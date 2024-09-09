@@ -1,0 +1,1044 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ElasticSearch 8.12.0 K8S部署实践【超详细】【一站式】 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/a984ea4af362315280a35ecda2ee8e71/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="ElasticSearch 8.12.0 K8S部署实践【超详细】【一站式】">
+  <meta property="og:description" content="近日在k8s上部署了一个ES8.12.0的集群，在部署过程中，发现无论是官方、还是网上的文章，都没有一站式能搞定的（官网文档非常碎片化，出了问题只能去官网的问题反馈去查，网上的其他文章可能是版本的问题与最新版ES不太适配），因此把我的部署过程整理分享出来，希望能帮到需要的同学。
+--------------------- 原创不易，如果大家看完觉得有帮助，希望能多多点赞关注，感谢各位的支持 ----------------------
+镜像 官网的镜像可以直接使用，docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+部署坑点 最新版ES默认启用了SSL安全性，镜像默认的启动命令会自动生成证书，不过只能让服务单点启动成起来，想做个集群或者配置kibana都不行，纯粹就是个摆设。需要重新生成整套的证书，官网还没有一套完整的文档都是东一块，西一块；
+ES代码中针对部署状态做了强安全性的校验导致k8s部署时要处理更多细节如：
+配置文件不允许做软链（部署k8s一般都把配置文件外挂成comfigmap便于维护，挂载configmap后，在通过软连方式替换掉原有的配置文件可以实现配置文件实时更新），启动会报异常‘
+$ES_HOME目录（默认是/usr/share/elasticsearch）极其子目录的owner必须是elasticsearch:elasticsearch，证书的目录可以例外，否则也会启动报异常
+安全证书需要适配节点IP，因此需要K8S容器绑定固定IP，使用Calico网络组件最新版3.27.0，支持在pod的annotations中添加声明 “cni.projectcalico.org/ipAddrs”: “[“xx.xx.xx.xx”]” 来绑定固定ip（一般不建议绑定，因为绑定后，容器更新重启需要等原容器销毁后新容器才能启动，平滑重启，滚动更新相当于废了）
+原始镜像没有优化系统内核参数，需要在容器初始化时通过root权限处理，而这就导致镜像默认启动命令不会执行自动初始化，也不会再生成默认证书，启动一定失败！！因为ES代码里面有校验如果启动脚本的进程pid不是1，就不会自动做初始化，必须手动处理（写到这里我想骂人。。。）
+综上所述，想要通过官网镜像部署ES集群，就不能使用默认自动初始化，而这就导致启动必然失败，首次启动只能通过在command中使用 sleep 3600; 把容器挂住，然后在到容器中通过elasticsearch-certuti生成全套证书后，再配置好证书挂载目录后，才能正常启动。
+配置文件可以通过cat 命令在启动命令执行前将挂载的自定义配置文件内容替换到默认配置文件中
+部署过程 部署2个实例的集群，1主1从
+准备主节点 k8s部署yml文件
+PVC声明，这里我是用的是local-path-provisioner本地存储，可以根据自己的环境替换
+--- #声明存储使用 #local存储 storage_class:local-path-provisioner(rancher) apiVersion: v1 kind: PersistentVolumeClaim metadata: name: es-010-pvc namespace: es spec: accessModes: - ReadWriteOnce #本地存储只支持ReadWriteOnce storageClassName: local-path #local-path: 容器删除，存储local-path动态删除，local-path-retain: 容器删除，存储local-path保留，local-path|local-path-retain为手动安装的storageclass resources: requests: storage: 50Gi #声明最少要使用存储空间，不足则无法创建 Gi=G Mi=M #persistentVolumeReclaimPolicy: Delete # PVC 回收策略 Retain 保留| Delete 清除 | PV: local-path-provisioner(rancher) 不支持设置该属性 暴露ES集群service, service 我一般是采用固定ip，方便给nginx做upsream">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-03-18T16:34:30+08:00">
+    <meta property="article:modified_time" content="2024-03-18T16:34:30+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">ElasticSearch 8.12.0 K8S部署实践【超详细】【一站式】</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>近日在k8s上部署了一个ES8.12.0的集群，在部署过程中，发现无论是官方、还是网上的文章，都没有一站式能搞定的（官网文档非常碎片化，出了问题只能去官网的问题反馈去查，网上的其他文章可能是版本的问题与最新版ES不太适配），因此把我的部署过程整理分享出来，希望能帮到需要的同学。</p> 
+<p><strong>--------------------- 原创不易，如果大家看完觉得有帮助，希望能多多点赞关注，感谢各位的支持 ----------------------</strong></p> 
+<h3><a id="_4"></a>镜像</h3> 
+<p>官网的镜像可以直接使用，docker.elastic.co/elasticsearch/elasticsearch:8.12.0</p> 
+<h3><a id="_8"></a>部署坑点</h3> 
+<ul><li> <p>最新版ES默认启用了SSL安全性，镜像默认的启动命令会自动生成证书，不过只能让服务单点启动成起来，想做个集群或者配置kibana都不行，纯粹就是个摆设。需要重新生成整套的证书，官网还没有一套完整的文档都是东一块，西一块；</p> </li><li> <p>ES代码中针对部署状态做了强安全性的校验导致k8s部署时要处理更多细节如：</p> <p>配置文件不允许做软链（部署k8s一般都把配置文件外挂成comfigmap便于维护，挂载configmap后，在通过软连方式替换掉原有的配置文件可以实现配置文件实时更新），启动会报异常‘</p> <p>$ES_HOME目录（默认是/usr/share/elasticsearch）极其子目录的owner必须是elasticsearch:elasticsearch，证书的目录可以例外，否则也会启动报异常</p> </li><li> <p>安全证书需要适配节点IP，因此需要K8S容器绑定固定IP，使用Calico网络组件最新版3.27.0，支持在pod的annotations中添加声明 “cni.projectcalico.org/ipAddrs”: “[“xx.xx.xx.xx”]” 来绑定固定ip（一般不建议绑定，因为绑定后，容器更新重启需要等原容器销毁后新容器才能启动，平滑重启，滚动更新相当于废了）</p> </li><li> <p>原始镜像没有优化系统内核参数，需要在容器初始化时通过root权限处理，而这就导致镜像默认启动命令不会执行自动初始化，也不会再生成默认证书，启动一定失败！！因为ES代码里面有校验如果启动脚本的进程pid不是1，就不会自动做初始化，必须手动处理（写到这里我想骂人。。。）</p> </li></ul> 
+<p>综上所述，想要通过官网镜像部署ES集群，就不能使用默认自动初始化，而这就导致启动必然失败，首次启动只能通过在command中使用 sleep 3600; 把容器挂住，然后在到容器中通过elasticsearch-certuti生成全套证书后，再配置好证书挂载目录后，才能正常启动。</p> 
+<p>配置文件可以通过cat 命令在启动命令执行前将挂载的自定义配置文件内容替换到默认配置文件中</p> 
+<h3><a id="_24"></a>部署过程</h3> 
+<p>部署2个实例的集群，1主1从</p> 
+<p>准备主节点 k8s部署yml文件</p> 
+<p><strong>PVC声明，这里我是用的是local-path-provisioner本地存储，可以根据自己的环境替换</strong></p> 
+<pre><code class="prism language-bash">---
+
+<span class="token comment">#声明存储使用</span>
+<span class="token comment">#local存储  storage_class:local-path-provisioner(rancher)</span>
+apiVersion: v1 
+kind: PersistentVolumeClaim
+metadata:
+  name: es-010-pvc
+  namespace:  es
+spec:
+  accessModes:
+    - ReadWriteOnce <span class="token comment">#本地存储只支持ReadWriteOnce</span>
+  storageClassName: local-path <span class="token comment">#local-path: 容器删除，存储local-path动态删除，local-path-retain: 容器删除，存储local-path保留，local-path|local-path-retain为手动安装的storageclass</span>
+  resources:
+    requests:
+      storage: 50Gi <span class="token comment">#声明最少要使用存储空间，不足则无法创建 Gi=G Mi=M </span>
+  <span class="token comment">#persistentVolumeReclaimPolicy: Delete # PVC 回收策略 Retain 保留| Delete 清除 | PV: local-path-provisioner(rancher) 不支持设置该属性</span>
+  
+</code></pre> 
+<p><strong>暴露ES集群service, service 我一般是采用固定ip，方便给nginx做upsream</strong></p> 
+<pre><code class="prism language-bash">---
+
+<span class="token comment"># api service</span>
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: es-01-svc
+  namespace:  es
+  annotations: 
+    desc <span class="token builtin class-name">:</span> elastic 01 集群 name-server的服务访问入口
+spec:
+  selector:
+    es-cluster: es-01
+  type: ClusterIP   <span class="token comment">#type:  ClusterIP【默认】 | NodePort | LoadBalancer(外部负载均衡) | ExternalName (外部DNS解析)</span>
+  clusterIP: <span class="token number">10.106</span>.220.1
+  ports:
+    - port: <span class="token number">9200</span>
+      targetPort: <span class="token number">9200</span>
+      name: httpport
+    - port: <span class="token number">9300</span>
+      targetPort: <span class="token number">9300</span>
+      name: transport
+      <span class="token comment">#nodePort: 32000</span>
+      
+---
+</code></pre> 
+<p><strong>StatefulSet配置（ES肯定是有状态的）</strong><br> <strong>要点说明</strong></p> 
+<ul><li> <p>只能单副本 replicas: 1</p> </li><li> <p>需要指定以root来启动pod并开启特权（因为需要优化内核参数）</p> </li><li> <p>挂载data跟logs目录，使用的PVC</p> </li><li> <p>挂载证书目录es-010-cert-file，使用的hostPath，配置文件中可以用绝对目录也可以用相对目录，相对目录的话当前位置是在 ${ES_HOME}/config/ 下，所以我才会把证书目录挂载到config子目录中；</p> </li><li> <p>通过command来同步配置文件，并重设目录用户，添加hosts(可选)，再以elasticsearch用户启动服务</p> </li><li> <p>elasticsearch.yml配置要点说明<br> command中增加 “sleep 3600;” 生成完证书删除掉，不要注释，要删除。</p> <p>discovery.seed_hosts: [“10.244.220.10:9300”,“10.244.220.11:9300”]<br> 这行配置是用于发现集群中的节点，首次启动时注释掉，等后面需要初始化集群的时候再打开</p> <p>首次启动单点使用<br> cluster.initial_master_nodes: [“10.244.220.10”]，启动成功后，进行证书初始化<br> 后续集群启动开启 discovery.seed_hosts 进行集群启动，由于之前单点启动成功已经有master了，故此是可以成功启动集群的</p> <p>cluster.name: "es-01"同一个集群的节点要保持一致</p> </li><li> <p>这里我还初始化了一下pod的hosts，可以让本地通过域名来执行脚本或访问api而不用写死ip</p> </li></ul> 
+<pre><code class="prism language-bash">apiVersion: apps/v1
+kind: StatefulSet <span class="token comment"># Deployment | StatefulSet | DaemonSet | JobSet</span>
+metadata: 
+  name:   es-010
+  namespace:  es
+spec: 
+  replicas: <span class="token number">1</span>  <span class="token comment">#运行副本数</span>
+  selector: 
+    matchLabels: 
+      k8s-app:  es-010 <span class="token comment">#与下方template节点中的 labels 保持一致</span>
+  revisionHistoryLimit: <span class="token number">10</span> <span class="token comment">#设定保留最近的几个revision 用于回滚，默认10</span>
+  <span class="token comment">#serviceName: "nginx-headless" #设置绑定的service，以支持内部dns访问 &lt;pod-name&gt;.&lt;svc-name&gt;.&lt;namespace&gt;.svc.cluster.local</span>
+  updateStrategy: <span class="token comment">#更新策略 [Statefulset]</span>
+  <span class="token comment">#strategy: #更新策略 [Deployment]</span>
+    type: RollingUpdate <span class="token comment"># RollingUpdate (滚动更新) | OnDelete (删除时更新)</span>
+    rollingUpdate:
+      <span class="token comment">#maxSurge: 1  #[Deployment]支持-升级过程中可以启动超过原先设置的POD数量的上限：数量 或 百分比 1 | 20%</span>
+      <span class="token comment">#maxUnavailable: 1 #[Deployment]支持-升级过程中无法提供服务的POD数量的上限：数量 或 百分比 1 | 20%，最好与maxSurge保持一致，这样能确保更新过程中的服务能力不会下降</span>
+      partition: <span class="token number">0</span> <span class="token comment">#[Statefulset] 灰度发布控制器，每次只更新部署的pod序号 &gt;= partition的pod，如果有5个pod[0-4]，0=更新所有,4=更新1pod,3=更新2pod</span>
+  template: 
+    metadata: 
+      labels: 
+         k8s-app: es-010
+         es-cluster: es-01
+      annotations:
+        <span class="token comment">#elasticearch 安全证书要求，需要固定节点ip</span>
+        <span class="token string">"cni.projectcalico.org/ipAddrs"</span><span class="token builtin class-name">:</span> <span class="token string">"[<span class="token entity" title='\"'>\"</span>10.244.220.10<span class="token entity" title='\"'>\"</span>]"</span>  <span class="token comment">#pod绑定固定ip，依赖于calico ipam插件，必须使用calico 3.24.1以上的版本才可以</span>
+    spec: 
+      restartPolicy: Always 
+      <span class="token comment">#使用指定用户运行，当前pod下所有容器都生效</span>
+      securityContext:
+        runAsUser: <span class="token number">0</span>  <span class="token comment">#以root运行 </span>
+      containers:  
+        - name: es-010
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+          imagePullPolicy: IfNotPresent <span class="token comment"># IfNotPresent | Always | Never</span>
+          securityContext: <span class="token comment">##开启特权，因为要调整系统内核</span>
+            privileged: <span class="token boolean">true</span>
+          resources:
+            requests:
+              memory: <span class="token string">"4Gi"</span> <span class="token comment">#Gi=G Mi=M 只支持整数</span>
+              cpu: <span class="token string">"2000m"</span> <span class="token comment">#1000m=1cpu (cpu物理线程)</span>
+            limits:
+              memory: <span class="token string">"6Gi"</span> <span class="token comment">#Gi=G Mi=M 只支持整数</span>
+              cpu: <span class="token string">"3000m"</span>  <span class="token comment">#1000m=1cpu (cpu物理线程)</span>
+          <span class="token comment">#securityContext: ###添加参数启用容器root权限</span>
+          <span class="token comment">#  privileged: true</span>
+          ports: 
+          - containerPort: <span class="token number">9200</span>
+            protocol: TCP
+          - containerPort: <span class="token number">9300</span>
+            protocol: TCP
+          command: <span class="token punctuation">[</span><span class="token string">"/bin/sh"</span>,<span class="token string">"-c"</span><span class="token punctuation">]</span> 
+          args: <span class="token comment">#可以设置多行命令,不过启动后初始化还是推荐使用postStart钩子函数来执行，不能有#注释符</span>
+           <span class="token comment">#将挂载的配置文件同步到默认的ES配置文件中,因为elastic的安全机制，软连接无法生效</span>
+           <span class="token comment">#将${POD_NAME}'.es.ndcto.com添加到本机hosts中，以便于与http.p12中的授信主机名适配</span>
+          - <span class="token operator">|</span> 
+            <span class="token function">cat</span> /config/elasticsearch.yml <span class="token operator">&gt;</span> /usr/share/elasticsearch/config/elasticsearch.yml<span class="token punctuation">;</span>
+            <span class="token function">cat</span> /config/jvm.options <span class="token operator">&gt;</span> /usr/share/elasticsearch/config/jvm.options<span class="token punctuation">;</span>
+            <span class="token function">chown</span> <span class="token parameter variable">-R</span> elasticsearch:elasticsearch /usr/share/elasticsearch<span class="token punctuation">;</span>
+            <span class="token function">chown</span> <span class="token parameter variable">-R</span> elasticsearch:elasticsearch /elasticsearch<span class="token punctuation">;</span>
+            
+            swapoff <span class="token parameter variable">-a</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'elasticsearch  -  nproc   4096'</span> <span class="token operator">&gt;&gt;</span> /etc/security/limits.conf<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'elasticsearch  -  nofile  65535'</span> <span class="token operator">&gt;&gt;</span> /etc/security/limits.conf<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'elasticsearch soft memlock unlimited'</span> <span class="token operator">&gt;&gt;</span> /etc/security/limits.conf<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'elasticsearch hard memlock unlimited'</span> <span class="token operator">&gt;&gt;</span> /etc/security/limits.conf<span class="token punctuation">;</span>
+            
+            <span class="token builtin class-name">echo</span> <span class="token string">'vm.max_map_count=262144'</span>  <span class="token operator">&gt;&gt;</span> /tmp/sysctl.conf<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'vm.swappiness=0'</span>          <span class="token operator">&gt;&gt;</span> /tmp/sysctl.conf<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'vm.overcommit_memory=1'</span>   <span class="token operator">&gt;&gt;</span> /tmp/sysctl.conf<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'vm.zone_reclaim_mode=0'</span>   <span class="token operator">&gt;&gt;</span> /tmp/sysctl.conf<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'net.ipv4.tcp_retries2=5'</span>  <span class="token operator">&gt;&gt;</span> /tmp/sysctl.conf<span class="token punctuation">;</span>
+            
+            <span class="token function">sysctl</span> -p<span class="token punctuation">;</span>
+            
+            <span class="token builtin class-name">echo</span> <span class="token string">''</span><span class="token variable">${POD_IP}</span><span class="token string">' es01.es.ndcto.com'</span> <span class="token operator">&gt;&gt;</span> /etc/hosts<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">''</span><span class="token variable">${POD_IP}</span><span class="token string">' es-01-svc'</span> <span class="token operator">&gt;&gt;</span> /etc/hosts<span class="token punctuation">;</span>
+            
+            <span class="token function">su</span> - elasticsearch <span class="token parameter variable">-c</span> <span class="token string">"/usr/share/elasticsearch/bin/elasticsearch -p /elasticsearch/elasticsearch.pid"</span><span class="token punctuation">;</span>
+            <span class="token function">sleep</span> <span class="token number">3600</span><span class="token punctuation">;</span>
+
+          env:   <span class="token comment">#环境变量配置</span>
+          - name: POD_NAME
+            valueFrom: 
+              fieldRef: 
+                apiVersion: v1
+                fieldPath: metadata.name
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          volumeMounts: 
+          - name: es-volume    <span class="token comment">#挂载部署目录</span>
+            mountPath: /elasticsearch/data
+            subPathExpr: <span class="token variable"><span class="token variable">$(</span>POD_NAME<span class="token variable">)</span></span>/elasticsearch/data
+          - name: es-volume  <span class="token comment">#挂载部署目录</span>
+            mountPath: /elasticsearch/logs
+            subPathExpr: <span class="token variable"><span class="token variable">$(</span>POD_NAME<span class="token variable">)</span></span>/elasticsearch/logs
+          - name: es-volume  <span class="token comment">#挂载部署目录</span>
+            mountPath: /usr/share/elasticsearch/.cache
+            subPathExpr: <span class="token variable"><span class="token variable">$(</span>POD_NAME<span class="token variable">)</span></span>/elasticsearch/cache
+          - name: es-volume  <span class="token comment">#挂载部署目录</span>
+            mountPath: /usr/share/elasticsearch/plugins
+            subPathExpr: <span class="token variable"><span class="token variable">$(</span>POD_NAME<span class="token variable">)</span></span>/elasticsearch/plugins
+          - name: es-010-cert-file  <span class="token comment">#挂载存储目录</span>
+            mountPath: /usr/share/elasticsearch/config/local-certs
+          - name: es-010-config  <span class="token comment">#挂载配置文件</span>
+            mountPath: /config
+          - name: host-time  <span class="token comment">#挂载本地时区</span>
+            mountPath: /etc/localtime
+            readOnly: <span class="token boolean">true</span>
+      volumes: 
+      - name: es-volume  <span class="token comment">#使用pvc</span>
+        persistentVolumeClaim:
+          claimName: es-010-pvc
+      - name: es-010-config  <span class="token comment">#使用pvc</span>
+        configMap:    <span class="token comment">#使用configMap</span>
+          name:  es-010-config
+          defaultMode: <span class="token number">420</span> <span class="token comment">#420-644 493-755</span>
+      - name: es-010-cert-file
+        hostPath: <span class="token comment">#挂载主机的目录</span>
+          path: /data/deploy/k8s/elasticsearch/certs
+          type: <span class="token string">""</span>
+      - name: host-time
+        hostPath: <span class="token comment">#挂载本地时区</span>
+          path: /etc/localtime
+          type: <span class="token string">""</span>
+
+---
+</code></pre> 
+<p><strong>configmap配置</strong><br> 要点</p> 
+<pre><code class="prism language-bash">---
+
+apiVersion: v1
+kind: ConfigMap <span class="token comment">#配置信息</span>
+metadata:
+  name: es-010-config <span class="token comment">#es-010配置</span>
+  namespace:  es
+data:
+  elasticsearch.yml: <span class="token operator">|</span> 
+    <span class="token comment">#首次启动会失败，需要重新生成证书并复制到所有节点上（xpack.security配置中的证书位置）</span>
+    cluster.name: <span class="token string">"es-01"</span>
+    node:
+      name: <span class="token string">"es-010"</span>
+      <span class="token comment">#指定节点角色</span>
+      <span class="token comment">#roles: [ data, master]</span>
+    
+    <span class="token comment"># 为HTTP 和传输流量设置此节点的地址。 elastic将监听该地址的所有请求，0.0.0.0 代表监听本机所有网络地址的请求，指定地址则仅监听该地址的请求（接受IP、主机名或特殊值）。</span>
+    network.host: <span class="token number">10.244</span>.220.10
+    
+    <span class="token comment"># 默认不开启</span>
+    <span class="token comment"># 开启是为了能够在内网与其他节点通讯，使得新节点可以加入集群，0.0.0.0 代表监听本机所有网络地址的请求，指定地址则仅监听该地址的请求（接受IP、主机名或特殊值）。</span>
+    transport.host: <span class="token number">10.244</span>.220.10
+    
+    <span class="token comment"># 用于节点发现</span>
+    <span class="token comment"># 首次启动时不开启</span>
+    <span class="token comment">#discovery.seed_hosts: ["10.244.220.10:9300","10.244.220.11:9300"]</span>
+    
+    <span class="token comment"># 初始主节点配置，集群形成后，从每个节点的配置中删除此设置。</span>
+    <span class="token comment"># 单点首次启动</span>
+    cluster.initial_master_nodes: <span class="token punctuation">[</span><span class="token string">"10.244.220.10"</span><span class="token punctuation">]</span>
+
+    <span class="token comment"># 初始集群配置至少3台，集群形成后，从每个节点的配置中删除此设置，需要按顺序启动</span>
+    <span class="token comment">#cluster.initial_master_nodes: ["10.244.220.10","10.244.220.11","10.244.220.12"]</span>
+    
+    <span class="token comment">#配置存储路径</span>
+    path.data:  /elasticsearch/data
+    path.logs:  /elasticsearch/logs
+    
+    <span class="token comment"># 开启es跨域与head插件</span>
+    http.cors.allow-origin: <span class="token string">"*"</span>
+    http.cors.enabled: <span class="token boolean">true</span>
+    http.cors.allow-headers: Authorization
+    http.max_content_length: 200mb
+    
+    <span class="token comment">#linux在使用内存锁时仍会交换堆外内存。要防止堆外内存交换，请禁用所有交换文件。</span>
+    bootstrap.memory_lock: <span class="token boolean">true</span>
+    
+    <span class="token comment">#限制高成本查询</span>
+    search.default_search_timeout: <span class="token string">"50s"</span>
+    <span class="token comment">#必须set为true，否则kibana报错</span>
+    search.allow_expensive_queries: <span class="token boolean">true</span>
+    
+    <span class="token comment">#禁用通配符模糊匹配删除索引</span>
+    action.destructive_requires_name: <span class="token boolean">true</span>
+      
+    <span class="token comment"># 设置自动创建索引(可选)</span>
+    <span class="token comment"># 一些商业功能会自动在 Elasticsearch 中创建索引。 默认情况下，Elasticsearch 配置为允许自动创建索引，不需要额外的步骤</span>
+    <span class="token comment">#action.auto_create_index: .monitoring*,.watches,.triggered_watches,.watcher-history*,.ml*</span>
+
+    <span class="token comment">#----------------------- BEGIN SECURITY AUTO CONFIGURATION -----------------------</span>
+    <span class="token comment">#</span>
+    <span class="token comment"># The following settings, TLS certificates, and keys have been automatically      </span>
+    <span class="token comment"># generated to configure Elasticsearch security features on 07-02-2024 12:57:00</span>
+    <span class="token comment">#</span>
+    <span class="token comment"># --------------------------------------------------------------------------------</span>
+
+    <span class="token comment"># Enable security features</span>
+   
+    
+    xpack.security: 
+      enabled: <span class="token boolean">true</span>
+      autoconfiguration: 
+        enabled: <span class="token boolean">true</span>
+
+    xpack.security.enrollment.enabled: <span class="token boolean">true</span>
+
+    <span class="token comment"># Enable encryption for HTTP API client connections, such as Kibana, Logstash, and Agents</span>
+    xpack.security.http.ssl:
+      enabled: <span class="token boolean">true</span>
+      <span class="token comment"># pem证书配置方式</span>
+      <span class="token comment">#key: local-certs/elastic-http.key</span>
+      <span class="token comment">#certificate: local-certs/elastic-http.crt</span>
+      <span class="token comment">#certificate_authorities: [ "local-certs/elastic-http.crt" ]</span>
+      keystore.path: local-certs/http.p12
+
+    <span class="token comment"># Enable encryption and mutual authentication between cluster nodes</span>
+    xpack.security.transport.ssl:
+      enabled: <span class="token boolean">true</span>
+      verification_mode: certificate
+      <span class="token comment"># pem证书配置方式</span>
+      <span class="token comment">#key: local-certs/ca.key </span>
+      <span class="token comment">#certificate: local-certs/ca.crt </span>
+      <span class="token comment">#certificate_authorities: [ "local-certs/ca.crt" ]</span>
+      
+      <span class="token comment"># pks12证书配置方式</span>
+      keystore.path: local-certs/elastic-certificates.p12
+      truststore.path: local-certs/elastic-certificates.p12
+
+
+    <span class="token comment">#----------------------- END SECURITY AUTO CONFIGURATION -------------------------</span>
+    
+  jvm.options: <span class="token operator">|</span>
+    <span class="token parameter variable">-Xms4g</span>
+    <span class="token parameter variable">-Xmx4g</span>
+    <span class="token parameter variable">-XX:+UseG1GC</span>
+
+    <span class="token comment">## JVM temporary directory</span>
+    <span class="token parameter variable">-Djava.io.tmpdir</span><span class="token operator">=</span><span class="token variable">${ES_TMPDIR}</span>
+
+    <span class="token comment"># Leverages accelerated vector hardware instructions; removing this may</span>
+    <span class="token comment"># result in less optimal vector performance</span>
+    <span class="token number">20</span>-:--add-modules<span class="token operator">=</span>jdk.incubator.vector
+
+    <span class="token comment"># REMOVE once bumped to a JDK greater than 21.0.1, https://github.com/elastic/elasticsearch/issues/103004</span>
+    <span class="token number">19</span>-21:-XX:CompileCommand<span class="token operator">=</span>exclude,org.apache.lucene.util.MSBRadixSorter::computeCommonPrefixLengthAndBuildHistogram
+    <span class="token number">19</span>-21:-XX:CompileCommand<span class="token operator">=</span>exclude,org.apache.lucene.util.RadixSelector::computeCommonPrefixLengthAndBuildHistogram
+
+    <span class="token comment">## heap dumps</span>
+
+    <span class="token comment"># generate a heap dump when an allocation from the Java heap fails; heap dumps</span>
+    <span class="token comment"># are created in the working directory of the JVM unless an alternative path is</span>
+    <span class="token comment"># specified</span>
+    <span class="token parameter variable">-XX:+HeapDumpOnOutOfMemoryError</span>
+
+    <span class="token comment"># exit right after heap dump on out of memory error</span>
+    <span class="token parameter variable">-XX:+ExitOnOutOfMemoryError</span>
+
+    <span class="token comment"># specify an alternative path for heap dumps; ensure the directory exists and</span>
+    <span class="token comment"># has sufficient space</span>
+    <span class="token parameter variable">-XX:HeapDumpPath</span><span class="token operator">=</span>/elasticsearch/data
+
+    <span class="token comment"># specify an alternative path for JVM fatal error logs</span>
+    <span class="token parameter variable">-XX:ErrorFile</span><span class="token operator">=</span>/elasticsearch/logs/hs_err_pid%p.log
+
+    <span class="token comment">## GC logging</span>
+    -Xlog:gc*,gc+age<span class="token operator">=</span>trace,safepoint:file<span class="token operator">=</span>/elasticsearch/logs/gc.log:utctime,level,pid,tags:filecount<span class="token operator">=</span><span class="token number">32</span>,filesize<span class="token operator">=</span>64m
+</code></pre> 
+<h3><a id="_380"></a>证书生成</h3> 
+<p>通过 kubectl apply -f 部署文件，可以部署ES-010 主节点以及 集群的service访问入口，ES服务会启动失败，不过由于slepp 3600; 容器会保持在running 状态，我们可以通过kubecl exec 进去容器内去生成证书。<br> ES使用的证书一共有4套<br> 1.CA证书，用于生成其他证书<br> 2.transport证书，用于ES节点之间通讯<br> 3.http证书，用于client访问，包括ES自带的/bin下的脚本文件也会依赖这个证书调用当前ES的API(跟K8S kubedctl kubeadm 类似)<br> 4.kibana访问ES集群的证书<br> 当前可以简单粗暴的在配置中把所有ssl校验都设置为false来忽略这些安全校验，不过这不是我的初衷</p> 
+<p><strong>生成CA证书</strong></p> 
+<pre><code class="prism language-bash"><span class="token variable">${ES_HOME}</span>/bin/elasticsearch-certutil ca 
+</code></pre> 
+<p>这里可以选择添加证书密码，如果添加密码的话，后续使用CA证书去生成其他证书都需要先校验密码<br> 默认会在${ES_HOME}目录下生成 elastic-stack-ca.p12 这个证书文件，在实际操作中根据自己的实际情况进行调整</p> 
+<p><strong>使用CA证书生成 transport证书</strong></p> 
+<pre><code class="prism language-bash"><span class="token variable">${ES_HOME}</span>/bin/elasticsearch-certutil cert <span class="token parameter variable">--ca</span> <span class="token variable">${ES_HOME}</span>/elastic-stack-ca.p12
+</code></pre> 
+<p>最终会生成1个elastic-certificates.p12的证书文件</p> 
+<p><strong>使用CA证书生成http证书</strong></p> 
+<pre><code class="prism language-bash">/usr/share/elasticsearch/bin/elasticsearch-certutil http
+</code></pre> 
+<p>执行后需要按提示输入一些选项</p> 
+<pre><code class="prism language-bash"><span class="token comment">#   需要设置一些选项</span>
+ 创建CSR: 否 <span class="token punctuation">{<!-- --></span>选是的话，需要使用自己的CA根证书<span class="token punctuation">}</span>
+ 使用已创建CA：是
+ 输入CA文件路径：/elastic-stack-ca.p12   <span class="token variable">${ES_HOME}</span>/elastic-stack-ca.p12
+ CA文件密码：创建CA证书时没有设置就回车，设置了就填写
+ 设置证书过期时间：可以按年月日计算，例如10y为10年，10d为10天，10m为10个月。
+ 是否为每个节点创建独立的证书：是  <span class="token punctuation">(</span>使用同一个证书。<span class="token punctuation">)</span>
+ 录入需要使用证书的主机名   即可以通过https访问的主机名或域名，域名可以设置通配符如：*.es.example.com <span class="token operator">|</span>  这里我用的是 es-01-svc.es 也就是<span class="token punctuation">{<!-- --></span>ES集群serviceapi的name<span class="token punctuation">}</span>.<span class="token punctuation">{<!-- --></span>service所在的命名空间<span class="token punctuation">}</span>，同个集群内都可以使用，k8s集群内部访问都是通过service的域名来做请求的，可以多个，每个换行。
+ 录入需要使用证书的IP       需要设置证书适用集群节点的ip，否则后期增加节点会不可用，还得重新生成证书 <span class="token builtin class-name">:</span> 输入ES集群节点将要绑定的ip地址，可以多个，每个换行
+ 设置证书密码：建议为空，省点麻烦，这么多证书认证已经够够的了
+</code></pre> 
+<p>以上完成后将在${elasticsearch_home}下生成一个zip压缩文件。 解压文件，生成一个文件夹，里面包含两个文件夹:<br> elasticsearch文件夹包含http.p12及elasticsearch.yml的配置参考;<br> kibana文件夹包含elasticsearch-ca.pem及kibana.yml的配置参考;（注意：kibana仅有这个证书是不够的）</p> 
+<p><strong>用java/bin/keytool http.p12证书中注入CA证书</strong><br> 这步很重要，否则生成的http.p12根本用不了，会提示异常，也是最让我想吐槽的地方，官方文档的安装步骤里根本没提，只是因为问题反馈有人说，才找到解答说这步是在哪哪哪，这也是我觉得ES官方文档很碎片化的原因，要说没有的吧，在某个地方也说了，但是从安装说明那开始走，找不到！！</p> 
+<pre><code class="prism language-bash">ERROR: Unable to create an enrollment token. Elasticsearch <span class="token function">node</span> HTTP layer SSL configuration Keystore doesn't contain any PrivateKey entries where the associated certificate is a CA certificate, with <span class="token builtin class-name">exit</span> code <span class="token number">73</span>
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token comment"># 这里需要使用java/bin/keytool 给http.p12证书中注入CA证书</span>
+<span class="token comment"># 如果http.p12证书没有设置密码，只需要在命令中添加  -storepass "" 参数</span>
+
+keytool <span class="token parameter variable">-importkeystore</span> <span class="token parameter variable">-destkeystore</span> <span class="token operator">&lt;</span>filename-http-PKCS1<span class="token operator"><span class="token file-descriptor important">2</span>&gt;</span> <span class="token parameter variable">-srckeystore</span> <span class="token operator">&lt;</span>filename-PKCS12-contains-CA-Cert.p1<span class="token operator"><span class="token file-descriptor important">2</span>&gt;</span> <span class="token parameter variable">-srcstoretype</span> PKCS12
+<span class="token variable">$ES_HOME</span>/jdk/bin/keytool <span class="token parameter variable">-importkeystore</span> <span class="token parameter variable">-destkeystore</span> ./http.p12 <span class="token parameter variable">-srckeystore</span> ./elastic-stack-ca.p12  <span class="token parameter variable">-srcstoretype</span> PKCS12 <span class="token parameter variable">-storepass</span> <span class="token string">""</span>
+</code></pre> 
+<p>到这里ES需要的3个证书（配置里只配2个）就齐了<br> CA：elastic-stack-ca.p12<br> trasport: elastic-certificates.p12 （需要在配置文件中指定位置）<br> http: http.p12 （需要在配置文件中指定位置）</p> 
+<p>这时候需要配置好证书把集群启动起来，在我这里的配置中，我把 <strong>elastic-stack-ca.p12、http.p12、elastic-certificates.p12</strong> 都通过hostpath 挂载到了所有pod的${ES_HOME}/config/local-certs/中(要确保pod调度到的所有Node的该存储目录中都有这3个文件)，实际配置中只需要 <strong>http.p12、elastic-certificates.p12</strong> 为了以后便于维护我还是都放进去了。</p> 
+<p>这时候需要调整一下部署文件，以我的集群1主1从举例</p> 
+<ol><li>所有节点的配置中开启节点发现，并把主从节点的ip端口都填进去，transport端口默认就是9300，也可以不指明</li></ol> 
+<pre><code class="prism language-bash"> discovery.seed_hosts: <span class="token punctuation">[</span><span class="token string">"10.244.220.10:9300"</span>,<span class="token string">"10.244.220.11:9300"</span><span class="token punctuation">]</span>
+</code></pre> 
+<ol start="2"><li>注释单节点初始化</li></ol> 
+<pre><code class="prism language-bash"> <span class="token comment"># 首次启动单点</span>
+<span class="token comment">#cluster.initial_master_nodes: ["10.244.220.10"]</span>
+
+</code></pre> 
+<ol start="3"><li>删除 commond中的 sleep 3600;</li></ol> 
+<p><strong>其他节点配置</strong><br> 从节点1的k8s部署配置如下，有更多节点2,3,4,5 可以参考复制该配置，并调整name，ip属性值</p> 
+<p><strong>声明单独的存储PVC</strong></p> 
+<pre><code class="prism language-bash">---
+
+<span class="token comment">#声明存储使用</span>
+<span class="token comment">#local存储  storage_class:local-path-provisioner(rancher)</span>
+apiVersion: v1 
+kind: PersistentVolumeClaim
+metadata:
+  name: es-011-pvc
+  namespace:  es
+spec:
+  accessModes:
+    - ReadWriteOnce <span class="token comment">#本地存储只支持ReadWriteOnce</span>
+  storageClassName: local-path <span class="token comment">#local-path: 容器删除，存储local-path动态删除，local-path-retain: 容器删除，存储local-path保留，local-path|local-path-retain为手动安装的storageclass</span>
+  resources:
+    requests:
+      storage: 50Gi <span class="token comment">#声明最少要使用存储空间，不足则无法创建 Gi=G Mi=M </span>
+  <span class="token comment">#persistentVolumeReclaimPolicy: Delete # PVC 回收策略 Retain 保留| Delete 清除 | PV: local-path-provisioner(rancher) 不支持设置该属性</span>
+  
+</code></pre> 
+<p><strong>pod部署说明</strong></p> 
+<ul><li>es-cluster: es-01 不要动这是为了让集群service能匹配到集群内的所有pod，集群内节点需要保持一致</li></ul> 
+<pre><code class="prism language-bash">---
+
+
+apiVersion: apps/v1
+kind: StatefulSet <span class="token comment"># Deployment | StatefulSet | DaemonSet | JobSet</span>
+metadata: 
+  name:   es-011
+  namespace:  es
+spec: 
+  replicas: <span class="token number">1</span>  <span class="token comment">#运行副本数</span>
+  selector: 
+    matchLabels: 
+      k8s-app:  es-011 <span class="token comment">#与下方template节点中的 labels 保持一致</span>
+  revisionHistoryLimit: <span class="token number">10</span> <span class="token comment">#设定保留最近的几个revision 用于回滚，默认10</span>
+  <span class="token comment">#serviceName: "nginx-headless" #设置绑定的service，以支持内部dns访问 &lt;pod-name&gt;.&lt;svc-name&gt;.&lt;namespace&gt;.svc.cluster.local</span>
+  updateStrategy: <span class="token comment">#更新策略 [Statefulset]</span>
+  <span class="token comment">#strategy: #更新策略 [Deployment]</span>
+    type: RollingUpdate <span class="token comment"># RollingUpdate (滚动更新) | OnDelete (删除时更新)</span>
+    rollingUpdate:
+      <span class="token comment">#maxSurge: 1  #[Deployment]支持-升级过程中可以启动超过原先设置的POD数量的上限：数量 或 百分比 1 | 20%</span>
+      <span class="token comment">#maxUnavailable: 1 #[Deployment]支持-升级过程中无法提供服务的POD数量的上限：数量 或 百分比 1 | 20%，最好与maxSurge保持一致，这样能确保更新过程中的服务能力不会下降</span>
+      partition: <span class="token number">0</span> <span class="token comment">#[Statefulset] 灰度发布控制器，每次只更新部署的pod序号 &gt;= partition的pod，如果有5个pod[0-4]，0=更新所有,4=更新1pod,3=更新2pod</span>
+  template: 
+    metadata: 
+      labels: 
+         k8s-app: es-011
+         es-cluster: es-01
+      annotations:
+        <span class="token comment">#elasticearch 安全证书要求，需要固定节点ip</span>
+        <span class="token string">"cni.projectcalico.org/ipAddrs"</span><span class="token builtin class-name">:</span> <span class="token string">"[<span class="token entity" title='\"'>\"</span>10.244.220.11<span class="token entity" title='\"'>\"</span>]"</span>  <span class="token comment">#pod绑定固定ip，依赖于calico ipam插件，必须使用calico 3.24.1以上的版本才可以</span>
+    spec: 
+      restartPolicy: Always 
+      <span class="token comment">#使用指定用户运行，当前pod下所有容器都生效</span>
+      securityContext:
+        runAsUser: <span class="token number">0</span>  <span class="token comment">#以root运行 </span>
+        <span class="token comment">#fsGroup: 1000  #指定存储卷挂载归属用户组 </span>
+        <span class="token comment">#runAsUser: 1000 #以指定用户运行容器</span>
+      containers:  
+        - name: es-011
+          image: docker.elastic.co/elasticsearch/elasticsearch:8.12.0
+          imagePullPolicy: IfNotPresent <span class="token comment"># IfNotPresent | Always | Never</span>
+          securityContext: <span class="token comment">##开启特权，因为要调整系统内核</span>
+            privileged: <span class="token boolean">true</span>
+          resources:
+            requests:
+              memory: <span class="token string">"4Gi"</span> <span class="token comment">#Gi=G Mi=M 只支持整数</span>
+              cpu: <span class="token string">"2000m"</span> <span class="token comment">#1000m=1cpu (cpu物理线程)</span>
+            limits:
+              memory: <span class="token string">"6Gi"</span> <span class="token comment">#Gi=G Mi=M 只支持整数</span>
+              cpu: <span class="token string">"4000m"</span>  <span class="token comment">#1000m=1cpu (cpu物理线程)</span>
+          <span class="token comment">#securityContext: ###添加参数启用容器root权限</span>
+          <span class="token comment">#  privileged: true</span>
+          ports: 
+          - containerPort: <span class="token number">9200</span>
+            protocol: TCP
+          - containerPort: <span class="token number">9300</span>
+            protocol: TCP
+          command: <span class="token punctuation">[</span><span class="token string">"/bin/sh"</span>,<span class="token string">"-c"</span><span class="token punctuation">]</span> 
+          args: <span class="token comment">#可以设置多行命令,不过启动后初始化还是推荐使用postStart钩子函数来执行，不能有#注释符</span>
+           <span class="token comment">#将挂载的配置文件同步到默认的ES配置文件中,因为elastic的安全机制，软连接无法生效</span>
+           <span class="token comment">#将${POD_NAME}'.es.ndcto.com添加到本机hosts中，以便于与http.p12中的授信主机名适配</span>
+          - <span class="token operator">|</span> 
+            <span class="token function">cat</span> /config/elasticsearch.yml <span class="token operator">&gt;</span> /usr/share/elasticsearch/config/elasticsearch.yml<span class="token punctuation">;</span>
+            <span class="token function">cat</span> /config/jvm.options <span class="token operator">&gt;</span> /usr/share/elasticsearch/config/jvm.options<span class="token punctuation">;</span>
+            <span class="token function">chown</span> <span class="token parameter variable">-R</span> elasticsearch:elasticsearch /usr/share/elasticsearch<span class="token punctuation">;</span>
+            <span class="token function">chown</span> <span class="token parameter variable">-R</span> elasticsearch:elasticsearch /elasticsearch<span class="token punctuation">;</span>
+            
+            swapoff <span class="token parameter variable">-a</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'elasticsearch  -  nproc   4096'</span> <span class="token operator">&gt;&gt;</span> /etc/security/limits.conf<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'elasticsearch  -  nofile  65535'</span> <span class="token operator">&gt;&gt;</span> /etc/security/limits.conf<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'elasticsearch soft memlock unlimited'</span> <span class="token operator">&gt;&gt;</span> /etc/security/limits.conf<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'elasticsearch hard memlock unlimited'</span> <span class="token operator">&gt;&gt;</span> /etc/security/limits.conf<span class="token punctuation">;</span>
+            
+            <span class="token builtin class-name">echo</span> <span class="token string">'vm.max_map_count=262144'</span>  <span class="token operator">&gt;&gt;</span> /tmp/sysctl.conf<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'vm.swappiness=0'</span>          <span class="token operator">&gt;&gt;</span> /tmp/sysctl.conf<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'vm.overcommit_memory=1'</span>   <span class="token operator">&gt;&gt;</span> /tmp/sysctl.conf<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'vm.zone_reclaim_mode=0'</span>   <span class="token operator">&gt;&gt;</span> /tmp/sysctl.conf<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">'net.ipv4.tcp_retries2=5'</span>  <span class="token operator">&gt;&gt;</span> /tmp/sysctl.conf<span class="token punctuation">;</span>
+            
+            <span class="token function">sysctl</span> -p<span class="token punctuation">;</span>
+           
+            <span class="token builtin class-name">echo</span> <span class="token string">''</span><span class="token variable">${POD_IP}</span><span class="token string">' es01.es.ndcto.com'</span> <span class="token operator">&gt;&gt;</span> /etc/hosts<span class="token punctuation">;</span>
+            <span class="token builtin class-name">echo</span> <span class="token string">''</span><span class="token variable">${POD_IP}</span><span class="token string">' es-01-svc'</span> <span class="token operator">&gt;&gt;</span> /etc/hosts<span class="token punctuation">;</span>
+            <span class="token function">su</span> - elasticsearch <span class="token parameter variable">-c</span> <span class="token string">"/usr/share/elasticsearch/bin/elasticsearch -p /elasticsearch/elasticsearch.pid"</span><span class="token punctuation">;</span>
+
+          env:   <span class="token comment">#环境变量配置</span>
+          - name: POD_NAME
+            valueFrom: 
+              fieldRef: 
+                apiVersion: v1
+                fieldPath: metadata.name     
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          volumeMounts: 
+          - name: es-volume    <span class="token comment">#挂载部署目录</span>
+            mountPath: /elasticsearch/data
+            subPathExpr: <span class="token variable"><span class="token variable">$(</span>POD_NAME<span class="token variable">)</span></span>/elasticsearch/data
+          - name: es-volume  <span class="token comment">#挂载部署目录</span>
+            mountPath: /elasticsearch/logs
+            subPathExpr: <span class="token variable"><span class="token variable">$(</span>POD_NAME<span class="token variable">)</span></span>/elasticsearch/logs
+          - name: es-volume  <span class="token comment">#挂载部署目录</span>
+            mountPath: /usr/share/elasticsearch/.cache
+            subPathExpr: <span class="token variable"><span class="token variable">$(</span>POD_NAME<span class="token variable">)</span></span>/elasticsearch/cache
+          - name: es-volume  <span class="token comment">#挂载部署目录</span>
+            mountPath: /usr/share/elasticsearch/plugins
+            subPathExpr: <span class="token variable"><span class="token variable">$(</span>POD_NAME<span class="token variable">)</span></span>/elasticsearch/plugins
+          - name: es-011-cert-file  <span class="token comment">#挂载存储目录</span>
+            mountPath: /usr/share/elasticsearch/config/local-certs
+          - name: es-011-config  <span class="token comment">#挂载配置文件</span>
+            mountPath: /config
+            <span class="token comment">#readOnly: true</span>
+          - name: host-time  <span class="token comment">#挂载本地时区</span>
+            mountPath: /etc/localtime
+            readOnly: <span class="token boolean">true</span>
+      volumes: 
+      - name: es-volume  <span class="token comment">#使用pvc</span>
+        persistentVolumeClaim:
+          claimName:  es-011-pvc
+      - name: es-011-config  <span class="token comment">#使用pvc</span>
+        configMap:    <span class="token comment">#使用configMap</span>
+          name:  es-011-config
+          defaultMode: <span class="token number">420</span> <span class="token comment">#420-644 493-755</span>
+      - name: es-011-cert-file
+        hostPath: <span class="token comment">#挂载主机的目录</span>
+          path: /data/deploy/k8s/elasticsearch/certs
+          type: <span class="token string">""</span>
+      - name: host-time
+        hostPath: <span class="token comment">#挂载本地时区</span>
+          path: /etc/localtime
+          type: <span class="token string">""</span>
+
+---
+</code></pre> 
+<p><strong>挂载配置文件，各节点除了node.name跟network.host 都相同，当然也可以指定不同的node.role</strong></p> 
+<pre><code class="prism language-bash">apiVersion: v1
+kind: ConfigMap <span class="token comment">#配置信息</span>
+metadata:
+  name: es-011-config <span class="token comment">#es-010配置</span>
+  namespace:  es
+data:
+  elasticsearch.yml: <span class="token operator">|</span>
+    cluster.name: <span class="token string">"es-01"</span>
+    node:
+      name: <span class="token string">"es-011"</span>
+      <span class="token comment">#指定节点角色</span>
+      <span class="token comment">#roles: [ data, master]</span>
+    <span class="token comment"># 为HTTP 和传输流量设置此节点的地址。 elastic将监听该地址的所有请求，0.0.0.0 代表监听本机所有网络地址的请求，指定地址则仅监听该地址的请求（接受IP、主机名或特殊值）。</span>
+    network.host: <span class="token number">10.244</span>.220.11
+    
+    <span class="token comment"># 默认不开启</span>
+    <span class="token comment"># 开启是为了能够在内网与其他节点通讯，使得新节点可以加入集群，0.0.0.0 代表监听本机所有网络地址的请求，指定地址则仅监听该地址的请求（接受IP、主机名或特殊值）。</span>
+    transport.host: <span class="token number">10.244</span>.220.11
+    
+    <span class="token comment"># 用于节点发现</span>
+    discovery.seed_hosts: <span class="token punctuation">[</span><span class="token string">"10.244.220.10:9300"</span>,<span class="token string">"10.244.220.11:9300"</span><span class="token punctuation">]</span>
+    
+    <span class="token comment"># 初始主节点配置，集群形成后，从每个节点的配置中删除此设置。</span>
+    <span class="token comment"># 单点首次启动</span>
+    <span class="token comment">#cluster.initial_master_nodes: ["10.244.220.11"]</span>
+    
+    <span class="token comment"># 初始集群配置至少3台，集群形成后，从每个节点的配置中删除此设置，需要按顺序启动</span>
+    <span class="token comment">#cluster.initial_master_nodes: ["10.244.220.10","10.244.220.11","10.244.220.12"]</span>
+    
+    <span class="token comment">#配置存储路径</span>
+    path.data:  /elasticsearch/data
+    path.logs:  /elasticsearch/logs
+    
+    <span class="token comment"># 开启es跨域与head插件</span>
+    http.cors.allow-origin: <span class="token string">"*"</span>
+    http.cors.enabled: <span class="token boolean">true</span>
+    http.cors.allow-headers: Authorization
+    http.max_content_length: 200mb
+    
+    <span class="token comment">#linux在使用内存锁时仍会交换堆外内存。要防止堆外内存交换，请禁用所有交换文件。</span>
+    <span class="token comment">#k8s容器无法执行</span>
+    bootstrap.memory_lock: <span class="token boolean">true</span>
+    
+    <span class="token comment">#限制高成本查询</span>
+    search.default_search_timeout: <span class="token string">"50s"</span>
+    <span class="token comment">#必须set为true，否则kibana报错</span>
+    search.allow_expensive_queries: <span class="token boolean">true</span>
+    
+    <span class="token comment">#禁用通配符模糊匹配删除索引</span>
+    action.destructive_requires_name: <span class="token boolean">true</span>
+      
+    <span class="token comment"># 设置自动创建索引(可选)</span>
+    <span class="token comment"># 一些商业功能会自动在 Elasticsearch 中创建索引。 默认情况下，Elasticsearch 配置为允许自动创建索引，不需要额外的步骤</span>
+    <span class="token comment">#action.auto_create_index: .monitoring*,.watches,.triggered_watches,.watcher-history*,.ml*</span>
+
+    <span class="token comment">#----------------------- BEGIN SECURITY AUTO CONFIGURATION -----------------------</span>
+    <span class="token comment">#</span>
+    <span class="token comment"># The following settings, TLS certificates, and keys have been automatically      </span>
+    <span class="token comment"># generated to configure Elasticsearch security features on 07-02-2024 12:57:00</span>
+    <span class="token comment">#</span>
+    <span class="token comment"># --------------------------------------------------------------------------------</span>
+
+    <span class="token comment"># Enable security features</span>
+   
+    
+    xpack.security: 
+      enabled: <span class="token boolean">true</span>
+      autoconfiguration: 
+        enabled: <span class="token boolean">true</span>
+
+    xpack.security.enrollment.enabled: <span class="token boolean">true</span>
+
+    <span class="token comment"># Enable encryption for HTTP API client connections, such as Kibana, Logstash, and Agents</span>
+    xpack.security.http.ssl:
+      enabled: <span class="token boolean">true</span>
+      <span class="token comment"># pem证书配置方式</span>
+      <span class="token comment">#key: local-certs/elastic-http.key</span>
+      <span class="token comment">#certificate: local-certs/elastic-http.crt</span>
+      <span class="token comment">#certificate_authorities: [ "local-certs/elastic-http.crt" ]</span>
+      keystore.path: local-certs/http.p12
+
+    <span class="token comment"># Enable encryption and mutual authentication between cluster nodes</span>
+    xpack.security.transport.ssl:
+      enabled: <span class="token boolean">true</span>
+      verification_mode: certificate
+      <span class="token comment"># pem证书配置方式</span>
+      <span class="token comment">#key: local-certs/ca.key </span>
+      <span class="token comment">#certificate: local-certs/ca.crt </span>
+      <span class="token comment">#certificate_authorities: [ "local-certs/ca.crt" ]</span>
+      
+      <span class="token comment"># pks12证书配置方式</span>
+      keystore.path: local-certs/elastic-certificates.p12
+      truststore.path: local-certs/elastic-certificates.p12
+      
+
+    <span class="token comment">#----------------------- END SECURITY AUTO CONFIGURATION -------------------------</span>
+    
+  jvm.options: <span class="token operator">|</span>
+    <span class="token parameter variable">-Xms4g</span>
+    <span class="token parameter variable">-Xmx4g</span>
+    <span class="token parameter variable">-XX:+UseG1GC</span>
+
+    <span class="token comment">## JVM temporary directory</span>
+    <span class="token parameter variable">-Djava.io.tmpdir</span><span class="token operator">=</span><span class="token variable">${ES_TMPDIR}</span>
+
+    <span class="token comment"># Leverages accelerated vector hardware instructions; removing this may</span>
+    <span class="token comment"># result in less optimal vector performance</span>
+    <span class="token number">20</span>-:--add-modules<span class="token operator">=</span>jdk.incubator.vector
+
+    <span class="token comment"># REMOVE once bumped to a JDK greater than 21.0.1, https://github.com/elastic/elasticsearch/issues/103004</span>
+    <span class="token number">19</span>-21:-XX:CompileCommand<span class="token operator">=</span>exclude,org.apache.lucene.util.MSBRadixSorter::computeCommonPrefixLengthAndBuildHistogram
+    <span class="token number">19</span>-21:-XX:CompileCommand<span class="token operator">=</span>exclude,org.apache.lucene.util.RadixSelector::computeCommonPrefixLengthAndBuildHistogram
+
+    <span class="token comment">## heap dumps</span>
+
+    <span class="token comment"># generate a heap dump when an allocation from the Java heap fails; heap dumps</span>
+    <span class="token comment"># are created in the working directory of the JVM unless an alternative path is</span>
+    <span class="token comment"># specified</span>
+    <span class="token parameter variable">-XX:+HeapDumpOnOutOfMemoryError</span>
+
+    <span class="token comment"># exit right after heap dump on out of memory error</span>
+    <span class="token parameter variable">-XX:+ExitOnOutOfMemoryError</span>
+
+    <span class="token comment"># specify an alternative path for heap dumps; ensure the directory exists and</span>
+    <span class="token comment"># has sufficient space</span>
+    <span class="token parameter variable">-XX:HeapDumpPath</span><span class="token operator">=</span>/elasticsearch/data
+
+    <span class="token comment"># specify an alternative path for JVM fatal error logs</span>
+    <span class="token parameter variable">-XX:ErrorFile</span><span class="token operator">=</span>/elasticsearch/logs/hs_err_pid%p.log
+
+    <span class="token comment">## GC logging</span>
+    -Xlog:gc*,gc+age<span class="token operator">=</span>trace,safepoint:file<span class="token operator">=</span>/elasticsearch/logs/gc.log:utctime,level,pid,tags:filecount<span class="token operator">=</span><span class="token number">32</span>,filesize<span class="token operator">=</span>64m
+</code></pre> 
+<p>然后通过kubectl apply -f …yaml 顺序部署主从节点，正常的话，会出现一大段的info初始化日志，没有error。<br> 启动成功后，用kubectl exec -it 进去到任一容器中，重置elastic账号 与 kibana-system(kibana专用)账号</p> 
+<pre><code class="prism language-bash"><span class="token variable">${ES_HOME}</span>/bin/elasticsearch-reset-password <span class="token parameter variable">-u</span> elastic <span class="token parameter variable">-i</span>
+<span class="token variable">${ES_HOME}</span>/bin/elasticsearch-reset-password <span class="token parameter variable">-u</span> kibana_system <span class="token parameter variable">-i</span>
+</code></pre> 
+<p>通过service 的 cluster ip 查看一下集群状态，需要输出刚才重置的elastic账号的密码</p> 
+<pre><code class="prism language-bash">https://<span class="token variable">${svc_cluster_ip}</span>:9200/_cat/nodes?v
+</code></pre> 
+<p>正常输出<img src="https://images2.imgbox.com/df/43/HO56mBx3_o.png" alt="在这里插入图片描述"><br> 至此elasticsearch集群部署完成，后续可以根据需要安装插件，比如分词器elasticsearch-analysis-ik<br> 只需要下载插件的压缩包，然后在所有ES节点的 ${ES_HOME}//plugins/中创建该插件的目录，比如针对 elasticsearch-analysis-ik 我建了个analysis-ik的目录，然后将压缩包通过 kubectl cp 复制进去再解压缩，重启ES节点，ES节点启动后会自动扫描安装插件。</p> 
+<p><strong>注意插件的适配版本一定要与当前ES集群的版本一致，否则会报错 ！！！</strong></p> 
+<p><strong>生成kibana使用的证书</strong><br> 除了之前生成http证书时生成的 elasticsearch-ca.pem 之外还有3个文件<br> kibana.crt，kibana.key，kibana.csr<br> 下面先生成 kibana.csr，kibana.key</p> 
+<pre><code class="prism language-bash"><span class="token comment"># 生成kibana证书，在es节点中执行</span>
+<span class="token comment"># -dns 证书适配的域名(kibana访问的es集群时使用的域名)，多个可用,分隔 ，也可以使用 -ip 设置证书适配的ip</span>
+<span class="token comment">#  </span>
+/usr/share/elasticsearch/bin/elasticsearch-certutil csr <span class="token parameter variable">-name</span> kibana <span class="token parameter variable">-dns</span> es-01-svc
+</code></pre> 
+<p>这里我依然是通过域名方式来处理，使用的是es集群的service 域名，注意因为我的kibana是跟我的ES部署在k8s集群中的同一个namespace下，因此才可以通过https|http://service-name:port 直接访问。否则还需要按照k8s规则拼完整的service域名，这里就先不展开，反正只要kiibana跟es 部署在1个ns下就没问题。</p> 
+<p>执行后默认会生成 <strong>csr-bundle.zip</strong><br> 解压缩后得到kibana.csr ，kibana.key，用它2生成 kibana.crt</p> 
+<pre><code class="prism language-bash"><span class="token comment"># 生成crt文件</span>
+openssl x509 <span class="token parameter variable">-req</span> <span class="token parameter variable">-in</span> kibana.csr <span class="token parameter variable">-signkey</span> kibana.key <span class="token parameter variable">-out</span> kibana.crt
+</code></pre> 
+<p>将3个文件kibana.csr、kibana.key、kibana.crt打包下载到本地,包括elasticsearch-ca.pem 一并挂载到到 kibana pod的目录中，这里我使用/config/local_certs，实际kibana配置文件中并没有配kibana.csr，为了以后便于维护我也放了进去。</p> 
+<h3><a id="kibana_k8s_808"></a>kibana k8s部署文件</h3> 
+<p><strong>照例先声明存储PVC</strong></p> 
+<pre><code class="prism language-bash">---
+
+<span class="token comment">#声明存储使用</span>
+<span class="token comment">#local存储  storage_class:local-path-provisioner(rancher)</span>
+apiVersion: v1 
+kind: PersistentVolumeClaim
+metadata:
+  name: kibana-010-pvc
+  namespace:  es
+spec:
+  accessModes:
+    - ReadWriteOnce <span class="token comment">#本地存储只支持ReadWriteOnce</span>
+  storageClassName: local-path <span class="token comment">#local-path: 容器删除，存储local-path动态删除，local-path-retain: 容器删除，存储local-path保留，local-path|local-path-retain为手动安装的storageclass</span>
+  resources:
+    requests:
+      storage: 20Gi <span class="token comment">#声明最少要使用存储空间，不足则无法创建 Gi=G Mi=M </span>
+  <span class="token comment">#persistentVolumeReclaimPolicy: Delete # PVC 回收策略 Retain 保留| Delete 清除 | PV: local-path-provisioner(rancher) 不支持设置该属性</span>
+---
+</code></pre> 
+<p><strong>声明service</strong></p> 
+<pre><code class="prism language-bash"><span class="token comment"># api service</span>
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: kibana-01-svc
+  namespace:  es
+  annotations: 
+    desc <span class="token builtin class-name">:</span> elastic 01 集群 kibana的服务访问入口
+spec:
+  selector:
+    kibana-cluster: kibana-01
+  type: ClusterIP   <span class="token comment">#type:  ClusterIP【默认】 | NodePort | LoadBalancer(外部负载均衡) | ExternalName (外部DNS解析)</span>
+  clusterIP: <span class="token number">10.106</span>.220.221
+  ports:
+    - port: <span class="token number">5601</span>
+      targetPort: <span class="token number">5601</span>
+      name: httpport
+      
+</code></pre> 
+<p><strong>声明StatefulSet ，这里不要绑定固定ip</strong></p> 
+<pre><code class="prism language-bash">apiVersion: apps/v1
+kind: StatefulSet <span class="token comment"># Deployment | StatefulSet | DaemonSet | JobSet</span>
+metadata: 
+  name:   kibana-010
+  namespace:  es
+spec: 
+  replicas: <span class="token number">1</span>  <span class="token comment">#运行副本数</span>
+  selector: 
+    matchLabels: 
+      k8s-app:  kibana-010 <span class="token comment">#与下方template节点中的 labels 保持一致</span>
+  revisionHistoryLimit: <span class="token number">10</span> <span class="token comment">#设定保留最近的几个revision 用于回滚，默认10</span>
+  <span class="token comment">#serviceName: "nginx-headless" #设置绑定的service，以支持内部dns访问 &lt;pod-name&gt;.&lt;svc-name&gt;.&lt;namespace&gt;.svc.cluster.local</span>
+  updateStrategy: <span class="token comment">#更新策略 [Statefulset]</span>
+  <span class="token comment">#strategy: #更新策略 [Deployment]</span>
+    type: RollingUpdate <span class="token comment"># RollingUpdate (滚动更新) | OnDelete (删除时更新)</span>
+    rollingUpdate:
+      <span class="token comment">#maxSurge: 1  #[Deployment]支持-升级过程中可以启动超过原先设置的POD数量的上限：数量 或 百分比 1 | 20%</span>
+      <span class="token comment">#maxUnavailable: 1 #[Deployment]支持-升级过程中无法提供服务的POD数量的上限：数量 或 百分比 1 | 20%，最好与maxSurge保持一致，这样能确保更新过程中的服务能力不会下降</span>
+      partition: <span class="token number">0</span> <span class="token comment">#[Statefulset] 灰度发布控制器，每次只更新部署的pod序号 &gt;= partition的pod，如果有5个pod[0-4]，0=更新所有,4=更新1pod,3=更新2pod</span>
+  template: 
+    metadata: 
+      labels: 
+         k8s-app: kibana-010
+         kibana-cluster: kibana-01
+      annotations:
+        <span class="token comment">#"cni.projectcalico.org/ipAddrs": "[\"10.244.220.10\"]"  #pod绑定固定ip，依赖于calico ipam插件，必须使用calico 3.24.1以上的版本才可以</span>
+    spec: 
+      restartPolicy: Always 
+      <span class="token comment">#使用指定用户运行，当前pod下所有容器都生效</span>
+      securityContext:
+        runAsUser: <span class="token number">0</span>  <span class="token comment">#以root运行 </span>
+        <span class="token comment">#fsGroup: 1000  #指定存储卷挂载归属用户组 </span>
+        <span class="token comment">#runAsUser: 1000 #以指定用户运行容器</span>
+      containers:  
+        - name: kibana-010
+          image: docker.elastic.co/kibana/kibana:8.12.0
+          imagePullPolicy: IfNotPresent <span class="token comment"># IfNotPresent | Always | Never</span>
+          <span class="token comment">#securityContext: ##要调整系统内核参数才开启特权容器</span>
+          <span class="token comment">#  privileged: true</span>
+          resources:
+            requests:
+              memory: <span class="token string">"1Gi"</span> <span class="token comment">#Gi=G Mi=M 只支持整数</span>
+              cpu: <span class="token string">"1000m"</span> <span class="token comment">#1000m=1cpu (cpu物理线程)</span>
+            limits:
+              memory: <span class="token string">"2Gi"</span> <span class="token comment">#Gi=G Mi=M 只支持整数</span>
+              cpu: <span class="token string">"2000m"</span>  <span class="token comment">#1000m=1cpu (cpu物理线程)</span>
+          <span class="token comment">#securityContext: ###添加参数启用容器root权限</span>
+          <span class="token comment">#  privileged: true</span>
+          ports: 
+          - containerPort: <span class="token number">8601</span>
+            protocol: TCP
+          command: <span class="token punctuation">[</span><span class="token string">"/bin/sh"</span>,<span class="token string">"-c"</span><span class="token punctuation">]</span> 
+          args: <span class="token comment">#可以设置多行命令,不过启动后初始化还是推荐使用postStart钩子函数来执行，不能有#注释符</span>
+          - <span class="token operator">|</span>
+            <span class="token function">cat</span> /config/kibana.yml <span class="token operator">&gt;</span> /usr/share/kibana/config/kibana.yml<span class="token punctuation">;</span> 
+            <span class="token builtin class-name">echo</span> <span class="token string">''</span><span class="token variable">${POD_IP}</span><span class="token string">' kibana01.ndcto.com'</span> <span class="token operator">&gt;&gt;</span> /etc/hosts<span class="token punctuation">;</span>
+            <span class="token function">su</span> - kibana <span class="token parameter variable">-c</span> <span class="token string">"/usr/share/kibana/bin/kibana"</span><span class="token punctuation">;</span>
+            
+          env:   <span class="token comment">#环境变量配置</span>
+          - name: POD_NAME
+            valueFrom: 
+              fieldRef: 
+                apiVersion: v1
+                fieldPath: metadata.name
+          - name: POD_IP
+            valueFrom:
+              fieldRef:
+                fieldPath: status.podIP
+          volumeMounts: 
+          - name: kibana-volume    <span class="token comment">#挂载部署目录</span>
+            mountPath: /usr/share/kibana/data
+            subPathExpr: <span class="token variable"><span class="token variable">$(</span>POD_NAME<span class="token variable">)</span></span>/data
+          - name: kibana-volume  <span class="token comment">#挂载部署目录</span>
+            mountPath: /usr/share/kibana/logs
+            subPathExpr: <span class="token variable"><span class="token variable">$(</span>POD_NAME<span class="token variable">)</span></span>/logs
+          - name: kibana-010-config  <span class="token comment">#挂载配置文件</span>
+            mountPath: /config
+          - name: kibana-010-cert-file  <span class="token comment">#挂载ssl证书目录</span>
+            mountPath: /config/local-certs/
+
+          - name: host-time  <span class="token comment">#挂载本地时区</span>
+            mountPath: /etc/localtime
+            readOnly: <span class="token boolean">true</span>
+      volumes: 
+      - name: kibana-volume  <span class="token comment">#使用pvc</span>
+        persistentVolumeClaim:
+          claimName: kibana-010-pvc
+      - name: kibana-010-config  <span class="token comment">#使用pvc</span>
+        configMap:    <span class="token comment">#使用configMap</span>
+          name:  kibana-010-config
+          defaultMode: <span class="token number">420</span> <span class="token comment">#420-644 493-755</span>
+      - name: kibana-010-cert-file
+        hostPath: <span class="token comment">#挂载主机的目录</span>
+          path: /data/deploy/k8s/kibana/certs
+          type: <span class="token string">""</span>
+      - name: host-time
+        hostPath: <span class="token comment">#挂载本地时区</span>
+          path: /etc/localtime
+          type: <span class="token string">""</span>
+
+---
+
+</code></pre> 
+<p><strong>声明configmap</strong></p> 
+<ul><li>server.publicBaseUrl、server.host<br> 可以根据自己的需要填写，我习惯都是挂个域名然后通过内网配个hosts来访问</li><li>elasticsearch.hosts 配置kibana访问ES集群的地址，这里用的就是ES service的访问地址</li><li>elasticsearch.password 是我们之前设定的kibana_system账号的密码</li></ul> 
+<pre><code class="prism language-bash">apiVersion: v1
+kind: ConfigMap <span class="token comment">#配置信息</span>
+metadata:
+  name: kibana-010-config <span class="token comment">#es-010配置</span>
+  namespace:  es
+data:
+  kibana.yml: <span class="token operator">|</span> 
+    <span class="token comment">#服务器端口</span>
+    server.port: <span class="token number">5601</span>
+    server.publicBaseUrl: <span class="token string">"https://kibana01.xxx.com"</span>
+    server.host: <span class="token string">"kibana01.xxx.com"</span>
+    server.shutdownTimeout: <span class="token string">"5s"</span>
+    
+    monitoring.ui.container.elasticsearch.enabled: <span class="token boolean">true</span>
+    elasticsearch.hosts: <span class="token punctuation">[</span> <span class="token string">"https://es-01-svc:9200"</span> <span class="token punctuation">]</span>
+    
+    elasticsearch.ssl.verificationMode: none
+    elasticsearch.ssl.certificateAuthorities: <span class="token punctuation">[</span> <span class="token string">"/config/local-certs/elasticsearch-ca.pem"</span> <span class="token punctuation">]</span>
+    
+    server.ssl.enabled: <span class="token boolean">true</span>
+    server.ssl.certificate: /config/local-certs/kibana.crt
+    server.ssl.key: /config/local-certs/kibana.key
+
+    
+    <span class="token comment">#访问es服务器账号密码</span>
+    elasticsearch.username: <span class="token string">"kibana_system"</span>
+    elasticsearch.password: <span class="token string">"password"</span>
+    
+    <span class="token comment"># =================== System: Logging ===================</span>
+
+    <span class="token comment">#logging.root.level: info</span>
+
+    <span class="token comment"># Example with size based log rotation</span>
+    logging.appenders.default:
+      type: rolling-file
+      fileName: /usr/share/kibana/logs/kibana.log
+      policy:
+        type: time-interval
+      strategy:
+        type: numeric
+        pattern: <span class="token string">'-%i'</span>
+        max: <span class="token number">10</span>
+      layout:
+        type: json
+
+    <span class="token comment"># Logs queries sent to Elasticsearch.</span>
+    <span class="token comment">#logging.loggers:</span>
+    <span class="token comment">#  - name: elasticsearch.query</span>
+    <span class="token comment">#    level: debug</span>
+
+    <span class="token comment"># Logs http responses.</span>
+    <span class="token comment">#logging.loggers:</span>
+    <span class="token comment">#  - name: http.server.response</span>
+    <span class="token comment">#    level: debug</span>
+
+    <span class="token comment"># Logs system usage information.</span>
+    <span class="token comment">#logging.loggers:</span>
+    <span class="token comment">#  - name: metrics.ops</span>
+    <span class="token comment">#    level: debug</span>
+
+    <span class="token comment"># Enables debug logging on the browser (dev console)</span>
+    <span class="token comment">#logging.browser.root:</span>
+    <span class="token comment">#  level: debug</span>
+    
+    <span class="token comment"># =================== System: Other ===================</span>
+    <span class="token comment"># The path where Kibana stores persistent data not saved in Elasticsearch. Defaults to data</span>
+    path.data: /usr/share/kibana/data
+
+    <span class="token comment"># Specifies the path where Kibana creates the process ID file.</span>
+    pid.file: /usr/share/kibana/kibana.pid
+
+    <span class="token comment"># Set the interval in milliseconds to sample system and process performance</span>
+    <span class="token comment"># metrics. Minimum is 100ms. Defaults to 5000ms.</span>
+    <span class="token comment">#ops.interval: 5000</span>
+
+    <span class="token comment"># Specifies locale to be used for all localizable strings, dates and number formats.</span>
+    <span class="token comment"># Supported languages are the following: English (default) "en", Chinese "zh-CN", Japanese "ja-JP", French "fr-FR".</span>
+    <span class="token comment">#i18n.locale: "en"</span>
+
+---
+</code></pre> 
+<p>最后通过kubectl apply -f 部署即可,部署成功后，通过kibana的serviceip访问<br> https://serviceip:5601/会出现登录界面，这时候需要输入elastic的账号登录进去</p> 
+<p><img src="https://images2.imgbox.com/a8/b3/F1Ju5FZC_o.png" alt="在这里插入图片描述"><br> 通过kibana dev-tool一样可以查看ES集群状态<br> <img src="https://images2.imgbox.com/92/a0/7QFpTWVZ_o.png" alt="在这里插入图片描述"><br> 好了，到此，本文结束，希望对大家有所帮助</p> 
+<p><strong>--------------------- 原创不易，如果大家看完觉得有帮助，希望能多多点赞关注，感谢各位的支持 ----------------------</strong></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/87abefa9fe99749123601135799b40de/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Midjourney如何使用“风格参考”和“角色参考”功能</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/02978ff6adf5b8666cbe5ce6b3867211/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">在 PostgreSQL 中，查看表是否被锁住以及解锁语句</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

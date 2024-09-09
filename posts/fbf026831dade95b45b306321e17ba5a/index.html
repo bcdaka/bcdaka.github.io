@@ -1,0 +1,627 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>详细解读keepalived高可用集群 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/fbf026831dade95b45b306321e17ba5a/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="详细解读keepalived高可用集群">
+  <meta property="og:description" content="一.高可用集群 1.1 集群类型 LB：Load Balance 负载均衡LVS/HAProxy/nginx（http/upstream, stream/upstream）HA：High Availability 高可用集群数据库、RedisSPoF: Single Point of Failure，解决单点故障HPC：High Performance Computing 高性能集群 1.2 系统可用性 SLA：Service-Level Agreement 服务等级协议（提供服务的企业与客户之间就服务的品质、水准、性能等方面所达成的双方共同认可的协议或契约） A = MTBF / (MTBF&#43;MTTR）
+1.3 系统故障 硬件故障：设计缺陷、wear out（损耗）、非人为不可抗拒因素 软件故障：设计缺陷 bug
+1.4 实现高可用 提升系统高用性的解决方案：降低MTTR- Mean Time To Repair(平均故障时间)
+解决方案：建立冗余机制
+active/passive 主/备
+active/active 双主
+active --&gt; HEARTBEAT --&gt; passive
+active &lt;--&gt; HEARTBEAT &lt;--&gt; active
+1.5.VRRP：Virtual Router Redundancy Protocol 概述：
+虚拟路由冗余协议,解决静态网关单点风险
+利用VRRP，一组路由器（同一个LAN中的接口）协同工作，但只有一个处于Master状态，处于该状态的路由器（的接口）承担实际的数据流量转发任务。在一个VRRP组内的多个路由器接口共用一个虚拟IP地址，该地址被作为局域网内所有主机的缺省网关地址。
+VRRP决定哪个路由器是Master，Master路由器负责接收发送至用户网关的数据包 并进行转发，以及响应PC对于其网关IP地址的ARP请求。
+Backup路由器侦听Master路由器的状态，并在Master路由器发生故障时，接替其工作，从而保证业务流量的平滑切换。
+物理层:路由器、三层交换机
+软件层:keepalived
+1.5.1 VRRP 相关术语 虚拟路由器：Virtual Router">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-08-14T22:17:23+08:00">
+    <meta property="article:modified_time" content="2024-08-14T22:17:23+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">详细解读keepalived高可用集群</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3>一.高可用集群</h3> 
+<h4>1.1 集群类型</h4> 
+<ul><li>LB：Load Balance 负载均衡</li><li>LVS/HAProxy/nginx（http/upstream, stream/upstream）</li><li>HA：High Availability 高可用集群</li><li>数据库、Redis</li><li>SPoF: Single Point of Failure，解决单点故障</li><li>HPC：High Performance Computing 高性能集群</li></ul> 
+<h4>1.2 系统可用性</h4> 
+<p>SLA：Service-Level Agreement 服务等级协议（提供服务的企业与客户之间就服务的品质、水准、性能等方面所达成的双方共同认可的协议或契约） A = MTBF / (MTBF+MTTR）</p> 
+<h4>1.3 系统故障</h4> 
+<p>硬件故障：设计缺陷、wear out（损耗）、非人为不可抗拒因素 软件故障：设计缺陷 bug</p> 
+<h4>1.4 实现高可用</h4> 
+<p>提升系统高用性的解决方案：降低MTTR- Mean Time To Repair(平均故障时间)</p> 
+<p>解决方案：建立冗余机制</p> 
+<p>active/passive 主/备</p> 
+<p>active/active 双主</p> 
+<p>active --&gt; HEARTBEAT --&gt; passive</p> 
+<p>active &lt;--&gt; HEARTBEAT &lt;--&gt; active</p> 
+<h4>1.5.VRRP：Virtual Router Redundancy Protocol</h4> 
+<p>概述：</p> 
+<p>虚拟路由冗余协议,解决静态网关单点风险</p> 
+<ol><li> <p>利用VRRP，一组路由器（同一个LAN中的接口）协同工作，但只有一个处于Master状态，处于该状态的路由器（的接口）承担实际的数据流量转发任务。在一个VRRP组内的多个路由器接口共用一个虚拟IP地址，该地址被作为局域网内所有主机的缺省网关地址。</p> </li><li> <p>VRRP决定哪个路由器是Master，Master路由器负责接收发送至用户网关的数据包 并进行转发，以及响应PC对于其网关IP地址的ARP请求。</p> </li><li> <p>Backup路由器侦听Master路由器的状态，并在Master路由器发生故障时，接替其工作，从而保证业务流量的平滑切换。</p> </li></ol> 
+<p>物理层:路由器、三层交换机</p> 
+<p>软件层:keepalived</p> 
+<p></p> 
+<p><img alt="" height="616" src="https://images2.imgbox.com/95/75/kVtOBCUi_o.png" width="1130"></p> 
+<h5>1.5.1 VRRP 相关术语</h5> 
+<ul><li> <p>虚拟路由器：Virtual Router</p> </li><li> <p>虚拟路由器标识：VRID(0-255)，唯一标识虚拟路由器</p> </li><li> <p>VIP：Virtual IP</p> </li><li> <p>VMAC：Virutal MAC (00-00-5e-00-01-VRID)</p> </li><li> <p>物理路由器：</p> <p>master：主设备</p> <p>backup：备用设备</p> <p>priority：优先级</p> </li></ul> 
+<h5>1.5.2 VRRP 相关技术</h5> 
+<p>通告：心跳，优先级等；</p> 
+<p>周期性 工作方式：抢占式，非抢占式</p> 
+<p>安全认证：</p> 
+<ul><li> <p>无认证</p> </li><li> <p>简单字符认证：预共享密钥</p> </li><li> <p>MD5</p> </li></ul> 
+<p>工作模式：</p> 
+<ul><li> <p>主/备：单虚拟路由器</p> </li><li> <p>主/主：主/备（虚拟路由器1），备/主（虚拟路由器2）</p> </li></ul> 
+<h3>二.Keepalived 部署</h3> 
+<h4>2.1 keepalived 简介</h4> 
+<p>vrrp 协议的软件实现，原生设计目的为了高可用 ipvs服务</p> 
+<blockquote> 
+ <p>官网：<a href="http://keepalived.org/" rel="nofollow" title="http://keepalived.org/">http://keepalived.org/</a>  </p> 
+</blockquote> 
+<p>功能：</p> 
+<ul><li> <p>基于vrrp协议完成地址流动</p> </li><li> <p>为vip地址所在的节点生成ipvs规则(在配置文件中预先定义)</p> </li><li> <p>为ipvs集群的各RS做健康状态检测</p> </li><li> <p>基于脚本调用接口完成脚本中定义的功能，进而影响集群事务，以此支持nginx、haproxy等服务</p> </li></ul> 
+<h4 style="background-color:transparent;">2.2 Keepalived 架构</h4> 
+<p>官方文档：<br><a href="https://keepalived.org/doc/" rel="nofollow" title="https://keepalived.org/doc/">https://keepalived.org/doc/</a> <a href="http://keepalived.org/documentation.html" rel="nofollow" title="http://keepalived.org/documentation.html">http://keepalived.org/documentation.html</a></p> 
+<p><a href="http://keepalived.org/documentation.html" rel="nofollow" title="http://keepalived.org/documentation.html">http://keepalived.org/documentation.html</a></p> 
+<p><img alt="" height="605" src="https://images2.imgbox.com/5b/96/81QLcUhs_o.png" width="896"></p> 
+<p>用户空间核心组件：<br> vrrp stack：VIP消息通告<br> checkers：监测real server<br> system call：实现 vrrp 协议状态转换时调用脚本的功能<br> SMTP：邮件组件<br> IPVS wrapper：生成IPVS规则<br> Netlink Reflector：网络接口<br> WatchDog：监控进程<br> 控制组件：提供keepalived.conf 的解析器，完成Keepalived配置<br> IO复用器：针对网络目的而优化的自己的线程抽象<br> 内存管理组件：为某些通用的内存管理功能（例如分配，重新分配，发布等）提供访问权限</p> 
+<h4>2.3 Keepalived 环境准备</h4> 
+<p><img alt="" height="550" src="https://images2.imgbox.com/ee/77/zaQBoJbn_o.png" width="1200"></p> 
+<h5>实验环境</h5> 
+<table><thead><tr><th>主机名</th><th>IP地址</th></tr></thead><tbody><tr><td>KA1</td><td>172.25.254.10</td></tr><tr><td>KA2</td><td>172.25.254.20</td></tr><tr><td>webserver1</td><td>172.25.254.110</td></tr><tr><td>webserver2</td><td>172.25.254.120</td></tr></tbody></table> 
+<ul><li> <p>各节点时间必须同步：ntp, chrony</p> </li><li> <p>关闭防火墙及SELinux</p> </li><li> <p>各节点之间可通过主机名互相通信：非必须</p> </li><li> <p>建议使用/etc/hosts文件实现：非必须</p> </li><li> <p>各节点之间的root用户可以基于密钥认证的ssh服务完成互相通信：非必须</p> <h4>2.4 Keepalived 相关文件</h4> <p>软件包名：keepalived<br> 主程序文件：/usr/sbin/keepalived<br> 主配置文件：/etc/keepalived/keepalived.conf<br> 配置文件示例：/usr/share/doc/keepalived/<br> Unit File：/lib/systemd/system/keepalived.service<br> Unit File的环境配置文件：/etc/sysconfig/keepalived</p> <h4>2.5 Keepalived 安装</h4> <p><strong>安装 keepalived</strong></p> </li></ul> 
+<blockquote> 
+ <p>[root@ka1 ~]# yum install keepalived -y<br> [root@ka1 ~]# systemctl start keepalived<br> [root@ka2 ~]# yum install keepalived -y<br> [root@ka2 ~]# systemctl start keepalived</p> 
+</blockquote> 
+<h4>2.6 KeepAlived 配置说明</h4> 
+<p>配置文件：/etc/keepalived/keepalived.conf</p> 
+<p>GLOBAL CONFIGURATION<br>         Global definitions： 定义邮件配置， route_id ， vrrp 配置，多播地址等<br> VRRP CONFIGURATION<br>          VRRP instance(s)： 定义每个vrrp虚拟路由器<br> LVS CONFIGURATION<br>         Virtual server group(s)<br>         Virtual server(s)： LVS集群的VS 和 RS</p> 
+<h5>2.6.1 配置虚拟路由</h5> 
+<p><strong>配置master:</strong></p> 
+<pre><code class="hljs">vim /etc/keepalived/keepalived.conf
+
+global_defs {
+   notification_email {
+      2823279147@qq.com                #keepalived 发生故障切换时邮件发送的目标邮箱，可以按行区分写多个
+   }
+   notification_email_from keepalived@ka1.exam.org      #发邮件的地址
+   smtp_server 127.0.0.1                                #邮件服务器地址
+   smtp_connect_timeout 30                              #邮件服务器连接timeout
+   router_id ka1.exam.org                               #每个keepalived主机唯一标识，多节点 
+                                                         重名不影响
+
+   vrrp_skip_check_adv_addr                 #对所有通告报文都检查，会比较消耗性能  
+                                            #启用此配置后，如果收到的通告报文和上一个报文是同一个路由器，则跳过检查，默认值为全检查
+
+   #vrrp_strict                            #严格遵循vrrp协议
+                                           #启用此项后以下状况将无法启动服务:
+                                              1.无VIP地址
+                                              2.配置了单播邻居
+                                              3.在VRRP版本2中有IPv6地址
+                                           #建议不加此项配置
+
+   vrrp_garp_interval 0                    #报文发送延迟，0表示不延迟
+   vrrp_gna_interval 0                     #消息发送延迟
+   vrrp_mcast_group4 224.0.0.18            #指定组播IP地址范围：
+}</code></pre> 
+<p><strong>配置slave：</strong></p> 
+<pre><code class="hljs">vrrp_instance VI_1 {
+    state MASTER
+    interface eth0                   #绑定为当前虚拟路由器使用的物理接口，如：eth0,可以和            
+                                      VIP不在一个网卡
+    
+    virtual_router_id 100            #每个虚拟路由器惟一标识,范围：0-255，每个虚拟路由器此 
+                                      值必须唯一，否则服务无法启动
+                                      同属一个虚拟路由器的多个keepalived节点必须相同
+                                      务必要确认在同一网络中此值必须唯一
+    
+    priority 100                    #当前物理节点在此虚拟路由器的优先级，范围：1-254
+                                     值越大优先级越高,每个keepalived主机节点此值不同
+ 
+    advert_int 1                    #vrrp通告的时间间隔，默认1s
+    authentication {                #认证机制
+        auth_type PASS              #PASS为简单密码(建议使用)
+        auth_pass 1111              #预共享密钥，仅前8位有效
+                                     同一个虚拟路由器的多个keepalived节点必须一样
+    }
+    virtual_ipaddress {             #虚拟IP,生产环境可能指定上百个IP地址
+                                    
+        172.25.250.100/24 dev eth0 label eth0:1    #&lt;IPADDR&gt; dev &lt;STRING&gt; scope &lt;SCOPE&gt;                                     
+                                                   label &lt;LABEL&gt;
+                                       #指定VIP，不指定网卡，默认为eth0,注意：不指 
+                                        定/prefix,默认32
+    }
+}</code></pre> 
+<h5><strong>2.6.2 示例：</strong> <strong>keepalived配置文件中配置虚拟路由</strong></h5> 
+<p>ka1和ka2中安装软件包：</p> 
+<p>yum install keepalived -y</p> 
+<p>主配置文件：</p> 
+<p>vim /etc/keepalived/keepalived.conf</p> 
+<p>默认为抢占模式：</p> 
+<p>配置全局参数：</p> 
+<pre><code class="hljs">global_defs {
+   notification_email {
+   	2823279147@qq.com
+   }
+   notification_email_from keepalived@timingding.org
+   smtp_server 127.0.0.1
+   smtp_connect_timeout 30
+   router_id ka1.timingding.org
+   vrrp_skip_check_adv_addr
+   vrrp_strict
+   vrrp_garp_interval 0
+   vrrp_gna_interval 0
+   vrrp_mcast_group4 224.0.0.18
+}
+
+配置vip：
+vrrp_instance VI_1 {
+    state MASTER
+    interface eth0
+    virtual_router_id 100
+    priority 100
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    virtual_ipaddress {
+        172.25.254.100/24 dev eth0 label eth0:1
+    }
+}
+
+systemctl start keepalived.service</code></pre> 
+<p>测试：</p> 
+<p><img alt="" height="702" src="https://images2.imgbox.com/ae/c3/tjuHCCAo_o.png" width="1200"></p> 
+<p>这里可以快捷一点：使用scp命令直接复制到另一台ka上面</p> 
+<blockquote> 
+ <p>直接复制到ka2上面：<br> scp /etc/keepalived/keepalived.conf root@172.25.254.20:/etc/keepalived/keepalived.conf</p> 
+</blockquote> 
+<p>ka2上面的优先级设置的低一些：</p> 
+<pre><code class="hljs">ka2配置vip的地方要改优先级：
+
+vrrp_instance VI_1 {
+    state BACKUP   ------ 改为BACKUP
+    interface eth0
+    virtual_router_id 100
+    priority 80    ------ 改的比ka1低一些
+    advert_int 1
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }</code></pre> 
+<h6>2.6.2.1 抓包命令查看组播信息：</h6> 
+<p>tcpdump -i eth0 -nn host 224.0.0.18</p> 
+<p><img alt="" height="269" src="https://images2.imgbox.com/f6/11/n5Ntyrox_o.png" width="1200"></p> 
+<p>此时ping 172.25.254.100是ping不通的，想ping通，得在全局配置里面加参数 vrrp_iptables，不想加就可以把vrrp_strict注释掉，要么都开，要么就注释掉</p> 
+<p>iptables -nL</p> 
+<p><img alt="" height="476" src="https://images2.imgbox.com/4a/82/CvJ0CSSH_o.png" width="1150"></p> 
+<pre><code class="hljs">global_defs {
+   notification_email {
+        2823279147@qq.com
+   }
+   notification_email_from keepalived@timinglee.org
+   smtp_server 127.0.0.1
+   smtp_connect_timeout 30
+   router_id ka1.timinglee.org
+   vrrp_skip_check_adv_addr
+   #vrrp_strict                   ------注释掉这一行
+   vrrp_garp_interval 0
+   vrrp_gna_interval 0
+   vrrp_mcast_global4 224.0.0.18
+}</code></pre> 
+<p><img alt="" height="615" src="https://images2.imgbox.com/0a/59/KuRAPeiF_o.png" width="1200"></p> 
+<p>此时就可以ping通172.25.254.100了。</p> 
+<h5>2.6.3 实现独立子配置文件</h5> 
+<blockquote> 
+ <p>vim /etc/keepalived/keepalived.conf<br> 把虚拟路由注释掉：<br> #vrrp_instance VI_1 {<!-- --><br> #    state MASTER<br> #    interface eth0<br> #    virtual_router_id 100<br> #    priority 100<br> #    advert_int 1<br> #    authentication {<!-- --><br> #        auth_type PASS<br> #        auth_pass 1111<br> #    }<br> #    virtual_ipaddress {<!-- --><br> #        172.25.254.100/24 dev eth0 label eth0:1<br> #    }<br> #}<br> 加上<br> include "/etc/keepalived/conf.d/*.conf"</p> 
+ <p>vim /etc/keepalived/conf.d/172.25.254.100.conf</p> 
+ <p>vrrp_instance VI_1 {<!-- --><br>     state MASTER<br>     interface eth0<br>     virtual_router_id 100<br>     priority 100<br>     advert_int 1<br>     authentication {<!-- --><br>         auth_type PASS<br>         auth_pass 1111<br>    }<br>     virtual_ipaddress {<!-- --><br>         172.25.254.100/24 dev eth0 label eth0:1<br>     }<br> }</p> 
+ <p></p> 
+ <p>systemctl restart keepalived.service</p> 
+</blockquote> 
+<h3>三.Keepalived应用示例</h3> 
+<h4>3.1 实现 master/slave 的 Keepalived 单主架构</h4> 
+<h5>3.1.1 配置MASTER</h5> 
+<blockquote> 
+ <p>[root@ka1 ~]# vim /etc/keepalived/keepalived.conf</p> 
+ <p>global_defs {<!-- --><br>    notification_email {<!-- --><br>       2823279147@qq.com  <br>    }<br>    notification_email_from keepalived@timingding.org<br>    smtp_server 127.0.0.1<br>    smtp_connect_timeout 30<br>    router_id ka1.timingding.org<br>    vrrp_skip_check_adv_addr<br>    #vrrp_strict                <br>    vrrp_garp_interval 0<br>    vrrp_gna_interval 0<br>    #vrrp_mcast_group4 224.0.0.18<br>    #vrrp_iptables<br> }</p> 
+ <p></p> 
+ <p>vrrp_instance VI_1 {<!-- --><br>     state MASTER<br>     interface eth0<br>     virtual_router_id 100<br>     priority 100<br>     advert_int 1<br>     #preempt_delay 5s<br>     authentication {<!-- --><br>         auth_type PASS<br>         auth_pass 1111<br>     }<br>     virtual_ipaddress {<!-- --><br>         172.25.254.100/24 dev eth0 label eth0:1<br>     }<br> }</p> 
+</blockquote> 
+<h5>3.1.2 配置BACKUP</h5> 
+<blockquote> 
+ <p>[root@ka2 ~]# vim /etc/keepalived/keepalived.conf </p> 
+ <p>global_defs {<!-- --><br>    notification_email {<!-- --><br>       2823279147@qq.com<br>    }<br>    notification_email_from keepalived@ka2.timingding.org<br>    smtp_server 127.0.0.1<br>    smtp_connect_timeout 30<br>    router_id ka2.timingding.org<br>    vrrp_skip_check_adv_addr<br>    #vrrp_strict<br>    vrrp_garp_interval 0<br>    vrrp_gna_interval 0<br>    vrrp_mcast_group 224.0.0.18<br>    #vrrp_iptables<br> }</p> 
+ <p>vrrp_instance VI_1 {<!-- --><br>     state BACKUP<br>     interface eth0<br>     virtual_router_id 100<br>     priority 80<br>     advert_int 1<br>     #preempt_delay 5s<br>     authentication {<!-- --><br>         auth_type PASS<br>         auth_pass 1111<br>     }<br>     virtual_ipaddress {<!-- --><br>         172.25.254.100/24 dev eth0 label eth0:1<br>     }<br> }</p> 
+</blockquote> 
+<h5>3.1.3 抓包查看</h5> 
+<p>tcpdump -i eth0 -nn host 224.0.0.18</p> 
+<h4><strong>3.2</strong> <strong>抢占模式和非抢占模式</strong></h4> 
+<p></p> 
+<blockquote> 
+ <p>默认为抢占模式preempt，即当高优先级的主机恢复在线后，会抢占低先级的主机的 master 角色， 这样会使vip 在 KA 主机中来回漂移，造成网络抖动，建议设置为非抢占模式 nopreempt ，即高优先级主机恢复后，并不会抢占低优先级主机的 master 角色</p> 
+ <p>非抢占模块下,如果原主机 down 机 , VIP 迁移至的新主机 , 后续也发生 down 时 , 仍会将 VIP 迁移回原主机</p> 
+</blockquote> 
+<p><strong>master角色下线后，会转移到另一台主机后，master角色重新恢复之后，不会因为优先级抢占vip</strong></p> 
+<h5>3.2.1 非抢占模式 nopreempt</h5> 
+<pre><code class="hljs">ka1和ka2一样：
+vim /etc/keepalived/keepalived.conf
+
+vrrp_instance VI_1 {
+    state BACKUP   ---- 也得设置为BACKUP，两台都为备机
+    interface eth0
+    virtual_router_id 100 
+    priority 100
+    advert_int 1
+    nopreempt     ------- 加上这个参数
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    virtual_ipaddress {
+        172.25.254.100/24 dev eth0 label eth0:1
+    }
+}</code></pre> 
+<h5>3.2.2 抢占延迟模式preempt_delay</h5> 
+<p>抢占延迟模式，即优先级高的主机恢复后，不会立即抢回VIP，而是延迟一段时间（默认300s）再抢回 VIP</p> 
+<p>注意：需要各keepalived服务器state为BACKUP,并且不要启用 vrrp_strict</p> 
+<blockquote> 
+ <p>ka1主机上：ka2也一样<br> vim /etc/keepalived/keepalived.conf</p> 
+ <p>vrrp_instance VI_1 {<!-- --><br>     state BACKUP<br>     interface eth0<br>     virtual_router_id 100<br>     priority 100<br>     advert_int 1<br>     preempt_delay 5s    ---- 抢占延时为5s，一般设定一分钟，五分钟，这里演示。<br>     authentication {<!-- --><br>         auth_type PASS<br>         auth_pass 1111<br>     }<br>     virtual_ipaddress {<!-- --><br>         172.25.254.100/24 dev eth0 label eth0:1<br>     }</p> 
+</blockquote> 
+<h4>3.3vip单播模式</h4> 
+<blockquote> 
+ <p>ka1主机上：ka2也一样<br> vim /etc/keepalived/keepalived.conf</p> 
+ <p>vrrp_instance VI_1 {<!-- --><br>     state BACKUP<br>     interface eth0<br>     virtual_router_id 100<br>     priority 80<br>     advert_int 1<br>     authentication {<!-- --><br>         auth_type PASS<br>         auth_pass 1111<br>     }<br>     virtual_ipaddress {<!-- --><br>         172.25.254.100/24 dev eth0 label eth0:1<br>     }<br>     unicast_src_ip 172.25.254.10   ---- 指定谁到谁  ka2上相反<br>     unicast_peer {<!-- --><br>         172.25.254.20<br>     }</p> 
+</blockquote> 
+<h5>3.3.1 抓包命令查看：</h5> 
+<p>[root@ka1 ~]# tcpdump -i eth0 -nn src host 172.25.254.10 and dst 172.25.254.20</p> 
+<p><img alt="" height="225" src="https://images2.imgbox.com/18/78/8IUz0Y3C_o.png" width="1199"></p> 
+<h4>3.4 keepalived实现邮件通知</h4> 
+<blockquote> 
+ <p>安装邮件发送工具：<br> dnf install mailx -y</p> 
+ <p>QQ邮箱配置：<br> vim /etc/mail.rc<br> 在配置文件最后面加上这5行<br> set from=2823279147@qq.com<br> set smtp=smtp.qq.com<br> set smtp-auth-user=2823279147@qq.com<br> set smtp-auth-password=jxtebbewurjddhci            ---- 在QQ邮箱上面登录弄授权码<br> set smtp-auth=login</p> 
+ <p>测试发送邮件：<br> echo test message |mail -s test 2823279147@qq.com</p> 
+ <p>写个脚本：<br> vim /etc/keepalived/mail.sh</p> 
+ <p>#!/bin/bash<br> mail_dst="2823279147@qq.com"<br> send_message()<br> {<!-- --><br>   mail_sub="HOSTNAME to be $1 vip mopve"<br>   mail_msg="`date +%F\ %T`: vrrp move $HOSTNAME chage $1"<br>   echo $mail_msg | mail -s "$mail_sub" $mail_dst<br> }</p> 
+ <p>case $1 in<br>   master)<br>   send_message master<br>   ;;<br>   backup)<br>   send_message backup<br>   ;;<br>   fault)<br>   send_message fault<br>   ;;<br>   *)<br>   ;;<br> esac</p> 
+ <p>chmod +x /etc/keepalived/mail.sh</p> 
+ <p>在ka1和ka2虚拟路由上面添加节点：<br> vim /etc/keepalived/keepalived.conf</p> 
+ <p>vrrp_instance VI_1 {<!-- --><br>     state BACKUP<br>     interface eth0<br>     virtual_router_id 100<br>     priority 80<br>     advert_int 1<br>     #preempt_delay 5s<br>     authentication {<!-- --><br>         auth_type PASS<br>         auth_pass 1111<br>     }<br>     virtual_ipaddress {<!-- --><br>         172.25.254.100/24 dev eth0 label eth0:1<br>     }<br>     unicast_src_ip 172.25.254.20<br>     unicast_peer {<!-- --><br>         172.25.254.10<br>     }<br>     notify_master "/etc/keepalived/notify.sh master"     ----- 添加这三行<br>     notify_backup "/etc/keepalived/notify.sh backup"<br>     notify_fault "/etc/keepalived/notify.sh fault"<br> }</p> 
+</blockquote> 
+<p><img alt="" height="304" src="https://images2.imgbox.com/56/28/ITnPivRc_o.png" width="1051"></p> 
+<h4>3.5 实现keepalived的双主架构 master/master</h4> 
+<blockquote> 
+ <p>master/slave的单主架构，同一时间只有一个Keepalived 对外提供服务，此主机繁忙，而另一台主机却 很空闲，利用率低下，可以使用master/master 的双主架构，解决此问题。</p> 
+ <p>master/master 的双主架构：        <br>         即将两个或以上VIP分别运行在不同的 keepalived 服务器，以实现服务器并行提供 web 访问的目的，提高 服务器资源利用率</p> 
+</blockquote> 
+<pre><code class="hljs">ka1和ka2上都加上，都有一个主备
+vim /etc/keepalived/keepalived.conf
+
+vrrp_instance VI_2 {
+    state MASTWE
+    interface eth0
+    virtual_router_id 200
+    priority 80      ----- 优先级不能一样
+    advert_int 1
+    #preempt_delay 5s
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    virtual_ipaddress {
+        172.25.254.200/24 dev eth0 label eth0:2
+    }
+    unicast_src_ip 172.25.254.10
+    unicast_peer {
+        172.25.254.20
+    }
+}</code></pre> 
+<h4>3.6 实现IPVS的高可用性（DR模式）</h4> 
+<h5><strong>3.6.1</strong> <strong>应用层监测</strong></h5> 
+<p>应用层检测： HTTP_GET|SSL_GET</p> 
+<blockquote> 
+ <p>HTTP_GET|SSL_GET {<!-- --><br>     url {<!-- --><br>     path &lt;URL_PATH&gt; #-----------定义要监控的URL<br>     status_code &lt;INT&gt; #---------判断上述检测机制为健康状态的响应码，一般为 200<br>     }<br>     connect_timeout &lt;INTEGER&gt; #---------客户端请求的超时时长, 相当于haproxy的timeout server<br>     nb_get_retry &lt;INT&gt; #---------重试次数<br>     delay_before_retry &lt;INT&gt; #---------重试之前的延迟时长<br>     connect_ip &lt;IP ADDRESS&gt; #---------向当前RS哪个IP地址发起健康状态检测请求<br>     connect_port &lt;PORT&gt; #--------向当前RS的哪个PORT发起健康状态检测请求<br>     bindto &lt;IP ADDRESS&gt; #---------向当前RS发出健康状态检测请求时使用的源地址<br>     bind_port &lt;PORT&gt; #----------向当前RS发出健康状态检测请求时使用的源端口<br> }</p> 
+</blockquote> 
+<h5>3.6.2 TCP监测</h5> 
+<blockquote> 
+ <p>TCP_CHECK {<!-- --><br>     connect_ip &lt;IP ADDRESS&gt; #----------向当前RS的哪个IP地址发起健康状态检测请求<br>     connect_port &lt;PORT&gt; #---------向当前RS的哪个PORT发起健康状态检测请求<br>     bindto &lt;IP ADDRESS&gt; #--------发出健康状态检测请求时使用的源地址<br>     bind_port &lt;PORT&gt; #---------发出健康状态检测请求时使用的源端口<br>     connect_timeout &lt;INTEGER&gt; #------客户端请求的超时时长<br>                               #-------等于haproxy的timeout server<br> }</p> 
+</blockquote> 
+<h5>3.6.3 实现单主的 LVS-DR 模式</h5> 
+<pre><code class="hljs">永久设定vip：
+vim /etc/sysconfig/network-scripts/ifcfg-lo 
+
+加上：
+IPADDR1=172.25.254.100
+NETMASK1=255.255.255.255
+NETWORK=127.0.0.0
+
+这里我们给上临时的就行：
+reslserver1和2上面给上vip（临时）
+ip a a 172.25.254.100 dev lo
+
+解决响应问题：
+查看arp:
+sysctl -a | grep arp
+
+ka1上面
+vim /etc/sysctl.d/arp.conf
+net.ipv4.conf.all.arp_ignore=1
+net.ipv4.conf.all.arp_announce=2
+net.ipv4.conf.lo.arp_announce=2
+net.ipv4.conf.lo.arp_ignore=1
+
+用scp命令写到ka2上面：
+scp /etc/sysctl.d/arp.conf root@172.25.254.110:/etc/sysctl.d/arp.conf
+
+#######################################
+ka1和ka2上面安装ipvsadm 用来查看策略：
+yum install ipvsadm -y
+######################################
+ka1和ka2一样：
+vim /etc/keepalived/keepalived.conf
+
+virtual_server 172.25.254.100 80 {
+    delay_loop 6
+    lb_algo wrr
+    lb_kind DR
+    #persistence_timeout 50
+    protocol TCP
+
+real_server 172.25.254.110 80 {
+    weight 1
+    HTTP_GET {
+        url {
+          path /
+          status_code 200
+        }
+        connect_timeout 3
+        nb_get_retry 2
+        delay_before_retry 2
+    }
+}
+real_server 172.25.254.120 80 {
+    weight 1
+    HTTP_GET {
+        url {
+          path /
+          status_code 200
+        }
+        connect_timeout 3
+        nb_get_retry 2
+        delay_before_retry 2
+    }
+}
+}
+
+ssytemctl restart keepalived.service
+
+使用ipvsadm -Ln 查看策略是否写进去</code></pre> 
+<h4>3.7 vrrp Script 配置 脚本控制vip</h4> 
+<h5>3.7.1 利用脚本实现主从角色切换</h5> 
+<blockquote> 
+ <p>示例：先用例子测试一下：<br> 检测文件是否存在，存在为真(1)，ka1就降低优先级，vip飘到ka2上面，不存在为假(0)，vip就按兵不动<br> [root@ka1 ~]# vim /etc/keepalived/test.sh<br> #!/bin/bash<br> [ ! -f /mnt/ding ]   ---- 取反</p> 
+ <p>chmod +x /etc/keepalived/test.sh ---- 给上可执行权限</p> 
+ <p>[root@ka1 ~]# vim /etc/keepalived/keepalived.conf</p> 
+ <p>vrrp_script lee {<!-- --><br>    script "/etc/keepalived/test.sh"     ------shell命令或脚本的路径<br>    interval 1                  ------ 检测的间隔时间，默认为1s<br>    weight -30                  ------ 默认为零，这里测试设置-30，当运行脚本检测到之后，为非0，就会与VIP的优先级相加，优先                                         降低，实现VIP飘移，为0时就VIP就按兵不动。<br>    fall 2                       ------ 脚本连续几次都执行失败，则转换为失败，建议设置为2以上<br>    rise 2                         ------ 执行脚本连续几次都成功，把服务器标记为成功<br>    timeout 2                   ------ 设置的超时时间。<br> }</p> 
+ <p><br> vrrp_instance VI_1 {<!-- --><br>     state MASTER<br>     interface eth0<br>     virtual_router_id 100<br>     priority 100<br>     advert_int 1<br>     #preempt_delay 5s<br>     authentication {<!-- --><br>         auth_type PASS<br>         auth_pass 1111<br>     }<br>     virtual_ipaddress {<!-- --><br>         172.25.254.100/24 dev eth0 label eth0:1<br>     }<br>     unicast_src_ip 172.25.254.10<br>     unicast_peer {<!-- --><br>         172.25.254.20<br>     }<br>     track_script {            ------ 调用这个script配置参数<br>          lee<br>     }    <br> }</p> 
+ <p>[root@ka1 ~]# systemctl restart keepalived.service </p> 
+ <p>sh /etc/keepalived/test.sh<br> echo $?</p> 
+ <p>0<br> 此时/mnt底下没有ding这个文件，运行脚本输出0，VIP就不动</p> 
+</blockquote> 
+<p><img alt="" height="691" src="https://images2.imgbox.com/23/ca/00d59dLs_o.png" width="1200"></p> 
+<blockquote> 
+ <p>此时在/mnt底下创建lee这个文件，输出为非0，执行脚本，此时vip飘到ka2上面<br> touch /mnt/lee<br> sh /etc/keepalived/test.sh<br> echo $?<br> 1</p> 
+</blockquote> 
+<p>ka1上面：</p> 
+<p><img alt="" height="522" src="https://images2.imgbox.com/ed/d6/q4v2U2lA_o.png" width="1195"></p> 
+<p>ka2上面： <img alt="" height="514" src="https://images2.imgbox.com/a0/5c/SkjgrDaE_o.png" width="865"></p> 
+<h4>3.8 keepalived-haproxy实现高可用</h4> 
+<h5>3.8.1 还原状态</h5> 
+<p></p> 
+<pre><code class="hljs">两台ka1和ka2上安装haproxy
+yum install haproxy -y
+
+把两台server机上面的VIP和arp响应给去掉：
+[root@realserver1 ~]# ip a d 172.25.254.100/32 dev lo
+[root@realserver2 ~]# ip a d 172.25.254.100/32 dev lo
+
+arp响应：
+[root@realserver1 ~]# vim /etc/sysctl.d/arp.conf
+[root@realserver2 ~]# vim /etc/sysctl.d/arp.conf
+
+net.ipv4.conf.all.arp_ignore=0
+net.ipv4.conf.all.arp_announce=0
+net.ipv4.conf.lo.arp_announce=0
+net.ipv4.conf.lo.arp_ignore=0
+
+sysctl --system   ---- 查看
+
+
+ka1和ka2上都开启内核路由：
+[root@ka1 ~]# vim /etc/sysctl.conf 
+[root@ka2 ~]# vim /etc/sysctl.conf 
+
+et.ipv4.ip_nonlocal_bind=1    ---- 两台都开启内核路由
+
+sysctl -p    ----- 刷新一下
+
+记住要把之前做的LVS给注释掉，lvs和haproxy不能同时使用！！！！
+[root@ka1 ~]# vim /etc/haproxy/haproxy.cfg
+[root@ka2 ~]# vim /etc/haproxy/haproxy.cfg
+
+listen webcluster
+    bind 172.25.254.100:80
+    mode http
+    balance roundrobin
+    server web1 172.25.254.110:80 check inter 3 fall 2 rise 5
+    server web1 172.25.254.120:80 check inter 3 fall 2 rise 5
+
+查看端口是否开启：
+[root@ka1 ~]# netstat -antlupe | grep haproxy
+tcp        0      0 0.0.0.0:5000            0.0.0.0:*     LISTEN      0          315293     20936/haproxy       
+tcp        0      0 172.25.254.100:80       0.0.0.0:*     LISTEN      0          315291     20936/haproxy       
+udp        0      0 0.0.0.0:50163           0.0.0.0:*                 0          315292     20934/haproxy </code></pre> 
+<p><img alt="" height="215" src="https://images2.imgbox.com/dd/8a/b7ZS9M60_o.png" width="1200"></p> 
+<h5>3.8.2 实现haproxy高可用</h5> 
+<pre><code class="hljs">如何检测haproxy的存活状态：
+killall -0 haproxy
+
+写入之前示例的那个脚本：
+[root@ks2 ~]# vim /etc/keepalived/test.sh
+#!/bin/bash
+killall -0 haproxy
+
+[root@ka1 ~]# vim /etc/keepalived/keepalived.conf 
+[root@ka2~]# vim /etc/keepalived/keepalived.conf 
+
+vrrp_script check_haproxy {
+   script "/etc/keepalived/test.sh"     
+   interval 1                  
+   weight -30                 
+   fall 2					   
+   rise 2  					   
+   timeout 2                   
+}
+
+
+vrrp_instance VI_1 {
+    state MASTER
+    interface eth0
+    virtual_router_id 100
+    priority 100
+    advert_int 1
+    #preempt_delay 5s
+    authentication {
+        auth_type PASS
+        auth_pass 1111
+    }
+    virtual_ipaddress {
+        172.25.254.100/24 dev eth0 label eth0:1
+    }
+    unicast_src_ip 172.25.254.10
+    unicast_peer {
+        172.25.254.20
+    }
+	track_script {            
+ 		check_haproxy
+	}    
+}
+
+systemctl restart keepalived.service</code></pre> 
+<h5>3.8.3 测试</h5> 
+<blockquote> 
+ <p>复制一个ka1出来，写个死循环：<br> while true<br> &gt;do<br> &gt;curl 172.25.254.100;sleep 0.5<br> &gt;done</p> 
+ <p>把ka1上的haproxy挂掉，这边不会受影响，一直循环，VIP会飘到ka2上面</p> 
+</blockquote> 
+<p><img alt="" height="245" src="https://images2.imgbox.com/48/cb/Nbd8eBNn_o.png" width="766"></p> 
+<blockquote> 
+ <p>把ka1上面的haproxy给挂掉：</p> 
+ <p>[root@ka1 ~]# systemctl stop haproxy.service<br> 此时ka1上面没有VIP了</p> 
+</blockquote> 
+<p><img alt="" height="519" src="https://images2.imgbox.com/49/f6/J7mkmke6_o.png" width="1142"></p> 
+<p>查看ka2上面： <img alt="" height="642" src="https://images2.imgbox.com/4f/57/J2MwVUCI_o.png" width="989"></p> 
+<blockquote> 
+ <p>把ka1上面的haproxy重新启动，VIP又回来了<br> systemctl start haproxy.service</p> 
+ <p>死循环也不会受影响，因为ka1上面haproxy挂掉了，ka1上的VIP优先级降低，飘到ka2上面去了，ka2上面的haproxy还存活，也有VIP，所以死循环会一直能访问。最终不会影响架构的最终访问。</p> 
+</blockquote> 
+<p><img alt="" height="636" src="https://images2.imgbox.com/c2/1e/PJid4Bxn_o.png" width="1030"></p> 
+<p>至此，keepalived-haproxy就实现了高可用</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ce04f8964c277c557dc74ed37444c8f1/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【数据结构】顺序表——赋源码(结尾)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2e56c31cdf4388b5c421255e37b949b1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">征服云端：Kubernetes如何让微服务与云原生技术如虎添翼</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

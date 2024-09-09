@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Kafka如何保证消息的消费顺序【全局有序、局部有序 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/aec607d80c04537b4efcdc3f1980c585/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Kafka如何保证消息的消费顺序【全局有序、局部有序">
+  <meta property="og:description" content="0代表producer往集群发送数据不需要等到集群的返回，不确保消息发送成功。安全性最低但是效率最高。1代表producer往集群发送数据只要leader应答就可以发送下一条，只确保leader发送成功。all代表producer往集群发送数据需要所有的follower都完成从leader的同步才会发送下一条，确保leader发送成功和所有的副本都完成备份。安全性最高，但是效率最低。 最后要注意的是，如果往不存在的topic写数据，能不能写入成功呢？kafka会自动创建topic，分区和副本的数量根据默认配置都是1。
+此外，对于某些业务场景，设置max.in.flight.requests.per.connection=1会严重降低吞吐量，如果放弃使用这种同步重试机制，则可以考虑在消费端增加失败标记的记录，然后用定时任务轮询去重试这些失败的消息并做好监控报警。
+Kafka的多副本机制 Kafka为分区（Partition）引入多副本（Replica）机制，分区（Partition）中的多个副本中有一个leader，其余称为leader的follower。我们的消息发送到leader副本，然后follower副本才能从leader副本中拉取消息进行同步。
+Kafka的follower从leader同步数据的流程 初始同步请求：当一个新的follower加入集群或者现有的follower与leader失去连接后重新连接时，follower会向leader发送一个初始同步请求（Initial Fetch Request），请求获取最新的数据。获取偏移量信息：leader响应这个请求，发送给follower最新的日志文件（log file）名称和偏移量（offset）。这告诉follower从哪个位置开始拉取数据。数据拉取：根据从leader获取的偏移量信息，follower开始从leader拉取数据。这些数据通常是leader日志文件中的一部分或全部内容。写入本地副本：follower在接收到数据后，会将这些数据写入自己的本地副本中。这确保了即使leader发生故障，follower也有完整的数据副本。提交偏移量：一旦数据写入完成，follower会向leader发送一个确认消息，告知已经成功写入的偏移量。这个确认是Kafka复制协议的一部分，确保leader知道哪些数据已经被follower成功接收和写入。持续同步：在初始同步之后，follower会持续地监听leader的日志变化。每当leader有新的数据写入时，follower都会按照上述流程拉取并写入这些数据。故障恢复和选举：如果leader发生故障，Kafka集群中的其他节点（通常是follower）会通过ZooKeeper进行选举，选出一个新的leader。选举成功后，新的leader会继续接受生产者的写入请求，并同步数据到其他的follower。日志截断：在某些情况下，如删除旧的topic分区或执行日志压缩时，leader可能会截断其日志文件。当这种情况发生时，leader会通知所有的follower进行相同的截断操作，以确保所有副本的一致性。 整个同步流程是异步的，并且设计得足够高效，以便在Kafka集群中处理大量的数据和高并发的读写操作。此外，Kafka还通过一系列的优化手段（如批量拉取、压缩传输等）来减少同步过程中的网络开销和延迟。
+Kafka的follower为什么不能用于消息消费 对于消息的消费，Kafka采用的是生产者-消费者模式。在这个模式中，生产者将消息写入Kafka的leader分区，而消费者则从leader分区拉取消息进行消费。Kafka通过移交偏移量来控制消费者从哪个位置开始消费消息，从而使得消费者可以按照一定的顺序消费消息。Kafka的设计是基于分布式的，所有的读写操作都是在leader分区进行的，follower分区则主要负责从leader同步数据。从而保证分布式环境中数据的一致性和可靠性。 Kafka的多分区（partition）以及多副本（Replica）机制的作用 Kafka 通过给特定 Topic 指定多个 Partition, 而各个 Partition 可以分布在不同的 Broker 上, 这样便能提供比较好的并发能力（负载均衡）。Partition 可以指定对应的 Replica 数, 这也极大地提高了消息存储的安全性, 提高了容灾能力，不过也相应的增加了所需要的存储空间。 Kafka和Zookeeper的关系 Zookeeper主要为Kafka提供元数据的管理的功能。
+Broker注册：在 Zookeeper 上会有一个专门用来进行 Broker 服务器列表记录的节点。每个 Broker 在启动时，都会到 Zookeeper 上进行注册，即到 /brokers/ids 下创建属于自己的节点。每个 Broker 就会将自己的 IP 地址和端口等信息记录到该节点中去Topick注册：在 Kafka 中，同一个Topic 的消息会被分成多个分区并将其分布在多个 Broker 上，这些分区信息及与 Broker 的对应关系也都是由 Zookeeper 在维护。比如我创建了一个名字为 my-topic 的主题并且它有两个分区，对应到 zookeeper 中会创建这些文件夹：/brokers/topics/my-topic/Partitions/0、/brokers/topics/my-topic/Partitions/1。负载均衡：对于同一个 Topic 的不同 Partition，Kafka 会尽力将这些 Partition 分布到不同的 Broker 服务器上。当生产者产生消息后也会尽量投递到不同 Broker 的 Partition 里面。当 Consumer 消费的时候，Zookeeper 可以根据当前的 Partition 数量以及 Consumer 数量来实现动态负载均衡。 在Kafka2.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-04-08T05:48:12+08:00">
+    <meta property="article:modified_time" content="2024-04-08T05:48:12+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Kafka如何保证消息的消费顺序【全局有序、局部有序</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <ul><li>0代表producer往集群发送数据不需要等到集群的返回，不确保消息发送成功。安全性最低但是效率最高。</li><li>1代表producer往集群发送数据只要leader应答就可以发送下一条，只确保leader发送成功。</li><li>all代表producer往集群发送数据需要所有的follower都完成从leader的同步才会发送下一条，确保leader发送成功和所有的副本都完成备份。安全性最高，但是效率最低。</li></ul> 
+ <p>最后要注意的是，如果往不存在的topic写数据，能不能写入成功呢？kafka会自动创建topic，分区和副本的数量根据默认配置都是1。</p> 
+</blockquote> 
+<p>此外，对于某些业务场景，设置<code>max.in.flight.requests.per.connection</code>=1会严重降低吞吐量，如果放弃使用这种同步重试机制，则可以考虑在消费端增加失败标记的记录，然后用定时任务轮询去重试这些失败的消息并做好监控报警。</p> 
+<h4><a id="Kafka_16"></a><strong>Kafka的多副本机制</strong></h4> 
+<p>Kafka为分区（Partition）引入多副本（Replica）机制，分区（Partition）中的多个副本中有一个leader，其余称为leader的follower。我们的消息发送到leader副本，然后follower副本才能从leader副本中拉取消息进行同步。</p> 
+<h5><a id="Kafkafollowerleader_22"></a>Kafka的follower从leader同步数据的流程</h5> 
+<ol><li><strong>初始同步请求</strong>：当一个新的follower加入集群或者现有的follower与leader失去连接后重新连接时，follower会向leader发送一个初始同步请求（Initial Fetch Request），请求获取最新的数据。</li><li><strong>获取偏移量信息</strong>：leader响应这个请求，发送给follower最新的日志文件（log file）名称和偏移量（offset）。这告诉follower从哪个位置开始拉取数据。</li><li><strong>数据拉取</strong>：根据从leader获取的偏移量信息，follower开始从leader拉取数据。这些数据通常是leader日志文件中的一部分或全部内容。</li><li><strong>写入本地副本</strong>：follower在接收到数据后，会将这些数据写入自己的本地副本中。这确保了即使leader发生故障，follower也有完整的数据副本。</li><li><strong>提交偏移量</strong>：一旦数据写入完成，follower会向leader发送一个确认消息，告知已经成功写入的偏移量。这个确认是Kafka复制协议的一部分，确保leader知道哪些数据已经被follower成功接收和写入。</li><li><strong>持续同步</strong>：在初始同步之后，follower会持续地监听leader的日志变化。每当leader有新的数据写入时，follower都会按照上述流程拉取并写入这些数据。</li><li><strong>故障恢复和选举</strong>：如果leader发生故障，Kafka集群中的其他节点（通常是follower）会通过ZooKeeper进行选举，选出一个新的leader。选举成功后，新的leader会继续接受生产者的写入请求，并同步数据到其他的follower。</li><li><strong>日志截断</strong>：在某些情况下，如删除旧的topic分区或执行日志压缩时，leader可能会截断其日志文件。当这种情况发生时，leader会通知所有的follower进行相同的截断操作，以确保所有副本的一致性。</li></ol> 
+<p>整个同步流程是异步的，并且设计得足够高效，以便在Kafka集群中处理大量的数据和高并发的读写操作。此外，Kafka还通过一系列的优化手段（如批量拉取、压缩传输等）来减少同步过程中的网络开销和延迟。</p> 
+<h5><a id="Kafkafollower_38"></a>Kafka的follower为什么不能用于消息消费</h5> 
+<ul><li>对于消息的消费，Kafka采用的是<strong>生产者-消费者模式</strong>。在这个模式中，生产者将消息写入Kafka的leader分区，而消费者则从leader分区拉取消息进行消费。Kafka通过移交偏移量来控制消费者从哪个位置开始消费消息，从而使得消费者可以按照一定的顺序消费消息。</li><li>Kafka的设计是基于分布式的，所有的读写操作都是在leader分区进行的，follower分区则主要负责从leader同步数据。从而保证分布式环境中数据的一致性和可靠性。</li></ul> 
+<h5><a id="KafkapartitionReplica_45"></a>Kafka的多分区（partition）以及多副本（Replica）机制的作用</h5> 
+<ul><li>Kafka 通过给特定 Topic 指定多个 Partition, 而各个 Partition 可以分布在不同的 Broker 上, 这样便能提供比较好的并发能力（负载均衡）。</li><li>Partition 可以指定对应的 Replica 数, 这也极大地提高了消息存储的安全性, 提高了容灾能力，不过也相应的增加了所需要的存储空间。</li></ul> 
+<h4><a id="KafkaZookeeper_52"></a>Kafka和Zookeeper的关系</h4> 
+<p>Zookeeper主要为Kafka提供元数据的管理的功能。</p> 
+<blockquote> 
+ <ul><li>Broker注册：在 Zookeeper 上会有一个专门<strong>用来进行 Broker 服务器列表记录</strong>的节点。每个 Broker 在启动时，都会到 Zookeeper 上进行注册，即到 <code>/brokers/ids</code> 下创建属于自己的节点。每个 Broker 就会将自己的 IP 地址和端口等信息记录到该节点中去</li><li>Topick注册：在 Kafka 中，同一个<strong>Topic 的消息会被分成多个分区</strong>并将其分布在多个 Broker 上，<strong>这些分区信息及与 Broker 的对应关系</strong>也都是由 Zookeeper 在维护。比如我创建了一个名字为 my-topic 的主题并且它有两个分区，对应到 zookeeper 中会创建这些文件夹：<code>/brokers/topics/my-topic/Partitions/0</code>、<code>/brokers/topics/my-topic/Partitions/1。</code></li><li>负载均衡：对于同一个 Topic 的不同 Partition，Kafka 会尽力将这些 Partition 分布到不同的 Broker 服务器上。当生产者产生消息后也会尽量投递到不同 Broker 的 Partition 里面。当 Consumer 消费的时候，Zookeeper 可以根据当前的 Partition 数量以及 Consumer 数量来实现动态负载均衡。</li></ul> 
+</blockquote> 
+<p><strong>在Kafka2.8之前Kafka严重依赖于Zookeeper，在Kafka2.8之后引入了基于Raft协议的KRaft模式，从而使得Kafka不再严重依赖于Zookeeper，可以进行独立的部署，大大简化了Kafka的架构.</strong></p> 
+<h4><a id="Kafka_71"></a>Kafka如何保证消息不丢失</h4> 
+<h5><a id="Kafka_74"></a>Kafka消息发送模式</h5> 
+<blockquote> 
+ <ul><li>同步发送模式：发出消息后，必须等待<a href="" rel="nofollow">阻塞队列</a>收到通知后，才发送下一条消息；同步发送模式可以保证消息不丢失、又能保证消息的有序性。</li></ul> 
+</blockquote> 
+<blockquote> 
+ <p>SendResult&lt;String, Object&gt; sendResult = kafkaTemplate.send(topic, o).get();<br> if (sendResult.getRecordMetadata() != null) {<!-- --><br> logger.info(“生产者成功发送消息到” + sendResult.getProducerRecord().topic() + "-&gt; " + sendRe<br> sult.getProducerRecord().value().toString());<br> }</p> 
+</blockquote> 
+<blockquote> 
+ <ul><li>异步发送模式：生产者一直向缓冲区写消息，然后一起写到队列中；好处是吞吐量大，性能高。</li></ul> 
+</blockquote> 
+<blockquote> 
+ <pre><code>      ListenableFuture&lt;SendResult&lt;String, Object&gt;&gt; future = kafkaTemplate.send(topic, o);
+      future.addCallback(result -&gt; logger.info("生产者成功发送消息到topic:{} partition:{}的消息", result.getRecordMetadata().topic(), result.getRecordMetadata().partition()),
+              ex -&gt; logger.error("生产者发送消失败，原因：{}", ex.getMessage()));
+</code></pre> 
+</blockquote> 
+<blockquote></blockquote> 
+<h5><a id="Kafka_104"></a>Kafka保证消息不丢失的措施</h5> 
+<ol><li>在<code>同步模式</code>下，将发送消息的确认机制设置为all，使得所有节点确认后再发送下一条数据即可。</li><li>在<code>异步模式</code>下，如果消息发送出去了，但还没有收到确定的时候，在配置文件中设置成不限制阻塞超时的时间，即让生产者一直保持等待，也可以保证数据不丢失。</li></ol> 
+<h4><a id="Kafka_111"></a>Kafka为什么这么快</h4> 
+<p><strong>Kafka不基于内存，而是基于磁盘，因此消息堆积能力更强。</strong></p> 
+<ul><li>**顺序写磁盘，充分利用磁盘特性：**利用磁盘的顺序访问速度可以接近内存，kafka的消息都是append操作，partition是有序的，节省了磁盘的寻道时间，同时通过批量操作、节省写入次数，partition物理上分为多个segment存储，方便删除；</li><li><strong>零拷贝：</strong></li></ul> 
+<ul><li>Producer 生产的数据持久化到 broker，采用 mmap 文件映射，实现顺序的快速写入。</li></ul> 
+<ul><li>mmap()系统调用函数会直接把内核缓冲区里的数据「映射」到用户空间，这样，操作系统内核与用户空间就不需要再进行任何的数据拷贝操作；</li><li>Customer 从 broker 读取数据，采用 sendfile，将磁盘文件读到 OS 内核缓冲区后，转到 NIO buffer进行网络发送，减少 CPU 消耗。</li></ul> 
+<ul><li><strong>Kafka不依赖于JVM，主要依赖OS的PageCache</strong>，如果生产消费速率相当，直接使用PageCache交换数据，不需要经过系统磁盘。</li><li>**消息压缩：**Producer 可将数据压缩后发送给 broker，从而减少网络传输代价，目前支持的压缩算法有：Snappy、Gzip、LZ4。数据压缩一般都是和批处理配套使用来作为优化手段的。</li><li>**分批发送：**批量处理，合并小的请求，然后以流的方式进行交互，直顶网络上限；</li></ul> 
+<h4><a id="Kafka_129"></a>Kafka如何保证消息不被重复消费</h4> 
+<h5><a id="_132"></a>生产者消息重复发送</h5> 
+<p>生产发送的消息没有收到正确的broke响应，导致producer重试。</p> 
+<p>详解：producer发出一条消息，broker落盘以后，因为网络等原因，发送端得到一个发送失败的响应或者网络中断，然后producer收到 一个可恢复的Exception重试消息导致消息重复。</p> 
+<p>解决：</p> 
+<blockquote> 
+ <p>enable.idempotence=true   //此时会默认开启acks=all<br> acks=all<br> retries&gt;1</p> 
+ <p>kafka 0.11.0.0版本之后，正式推出了idempotent producer，支持生产者的幂等。每个生产者producer都有一个唯-id，producer每发送一条数据都会带上一个sequence，当消息落盘，sequence就会递增1。只需判断当前消息的sequence是否大于当前最大sequence，大于就代表此条数据没有落盘过，可以正常消费，不大于就代表落盘过，这个时候重发的消息会被服务端拒掉从而避免消息重复。</p> 
+</blockquote> 
+<h5><a id="_157"></a>消费者消息重复消费</h5> 
+<p>Kafka默认先消费消息，再提交offset。如果消费者在消费了消息之后，消费者挂了，还未提交offset，那么Broker后边会重新让消费者消费。</p> 
+<p>解决：消费者进行幂等处理，消费者进行幂等处理同样可以处理生产生重复发送消息的问题。</p> 
+<ol><li>将唯一键存入第三方介质，要操作数据的时候先判断第三方介质(数据库或者缓存)有没有这个唯一键。</li><li>将版本号(offset)存入到数据里面，然后再要操作数据的时候用这个版本号做乐观锁，当版本号大于原先的才能操作。</li></ol> 
+<p>如：可以用redis的setnx分布式锁来实现。比如操作订单消息，可以把订单id作为key，在消费消息时，通过setnx命令设置一下，offset提交完成后，在redis中删除订单id的key。setnx命令保证同样的订单消息，只有一个能被消费，可有效保证消费的幂等性！<strong>上面提到的两种方式需要结合SETNX使用。</strong></p> 
+<h4><a id="Kafka_173"></a>Kafka消息消费失败</h4> 
+<p>Kafka默认消息消费失败后的重试次数为10，并且重试间隔为0s。</p> 
+<p><strong>自我介绍一下，小编13年上海交大毕业，曾经在小公司待过，也去过华为、OPPO等大厂，18年进入阿里一直到现在。</strong></p> 
+<p><strong>深知大多数大数据工程师，想要提升技能，往往是自己摸索成长或者是报班学习，但对于培训机构动则几千的学费，着实压力不小。自己不成体系的自学效果低效又漫长，而且极易碰到天花板技术停滞不前！</strong></p> 
+<p><strong>因此收集整理了一份《2024年大数据全套学习资料》，初衷也很简单，就是希望能够帮助到想自学提升又不知道该从何学起的朋友。</strong><br> <img src="https://images2.imgbox.com/75/74/fndvvzUb_o.png" alt="img"><br> <img src="https://images2.imgbox.com/08/c7/bu2YhoXt_o.png" alt="img"><br> <img src="https://images2.imgbox.com/5e/11/ewjCzT6x_o.png" alt="img"><br> <img src="https://images2.imgbox.com/e1/11/Vfbc7YZ9_o.png" alt="img"><br> <img src="https://images2.imgbox.com/27/a6/MyrjioWq_o.png" alt="img"></p> 
+<p><strong>既有适合小白学习的零基础资料，也有适合3年以上经验的小伙伴深入学习提升的进阶课程，基本涵盖了95%以上大数据开发知识点，真正体系化！</strong></p> 
+<p><strong>由于文件比较大，这里只是将部分目录大纲截图出来，每个节点里面都包含大厂面经、学习笔记、源码讲义、实战项目、讲解视频，并且后续会持续更新</strong></p> 
+<p><strong>如果你觉得这些内容对你有帮助，可以添加VX：vip204888 （备注大数据获取）</strong><br> <img src="https://images2.imgbox.com/30/2d/RFho0yuZ_o.png" alt="img"></p> 
+<p>程，基本涵盖了95%以上大数据开发知识点，真正体系化！**</p> 
+<p><strong>由于文件比较大，这里只是将部分目录大纲截图出来，每个节点里面都包含大厂面经、学习笔记、源码讲义、实战项目、讲解视频，并且后续会持续更新</strong></p> 
+<p><strong>如果你觉得这些内容对你有帮助，可以添加VX：vip204888 （备注大数据获取）</strong><br> [外链图片转存中…(img-p3WdlTf9-1712526482326)]</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/156ea7ab83c25d7611c1654a958fe242/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Hive On Spark 概述、安装配置、计算引擎更换</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1aaa8b774f25df4ca04e1d1f6533e046/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">[C#]C#中的ComboBox控件</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

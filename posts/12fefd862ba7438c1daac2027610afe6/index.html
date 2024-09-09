@@ -1,0 +1,424 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【Kafka】 幂等和事务详解 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/12fefd862ba7438c1daac2027610afe6/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【Kafka】 幂等和事务详解">
+  <meta property="og:description" content="目录 幂等性为什么需要幂等性如何实现幂等性使用幂等幂等性的限制条件幂等性的实现原理 事务为什么需要事务开启事务事务保证事务恢复的保证事务原子性的保证事务中 Offset 的提交保证用于事务特性的控制型消息 事务流程事务原理FindCoordinatorRequestInitProducerIdRequest开启事务回话流的处理与转发阶段提交或回滚事务超时事务中止 拒绝僵尸实例与分布式事务机制对比事务操作 相关配置总结 幂等性 保证在消息重发的时候，消费者不会重复处理。即使在消费者收到重复消息的时候，重复处理，也要保证最终结果的一致性。
+所谓幂等性，数学概念就是： f(f(x)) = f(x) 。f函数表示对消息的处理。
+比如，银行转账，如果失败，需要重试。不管重试多少次，都要保证最终结果一定是一致的。
+Exactly-Once
+即精准一次，来保证幂等性。Exactly once是Kafka从版本0.11之后提供的高级特性。
+为什么需要幂等性 在使用Kafka时，需要确保Exactly-Once语义。分布式系统中，一些不可控因素有很多，比如网络、OOM、FullGC等。在Kafka Broker确认Ack前，有可能出现网络异常、FullGC、OOM等问题时导致Ack超时，Producer会进行重复发送。注，在未达到最大重试次数前，会自动重试（非应用程序代码写的重试）。
+Kafka在引入幂等性之前，Producer向Broker发送消息，然后Broker将消息追加到消息流中后给Producer返回Ack信号值。实现流程如下：
+生产中，会出现各种不确定的因素，比如在Producer在发送给Broker的时候出现网络异常。比如以下这种异常情况的出现：
+上图这种情况，当Producer第一次发送消息给Broker时，Broker将消息(x2,y2)追加到了消息流中，但是在返回Ack信号给Producer时失败了（比如网络异常） 。此时，Producer端触发重试机制，将消息(x2,y2)重新发送给Broker，Broker接收到消息后，再次将该消息追加到消息流中，然后成功返回Ack信号给Producer。这样下来，消息流中就被重复追加了两条相同的(x2,y2)的消息。
+因此需要保证幂等性保证即使多次发送也要让最终的结果一样。
+如何实现幂等性 Kafka在0.11.0.0之后加入的幂等性。他是通过添加唯一ID，类似于数据库的主键，用于唯一标记一个消息。它在底层设计架构中引入了ProducerID和SequenceNumber。那这两个概念的用途是什么呢？
+PID：ProducerID，每个生产者启动时，Kafka 都会给它分配一个 ID，ProducerID 是生产者的唯一标识，需要注意的是，Kafka 重启也会重新分配 PIDSequenceNumber ：对于每个ProducerID，Producer发送数据的每个Topic和Partition都对应一个从0开始单调递增的SequenceNumber值。 同样，下图一种理想状态下的发送流程。实际情况下，会有很多不确定的因素，比如Broker在发送Ack信号给Producer时出现网络异常，导致发送失败。异常情况如下图所示：
+当Producer发送消息(x2,y2)给Broker时，Broker接收到消息并将其追加到消息流中。此时，Broker返回Ack信号给Producer时，发生异常导致Producer接收Ack信号失败。对于Producer来说，会触发重试机制，将消息(x2,y2)再次发送，但是，由于引入了幂等性，在每条消息中附带了PID（ProducerID）和SequenceNumber。相同的PID和SequenceNumber发送给Broker，而之前Broker缓存过之前发送的相同的消息，那么在消息流中的消息就只有一条(x2,y2)，不会出现重复发送的情况。
+使用幂等 通过如下配置使用幂：
+enable.idempotence=true。enable.idempotence配置项表示是否使用幂等性。当enable.idempotence配置为true时，acks必须配置为all。并且建议max.in.flight.requests.per.connection的值小于5。acks=all。 幂等性的限制条件 单独只使用Producer的幂等性是存在一些限制条件的：
+只能保证 Producer 在单个会话内不丟不重 ，如果 Producer 出现意外挂掉再重启是无法保证的（幂等性情况下，是无法获取之前的状态信息，因此是无法做到跨会话级别的不丢不重）;幂等性不能跨多个 Topic-Partition，只能保证单个 partition 内的幂等性 ，当涉及多个 Topic-Partition 时，这中间的状态并没有同步。 如果需要跨会话、跨多个 topic-partition 的情况，需要使用 Kafka 的事务性来实现。这种幂等性只是保证了再生产端实现了幂等性，在实际场景中往往需要在消息者端实现幂等性，可以最大程度避免重复消费。
+幂等性的实现原理 每个新的Producer在初始化的时候会被分配一个唯一的PID（凡是开启幂等性都是需要生成PID，只不过未开启事务的PID可以在任意broker生成，而开启事务只能在TransactionCoordinator节点生成），该PID对用户完全透明而不会暴露给用户。Broker端也会为每个&lt;PID, Topic, Partition&gt;维护一个序号，并且每次Commit一条消息时将其对应序号递增。对于接收的每条消息，如果其消息序号比Broker维护的序号（即最后一次Commit的消息的序号）大一，则Broker会接受它，否则将其丢弃：
+如果消息序号比Broker维护的序号大于1以上，说明中间有数据尚未写入，也即乱序，此时Broker拒绝该消息，Producer抛出InvalidSequenceNumber如果消息序号小于等于Broker维护的序号，说明该消息已被保存，即为重复消息，Broker直接丢弃该消息，Producer抛出DuplicateSequenceNumber 上述设计解决了 0.11.0 之前版本中的两个问题：
+Broker 保存消息后，发送 ACK 前宕机，Producer 认为消息未发送成功并重试，造成数据重复前一条消息发送失败，后一条消息发送成功，前一条消息重试后成功，造成数据乱序 producer_id是从Kafka服务端请求获取的（通过 ProducerIdManager 的 generateProducerId() 方法产生，维护在zk中的 /latest_producer_id_block 节点），消息序列号是Producer端生成的，初始值为0，之后自增加1，每个分区都有独立的序列号。。这里需要说明下，Kafka发送消息都是以batch的格式发送，batch包含了多条消息。所以Producer发送消息batch的时候，只会设置该batch的第一个消息的序列号，后面消息的序列号可以根据第一个消息的序列号计算出来。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-02-02T11:11:27+08:00">
+    <meta property="article:modified_time" content="2024-02-02T11:11:27+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【Kafka】 幂等和事务详解</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">幂等性</a></li><li><ul><li><a href="#_15" rel="nofollow">为什么需要幂等性</a></li><li><a href="#_35" rel="nofollow">如何实现幂等性</a></li><li><a href="#_51" rel="nofollow">使用幂等</a></li><li><a href="#_60" rel="nofollow">幂等性的限制条件</a></li><li><a href="#_71" rel="nofollow">幂等性的实现原理</a></li></ul> 
+  </li><li><a href="#_87" rel="nofollow">事务</a></li><li><ul><li><a href="#_89" rel="nofollow">为什么需要事务</a></li><li><a href="#_110" rel="nofollow">开启事务</a></li><li><a href="#_118" rel="nofollow">事务保证</a></li><li><ul><li><a href="#_120" rel="nofollow">事务恢复的保证</a></li><li><a href="#_131" rel="nofollow">事务原子性的保证</a></li><li><a href="#_Offset__141" rel="nofollow">事务中 Offset 的提交保证</a></li><li><a href="#_150" rel="nofollow">用于事务特性的控制型消息</a></li></ul> 
+   </li><li><a href="#_160" rel="nofollow">事务流程</a></li><li><a href="#_203" rel="nofollow">事务原理</a></li><li><ul><li><a href="#FindCoordinatorRequest_208" rel="nofollow">FindCoordinatorRequest</a></li><li><a href="#InitProducerIdRequest_218" rel="nofollow">InitProducerIdRequest</a></li><li><a href="#_241" rel="nofollow">开启事务回话</a></li><li><a href="#_247" rel="nofollow">流的处理与转发阶段</a></li><li><a href="#_283" rel="nofollow">提交或回滚事务</a></li><li><a href="#_302" rel="nofollow">超时事务中止</a></li></ul> 
+   </li><li><a href="#_310" rel="nofollow">拒绝僵尸实例</a></li><li><a href="#_318" rel="nofollow">与分布式事务机制对比</a></li><li><a href="#_346" rel="nofollow">事务操作</a></li></ul> 
+  </li><li><a href="#_512" rel="nofollow">相关配置</a></li><li><a href="#_546" rel="nofollow">总结</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>幂等性</h2> 
+<p>保证在消息重发的时候，消费者不会重复处理。即使在消费者收到重复消息的时候，重复处理，也要保证最终结果的一致性。</p> 
+<p>所谓幂等性，数学概念就是： <code>f(f(x)) = f(x)</code> 。f函数表示对消息的处理。</p> 
+<p>比如，银行转账，如果失败，需要重试。不管重试多少次，都要保证最终结果一定是一致的。</p> 
+<p><strong>Exactly-Once</strong></p> 
+<p>即精准一次，来保证幂等性。Exactly once是Kafka从版本0.11之后提供的高级特性。</p> 
+<h3><a id="_15"></a>为什么需要幂等性</h3> 
+<p>在使用Kafka时，需要确保Exactly-Once语义。分布式系统中，一些不可控因素有很多，比如网络、OOM、FullGC等。在Kafka Broker确认Ack前，有可能出现网络异常、FullGC、OOM等问题时导致Ack超时，Producer会进行重复发送。注，在未达到最大重试次数前，会自动重试（非应用程序代码写的重试）。</p> 
+<p>Kafka在引入幂等性之前，Producer向Broker发送消息，然后Broker将消息追加到消息流中后给Producer返回Ack信号值。实现流程如下：</p> 
+<p><img src="https://images2.imgbox.com/6a/c5/RRh3EQCZ_o.png" alt="在这里插入图片描述"></p> 
+<p>生产中，会出现各种不确定的因素，比如在Producer在发送给Broker的时候出现网络异常。比如以下这种异常情况的出现：</p> 
+<p><img src="https://images2.imgbox.com/71/0e/SFpbhOvb_o.png" alt="在这里插入图片描述"></p> 
+<p>上图这种情况，当Producer第一次发送消息给Broker时，Broker将消息(x2,y2)追加到了消息流中，但是在返回Ack信号给Producer时失败了（比如网络异常） 。此时，Producer端触发重试机制，将消息(x2,y2)重新发送给Broker，Broker接收到消息后，再次将该消息追加到消息流中，然后成功返回Ack信号给Producer。这样下来，消息流中就被重复追加了两条相同的(x2,y2)的消息。</p> 
+<p>因此需要保证幂等性保证即使多次发送也要让最终的结果一样。</p> 
+<h3><a id="_35"></a>如何实现幂等性</h3> 
+<p>Kafka在0.11.0.0之后加入的幂等性。他是通过添加唯一ID，类似于数据库的主键，用于唯一标记一个消息。它在底层设计架构中引入了ProducerID和SequenceNumber。那这两个概念的用途是什么呢？</p> 
+<ul><li><strong>PID</strong>：ProducerID，每个生产者启动时，Kafka 都会给它分配一个 ID，ProducerID 是生产者的唯一标识，需要注意的是，Kafka 重启也会重新分配 PID</li><li>SequenceNumber ：对于每个ProducerID，Producer发送数据的每个Topic和Partition都对应一个从0开始单调递增的SequenceNumber值。</li></ul> 
+<p>同样，下图一种理想状态下的发送流程。实际情况下，会有很多不确定的因素，比如Broker在发送Ack信号给Producer时出现网络异常，导致发送失败。异常情况如下图所示：</p> 
+<p><img src="https://images2.imgbox.com/c5/94/WjtxoJZV_o.png" alt="在这里插入图片描述"></p> 
+<p>当Producer发送消息(x2,y2)给Broker时，Broker接收到消息并将其追加到消息流中。此时，Broker返回Ack信号给Producer时，发生异常导致Producer接收Ack信号失败。对于Producer来说，会触发重试机制，将消息(x2,y2)再次发送，但是，由于引入了幂等性，在每条消息中附带了PID（ProducerID）和SequenceNumber。相同的PID和SequenceNumber发送给Broker，而之前Broker缓存过之前发送的相同的消息，那么在消息流中的消息就只有一条(x2,y2)，不会出现重复发送的情况。</p> 
+<h3><a id="_51"></a>使用幂等</h3> 
+<p>通过如下配置使用幂：</p> 
+<ul><li><strong>enable.idempotence=true</strong>。<code>enable.idempotence</code>配置项表示是否使用幂等性。当<code>enable.idempotence</code>配置为true时，<code>acks</code>必须配置为all。并且建议<code>max.in.flight.requests.per.connection</code>的值小于5。</li><li><strong>acks=all</strong>。</li></ul> 
+<h3><a id="_60"></a>幂等性的限制条件</h3> 
+<p>单独只使用Producer的幂等性是存在一些限制条件的：</p> 
+<ul><li>只能保证 Producer 在单个会话内不丟不重 ，如果 Producer 出现意外挂掉再重启是无法保证的（幂等性情况下，是无法获取之前的状态信息，因此是无法做到跨会话级别的不丢不重）;</li><li>幂等性不能跨多个 Topic-Partition，只能保证单个 partition 内的幂等性 ，当涉及多个 Topic-Partition 时，这中间的状态并没有同步。</li></ul> 
+<blockquote> 
+ <p>如果需要跨会话、跨多个 topic-partition 的情况，需要使用 Kafka 的事务性来实现。这种幂等性只是保证了再生产端实现了幂等性，在实际场景中往往需要在消息者端实现幂等性，可以最大程度避免重复消费。</p> 
+</blockquote> 
+<h3><a id="_71"></a>幂等性的实现原理</h3> 
+<p>每个新的Producer在初始化的时候会被分配一个唯一的PID（凡是开启幂等性都是需要生成PID，只不过未开启事务的PID可以在任意broker生成，而开启事务只能在TransactionCoordinator节点生成），该PID对用户完全透明而不会暴露给用户。Broker端也会为每个&lt;PID, Topic, Partition&gt;维护一个序号，并且每次Commit一条消息时将其对应序号递增。对于接收的每条消息，如果其消息序号比Broker维护的序号（即最后一次Commit的消息的序号）大一，则Broker会接受它，否则将其丢弃：</p> 
+<ul><li>如果消息序号比Broker维护的序号大于1以上，说明中间有数据尚未写入，也即乱序，此时Broker拒绝该消息，Producer抛出InvalidSequenceNumber</li><li>如果消息序号小于等于Broker维护的序号，说明该消息已被保存，即为重复消息，Broker直接丢弃该消息，Producer抛出DuplicateSequenceNumber</li></ul> 
+<p>上述设计解决了 0.11.0 之前版本中的两个问题：</p> 
+<ul><li>Broker 保存消息后，发送 ACK 前宕机，Producer 认为消息未发送成功并重试，造成数据重复</li><li>前一条消息发送失败，后一条消息发送成功，前一条消息重试后成功，造成数据乱序</li></ul> 
+<blockquote> 
+ <p>producer_id是从Kafka服务端请求获取的（通过 ProducerIdManager 的 generateProducerId() 方法产生，维护在zk中的 /latest_producer_id_block 节点），消息序列号是Producer端生成的，初始值为0，之后自增加1，每个分区都有独立的序列号。。这里需要说明下，Kafka发送消息都是以batch的格式发送，batch包含了多条消息。所以Producer发送消息batch的时候，只会设置该batch的第一个消息的序列号，后面消息的序列号可以根据第一个消息的序列号计算出来。</p> 
+</blockquote> 
+<h2><a id="_87"></a>事务</h2> 
+<h3><a id="_89"></a>为什么需要事务</h3> 
+<p>Kafka 的 Exactly Once 幂等性只能保证单次会话内的精准一次性，不能解决跨会话和跨分区的问题。</p> 
+<p>假如有如下问题：</p> 
+<ol><li>producer发的多条消息组成一个事务，这些消息需要对consumer同时可见或者同时不可见 。</li><li>producer可能会给多个topic，多个partition发消息，这些消息也需要能放在一个事务里面，这就形成了一个典型的分布式事务。</li><li>kafka的应用场景经常是应用先消费一个topic，然后做处理再发到另一个topic，这个<code>consume-transform-produce</code>过程需要放到一个事务里面，比如在消息处理或者发送的过程中如果失败了，消费偏移量也不能提交。</li><li>producer或者producer所在的应用可能会挂掉，新的producer启动以后需要知道怎么处理之前未完成的事务 。</li></ol> 
+<p>在一个原子操作中，根据包含的操作类型，可以分为三种情况：</p> 
+<ol><li>只有Producer生产消息</li><li>消费消息和生产消息并存，这个是事务场景中最常用的情况，就是我们常说的<code>consume-transform-produce </code>模式</li><li>只有consumer消费消息</li></ol> 
+<p>前两种情况需要引入事务，第3种情况不需要引入，这种操作其实没有什么意义，跟使用手动提交效果一样，而且也不是事务属性引入的目的。</p> 
+<h3><a id="_110"></a>开启事务</h3> 
+<p>对于Producer，需要设置<code>transactional.id</code>属性，这个属性的作用下文会提到。设置了<code>transactional.id</code>属性后，<code>enable.idempotence</code>属性会自动设置为true。</p> 
+<p>对于Consumer，需要设置<code>isolation.level = read_committed</code>，这样Consumer只会读取已经提交了事务的消息。另外，需要设置<code>enable.auto.commit = false</code>来关闭自动提交Offset功能。</p> 
+<h3><a id="_118"></a>事务保证</h3> 
+<h4><a id="_120"></a>事务恢复的保证</h4> 
+<p>为了实现有状态的应用也可以保证重启后从断点处继续处理，也即事务恢复。应用程序必须提供一个稳定的（重启后不变）唯一的 ID，也即Transaction ID。Transactin ID与PID可能一一对应。区别在于Transaction ID由用户提供，而PID是内部的实现对用户透明。</p> 
+<p>另外，为了保证新的 Producer 启动后，旧的具有相同Transaction ID的 Producer 即失效，每次 Producer 通过Transaction ID拿到 PID 的同时，还会获取一个单调递增的 epoch。由于旧的 Producer 的 epoch 比新 Producer 的 epoch 小，Kafka 可以很容易识别出该 Producer 是老的 Producer 并拒绝其请求。</p> 
+<p>有了Transaction ID和epoch后，Kafka 可保证：</p> 
+<ul><li>跨 Session 的数据幂等发送。当具有相同Transaction ID的新的 Producer 实例被创建且工作时，旧的且拥有相同Transaction ID的 Producer 将不再工作。</li><li>跨 Session 的事务恢复。如果某个应用实例宕机，新的实例可以保证任何未完成的旧的事务要么 Commit 要么 Abort，使得新实例从一个正常状态开始工作。</li></ul> 
+<h4><a id="_131"></a>事务原子性的保证</h4> 
+<p>事务原子性是指 Producer 将多条消息作为一个事务批量发送，要么全部成功要么全部失败。 引入了一个服务器端的模块，名为Transaction Coordinator，用于管理 Producer 发送的消息的事务性。</p> 
+<p>该Transaction Coordinator维护Transaction Log，该 log 存于一个内部的 Topic 内。由于 Topic 数据具有持久性，因此事务的状态也具有持久性。</p> 
+<p>Producer 并不直接读写Transaction Log，它与Transaction Coordinator通信，然后由Transaction Coordinator将该事务的状态插入相应的Transaction Log。</p> 
+<p>Transaction Log的设计与Offset Log用于保存 Consumer 的 Offset 类似。</p> 
+<h4><a id="_Offset__141"></a>事务中 Offset 的提交保证</h4> 
+<p>在Kafka Stream 应用中同时包含 Consumer 和 Producer（即Consumer-Transform-Producer），前者负责从 Kafka 中获取消息，后者负责将处理完的数据写回 Kafka 的其它 Topic 中。</p> 
+<p>为了实现该场景下的事务的原子性，Kafka 需要保证对 Consumer Offset 的 Commit 与 Producer 对发送消息的 Commit 包含在同一个事务中。否则，如果在二者 Commit 中间发生异常，根据二者 Commit 的顺序可能会造成数据丢失和数据重复：</p> 
+<ul><li>如果先 Commit Producer 发送数据的事务再 Commit Consumer 的 Offset，即At Least Once语义，可能造成数据重复。</li><li>如果先 Commit Consumer 的 Offset，再 Commit Producer 数据发送事务，即At Most Once语义，可能造成数据丢失。</li></ul> 
+<h4><a id="_150"></a>用于事务特性的控制型消息</h4> 
+<p>为了区分写入 Partition 的消息被 Commit 还是 Abort，Kafka 引入了一种特殊类型的消息，即Control Message。该类消息的 Value 内不包含任何应用相关的数据，并且不会暴露给应用程序。它只用于 Broker 与 Client 间的内部通信。</p> 
+<p>对于 Producer 端事务，Kafka 以 Control Message 的形式引入一系列的Transaction Marker。Consumer 即可通过该标记判定对应的消息被 Commit 了还是 Abort 了，然后结合该 Consumer 配置的隔离级别决定是否应该将该消息返回给应用程序。</p> 
+<blockquote> 
+ <p>Kafka事务的回滚，并不是删除已写入的数据，而是将写入数据的事务标记为 Rollback/Abort 从而在读数据时过滤该数据。</p> 
+</blockquote> 
+<h3><a id="_160"></a>事务流程</h3> 
+<p>事务原理流程如下：</p> 
+<p><img src="https://images2.imgbox.com/ef/b4/k4RIyvbQ_o.png" alt="在这里插入图片描述"></p> 
+<p>上图中的 Transaction Coordinator 运行在 Kafka 服务端，下面简称 TC 服务。<br> __transaction_state 是 TC 服务持久化事务信息的 topic 名称，下面简称事务 topic。<br> Producer 向 TC 服务发送的 commit 消息，下面简称事务提交消息。<br> TC 服务向分区发送的消息，下面简称事务结果消息。</p> 
+<ol><li><strong>寻找 TC 服务地址</strong></li></ol> 
+<p>Producer 会首先从 Kafka 集群中选择任意一台机器，然后向其发送请求，获取 TC 服务的地址。Kafka 有个特殊的事务 topic，名称为__transaction_state ，负责持久化事务消息。这个 topic 有多个分区，默认有50个，每个分区负责一部分事务。事务划分是根据 transaction id， 计算出该事务属于哪个分区。这个分区的 leader 所在的机器，负责这个事务的TC 服务地址。</p> 
+<ol start="2"><li><strong>事务初始化</strong></li></ol> 
+<p>Producer 在使用事务功能，必须先自定义一个唯一的 transaction id。有了 transaction id，即使客户端挂掉了，它重启后也能继续处理未完成的事务。<br> Kafka 实现事务需要依靠幂等性，而幂等性需要指定 producer id 。所以Producer在启动事务之前，需要向 TC 服务申请 producer id。TC 服务在分配 producer id 后，会将它持久化到事务 topic。</p> 
+<ol start="3"><li><strong>发送消息</strong></li></ol> 
+<p>Producer 在接收到 producer id 后，就可以正常的发送消息了。不过发送消息之前，需要先将这些消息的分区地址，上传到 TC 服务。TC 服务会将这些分区地址持久化到事务 topic。然后 Producer 才会真正的发送消息，这些消息与普通消息不同，它们会有一个字段，表示自身是事务消息。</p> 
+<p>这里需要注意下一种特殊的请求，提交消费位置请求，用于原子性的从某个 topic 读取消息，并且发送消息到另外一个 topic。我们知道一般是消费者使用消费组订阅 topic，才会发送提交消费位置的请求，而这里是由 Producer 发送的。Producer 首先会发送一条请求，里面会包含这个消费组对应的分区（每个消费组的消费位置都保存在 __consumer_offset topic 的一个分区里），TC 服务会将分区持久化之后，发送响应。Producer 收到响应后，就会直接发送消费位置请求给 GroupCoordinator。</p> 
+<ol start="4"><li><strong>发送提交请求</strong></li></ol> 
+<p>Producer 发送完消息后，如果认为该事务可以提交了，就会发送提交请求到 TC 服务。Producer 的工作至此就完成了，接下来它只需要等待响应。这里需要强调下，Producer 会在发送事务提交请求之前，会等待之前所有的请求都已经发送并且响应成功。</p> 
+<ol start="5"><li><strong>提交请求持久化</strong></li></ol> 
+<p>TC 服务收到事务提交请求后，会先将提交信息先持久化到事务 topic 。持久化成功后，服务端就立即发送成功响应给 Producer。然后找到该事务涉及到的所有分区，为每 个分区生成提交请求，存到队列里等待发送。</p> 
+<p>读者可能有所疑问，在一般的二阶段提交中，协调者需要收到所有参与者的响应后，才能判断此事务是否成功，最后才将结果返回给客户。那如果 TC 服务在发送响应给 Producer 后，还没来及向分区发送请求就挂掉了，那么 Kafka 是如何保证事务完成。因为每次事务的信息都会持久化，所以 TC 服务挂掉重新启动后，会先从 事务 topic 加载事务信息，如果发现只有事务提交信息，却没有后来的事务完成信息，说明存在事务结果信息没有提交到分区。</p> 
+<ol start="6"><li><strong>发送事务结果信息给分区</strong></li></ol> 
+<p>后台线程会不停的从队列里，拉取请求并且发送到分区。当一个分区收到事务结果消息后，会将结果保存到分区里，并且返回成功响应到 TC服务。当 TC 服务收到所有分区的成功响应后，会持久化一条事务完成的消息到事务 topic。至此，一个完整的事务流程就完成了。</p> 
+<h3><a id="_203"></a>事务原理</h3> 
+<p><img src="https://images2.imgbox.com/6d/c4/gi23rpgn_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="FindCoordinatorRequest_208"></a>FindCoordinatorRequest</h4> 
+<p>对应图中的 1。</p> 
+<p>由于Transaction Coordinator是分配 PID 和管理事务的核心，因此 Producer 要做的第一件事情就是通过向任意一个 Broker 发送FindCoordinator请求找到Transaction Coordinator的位置。</p> 
+<p>注意：只有应用程序为 Producer 配置了Transaction ID时才可使用事务特性，也才需要这一步。另外，由于事务性要求 Producer 开启幂等特性，因此通过将<code>transactional.id</code>设置为非空从而开启事务特性的同时也需要通过将<code>enable.idempotence</code>设置为 true 来开启幂等特性。</p> 
+<p>通过请求附带的事务 ID，计算出 <code>__transaction_state</code> 的分区 ID，而其对应的Leader副本 Broker 即是负责当前事务的 Transaction Coordinator。</p> 
+<h4><a id="InitProducerIdRequest_218"></a>InitProducerIdRequest</h4> 
+<p>对应图中的 2 。</p> 
+<p>找到Transaction Coordinator后，具有幂等特性的 Producer 必须发起InitPidRequest请求以获取 PID。</p> 
+<p>注意：只要开启了幂等特性即必须执行该操作，而无须考虑该 Producer 是否开启了事务特性。</p> 
+<p><strong>如果事务特性被开启</strong><br> InitPidRequest会发送给Transaction Coordinator。如果Transaction Coordinator是第一次收到包含有该Transaction ID的 InitPidRequest 请求，它将会把该&lt;TransactionID, PID&gt;存入Transaction Log，如上图中步骤 2.1 所示。这样可保证该对应关系被持久化，从而保证即使Transaction Coordinator宕机该对应关系也不会丢失。</p> 
+<p>除了返回 PID 外，InitPidRequest还会执行如下任务：</p> 
+<p>增加该 PID 对应的 epoch。具有相同 PID 但 epoch 小于该 epoch 的其它 Producer（如果有）新开启的事务将被拒绝。</p> 
+<p>恢复（Commit 或 Abort）之前的 Producer 未完成的事务（如果有）。</p> 
+<p>注意：InitPidRequest的处理过程是同步阻塞的。一旦该调用正确返回，Producer 即可开始新的事务。</p> 
+<p>另外，如果事务特性未开启，InitPidRequest可发送至任意 Broker，并且会得到一个全新的唯一的 PID。该 Producer 将只能使用幂等特性以及单一 Session 内的事务特性，而不能使用跨 Session 的事务特性。</p> 
+<h4><a id="_241"></a>开启事务回话</h4> 
+<p>Kafka 从 0.11.0.0 版本开始，提供<code>beginTransaction()</code>方法用于开启一个事务。调用该方法后，Producer 本地会记录已经开启了事务（标记生产者状态机处于 IN_TRANSACTION 状态），但Transaction Coordinator只有在 Producer 发送第一条消息后才认为事务已经开启。</p> 
+<h4><a id="_247"></a>流的处理与转发阶段</h4> 
+<p><code>Consume-Transform-Produce</code>模式。这一阶段，包含了整个事务的数据处理过程，并且包含了多种请求。</p> 
+<ol><li> <p>AddPartitionsToTxnRequest</p> <p>一个 Producer 可能会给多个&lt;Topic, Partition&gt;发送数据，给一个新的&lt;Topic, Partition&gt;发送数据前，它需要先向Transaction Coordinator发送AddPartitionsToTxnRequest。</p> <p>Transaction Coordinator会将该&lt;Transaction, Topic, Partition&gt;存于Transaction Log内，并将其状态置为BEGIN，如上图中步骤 4.1 所示。有了该信息后，我们才可以在后续步骤中为每个Topic, Partition&gt;设置 COMMIT 或者 ABORT 标记（如上图中步骤 5.2 所示）。</p> <p>另外，如果该&lt;Topic, Partition&gt;为该事务中第一个&lt;Topic, Partition&gt;，Transaction Coordinator还会启动对该事务的计时（每个事务都有自己的超时时间）。</p> </li><li> <p>ProduceRequest</p> <p>Producer 通过一个或多个ProduceRequest发送一系列消息。除了应用数据外，该请求还包含了 PID，epoch，和Sequence Number。该过程如上图中步骤 4.2 所示。</p> </li><li> <p>AddOffsetsToTxnRequest</p> <p>为了提供事务性，Producer 新增了sendOffsetsToTransaction方法，该方法将多组消息的发送和消费放入同一批处理内。</p> <p>该方法先判断在当前事务中该方法是否已经被调用并传入了相同的 Group ID。若是，直接跳到下一步；若不是，则向Transaction Coordinator发送AddOffsetsToTxnRequests请求，Transaction Coordinator将对应的所有&lt;Topic, Partition&gt;存于Transaction Log中，并将其状态记为BEGIN，如上图中步骤 4.3 所示。该方法会阻塞直到收到响应。</p> </li><li> <p>TxnOffsetCommitRequest</p> <p>作为sendOffsetsToTransaction方法的一部分，在处理完AddOffsetsToTxnRequest后，Producer 也会发送TxnOffsetCommit请求给Consumer Coordinator从而将本事务包含的与读操作相关的各&lt;Topic, Partition&gt;的 Offset 持久化到内部的__consumer_offsets中，如上图步骤 4.4 所示。</p> <p>在此过程中，Consumer Coordinator会通过 PID 和对应的 epoch 来验证是否应该允许该 Producer 的该请求。</p> <p>这里需要注意：</p> <p>（1）写入__consumer_offsets的 Offset 信息在当前事务 Commit 前对外是不可见的。也即在当前事务被 Commit 前，可认为该 Offset 尚未 Commit，也即对应的消息尚未被完成处理。</p> <p>（2）Consumer Coordinator并不会立即更新缓存中相应&lt;Topic, Partition&gt;的 Offset，因为此时这些更新操作尚未被 COMMIT 或 ABORT。</p> </li></ol> 
+<h4><a id="_283"></a>提交或回滚事务</h4> 
+<ol><li> <p>EndTxnRequest*（对应 5.1）*</p> <p>当用户调用 KafkaProducer#commitTransaction 或者 abortTransaction 方法，生产者会往 Transaction Coordinator 发送附带提交或中止的事务结果的 EndTxnRequest 请求。</p> <p>当 Transaction Coordinator 在收到请求后，</p> 
+  <ol><li>把 PREPARE 消息写到 <code>__transaction_state</code>。（对应 5.1a）</li><li>通过 WriteTxnMarkersRequest 请求，向事务关联的所有 TopicPartitions 主副本写入 EndTransactionMarker 标记。（详细见下文）</li><li>最终，把封装了 COMMITTED 或 ABORTED 状态的 EndTransactionMarker 标记写到 <code>__transaction_state</code>。（对应 5.3a）</li></ol> </li><li> <p>WriteTxnMarkersRequest（对应 5.2a）<br> Transaction Coordinator 向关联的 TopicPartitions 主副本提交 WriteTxnMarkersRequest 请求，请求中将附带生产者 ID，以用于过滤掉交叉不相关联生产者的日志。<br> 在日后，当消费者读取某生产者的 Aborted 段日志时，可通过上文提及的 <code>.txnindex</code> 索引文件提前过滤，而读取 Committed 段的则无需格外处理。（具体参考上文的设计分解）<br> 另外，如果 <code>__consumer_offsets</code> 也作为事务的一部分，同样写入 EndTransactionMarker 标记并更新 Offsets 可见性。</p> </li></ol> 
+<h4><a id="_302"></a>超时事务中止</h4> 
+<p>默认情况，根据事务的起始时间戳，Transaction Coordinator 每 10s 轮询进行中的事务是否已超时，若发现超时事务，将推进 Epoch、中止当前事务（相当于 Transaction Coordinator 作为新的生产者）；而在未来，老的生产者将收到 ProducerFencedException 异常。</p> 
+<h3><a id="_310"></a>拒绝僵尸实例</h3> 
+<p>在分布式系统中，一个instance的宕机或失联，集群往往会自动启动一个新的实例来代替它的工作。此时若原实例恢复了，那么集群中就产生了两个具有相同职责的实例，此时前一个instance就被称为“僵尸实例（Zombie Instance）”。在Kafka中，两个相同的producer同时处理消息并生产出重复的消息（read-process-write模式），这样就严重违反了Exactly Once Processing的语义。这就是僵尸实例问题。</p> 
+<p>Kafka事务特性通过<code>transaction-id</code>属性来解决僵尸实例问题。所有具有相同<code>transaction-id</code>的Producer都会被分配相同的pid，同时每一个Producer还会被分配一个递增的epoch。Kafka收到事务提交请求时，如果检查当前事务提交者的epoch不是最新的，那么就会拒绝该Producer的请求。从而达成拒绝僵尸实例的目标。</p> 
+<h3><a id="_318"></a>与分布式事务机制对比</h3> 
+<p><strong>两阶段提交原理</strong></p> 
+<p>二阶段提交的算法思路可以概括为：协调者询问参与者是否准备好了提交，并根据所有参与者的反馈情况决定向所有参与者发送commit或者rollback指令（协调者向所有参与者发送相同的指令）。</p> 
+<p>所谓的两个阶段是指</p> 
+<ul><li>准备阶段 又称投票阶段。在这一阶段，协调者询问所有参与者是否准备好提交，参与者如果已经准备好提交则回复Prepared，否则回复Non-Prepared。</li><li>提交阶段 又称执行阶段。协调者如果在上一阶段收到所有参与者回复的Prepared，则在此阶段向所有参与者发送commit指令，所有参与者立即执行commit操作；否则协调者向所有参与者发送rollback指令，参与者立即执行rollback操作。</li></ul> 
+<p>两阶段提交中，协调者和参与方的交互过程如下图所示：</p> 
+<p><img src="https://images2.imgbox.com/47/71/0eUVO7wl_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>Kafka两阶段提交对比</strong></p> 
+<p>Kafka的事务机制与上述所介绍的两阶段提交机制看似相似，都分PREPARE阶段和最终COMMIT阶段，但又有很大不同。</p> 
+<ul><li>Kafka事务机制中，PREPARE时即要指明是PREPARE_COMMIT还是PREPARE_ABORT，并且 只须在Transaction Log中标记即可 ，无须其它组件参与。而两阶段提交的PREPARE需要发送给所有的分布式事务参与方，并且事务参与方需要尽可能准备好，并根据准备情况返回Prepared或Non-Prepared状态给事务管理器。</li><li>Kafka事务中，一但发起PREPARE_COMMIT或PREPARE_ABORT，则确定该事务最终的结果应该是被COMMIT或ABORT 。而分布式事务中，PREPARE后由各事务参与方返回状态，只有所有参与方均返回Prepared状态才会真正执行COMMIT，否则执行ROLLBACK</li><li>Kafka事务机制中，某几个Partition在COMMIT或ABORT过程中变为不可用，只影响该Partition不影响其它Partition。两阶段提交中，若唯一收到COMMIT命令参与者Crash，其它事务参与方无法判断事务状态从而使得整个事务阻塞</li><li>Kafka事务机制引入事务超时机制，有效避免了挂起的事务影响其它事务的问题</li><li>Kafka事务机制中存在多个Transaction Coordinator实例，而分布式事务中只有一个事务管理器</li></ul> 
+<h3><a id="_346"></a>事务操作</h3> 
+<p>Kafka事务操作常用的API如下：</p> 
+<pre><code class="prism language-java"><span class="token comment">// 初始化事务，需要注意确保transation.id属性被分配 </span>
+<span class="token keyword">void</span> <span class="token function">initTransactions</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">// 开启事务</span>
+<span class="token keyword">void</span> <span class="token function">beginTransaction</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">ProducerFencedException</span><span class="token punctuation">;</span>
+<span class="token comment">// 为Consumer提供的在事务内Commit Offsets的操作 </span>
+<span class="token keyword">void</span> <span class="token function">sendOffsetsToTransaction</span><span class="token punctuation">(</span><span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">TopicPartition</span><span class="token punctuation">,</span> <span class="token class-name">OffsetAndMetadata</span><span class="token punctuation">&gt;</span></span> offsets<span class="token punctuation">,</span> <span class="token class-name">String</span> consumerGroupId<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">ProducerFencedException</span><span class="token punctuation">;</span> 
+<span class="token comment">// 提交事务 </span>
+<span class="token keyword">void</span> <span class="token function">commitTransaction</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">ProducerFencedException</span><span class="token punctuation">;</span>
+<span class="token comment">// 放弃事务，类似于回滚事务的操作</span>
+<span class="token keyword">void</span> <span class="token function">abortTransaction</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">ProducerFencedException</span><span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>案例1：</strong></p> 
+<p>单个Producer，使用事务保证消息的仅一次发送：</p> 
+<pre><code class="prism language-java"><span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>kafka<span class="token punctuation">.</span>clients<span class="token punctuation">.</span>producer<span class="token punctuation">.</span></span><span class="token class-name">KafkaProducer</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>kafka<span class="token punctuation">.</span>clients<span class="token punctuation">.</span>producer<span class="token punctuation">.</span></span><span class="token class-name">ProducerConfig</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>kafka<span class="token punctuation">.</span>clients<span class="token punctuation">.</span>producer<span class="token punctuation">.</span></span><span class="token class-name">ProducerRecord</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>kafka<span class="token punctuation">.</span>common<span class="token punctuation">.</span>serialization<span class="token punctuation">.</span></span><span class="token class-name">StringSerializer</span></span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">HashMap</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">Map</span></span><span class="token punctuation">;</span>
+
+
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">MyTransactionalProducer</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> configs <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ProducerConfig</span><span class="token punctuation">.</span><span class="token constant">BOOTSTRAP_SERVERS_CONFIG</span><span class="token punctuation">,</span> <span class="token string">"node1:9092"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ProducerConfig</span><span class="token punctuation">.</span><span class="token constant">KEY_SERIALIZER_CLASS_CONFIG</span><span class="token punctuation">,</span> <span class="token class-name">StringSerializer</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ProducerConfig</span><span class="token punctuation">.</span><span class="token constant">VALUE_SERIALIZER_CLASS_CONFIG</span><span class="token punctuation">,</span> <span class="token class-name">StringSerializer</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 提供客户端ID</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ProducerConfig</span><span class="token punctuation">.</span><span class="token constant">CLIENT_ID_CONFIG</span><span class="token punctuation">,</span> <span class="token string">"tx_producer"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 事务ID</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ProducerConfig</span><span class="token punctuation">.</span><span class="token constant">TRANSACTIONAL_ID_CONFIG</span><span class="token punctuation">,</span> <span class="token string">"my_tx_id"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 要求ISR都确认</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ProducerConfig</span><span class="token punctuation">.</span><span class="token constant">ACKS_CONFIG</span><span class="token punctuation">,</span> <span class="token string">"all"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">KafkaProducer</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> producer <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">KafkaProducer</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>configs<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 初始化事务 </span>
+        producer<span class="token punctuation">.</span><span class="token function">initTransactions</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 开启事务 </span>
+        producer<span class="token punctuation">.</span><span class="token function">beginTransaction</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// producer.send(new ProducerRecord&lt;&gt;("tp_tx_01", "tx_msg_01"));</span>
+            producer<span class="token punctuation">.</span><span class="token function">send</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">ProducerRecord</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token string">"tp_tx_01"</span><span class="token punctuation">,</span> <span class="token string">"tx_msg_02"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">// int i = 1 / 0;</span>
+            <span class="token comment">// 提交事务</span>
+            producer<span class="token punctuation">.</span><span class="token function">commitTransaction</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> ex<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 中止事务</span>
+            producer<span class="token punctuation">.</span><span class="token function">abortTransaction</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">finally</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 关闭生产者</span>
+            producer<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p><strong>案例2：</strong></p> 
+<p>在 消费-转换-生产 模式，使用事务保证仅一次发送：</p> 
+<pre><code class="prism language-java"><span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>kafka<span class="token punctuation">.</span>clients<span class="token punctuation">.</span>consumer<span class="token punctuation">.</span></span><span class="token operator">*</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>kafka<span class="token punctuation">.</span>clients<span class="token punctuation">.</span>producer<span class="token punctuation">.</span></span><span class="token class-name">KafkaProducer</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>kafka<span class="token punctuation">.</span>clients<span class="token punctuation">.</span>producer<span class="token punctuation">.</span></span><span class="token class-name">ProducerConfig</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>kafka<span class="token punctuation">.</span>clients<span class="token punctuation">.</span>producer<span class="token punctuation">.</span></span><span class="token class-name">ProducerRecord</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>kafka<span class="token punctuation">.</span>common<span class="token punctuation">.</span></span><span class="token class-name">TopicPartition</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>kafka<span class="token punctuation">.</span>common<span class="token punctuation">.</span>serialization<span class="token punctuation">.</span></span><span class="token class-name">StringDeserializer</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>kafka<span class="token punctuation">.</span>common<span class="token punctuation">.</span>serialization<span class="token punctuation">.</span></span><span class="token class-name">StringSerializer</span></span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">Collections</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">HashMap</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">Map</span></span><span class="token punctuation">;</span>
+
+
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">MyTransactional</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token class-name">KafkaProducer</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> <span class="token function">getProducer</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> configs <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ProducerConfig</span><span class="token punctuation">.</span><span class="token constant">BOOTSTRAP_SERVERS_CONFIG</span><span class="token punctuation">,</span> <span class="token string">"node1:9092"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ProducerConfig</span><span class="token punctuation">.</span><span class="token constant">KEY_SERIALIZER_CLASS_CONFIG</span><span class="token punctuation">,</span> <span class="token class-name">StringSerializer</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ProducerConfig</span><span class="token punctuation">.</span><span class="token constant">VALUE_SERIALIZER_CLASS_CONFIG</span><span class="token punctuation">,</span> <span class="token class-name">StringSerializer</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 设置client.id</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ProducerConfig</span><span class="token punctuation">.</span><span class="token constant">CLIENT_ID_CONFIG</span><span class="token punctuation">,</span> <span class="token string">"tx_producer_01"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 设置事务id</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ProducerConfig</span><span class="token punctuation">.</span><span class="token constant">TRANSACTIONAL_ID_CONFIG</span><span class="token punctuation">,</span> <span class="token string">"tx_id_02"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 需要所有的ISR副本确认</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ProducerConfig</span><span class="token punctuation">.</span><span class="token constant">ACKS_CONFIG</span><span class="token punctuation">,</span> <span class="token string">"all"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 启用幂等性</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ProducerConfig</span><span class="token punctuation">.</span><span class="token constant">ENABLE_IDEMPOTENCE_CONFIG</span><span class="token punctuation">,</span> <span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">KafkaProducer</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> producer <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">KafkaProducer</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>configs<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">return</span> producer<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token class-name">KafkaConsumer</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> <span class="token function">getConsumer</span><span class="token punctuation">(</span><span class="token class-name">String</span> consumerGroupId<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> configs <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ConsumerConfig</span><span class="token punctuation">.</span><span class="token constant">BOOTSTRAP_SERVERS_CONFIG</span><span class="token punctuation">,</span> <span class="token string">"node1:9092"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ConsumerConfig</span><span class="token punctuation">.</span><span class="token constant">KEY_DESERIALIZER_CLASS_CONFIG</span><span class="token punctuation">,</span> <span class="token class-name">StringDeserializer</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ConsumerConfig</span><span class="token punctuation">.</span><span class="token constant">VALUE_DESERIALIZER_CLASS_CONFIG</span><span class="token punctuation">,</span> <span class="token class-name">StringDeserializer</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 设置消费组ID</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ConsumerConfig</span><span class="token punctuation">.</span><span class="token constant">GROUP_ID_CONFIG</span><span class="token punctuation">,</span> <span class="token string">"consumer_grp_02"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 不启用消费者偏移量的自动确认，也不要手动确认</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ConsumerConfig</span><span class="token punctuation">.</span><span class="token constant">ENABLE_AUTO_COMMIT_CONFIG</span><span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ConsumerConfig</span><span class="token punctuation">.</span><span class="token constant">CLIENT_ID_CONFIG</span><span class="token punctuation">,</span> <span class="token string">"consumer_client_02"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        configs<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">ConsumerConfig</span><span class="token punctuation">.</span><span class="token constant">AUTO_OFFSET_RESET_CONFIG</span><span class="token punctuation">,</span> <span class="token string">"earliest"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 只读取已提交的消息</span>
+        <span class="token comment">// configs.put(ConsumerConfig.ISOLATION_LEVEL_CONFIG, "read_committed");</span>
+
+        <span class="token class-name">KafkaConsumer</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> consumer <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">KafkaConsumer</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>configs<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> consumer<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">String</span> consumerGroupId <span class="token operator">=</span> <span class="token string">"consumer_grp_id_101"</span><span class="token punctuation">;</span>
+        <span class="token class-name">KafkaProducer</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> producer <span class="token operator">=</span> <span class="token function">getProducer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">KafkaConsumer</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> consumer <span class="token operator">=</span> <span class="token function">getConsumer</span><span class="token punctuation">(</span>consumerGroupId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 事务的初始化</span>
+        producer<span class="token punctuation">.</span><span class="token function">initTransactions</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 订阅主题</span>
+        consumer<span class="token punctuation">.</span><span class="token function">subscribe</span><span class="token punctuation">(</span><span class="token class-name">Collections</span><span class="token punctuation">.</span><span class="token function">singleton</span><span class="token punctuation">(</span><span class="token string">"tp_tx_01"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">final</span> <span class="token class-name">ConsumerRecords</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> records <span class="token operator">=</span> consumer<span class="token punctuation">.</span><span class="token function">poll</span><span class="token punctuation">(</span><span class="token number">1_000</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 开启事务</span>
+        producer<span class="token punctuation">.</span><span class="token function">beginTransaction</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">TopicPartition</span><span class="token punctuation">,</span> <span class="token class-name">OffsetAndMetadata</span><span class="token punctuation">&gt;</span></span> offsets <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">ConsumerRecord</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> record <span class="token operator">:</span> records<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>record<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                producer<span class="token punctuation">.</span><span class="token function">send</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">ProducerRecord</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token string">"tp_tx_out_01"</span><span class="token punctuation">,</span> record<span class="token punctuation">.</span><span class="token function">key</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> record<span class="token punctuation">.</span><span class="token function">value</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                offsets<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">TopicPartition</span><span class="token punctuation">(</span>record<span class="token punctuation">.</span><span class="token function">topic</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> record<span class="token punctuation">.</span><span class="token function">partition</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token class-name">OffsetAndMetadata</span><span class="token punctuation">(</span>record<span class="token punctuation">.</span><span class="token function">offset</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">// 偏 移量表示下一条要消费的消息</span>
+            <span class="token punctuation">}</span>
+            <span class="token comment">// 将该消息的偏移量提交作为事务的一部分，随事务提交和回滚（不提交消费偏移 量）</span>
+            producer<span class="token punctuation">.</span><span class="token function">sendOffsetsToTransaction</span><span class="token punctuation">(</span>offsets<span class="token punctuation">,</span> consumerGroupId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token comment">// 提交事务</span>
+            producer<span class="token punctuation">.</span><span class="token function">commitTransaction</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            e<span class="token punctuation">.</span><span class="token function">printStackTrace</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">// 回滚事务</span>
+            producer<span class="token punctuation">.</span><span class="token function">abortTransaction</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">finally</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 关闭资源 </span>
+            producer<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            consumer<span class="token punctuation">.</span><span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="_512"></a>相关配置</h2> 
+<p><strong>1、Broker configs</strong></p> 
+<table><thead><tr><th>配置项</th><th>说明</th></tr></thead><tbody><tr><td>transactional.id.timeout.ms</td><td>在ms中，事务协调器在生产者TransactionalId提前过期之前等待的最长时间，并且没有从该生产者TransactionalId接收到任何事务状态更新。默认是604800000(7天)。这允许每周一次的生产者作业维护它们的id</td></tr><tr><td>max.transaction.timeout.ms</td><td>事务允许的最大超时。如果客户端请求的事务时间超过此时间，broke将在InitPidRequest中返回InvalidTransactionTimeout错误。这可以<br>防止客户机超时过大，从而导致用户无法从事务中包含的主题读取内容。默认值为900000(15分钟)。这是消息事务需要发送的时间的保守上限。</td></tr><tr><td>transaction.state.log.replication.factor</td><td>事务状态topic的副本数量。默认值:3</td></tr><tr><td>transaction.state.log.num.partitions</td><td>事务状态主题的分区数。默认值:50</td></tr><tr><td>transaction.state.log.min.isr</td><td>事务状态主题的每个分区ISR最小数量。默认值:2</td></tr><tr><td>transaction.state.log.segment.bytes</td><td>事务状态主题的segment大小。默认值:104857600字节</td></tr></tbody></table> 
+<p><strong>2、Producer configs</strong></p> 
+<table><thead><tr><th>配置项</th><th>说明</th></tr></thead><tbody><tr><td>enable.idempotence</td><td>开启幂等</td></tr><tr><td>transaction.timeout.ms</td><td>事务超时时间<br>事务协调器在主动中止正在进行的事务之前等待生产者更新事务状态的最长时间。这个配置值将与InitPidRequest一起发送到事务<br>协调器。如果该值大于max.transaction.timeout：在broke中设置ms时，请求将失败，并出现InvalidTransactionTimeout错误。默认是60000。这使得交易不会阻塞下游消费超过一分钟，这在实时应用程序中通常是允许的。</td></tr><tr><td>transactional.id</td><td>用于事务性交付的TransactionalId。这支持跨多个生产者会话的可靠性语义，因为它允许客户端确保使用相同TransactionalId的事务在启动任何新事务之前已经完成。如果没有提供TransactionalId，则生产者仅限于幂等交付。</td></tr></tbody></table> 
+<p><strong>3、Consumer configs</strong></p> 
+<table><thead><tr><th>配置项</th><th>说明</th></tr></thead><tbody><tr><td>isolation.level</td><td>隔离级别。<br>- read_uncommitted:以偏移顺序使用已提交和未提交的消息。<br>- read_committed:仅以偏移量顺序使用非事务性消息或已提交事务性消息。为了维护偏移排序，这个设置意味着我们必须在使用者中缓冲消息，直到看到给定事务中的所有消息。</td></tr></tbody></table> 
+<h2><a id="_546"></a>总结</h2> 
+<ul><li>KAFKA的事务机制，在底层依赖于幂等生产者，幂等生产者是 kafka 事务的必要不充分条件；</li><li>开启 kafka事务时，kafka 会自动开启幂等生产者。</li><li>Transaction Marker与PID提供了识别消息是否应该被读取的能力，从而实现了事务的隔离性。</li><li>通过事务机制，KAFKA 实现了对多个 topic 的多个 partition 的原子性的写入（Atomic multi-partition writes）；</li><li>KAFKA的事务机制，在底层依赖于幂等生产者，幂等生产者是 kafka 事务的必要不充分条件：用户可以根据需要，配置使用幂等生产者但不开启事务；也可以根据需要开启 kafka事务，此时kafka 会使用幂等生产者；</li><li>为支持事务机制，KAFKA 引入了两个新的组件：<strong>Transaction Coordinator 和 Transaction Log</strong>，其中 transaction coordinator 是运行在每个 kafka broker 上的一个模块，是 kafka broker 进程承载的新功能之一（不是一个独立的新的进程）；而 transaction log 是 kakafa 的一个内部 topic；</li><li>为支持事务机制，kafka 将日志文件格式进行了扩展：日志中除了普通的消息，还有一种消息专门用来标志一个事务的结束，它就是控制消息 controlBatch,它有两种类型：commit和abort，分别用来表征事务已经成功提交或已经被成功终止。</li><li>开启了事务的生产者，生产的消息最终还是正常写到目标 topic 中，但同时也会通过 transaction coordinator 使用两阶段提交协议，将事务状态标记 transaction marker，也就是控制消息 controlBatch，写到目标 topic 中，控制消息共有两种类型 commit 和 abort，分别用来表征事务已经成功提交或已经被成功终止；</li><li>开启了事务的消费者，如果配置读隔离级别为 read-committed, 在内部会使用存储在目标 topic-partition 中的事务控制消息，来过滤掉没有提交的消息，包括回滚的消息和尚未提交的消息,从而确保只读到已提交的事务的 message；</li><li>开启了事务的消费者，过滤消息时，KAFKA consumer 不需要跟 transactional coordinator 进行 rpc 交互，因为 topic 中存储的消息，包括正常的数据消息和控制消息，包含了足够的元数据信息来支持消息过滤；</li><li>当然 kakfa 的 producer 和 consumer 是解耦的，你也可以使用非 transactional consumer 来消费 transactional producer 生产的消息，此时目标 topic-partition 中的所有消息都会被返回，不会进行过滤,此时也就丢失了事务 ACID 的支持；</li></ul> 
+<p>参考：https://www.cnblogs.com/hongdada/p/16945086.html</p> 
+<p>https://blog.csdn.net/oTengYue/article/details/104727512</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7daa1827af07567d5077de47324e0f7b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">windows的python怎么降版本,anaconda的python降版本</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0c5bf756483d5e0029bfd468e1a56c41/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">解决Linux Shell脚本错误：“/bin/bash^M: bad interpreter: No such file or directory”</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Transformer学习笔记 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/bdcce0e5117fe8e3185384202146fe44/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Transformer学习笔记">
+  <meta property="og:description" content="使用 Transformer 解码器（Transformer decoder）生成 tokens 需要以下两个步骤。这两个步骤分别是处理提示语步骤和多个自回归步骤。两个步骤在硬件利用上有着截然不同的特征。 程序员 - LLM 推理优化探微 (4) ：模型性能瓶颈分类及优化策略 - IDP技术干货 - SegmentFault 思否
+1.LLM 做出回答的两个阶段 文本生成的两个阶段包括:启动阶段和生成阶段。
+Transformer 解码器的模型轮廓图:
+解码器本身并不输出 tokens，而是输出 logits（数量与词汇表的大小相同）（译者注：logits 是一个数值向量，其维度等于词汇表的大小，表示每个 token 的可能性分数。）在生成文本时，通过 logits 提取 tokens 的过程是通过一种被称为搜索策略（search strategy）、生成策略（generation strategy）或解码策略（decoding strategy）的启发式方法完成的。
+基于 Transformer 的解码器从输入文本序列（通常称为提示语（prompt））生成文本（通常也被称为对输入文本的扩展或补充）基本上包括以下步骤：
+将模型权重加载到GPU在CPU上对提示词(prompt)进行分词(tokenizing)，并将token张量传输到GPU。 分词步骤示意图:
+将分词完成后的提示语输入神经网络，生成扩展的第一个token 这一阶段通常被称为启动阶段（initiation phase）。 在下一篇文章中，我们将看到它也经常被称为预填充阶段（pre-fill phase）。
+将生成token附加到输入的token序列中，并将其用作生成扩展文本中第二个token的新输入。然后，重复此过程，直到生成了停止序列或达到所配置的最大序列长度。 这个由多个步骤组成的阶段通常被称为生成阶段（generation phase）、解码阶段（decoding phase）、自回归阶段（auto-regressive phase），甚至是增量阶段（incremental phase）。
+将完成的 tokens 从 GPU 获取到 CPU ，并对它们进行 detokenize（译者注：”detokenize“指的是将模型生成的 tokens 序列转换回原始文本或句子的过程。可能包括去除 tokens 之间的空格、添加标点符号、还原缩写等操作，以还原生成文本的自然语言形式。），以获取生成的文本（图5）。 论在硬件上如何进行计算，两个阶段之间确实没有区别，因此两个阶段在这方面都没有什么特别之处。这种设置涉及大量冗余计算，因此在许多情况下效率低下。缓解这种情况的一种重要方式是缓存我们不想重新计算的内容。这种优化被称为 KV 缓存，并引入了我一直在暗示的这两个阶段之间的关键差异。
+单头注意力 :
+假设只处理长度为 t 的单个输入序列,则会有 t 个查询向量、t 个键向量和 t 个值向量。对于每个查询向量，都会生成一个输出向量，输出向量是输入序列中所有值向量的线性组合，每个值向量在线性组合中的权重由对应的注意力分数决定。换句话说，对于每个查询向量，生成的输出向量是通过对输入序列中的值向量进行加权求和而得到的，其中权重由注意力分数确定。对于给定的查询向量，都会与所有的键向量进行点积运算。点积运算的结果表示了查询向量与每个键向量之间的关联度，即它们的相似性。这些点积的结果经过适当的处理后，成为了注意力分数，用于权衡对应值向量在输出向量中的贡献。这样，我们就能为序列中的每个 token 生成一个包含其他 token 信息的向量表征，也就是说，我们为每个 token 创建了一个上下文表征（contextual representation）。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-17T20:34:10+08:00">
+    <meta property="article:modified_time" content="2024-07-17T20:34:10+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Transformer学习笔记</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <ol><li>使用 Transformer 解码器（Transformer decoder）生成 tokens 需要以下两个步骤。这两个步骤分别是处理提示语步骤和多个自回归步骤。两个步骤在硬件利用上有着截然不同的特征。</li></ol> 
+<p><a href="https://segmentfault.com/a/1190000044790264" rel="nofollow">程序员 - LLM 推理优化探微 (4) ：模型性能瓶颈分类及优化策略 - IDP技术干货 - SegmentFault 思否</a></p> 
+<h5><a id="1LLM__4"></a>1.LLM 做出回答的两个阶段</h5> 
+<p>文本生成的两个阶段包括:启动阶段和生成阶段。</p> 
+<p>Transformer 解码器的模型轮廓图:<br> <img src="https://images2.imgbox.com/00/bb/LcrTZY5p_o.png" alt="在这里插入图片描述"></p> 
+<p>解码器本身并不输出 tokens，而是输出 logits（数量与词汇表的大小相同）（译者注：logits 是一个数值向量，其维度等于词汇表的大小，表示每个 token 的可能性分数。）在生成文本时，通过 logits 提取 tokens 的过程是通过一种被称为搜索策略（search strategy）、生成策略（generation strategy）或解码策略（decoding strategy）的启发式方法完成的。</p> 
+<p>基于 Transformer 的解码器从输入文本序列（通常称为提示语（prompt））生成文本（通常也被称为对输入文本的扩展或补充）基本上包括以下步骤：</p> 
+<ol><li>将模型权重加载到GPU</li><li>在CPU上对提示词(prompt)进行分词(tokenizing)，并将token张量传输到GPU。</li></ol> 
+<p>分词步骤示意图:</p> 
+<p><img src="https://images2.imgbox.com/99/ae/uXlvrKTZ_o.png" alt="在这里插入图片描述"></p> 
+<ol start="3"><li>将分词完成后的提示语输入神经网络，生成扩展的第一个token</li></ol> 
+<p><strong>这一阶段通常被称为启动阶段（initiation phase）。</strong> 在下一篇文章中，我们将看到它也经常被称为预填充阶段（pre-fill phase）。</p> 
+<ol start="4"><li>将生成token附加到输入的token序列中，并将其用作生成扩展文本中第二个token的新输入。然后，重复此过程，直到生成了停止序列或达到所配置的最大序列长度。</li></ol> 
+<p><strong>这个由多个步骤组成的阶段通常被称为生成阶段（generation phase）、解码阶段（decoding phase）、自回归阶段（auto-regressive phase），甚至是增量阶段（incremental phase）。</strong></p> 
+<ol start="4"><li>将完成的 tokens 从 GPU 获取到 CPU ，并对它们进行 detokenize（译者注：”detokenize“指的是将模型生成的 tokens 序列转换回原始文本或句子的过程。可能包括去除 tokens 之间的空格、添加标点符号、还原缩写等操作，以还原生成文本的自然语言形式。），以获取生成的文本（图5）。</li></ol> 
+<p>论在硬件上如何进行计算，两个阶段之间确实没有区别，因此两个阶段在这方面都没有什么特别之处。这种设置涉及大量冗余计算，因此在许多情况下效率低下。缓解这种情况的一种重要方式是缓存我们不想重新计算的内容。这种优化被称为 KV 缓存，并引入了我一直在暗示的这两个阶段之间的关键差异。</p> 
+<p><strong>单头注意力</strong> :</p> 
+<p>假设只处理长度为 t 的单个输入序列,则会有 t 个查询向量、t 个键向量和 t 个值向量。对于每个查询向量，都会生成一个输出向量，输出向量是输入序列中所有值向量的线性组合，每个值向量在线性组合中的权重由对应的注意力分数决定。换句话说，对于每个查询向量，生成的输出向量是通过对输入序列中的值向量进行加权求和而得到的，其中权重由注意力分数确定。对于给定的查询向量，都会与所有的键向量进行点积运算。点积运算的结果表示了查询向量与每个键向量之间的关联度，即它们的<strong>相似性</strong>。这些点积的结果经过适当的处理后，成为了<strong>注意力分数</strong>，用于权衡对应值向量在输出向量中的贡献。这样，我们就能为序列中的每个 token 生成一个包含其他 token 信息的向量表征，也就是说，我们为每个 token 创建了一个上下文表征（contextual representation）。</p> 
+<p>然而，在自回归解码（auto-regressive decoding）的情境中，我们不能使用所有可能的值向量来构建给定查询向量的输出表征。实际上，在计算与特定 token 相关的查询向量的输出时，我们不能使用序列中后面出现的 token 的值向量。<strong>这种限制是通过一种称为 masking 的技术实现的，实质上是将被禁止的值向量（即被禁止的 token）的注意力分数设置为零。</strong></p> 
+<h5><a id="2_masking__41"></a>2. masking 技术的使用导致生成阶段出现冗余计算</h5> 
+<p>由于 masking 技术的使用，在生成当前 tokens 的输出表征时，仅使用之前已生成 tokens 的信息，而不使用之后生成的 tokens 的信息。<strong>因为之前的 tokens 在各次迭代中都是相同的，所以对于该特定 tokens 的输出表征在随后的所有迭代中也都是相同的，这就意味着存在冗余计算。</strong></p> 
+<p>在自回归解码步骤的新一次迭代中，使用了“What color is the sky? The sky is ”作为输入序列，在之前的步骤中唯一尚未计算的是输入序列中的最后一个token “is”的表征。</p> 
+<p>需要的量有:</p> 
+<ol><li>“is”的查询向量。</li><li>用于计算注意力分数的“What”，“ color”，“ is”，“ the”，“ sky”，“?”，“The ”，“sky ”和“is ” 的键向量。</li><li>用于计算输出的“What”，“ color”，“ is”，“ the”，“ sky”，“?”，“The ”，“sky ”和“is ” 的值向量。</li></ol> 
+<p>至于键（key）和值（value）向量，除了 ”is “之外，它们已经在之前的迭代中为所有 tokens 计算过了。因此，我们可以保存（即缓存）并重复使用先前迭代中的键和值向量（译者注：原文是“query vectors”，可能是作者笔误，此处译者修改为“值向量”）。这种优化简单地被称为 KV 缓存。为“is ”计算输出表征将会变得非常简单：</p> 
+<ol><li>计算“is ”的查询向量、键向量和值向量。</li><li>从缓存中获取“What”，“ color”，“ is”，“ the”，“ sky”，“?”，“The ” 和 “sky ”的键和值向量，并将它们与刚刚为“is ”计算的键向量和值向量连接起来。</li><li>使用“is ”查询向量和所有键向量计算注意力分数。</li><li>使用注意力分数和所有值向量计算“is ”的输出向量。</li></ol> 
+<p><strong>当我们使用 KV 缓存时，模型的实际输入是最后生成的 tokens （而非整个序列）和 KV 缓存。</strong></p> 
+<p><strong>KV cacge</strong>可以节省多少运算量?假设有一批输入序列，数量为b个，每个序列由N个生成的tokens和t个输入的tokens(总长度为 N+t)组成。对于这些序列的前 t+N-1 个 tokens，计算 KV 值是冗余的，也就是说，在生成步骤的第 N 步，我们可以为每个序列节省 t+N-1 次 KV 计算。如果不重新计算，那么在前 N 个生成步骤中，每个序列总共可以节省 N.t+N.(N-1)/2 次 KV 计算。</p> 
+<p>通过 KV 缓存节省的运算数量与生成的 tokens 数量的平方成正比。（换句话说，如果生成的 tokens 数量翻倍，通过KV缓存所节省的运算数量将变为原来的四倍。）</p> 
+<p>KV 缓存是一种妥协，因此并不是免费的午餐：<strong>其实是使用更多的内存消耗和数据传输来换取更少的计算量。</strong></p> 
+<p>与启动阶段所需的输入相比，强制执行这一缓存策略改变了注意力层在生成阶段的输入。在启动阶段，注意力层会一次性处理整个输入序列，而启用 KV 缓存的生成阶段只需要最后生成的 token 和 KV 缓存作为输入。这种启动阶段和生成阶段之间的新差异不仅仅是概念上的。例如，<strong>与在两个阶段使用相同的 GPU 内核相比，在每个阶段使用特定的 GPU 内核能带来更好的性能。</strong></p> 
+<h5><a id="3_KV_cache_70"></a>3. 有效控制KV cache的内存占用，优化推理速度</h5> 
+<p>多头注意力（MHA）模型的 KV 缓存确实会<strong>消耗大量 GPU 内存</strong>，并且很容易增长到比模型权重还大的规模， KV 缓存大小的控制对于优化大模型的推理至关重要。</p> 
+<p><strong>KV 缓存阻碍了我们处理或生成超长序列（即长上下文窗口带来的挑战或障碍）和/或处理大 batches ，因此无法最大限度地提高硬件效率。</strong></p> 
+<p>从这个角度来看，最大化模型处理能力意味着为 KV 缓存留出尽可能多的内存空间，可以通过以下方式实现：</p> 
+<ul><li>减少模型权重的内存占用(权重量化)</li><li>较少KV cache 的内存占用，滑动窗口，缓存丢弃，</li><li>将模型分片到多个GPU上，以牺牲网络通信为代价(模型并行)或私用其他类型的存储，如CPU内存或者磁盘，从而将多个设备的内存池化。</li></ul> 
+<p>PagedAttention 没有涉及到的另一个可能的优化措施是跨请求重用键值缓存（reusing the key-value cache across requests）。当提示词（prompts）共享某一类共同的前缀时，这种优化就会适用，这种情况通常出现在聊天界面和Agent等多轮用例或使用提示词模板时（图 4）。</p> 
+<p><img src="https://images2.imgbox.com/99/ec/u1RfIzo3_o.png" alt="在这里插入图片描述"></p> 
+<p>RadixAttention 算法在完成内容生成请求后，并非直接丢弃 KV 缓存，而是将其保留在 GPU 内存中，并向专用数据结构（radix tree）添加一个新条目，将 tokens 序列映射到其 KV 缓存张量。当新请求到达时，调度程序会使用 radix tree 进行前缀匹配。如果有缓存命中，调度程序就会重新使用缓存的 KV 张量来满足请求。</p> 
+<h5><a id="4__89"></a>4. 模型性能瓶颈分类及优化策略</h5> 
+<p><strong>模型性能瓶颈的4种主要类型:</strong></p> 
+<ul><li>计算能力受限情况。在该情况下，大部分时间（即延迟）都耗费在执行计算操作上。</li><li>内存带宽受限情况。在这种情况下，大部分时间都用于在嵌入于处理器芯片上的内存和处理器之间移动数据。</li><li>通信受限情况。仅适用于计算和数据分布在多个芯片上的情况。大部分任务处理时间被芯片间的网络数据传输占用。</li><li>开销受限情况。是软件导致的瓶颈。</li></ul> 
+<p>通常情况下，不可能所有内核都运行在同一种机制下。因此，<strong>关键在于识别出大部分时间都耗费在哪一种机制上。</strong> 然后，我们应该<strong>优先优化这一主要的性能瓶颈，再找出下一个影响最大的性能瓶颈，如此循环往复。</strong></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a8028086e7687efc828cd2b69c586d17/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">河南萌新联赛2024第（一）场：河南农业大学</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f0ba63f36452892336e593e4a2b1528f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">微信小程序图片保存功能和API讲解以及项目实战介绍</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

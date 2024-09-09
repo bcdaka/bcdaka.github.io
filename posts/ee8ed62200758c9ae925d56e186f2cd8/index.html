@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Oracle物化视图（Materialized View） - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/ee8ed62200758c9ae925d56e186f2cd8/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Oracle物化视图（Materialized View）">
+  <meta property="og:description" content="与Oracle普通视图仅存储查询定义不同，物化视图（Materialized View）会将查询结果&#34;物化&#34;并保存下来，这意味着物化视图会消耗存储空间，物化的数据需要一定的刷新策略才能和基表同步，在使用和管理上比普通视图要略复杂。
+目录
+一、物化视图简介
+1.1 物化视图应用场景
+1.2 物化视图的类型
+二、物化视图创建
+2.1 通过语句创建物化视图
+2.2 通过注册创建物化视图
+三、物化视图刷新
+3.1 刷新类型
+3.1.1 全量刷新（refresh complete）
+3.1.2 增量刷新（refresh fast）
+3.2 刷新模式
+3.2.1 手动刷新（on demand）
+3.2.1.1 使用dbms_mview.refresh刷新指定物化视图
+3.2.1.2 使用dbms_mview.refresh_all_mviews刷新所有物化视图
+3.2.1.2 使用dbms_mview.refresh_dependent刷新某基表上的所有物化视图
+3.2.2 事务级自动刷新（on commit）
+3.2.3 语句级自动刷新（on statement）
+3.2.4 定期刷新（start with … next）
+四、查询重写
+一、物化视图简介 物化视图主要用在OLAP环境，可以提前运行大量运算并保存结果，为后续查询加速。
+1.1 物化视图应用场景 为什么要使用物化视图？假设一个场景，用户每天都需要分析销售数据，而每天产生的数据量都非常庞大，在原始数据上直接运行查询SQL（例如进行sum，avg的操作），速度会非常缓慢。传统的查询优化手段，例如索引、分区、并行执行等，在这种场景下都无法将速度提升到一个可接受的范围。
+对于这种问题，传统的解决方案是建立一张中间表，提前运行查询SQL并将结果保存下来，当用户查询的时候直接查询结果表。此解决方案虽然可以大幅提升相应时间，但也存在两个问题：
+对于应用，原先访问的是基表，现在需要访问结果表，意味着应用代码需要修改。结果表需要手动的刷新，如果需要频繁的全量刷新很麻烦。 而利用Oracle物化视图则可以完美解决上述问题：
+物化视图也是预先计算出结果并保存，利用&#34;查询重写&#34;（Query Rewirte）的特定，优化器如果发现可以通过物化视图提升速度，那么会直接改写原SQL，转而查询物化视图，这个操作对应用和用户是完全透明的（应用不需要知道物化视图的存在）。物化视图有各种刷新策略，可以很好的适应复杂的数据刷新场景。 1.2 物化视图的类型 物化视图根据其查询SQL的特点，可以分为下面3类：
+聚合物化视图，查询定义中包含例如sum(), avg(), count()等聚合函数，这类视图用来预先计算统计数据。连接物化视图，查询定义中不包含聚合函数，仅包含连接，这类视图用来预先计算一些高成本的连接。嵌套物化视图，查询定义中引用了其他的物化视图，这类视图通常用来作为一些大物化视图的中间结果集，可以被多个物化视图重复引用，以防止类似的结果集在多个物化视图中重复计算很多次。 二、物化视图创建 物化视图可以通过create materialized view语句直接创建，如果你已经在使用中间表，也可以将其注册为物化视图。
+2.1 通过语句创建物化视图 物化视图是通过 create materialized view 语句创建的，在创建时可以指定物化视图的特性。我们以Oracle自带的sample schema下SH用户下的sales和customers表为示例：">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2023-09-27T16:14:08+08:00">
+    <meta property="article:modified_time" content="2023-09-27T16:14:08+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Oracle物化视图（Materialized View）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div style="margin-left:0in;"> 
+ <div style="margin-left:0in;"> 
+  <p>   与Oracle普通视图仅存储查询定义不同，物化视图（Materialized View）会将查询结果"物化"并保存下来，这意味着物化视图会消耗存储空间，物化的数据需要一定的刷新策略才能和基表同步，在使用和管理上比普通视图要略复杂。</p> 
+  <p id="main-toc"><strong>目录</strong></p> 
+  <p id="%E4%B8%80%E3%80%81%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E7%AE%80%E4%BB%8B-toc" style="margin-left:0px;"><a href="#%E4%B8%80%E3%80%81%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E7%AE%80%E4%BB%8B" rel="nofollow">一、物化视图简介</a></p> 
+  <p id="1.1%C2%A0%20%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E5%BA%94%E7%94%A8%E5%9C%BA%E6%99%AF-toc" style="margin-left:40px;"><a href="#1.1%C2%A0%20%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E5%BA%94%E7%94%A8%E5%9C%BA%E6%99%AF" rel="nofollow">1.1  物化视图应用场景</a></p> 
+  <p id="1.2%20%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E7%9A%84%E7%B1%BB%E5%9E%8B-toc" style="margin-left:40px;"><a href="#1.2%20%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E7%9A%84%E7%B1%BB%E5%9E%8B" rel="nofollow">1.2 物化视图的类型</a></p> 
+  <p id="%E4%BA%8C%E3%80%81%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E5%88%9B%E5%BB%BA-toc" style="margin-left:0px;"><a href="#%E4%BA%8C%E3%80%81%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E5%88%9B%E5%BB%BA" rel="nofollow">二、物化视图创建</a></p> 
+  <p id="2.1%20%E9%80%9A%E8%BF%87%E8%AF%AD%E5%8F%A5%E5%88%9B%E5%BB%BA%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE-toc" style="margin-left:40px;"><a href="#2.1%20%E9%80%9A%E8%BF%87%E8%AF%AD%E5%8F%A5%E5%88%9B%E5%BB%BA%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE" rel="nofollow">2.1 通过语句创建物化视图</a></p> 
+  <p id="2.2%20%E9%80%9A%E8%BF%87%E6%B3%A8%E5%86%8C%E5%88%9B%E5%BB%BA%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE-toc" style="margin-left:40px;"><a href="#2.2%20%E9%80%9A%E8%BF%87%E6%B3%A8%E5%86%8C%E5%88%9B%E5%BB%BA%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE" rel="nofollow">2.2 通过注册创建物化视图</a></p> 
+  <p id="%E4%B8%89%E3%80%81%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E5%88%B7%E6%96%B0-toc" style="margin-left:0px;"><a href="#%E4%B8%89%E3%80%81%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E5%88%B7%E6%96%B0" rel="nofollow">三、物化视图刷新</a></p> 
+  <p id="3.1%20%E5%88%B7%E6%96%B0%E7%B1%BB%E5%9E%8B-toc" style="margin-left:40px;"><a href="#3.1%20%E5%88%B7%E6%96%B0%E7%B1%BB%E5%9E%8B" rel="nofollow">3.1 刷新类型</a></p> 
+  <p id="3.1.1%20%E5%85%A8%E9%87%8F%E5%88%B7%E6%96%B0%EF%BC%88refresh%20complete%EF%BC%89-toc" style="margin-left:80px;"><a href="#3.1.1%20%E5%85%A8%E9%87%8F%E5%88%B7%E6%96%B0%EF%BC%88refresh%20complete%EF%BC%89" rel="nofollow">3.1.1 全量刷新（refresh complete）</a></p> 
+  <p id="3.1.2%20%E5%A2%9E%E9%87%8F%E5%88%B7%E6%96%B0%EF%BC%88refresh%20fast%EF%BC%89-toc" style="margin-left:80px;"><a href="#3.1.2%20%E5%A2%9E%E9%87%8F%E5%88%B7%E6%96%B0%EF%BC%88refresh%20fast%EF%BC%89" rel="nofollow">3.1.2 增量刷新（refresh fast）</a></p> 
+  <p id="3.2%20%E5%88%B7%E6%96%B0%E6%A8%A1%E5%BC%8F-toc" style="margin-left:40px;"><a href="#3.2%20%E5%88%B7%E6%96%B0%E6%A8%A1%E5%BC%8F" rel="nofollow">3.2 刷新模式</a></p> 
+  <p id="3.2.1%20%E6%89%8B%E5%8A%A8%E5%88%B7%E6%96%B0%EF%BC%88on%20demand%EF%BC%89-toc" style="margin-left:80px;"><a href="#3.2.1%20%E6%89%8B%E5%8A%A8%E5%88%B7%E6%96%B0%EF%BC%88on%20demand%EF%BC%89" rel="nofollow">3.2.1 手动刷新（on demand）</a></p> 
+  <p id="3.2.1.1%20%E4%BD%BF%E7%94%A8dbms_mview.refresh%E5%88%B7%E6%96%B0%E6%8C%87%E5%AE%9A%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE-toc" style="margin-left:120px;"><a href="#3.2.1.1%20%E4%BD%BF%E7%94%A8dbms_mview.refresh%E5%88%B7%E6%96%B0%E6%8C%87%E5%AE%9A%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE" rel="nofollow">3.2.1.1 使用dbms_mview.refresh刷新指定物化视图</a></p> 
+  <p id="3.2.1.2%20%E4%BD%BF%E7%94%A8dbms_mview.refresh_all_mviews%E5%88%B7%E6%96%B0%E6%89%80%E6%9C%89%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE-toc" style="margin-left:120px;"><a href="#3.2.1.2%20%E4%BD%BF%E7%94%A8dbms_mview.refresh_all_mviews%E5%88%B7%E6%96%B0%E6%89%80%E6%9C%89%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE" rel="nofollow">3.2.1.2 使用dbms_mview.refresh_all_mviews刷新所有物化视图</a></p> 
+  <p id="3.2.1.2%20%E4%BD%BF%E7%94%A8dbms_mview.refresh_dependent%E5%88%B7%E6%96%B0%E6%9F%90%E5%9F%BA%E8%A1%A8%E4%B8%8A%E7%9A%84%E6%89%80%E6%9C%89%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE-toc" style="margin-left:120px;"><a href="#3.2.1.2%20%E4%BD%BF%E7%94%A8dbms_mview.refresh_dependent%E5%88%B7%E6%96%B0%E6%9F%90%E5%9F%BA%E8%A1%A8%E4%B8%8A%E7%9A%84%E6%89%80%E6%9C%89%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE" rel="nofollow">3.2.1.2 使用dbms_mview.refresh_dependent刷新某基表上的所有物化视图</a></p> 
+  <p id="3.2.2%20%E4%BA%8B%E5%8A%A1%E7%BA%A7%E8%87%AA%E5%8A%A8%E5%88%B7%E6%96%B0%EF%BC%88on%20commit%EF%BC%89-toc" style="margin-left:80px;"><a href="#3.2.2%20%E4%BA%8B%E5%8A%A1%E7%BA%A7%E8%87%AA%E5%8A%A8%E5%88%B7%E6%96%B0%EF%BC%88on%20commit%EF%BC%89" rel="nofollow">3.2.2 事务级自动刷新（on commit）</a></p> 
+  <p id="3.2.3%20%E8%AF%AD%E5%8F%A5%E7%BA%A7%E8%87%AA%E5%8A%A8%E5%88%B7%E6%96%B0%EF%BC%88on%20statement%EF%BC%89-toc" style="margin-left:80px;"><a href="#3.2.3%20%E8%AF%AD%E5%8F%A5%E7%BA%A7%E8%87%AA%E5%8A%A8%E5%88%B7%E6%96%B0%EF%BC%88on%20statement%EF%BC%89" rel="nofollow">3.2.3 语句级自动刷新（on statement）</a></p> 
+  <p id="3.2.4%20%E5%AE%9A%E6%9C%9F%E5%88%B7%E6%96%B0%EF%BC%88start%20with%20%E2%80%A6%20next%EF%BC%89-toc" style="margin-left:80px;"><a href="#3.2.4%20%E5%AE%9A%E6%9C%9F%E5%88%B7%E6%96%B0%EF%BC%88start%20with%20%E2%80%A6%20next%EF%BC%89" rel="nofollow">3.2.4 定期刷新（start with … next）</a></p> 
+  <p id="%E5%9B%9B%E3%80%81%E6%9F%A5%E8%AF%A2%E9%87%8D%E5%86%99-toc" style="margin-left:0px;"><a href="#%E5%9B%9B%E3%80%81%E6%9F%A5%E8%AF%A2%E9%87%8D%E5%86%99" rel="nofollow">四、查询重写</a></p> 
+  <hr id="hr-toc"> 
+  <p></p> 
+  <h2 id="%E4%B8%80%E3%80%81%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E7%AE%80%E4%BB%8B" style="margin-left:0px;">一、物化视图简介</h2> 
+  <p style="margin-left:0;">物化视图主要用在OLAP环境，可以提前运行大量运算并保存结果，为后续查询加速。</p> 
+  <p style="margin-left:0;"></p> 
+  <h3 id="1.1%C2%A0%20%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E5%BA%94%E7%94%A8%E5%9C%BA%E6%99%AF" style="margin-left:0px;"><strong>1.1  </strong><strong>物化视图应用场景</strong></h3> 
+  <p style="margin-left:0;">为什么要使用物化视图？假设一个场景，用户每天都需要分析销售数据，而每天产生的数据量都非常庞大，在原始数据上直接运行查询SQL（例如进行sum，avg的操作），速度会非常缓慢。传统的查询优化手段，例如索引、分区、并行执行等，在这种场景下都无法将速度提升到一个可接受的范围。</p> 
+  <p style="margin-left:0;">对于这种问题，传统的解决方案是建立一张中间表，提前运行查询SQL并将结果保存下来，当用户查询的时候直接查询结果表。此解决方案虽然可以大幅提升相应时间，但也存在两个问题：</p> 
+  <ul><li>对于应用，原先访问的是基表，现在需要访问结果表，意味着应用代码需要修改。</li><li>结果表需要手动的刷新，如果需要频繁的全量刷新很麻烦。</li></ul> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;">而利用Oracle物化视图则可以完美解决上述问题：</p> 
+  <ul><li>物化视图也是预先计算出结果并保存，利用"查询重写"（Query Rewirte）的特定，优化器如果发现可以通过物化视图提升速度，那么会直接改写原SQL，转而查询物化视图，这个操作对应用和用户是完全透明的（应用不需要知道物化视图的存在）。</li><li>物化视图有各种刷新策略，可以很好的适应复杂的数据刷新场景。</li></ul> 
+  <p style="margin-left:0;"><img alt="" height="540" src="https://images2.imgbox.com/19/da/Gsc9AB5w_o.png" width="924"></p> 
+  <p style="margin-left:0;"></p> 
+  <h3 id="1.2%20%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E7%9A%84%E7%B1%BB%E5%9E%8B" style="margin-left:0px;"><strong>1.2 </strong><strong>物化视图的类型</strong></h3> 
+  <p style="margin-left:0;">物化视图根据其查询SQL的特点，可以分为下面3类：</p> 
+  <ul><li>聚合物化视图，查询定义中包含例如sum(), avg(), count()等聚合函数，这类视图用来预先计算统计数据。</li><li>连接物化视图，查询定义中不包含聚合函数，仅包含连接，这类视图用来预先计算一些高成本的连接。</li><li>嵌套物化视图，查询定义中引用了其他的物化视图，这类视图通常用来作为一些大物化视图的中间结果集，可以被多个物化视图重复引用，以防止类似的结果集在多个物化视图中重复计算很多次。</li></ul> 
+  <p style="margin-left:0;"></p> 
+  <h2 id="%E4%BA%8C%E3%80%81%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E5%88%9B%E5%BB%BA" style="margin-left:0px;"><strong>二、物化视图创建</strong></h2> 
+  <p style="margin-left:0;">物化视图可以通过create materialized view语句直接创建，如果你已经在使用中间表，也可以将其注册为物化视图。</p> 
+  <p style="margin-left:0;"></p> 
+  <h3 id="2.1%20%E9%80%9A%E8%BF%87%E8%AF%AD%E5%8F%A5%E5%88%9B%E5%BB%BA%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE" style="margin-left:0px;"><strong>2.1 </strong><strong>通过语句创建物化视图</strong></h3> 
+  <p style="margin-left:0;">物化视图是通过 create materialized view 语句创建的，在创建时可以指定物化视图的特性。我们以Oracle自带的sample schema下SH用户下的sales和customers表为示例：</p> 
+  <pre><code class="language-sql">create materialized view sales_mv
+build immediate
+refresh complete
+enable query rewrite
+as
+select c.cust_id,s.channel_id,sum(amount_sold) sold_sum
+from sales s, customers c
+where s.cust_id=c.cust_id
+group by c.cust_id,s.channel_id
+order by c.cust_id,s.channel_id;</code></pre> 
+  <p style="margin-left:0;"><img alt="" height="237" src="https://images2.imgbox.com/64/ab/HjCryTTY_o.png" width="700"></p> 
+  <p style="margin-left:0;">语法解释：</p> 
+  <ul><li>create materialized view 指定创建物化视图，sales_mv是物化视图的名称，和普通视图一样，你也在后面用括号为每列显式指定名称。</li><li>build immediate 创建时立刻填充数据，另一个选项是build defferred，创建时不填充数据</li><li>refresh complete 全量刷新，对应的还有增量刷新。你可以在创建时或创建后手动执行，全量刷新会执行物化视图的定义SQL，可能较费时。</li><li>enable query rewrite 允许利用物化视图查询重写（会话参数query_rewrite_enabled也要设置为True）。</li><li>as 后面的就是物化视图的查询SQL，这里和普通视图一样。</li></ul> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;">当物化视图创建成功时，Oracle会创建下列对象：</p> 
+  <ul><li>一个容器表(Container Table)，用来存放物化视图的数据，容器表的名称和物化视图相同。</li><li>物化视图自己。</li><li>如果是聚合物化视图，还会额外创建一个包含聚合函数的索引（基于函数的索引），如果是连接或嵌套物化视图，则不会创建。</li></ul> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;">你可以通过多dba_objects或dba_indexes查询到这些对象：</p> 
+  <pre><code class="language-sql">select owner,object_name,object_type,status from dba_objects where object_name='SALES_MV';
+
+select owner,index_name,index_type,table_name from dba_indexes where table_name='SALES_MV';</code></pre> 
+  <p style="margin-left:0;"><img alt="" height="243" src="https://images2.imgbox.com/9d/83/QAknqhfE_o.png" width="1077"></p> 
+  <p style="margin-left:0;">由于示例创建的是聚合物化视图，所以会额外创建一个基于函数的索引（索引类型是：function-based normal）。</p> 
+  <p style="margin-left:0;"></p> 
+  <h3 id="2.2%20%E9%80%9A%E8%BF%87%E6%B3%A8%E5%86%8C%E5%88%9B%E5%BB%BA%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE" style="margin-left:0px;"><strong>2.2 </strong><strong>通过注册创建物化视图</strong></h3> 
+  <p style="margin-left:0;">有的时候你可能已经创建好了中间表，如果再创建一个物化视图，那么可能会重复进行复杂的计算。你可以将你创建的表作为容器表注册为物化视图，注册后同样可以查询重新或使用物化视图刷新策略。</p> 
+  <p style="margin-left:0;">我们删除刚才创建的物化视图，用注册的方式重新创建。</p> 
+  <pre><code class="language-sql">drop materialized view sales_mv;</code></pre> 
+  <p style="margin-left:0;"><img alt="" height="76" src="https://images2.imgbox.com/69/f1/XZzUlsua_o.png" width="432"></p> 
+  <p style="margin-left:0;">当物化视图删除后，上面创建的3个对象也就一并删除了。</p> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;">先创建一个中间表：</p> 
+  <pre><code class="language-sql">create table sales_mv as
+select c.cust_id,s.channel_id,sum(amount_sold) sold_sum
+from sales s, customers c
+where s.cust_id=c.cust_id
+group by c.cust_id,s.channel_id
+order by c.cust_id,s.channel_id;</code></pre> 
+  <p style="margin-left:0;"><img alt="" height="163" src="https://images2.imgbox.com/ca/a4/vuCH1HYn_o.png" width="679"></p> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;">将其注册为物化视图，物化视图的注册是通过on prebuilt table子句完成的：</p> 
+  <pre><code class="language-sql">create materialized view sales_mv
+on prebuilt table without reduced precision
+enable query rewrite
+as
+select c.cust_id,s.channel_id,sum(amount_sold) sold_sum
+from sales s, customers c
+where s.cust_id=c.cust_id
+group by c.cust_id,s.channel_id
+order by c.cust_id,s.channel_id;</code></pre> 
+  <p style="margin-left:0;"><img alt="" height="226" src="https://images2.imgbox.com/b2/a2/tGZiKaEv_o.png" width="671"></p> 
+  <p style="margin-left:0;">语法解释：</p> 
+  <ul><li>物化视图的名称必须和容器表的名称相同。</li><li>on prebuilt table 指示基于同名的表创建创建物化视图</li><li>without reduced precision 限制物化视图列的数据类型必须和容器表匹配，否则创建失败。</li></ul> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;">注意：当通过注册创建物化视图时，Oracle不会为聚合物化视图创建一个基于函数的索引（你需要自己创建合适的索引）。同时就算你删除物化视图，其容器表也不会被删除，这里和语句创建的物化视图不同。</p> 
+  <p style="margin-left:0;"></p> 
+  <h2 id="%E4%B8%89%E3%80%81%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE%E5%88%B7%E6%96%B0" style="margin-left:0px;"><strong>三、物化视图刷新</strong></h2> 
+  <p style="margin-left:0;">由于基表的数据在不断变化，所以物化视图必须要有一定的刷新策略来保持更新。</p> 
+  <p style="margin-left:0;"></p> 
+  <h3 id="3.1%20%E5%88%B7%E6%96%B0%E7%B1%BB%E5%9E%8B" style="margin-left:0px;"><strong>3.1 </strong><strong>刷新类型</strong></h3> 
+  <p style="margin-left:0;">当基表的数据变化时，物化视图中的数据也需要定期刷新，刷新的类型有2种：</p> 
+  <ul><li>全量刷新</li><li>增量刷新</li></ul> 
+  <p></p> 
+  <h4 id="3.1.1%20%E5%85%A8%E9%87%8F%E5%88%B7%E6%96%B0%EF%BC%88refresh%20complete%EF%BC%89" style="margin-left:0px;"><strong>3.1.1 </strong><strong>全量刷新（</strong><strong>refresh complete</strong><strong>）</strong></h4> 
+  <p style="margin-left:0;">全量刷新可以在创建物化视图时通过build immediate语句指定，或者在创建物化视图后，你随时可以手动进行全量刷新。全量刷新会清空物化视图数据，重新执行定义SQL语句并重新插入数据，这个操作通常比较慢。</p> 
+  <p style="margin-left:0;">如果物化视图创建时指定了build deferred，那么在物化视图可以使用前，必须要进行一次全量刷新。</p> 
+  <p style="margin-left:0;"></p> 
+  <h4 id="3.1.2%20%E5%A2%9E%E9%87%8F%E5%88%B7%E6%96%B0%EF%BC%88refresh%20fast%EF%BC%89" style="margin-left:0px;"><strong>3.1.2 </strong><strong>增量刷新</strong><strong>（refresh fast）</strong></h4> 
+  <p style="margin-left:0;">增量刷新，又叫快速刷新（Fast Refresh），是通过记录基表数据变化，仅刷新视图变化的数据部分，相比全量刷新速度要快很多。</p> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;">增量刷新分为2种:</p> 
+  <ul><li>一种是基于日志的增量刷新，这种方式每个物化视图引用的基表都需要创建一个日志来记录数据变更。</li><li>另一种是基于分区变更追踪（Partition Change Tracking）的刷新，这种刷新会移除物化视图特定分区的数据然后重新计算。</li></ul> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;">在建立基于日志快速刷新的物化视图时，首先要用 create materialized view log 语句为视图的基表建立物化视图日志，用来跟踪基表的数据变更。</p> 
+  <p style="margin-left:0;">分区变更追踪刷新（PCT Refresh），视图的基表是分区表，当对分区进行维护操作时，只能选用这种增量刷新方式。</p> 
+  <p style="margin-left:0;"></p> 
+  <h3 id="3.2%20%E5%88%B7%E6%96%B0%E6%A8%A1%E5%BC%8F" style="margin-left:0px;"><strong>3.2 </strong><strong>刷新模式</strong></h3> 
+  <p style="margin-left:0;">根据物化视图刷新模式，可以分为以下几类：</p> 
+  <ul><li>on demand: 手动刷新，默认模式，物化视图不会自动刷新，用户根据自己的需求通过调用存储过程来刷新物化视图。</li><li>on commit: 自动刷新（事务级），每当基表上有事务提交时都会刷新物化视图。</li><li>on statement: 自动刷新（语句级），每当基表上有DML语句时，都会刷新物化视图。</li><li>start with … next : 定期刷新，通过start with和next关键字，指定一个起始时间和间隔，物化视图将以指定的间隔自动刷新</li></ul> 
+  <p style="margin-left:0;"></p> 
+  <h4 id="3.2.1%20%E6%89%8B%E5%8A%A8%E5%88%B7%E6%96%B0%EF%BC%88on%20demand%EF%BC%89" style="margin-left:0px;"><strong>3.2.1 </strong><strong>手动刷新</strong><strong>（</strong><strong>on demand</strong><strong>）</strong></h4> 
+  <p style="margin-left:0;">on demand 代表手动刷新，这是默认的模式，Oracle不会主动的刷新物化视图。用户根据需要自己调用dbms_view包来完成视图的刷新，常用的刷新存储过程有：</p> 
+  <ul><li>dbms_mview.refresh 刷新1个或多个物化视图</li><li>dbms_mview.refresh_all_mviews 刷新所有的物化视图</li><li>dbms_mview.refresh_dependent 刷新所有基于指定基表（或物化视图）的物化视图</li></ul> 
+  <p style="margin-left:0;"></p> 
+  <h5 id="3.2.1.1%20%E4%BD%BF%E7%94%A8dbms_mview.refresh%E5%88%B7%E6%96%B0%E6%8C%87%E5%AE%9A%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE" style="margin-left:0px;"><strong>3.2.1.1 </strong><strong>使用</strong><strong>dbms_mview.refresh</strong><strong>刷新指定物化视图</strong></h5> 
+  <p style="margin-left:0;">使用dbms_mview.refresh可以刷新单个或多个物化视图，刷新上面创建的sales_mv视图：</p> 
+  <pre><code class="language-sql">begin
+dbms_mview.refresh(
+    list =&gt; 'SALES_MV',
+    method =&gt; 'F'
+    );
+end;/</code></pre> 
+  <p style="margin-left:0;"><img alt="" height="214" src="https://images2.imgbox.com/3a/6d/NgCKF6bq_o.png" width="456"></p> 
+  <p style="margin-left:0;">参数解释：</p> 
+  <ul><li>list: 要刷新的物化视图列表，如果有多个物化视图，用逗号隔开即可。</li><li>method: 刷新方式，可选择的值有 C 全量刷新 / F 快速刷新 / P 基于PCT的快速刷新 / ? 尝试快速刷新，如果失败则全量刷新</li></ul> 
+  <p style="margin-left:0;"></p> 
+  <h5 id="3.2.1.2%20%E4%BD%BF%E7%94%A8dbms_mview.refresh_all_mviews%E5%88%B7%E6%96%B0%E6%89%80%E6%9C%89%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE" style="margin-left:0px;"><strong>3.2.1.2 </strong><strong>使用</strong><strong>dbms_mview.refresh_all_mviews</strong><strong>刷新所有物化视图</strong></h5> 
+  <p style="margin-left:0;">dbms_mview.refresh_all_mviews可以用来刷新所有的物化视图：</p> 
+  <pre><code class="language-sql">declare
+failures number;
+begin
+dbms_mview.refresh_all_mviews(
+    number_of_failures =&gt; failures,
+    method =&gt; 'C',
+    refresh_after_errors =&gt; TRUE
+    );
+end;
+/</code></pre> 
+  <p style="margin-left:0;"><img alt="" height="274" src="https://images2.imgbox.com/37/23/GMCYp5CM_o.png" width="476"></p> 
+  <p style="margin-left:0;">参数解释：</p> 
+  <ul><li>number_of_failures 是一个输出参数，返回刷新失败的物化视图数量</li><li>method 选择C代表是全量刷新</li><li>refresh_after_errors 物化视图刷新失败时会继续刷新其他视图</li></ul> 
+  <p style="margin-left:0;"></p> 
+  <h5 id="3.2.1.2%20%E4%BD%BF%E7%94%A8dbms_mview.refresh_dependent%E5%88%B7%E6%96%B0%E6%9F%90%E5%9F%BA%E8%A1%A8%E4%B8%8A%E7%9A%84%E6%89%80%E6%9C%89%E7%89%A9%E5%8C%96%E8%A7%86%E5%9B%BE" style="margin-left:0px;"><strong>3.2.1.2 </strong><strong>使用</strong><strong>dbms_mview.refresh_dependent</strong><strong>刷新某基表上的所有物化视图</strong></h5> 
+  <p style="margin-left:0;">dbms_mview.refresh_dependent 可以刷新指定基表或物化视图之上建立的所有物化视图，这个存储过程适合那些单张基表上建立了多个物化视图的场景，例如sales表有大范围数据更新，而上面建立了多张视图，逐一刷新太麻烦，那么就可以用这个存储过程仅刷新基于sales表建立的视图：</p> 
+  <pre><code class="language-sql">declare
+failures number;
+begin
+dbms_mview.refresh_dependent(
+    number_of_failures =&gt; failures,
+     list =&gt; 'sales, customers',
+    method =&gt; 'C',
+    refresh_after_errors =&gt; TRUE
+    );
+end;
+/</code></pre> 
+  <p style="margin-left:0;"><img alt="" height="293" src="https://images2.imgbox.com/ea/1d/33ej4K57_o.png" width="487"></p> 
+  <p style="margin-left:0;">上面的示例刷新了基于sales, customers表建立的所有物化视图</p> 
+  <p style="margin-left:0;"></p> 
+  <h4 id="3.2.2%20%E4%BA%8B%E5%8A%A1%E7%BA%A7%E8%87%AA%E5%8A%A8%E5%88%B7%E6%96%B0%EF%BC%88on%20commit%EF%BC%89" style="margin-left:0px;"><strong>3.2.2 </strong><strong>事务级</strong><strong>自动刷新（on commit）</strong></h4> 
+  <p style="margin-left:0;">on commit 表示事务级的自动刷新，当物化视图的任意基表上有事务提交时，都会自动刷新物化视图。这种刷新方式可以保证视图和基表数据的一致性，此时物化视图刷新会变成事务的一部分，所以如果单个事务更新了大量的数据会，那么提交时物化视图的刷新工作量会非常大，降低提交的效率。因此建议尽量保持事务短小，可以提升刷新速度。</p> 
+  <pre><code class="language-sql">create materialized view log on sales with rowid, sequence(cust_id, channel_id, amount_sold) including new values;
+
+create materialized view log on customers with rowid, sequence(cust_id) including new values;
+
+create materialized view sales_mv_oncmt
+build immediate
+refresh fast on commit
+enable query rewrite
+as
+select c.cust_id, s.channel_id, sum(amount_sold) sold_sum
+from sales s, customers c
+where s.cust_id=c.cust_id
+group by c.cust_id, s.channel_id
+order by c.cust_id, s.channel_id;</code></pre> 
+  <p style="margin-left:0;"><img alt="" height="396" src="https://images2.imgbox.com/96/ef/hm9RaCOi_o.png" width="1200"></p> 
+  <p style="margin-left:0;">语法解释：</p> 
+  <ul><li>这里使用了快速刷新（refresh fast）因此创建物化视图前要先建立物化视图日志。</li><li>create materialized view log 语句创建物化视图日志。</li><li>with rowid 代表要将数据的rowid记录到日志中</li><li>sequence 也是上面with子句的一部分，代表提供额外的排序信息</li><li>(columns1, columns2 …) 物化视图引用到的所有列都要记录进日志。</li><li>including new values 指示日志将数据变更的新值和旧值一起记录进日志。</li></ul> 
+  <p style="margin-left:0;"></p> 
+  <h4 id="3.2.3%20%E8%AF%AD%E5%8F%A5%E7%BA%A7%E8%87%AA%E5%8A%A8%E5%88%B7%E6%96%B0%EF%BC%88on%20statement%EF%BC%89" style="margin-left:0px;"><strong>3.2.3 </strong><strong>语句级</strong><strong>自动刷新（on statement）</strong></h4> 
+  <p style="margin-left:0;">on statement 表示语句级的自动刷新，这种模式只能在创建物化视图时指定。当物化视图的任意基表执行DML语句时（不需要提交），都会刷新物化视图。这种刷新方式会让视图与基表在任何时间都保持同步，如果基表上的DML回滚了，那么物化视图中的变化同样也会回滚。</p> 
+  <p style="margin-left:0;">使用on statement这种刷新频率必须配合快速刷新模式（refresh fast）使用，由于在DML执行过程中需要额外的刷新物化视图操作，所以会降低DML语句的效率。</p> 
+  <p style="margin-left:0;">此外，on statement刷新模式还有一些使用场景限制，物化视图基表的连接必须是星型（star schema）或雪花型（snowflake），即有一个中心表事实表（fact table）通过主-外键与维度表（dimension table）连接，事实表的主键必须包含在物化视图中，Oracle会自动在事实表的主键上创建一个索引来提升刷新速度。</p> 
+  <pre><code class="language-sql">create materialized view sales_mv_onstmt
+build immediate
+refresh fast on statement
+as
+select s.rowid, c.cust_first_name, c.cust_last_name, s.amount_sold
+from sh.sales s, sh.customers c
+where s.cust_id = c.cust_id;</code></pre> 
+  <p style="margin-left:0;"></p> 
+  <h4 id="3.2.4%20%E5%AE%9A%E6%9C%9F%E5%88%B7%E6%96%B0%EF%BC%88start%20with%20%E2%80%A6%20next%EF%BC%89" style="margin-left:0px;"><strong>3.2.4 定期刷新</strong><strong>（</strong><strong>start with … next</strong><strong>）</strong></h4> 
+  <p style="margin-left:0;">如果物化视图需要定期刷新，那么则可以选用start with … next 来为物化视图指定一个刷新间隔，start with子句指定首次自动刷新时间，next子句指定后续刷新间隔（从start with指定首次刷新开始）。如果忽略的start with子句，那么则以当前日期开始计算后续的刷新间隔，如果忽略了next子句，那么物化视图只会在start with指定的时间刷新一次。</p> 
+  <pre><code class="language-sql">create materialized view sales_mv_interval
+refresh complete start with sysdate + 4/24
+next next_day(trunc(sysdate), 'Monday') + 12/24
+as select * from customers;</code></pre> 
+  <p style="margin-left:0;"><img alt="" height="160" src="https://images2.imgbox.com/a1/84/johmODji_o.png" width="603"></p> 
+  <p style="margin-left:0;">语法解释：</p> 
+  <ul><li>start with sysdate + 4/24 表示今日4:00首次刷新</li><li>next next_day(trunc(sysdate), 'Monday') + 12/24 表示以后每个周一的12:00刷新一次</li></ul> 
+  <p style="margin-left:0;"></p> 
+  <h2 id="%E5%9B%9B%E3%80%81%E6%9F%A5%E8%AF%A2%E9%87%8D%E5%86%99" style="margin-left:0px;"><strong>四</strong><strong>、</strong><strong>查询重写</strong></h2> 
+  <p style="margin-left:0;">物化视图建立后，优化器就可以利用物化视图来进行查询重写了，用户对基表的查询可能会被物化视图替代，从而提升执行速度。查询重写对用户和应用都是透明的，但是其也需要满足一定条件：</p> 
+  <ul><li style="margin-left:0px;">建立物化视图时，必须包含enable query rewrite子句。</li><li style="margin-left:0px;">用户会话的 query_rewirte_enable 参数必须设置为True（默认）或者force</li></ul> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;">query_rewirte_enable 参数有3个值：</p> 
+  <ul><li>false 禁用查询重写</li><li>true 允许查询重写，优化器将根据成本自行选择是否使用</li><li>force 强制使用查询重写</li></ul> 
+  <p style="margin-left:0;"><img alt="" height="121" src="https://images2.imgbox.com/e0/df/MRHqIq9M_o.png" width="644"></p> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;"></p> 
+  <p style="margin-left:0;"></p> 
+ </div> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/13201c958c4140ec2ed5975f91b4d6e9/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【数据结构】深度剖析最优建堆及堆的经典应用 - 堆排列与topk问题</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/bd14205301d7bbb85bd276f3eeabff0f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">mysql的mvcc详解</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,394 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【手写数据库内核组件】0301 动态内存池，频繁malloc/free让系统不堪重负，动态内存池让应用自由使用动态内存 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/54c5f30baa1eed4aa09501e51c97887d/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【手写数据库内核组件】0301 动态内存池，频繁malloc/free让系统不堪重负，动态内存池让应用自由使用动态内存">
+  <meta property="og:description" content="动态内存管理 ​专栏内容：
+postgresql使用入门基础手写数据库toadb并发编程 个人主页：我的主页
+管理社区：开源数据库
+座右铭：天行健，君子以自强不息；地势坤，君子以厚德载物.
+文章目录 动态内存管理一、概述 二、动态内存管理原理 2.1 内存分配策略 2.2 内存回收策略 三、动态内存管理实现 3.1 内存管理结构定义 3.2 memPage 申请与释放 3.3 memNode 释放与释放 3.4 应用申请内存 四、总结 结尾 一、概述 在平时运行时分配内存时，使用动态内存分配malloc/free或 new/delete，会直接从操作系统申请虚拟内存，释放时也归还给操作系统；
+而操作系统会记录那些内存片段正在使用，那些已经释放；时间久后，内存碎片就越来越多，最终没法分配一片较大的内存出来，所以系统会尽量让空闲的片段连成一整片，不断的整理。
+一般应用程序需要动态分配的次数和频率不高时，对操作系统的负担不重；
+而像数据库这样的重型应用跑起来，会有大量的运行时动态内存的分配和释放，如果不对动态内存进行用户态的管理，必然会拖慢操作系统的运行，影响所有应用的性能。
+本文就来分享一种在应用程序中进行动态内存管理的方法，减少向操作系统申请和释放的次数，来避免内存碎片整理的负担。
+二、动态内存管理原理 动态内存管理的目标主要有两个：
+减少向操作系统申请和释放的次数，也就是减少调用malloc/free；减少内存碎片，一旦产生碎片就需整理，同时会造成一部分内存的浪费； 2.1 内存分配策略 针对这两个目标，我们可以这样来做，先从内存的分配来看：
+每次从操作系统申请一块较大的内存；单次数量多，次数就会少很多；应用需要时，从这块大内存中切割划分，直到大块内存用尽，再重复1步骤；对于少量一次需要很大的内存时，超过每次申请的上限，此时就直接从操作系统申请，这就按特例来处理。 这有点像买蛋糕，当一个人吃时，每次就买一小块；当过生日时，有很多人一起吃，那就一次性买个大蛋糕，回来切分。
+我们也可以说算法来源于生活，而高于生活！
+2.2 内存回收策略 对于内存的释放回收，有两种策略：
+重复利用策略，释放时不归还给操作系统；下次申请时再重复利用；整体归还策略， 释放时不归还操作系统，如果一大块都释放时，则将此整块内存统一归还给操作系统； 重复利用策略
+这种策略对于内存利用次数较高，与操作系统交互更少，但需要增加内存碎片的管理，也就是对于应用使用的不同大小的内存片，归还后要么进行移动合并，要么按大小进行排序再利用；
+会增加碎片管理的负担，同时内存会有一些浪费。
+整体归还策略
+申请一大块内存，在应用内部进行切分为更小的片进行使用，当此大块内存上的分片均释放时，将此大块内存归还给操作系统。
+这样避免内存碎片的整理，同时大块的释放也会减少操作系统内存碎片整理的负担；
+但是也会存在内存浪费，当大块内存上有一小片一直不释放时，整块内存就会被浪费，迟迟得不到释放。
+当然两种策略还可以再优化，但过多的优化，都会带来一些额外的开销。
+三、动态内存管理实现 动态内存管理的基本单位称为内存页(page)，大小为4KB，也就是上节提到的大块内存，每次申请与释放都会按内存页来操作。
+而对于应用程序来讲，它申请内存是从memPage中进行分配，每次分配一个memNode，包含申请的内存大小。
+当一个MemPage用完或不够时，再从下一个memPage中分配。
+所有的memPage采用单链表的形式串起来，方便释放时管理。
+下面我们就分拆来了解一下，内存页的定义，以及内存的申请与释放的操作。
+3.1 内存管理结构定义 内存管理需要记录mempage的链表，同时为了更少的与操作系统交互，增加了一个freeList来记录释放的memPage，当freeList不空时，直接从这里分配即可。
+内存管理结构的定义
+#define MEMORY_POOL_MANAGER_VERSION (0x0B10) typedef struct MemPoolManagerContext { int version; unsigned long totalSize; /* 已经使用的动态内存大小 */ // SPINLOCK lock; /* protected this structure.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-13T06:00:00+08:00">
+    <meta property="article:modified_time" content="2024-07-13T06:00:00+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【手写数据库内核组件】0301 动态内存池，频繁malloc/free让系统不堪重负，动态内存池让应用自由使用动态内存</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>动态内存管理</h2> 
+<blockquote> 
+ <p>​<strong>专栏内容</strong>：</p> 
+ <ul><li><a href="https://blog.csdn.net/senllang/category_12346885.html">postgresql使用入门基础</a></li><li><a href="https://senllang.blog.csdn.net/category_12338586.html" rel="nofollow">手写数据库toadb</a></li><li><a href="https://blog.csdn.net/senllang/category_12265530.html">并发编程</a></li></ul> 
+</blockquote> 
+<blockquote> 
+ <p><strong>个人主页</strong>：<a href="https://senllang.blog.csdn.net" rel="nofollow">我的主页</a><br> <strong>管理社区</strong>：<a href="https://bbs.csdn.net/forums/a0a6ea788b3949b6a06ab4811f9eec5d">开源数据库</a><br> <strong>座右铭：天行健，君子以自强不息；地势坤，君子以厚德载物.</strong></p> 
+</blockquote> 
+<p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_0" rel="nofollow">动态内存管理</a></li><li><a href="#font_colorA0522D_font_13" rel="nofollow"><font color="#A0522D">一、概述 </font></a></li><li><a href="#font_colorA0522D_font_27" rel="nofollow"><font color="#A0522D">二、动态内存管理原理 </font></a></li><li><ul><li><a href="#font_color224070_21__font_35" rel="nofollow"><font color="#224070"> 2.1 内存分配策略 </font></a></li><li><a href="#font_color224070_22__font_47" rel="nofollow"><font color="#224070"> 2.2 内存回收策略 </font></a></li></ul> 
+  </li><li><a href="#font_colorA0522D_font_69" rel="nofollow"><font color="#A0522D">三、动态内存管理实现 </font></a></li><li><ul><li><a href="#font_color224070_31__font_85" rel="nofollow"><font color="#224070"> 3.1 内存管理结构定义 </font></a></li><li><a href="#font_color224070_32_memPage__font_165" rel="nofollow"><font color="#224070"> 3.2 memPage 申请与释放 </font></a></li><li><a href="#font_color224070_33_memNode__font_218" rel="nofollow"><font color="#224070"> 3.3 memNode 释放与释放 </font></a></li><li><a href="#font_color224070_34__font_267" rel="nofollow"><font color="#224070"> 3.4 应用申请内存 </font></a></li></ul> 
+  </li><li><a href="#font_colorA0522D_font_349" rel="nofollow"><font color="#A0522D">四、总结 </font></a></li><li><a href="#font_colorA0522D_font_357" rel="nofollow"><font color="#A0522D">结尾 </font></a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="font_colorA0522D_font_13"></a><font color="#A0522D">一、概述 </font></h2> 
+<hr> 
+<p>在平时运行时分配内存时，使用动态内存分配malloc/free或 new/delete，会直接从操作系统申请虚拟内存，释放时也归还给操作系统；</p> 
+<p>而操作系统会记录那些内存片段正在使用，那些已经释放；时间久后，内存碎片就越来越多，最终没法分配一片较大的内存出来，所以系统会尽量让空闲的片段连成一整片，不断的整理。</p> 
+<p>一般应用程序需要动态分配的次数和频率不高时，对操作系统的负担不重；</p> 
+<p>而像数据库这样的重型应用跑起来，会有大量的运行时动态内存的分配和释放，如果不对动态内存进行用户态的管理，必然会拖慢操作系统的运行，影响所有应用的性能。</p> 
+<p>本文就来分享一种在应用程序中进行动态内存管理的方法，减少向操作系统申请和释放的次数，来避免内存碎片整理的负担。</p> 
+<h2><a id="font_colorA0522D_font_27"></a><font color="#A0522D">二、动态内存管理原理 </font></h2> 
+<hr> 
+<p>动态内存管理的目标主要有两个：</p> 
+<ul><li>减少向操作系统申请和释放的次数，也就是减少调用malloc/free；</li><li>减少内存碎片，一旦产生碎片就需整理，同时会造成一部分内存的浪费；</li></ul> 
+<h3><a id="font_color224070_21__font_35"></a><font color="#224070"> 2.1 内存分配策略 </font></h3> 
+<p>针对这两个目标，我们可以这样来做，先从内存的分配来看：</p> 
+<blockquote> 
+ <ol><li>每次从操作系统申请一块较大的内存；单次数量多，次数就会少很多；</li><li>应用需要时，从这块大内存中切割划分，直到大块内存用尽，再重复1步骤；</li><li>对于少量一次需要很大的内存时，超过每次申请的上限，此时就直接从操作系统申请，这就按特例来处理。</li></ol> 
+</blockquote> 
+<p>这有点像买蛋糕，当一个人吃时，每次就买一小块；当过生日时，有很多人一起吃，那就一次性买个大蛋糕，回来切分。</p> 
+<p><strong>我们也可以说算法来源于生活，而高于生活！</strong></p> 
+<h3><a id="font_color224070_22__font_47"></a><font color="#224070"> 2.2 内存回收策略 </font></h3> 
+<p>对于内存的释放回收，有两种策略：</p> 
+<ul><li><strong>重复利用策略</strong>，释放时不归还给操作系统；下次申请时再重复利用；</li><li><strong>整体归还策略</strong>， 释放时不归还操作系统，如果一大块都释放时，则将此整块内存统一归还给操作系统；</li></ul> 
+<p><strong>重复利用策略</strong></p> 
+<p>这种策略对于内存利用次数较高，与操作系统交互更少，但需要增加内存碎片的管理，也就是对于应用使用的不同大小的内存片，归还后要么进行移动合并，要么按大小进行排序再利用；</p> 
+<p>会增加碎片管理的负担，同时内存会有一些浪费。</p> 
+<p><strong>整体归还策略</strong></p> 
+<p>申请一大块内存，在应用内部进行切分为更小的片进行使用，当此大块内存上的分片均释放时，将此大块内存归还给操作系统。</p> 
+<p>这样避免内存碎片的整理，同时大块的释放也会减少操作系统内存碎片整理的负担；</p> 
+<p>但是也会存在内存浪费，当大块内存上有一小片一直不释放时，整块内存就会被浪费，迟迟得不到释放。</p> 
+<p>当然两种策略还可以再优化，但过多的优化，都会带来一些额外的开销。</p> 
+<h2><a id="font_colorA0522D_font_69"></a><font color="#A0522D">三、动态内存管理实现 </font></h2> 
+<hr> 
+<p>动态内存管理的基本单位称为内存页(page)，大小为4KB，也就是上节提到的大块内存，每次申请与释放都会按内存页来操作。</p> 
+<p><img src="https://images2.imgbox.com/9d/85/zW9VtNn6_o.png" alt="在这里插入图片描述"></p> 
+<ul><li> <p>而对于应用程序来讲，它申请内存是从memPage中进行分配，每次分配一个memNode，包含申请的内存大小。</p> </li><li> <p>当一个MemPage用完或不够时，再从下一个memPage中分配。</p> </li><li> <p>所有的memPage采用单链表的形式串起来，方便释放时管理。</p> </li></ul> 
+<p>下面我们就分拆来了解一下，内存页的定义，以及内存的申请与释放的操作。</p> 
+<h3><a id="font_color224070_31__font_85"></a><font color="#224070"> 3.1 内存管理结构定义 </font></h3> 
+<p>内存管理需要记录mempage的链表，同时为了更少的与操作系统交互，增加了一个freeList来记录释放的memPage，当freeList不空时，直接从这里分配即可。</p> 
+<p><strong>内存管理结构的定义</strong></p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MEMORY_POOL_MANAGER_VERSION</span> <span class="token expression"><span class="token punctuation">(</span><span class="token number">0x0B10</span><span class="token punctuation">)</span></span></span>
+<span class="token keyword">typedef</span> <span class="token keyword">struct</span> <span class="token class-name">MemPoolManagerContext</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span>             version<span class="token punctuation">;</span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">long</span>   totalSize<span class="token punctuation">;</span>    <span class="token comment">/* 已经使用的动态内存大小 */</span>
+
+    <span class="token comment">// SPINLOCK        lock;         /* protected this structure. */</span>
+    
+    DList           memFreeList<span class="token punctuation">;</span>   
+    DList           memPageList<span class="token punctuation">;</span>      <span class="token comment">/* memPageInfo list */</span>
+    MemPageInfo     <span class="token operator">*</span>currUsePage<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>MemPoolManagerContext<span class="token punctuation">;</span>
+</code></pre> 
+<p>成员说明：</p> 
+<ul><li>version，模块的版本；</li><li>totalSize，记录当前使用了多少真实的内存空间；</li><li>memFreeList，空闲内存页的链表；</li><li>memPageList，正在使用的内存页的链表；</li><li>currUsePage，当前有最后一个内存页，下次分配时从此内存页上分配；</li></ul> 
+<p><strong>内存管页结构定义</strong></p> 
+<p>内存页memPage作为向操作系统申请和释放的基本单位，它的定义如下：</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MEMORY_POOL_PAGE_SIZE</span> <span class="token expression"><span class="token punctuation">(</span><span class="token number">4096</span><span class="token punctuation">)</span></span></span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MEMPAGE_INFO_LEN</span> <span class="token expression"><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span>MemPageInfo<span class="token punctuation">)</span><span class="token punctuation">)</span></span></span>
+<span class="token keyword">typedef</span> <span class="token keyword">struct</span> <span class="token class-name">MemPageInfo</span>
+<span class="token punctuation">{<!-- --></span>
+    DList list<span class="token punctuation">;</span>
+    <span class="token keyword">int</span> memPageSize<span class="token punctuation">;</span>
+    <span class="token keyword">int</span> useOffset<span class="token punctuation">;</span>
+    <span class="token keyword">int</span> freeSize<span class="token punctuation">;</span>  
+    <span class="token keyword">int</span> releaseSize<span class="token punctuation">;</span>         
+<span class="token punctuation">}</span>MemPageInfo<span class="token punctuation">;</span>
+
+<span class="token keyword">typedef</span> <span class="token keyword">char</span> <span class="token operator">*</span>MemPage<span class="token punctuation">,</span> <span class="token operator">*</span>MemPtr<span class="token punctuation">;</span>
+</code></pre> 
+<p>成员说明：</p> 
+<ul><li>list，由双向链表来记录所有的内存页；</li><li>memPageSize,当前内存页的大小；可能有超大的内存页；</li><li>useOffset，使用内存的偏移；</li><li>freeSize，空闲内存大小；</li><li>releaseSize, 释放内存大小；记录当前内存页上使用过后，释放的内存大小，当全部释放后，此内存页也会释放；</li></ul> 
+<p>这里新定义了一定类型MemPage, 也就是char *的别名，这样在后面分配内存页时使用，方便区分。</p> 
+<p><strong>内存管节点结构定义</strong></p> 
+<p>应用程序每次申请内存，都会分配一个内存节点结构，包含了申请的内存大小。</p> 
+<pre><code class="prism language-c"><span class="token comment">/* 
+ * MemAlloc will alloc a MemBlock, and return MemBlock-&gt;ptr for user.
+ */</span>
+<span class="token keyword">typedef</span> <span class="token keyword">struct</span> <span class="token class-name">MemBlock</span> 
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> size<span class="token punctuation">;</span>                   <span class="token comment">/* memblock size + ptr[] size */</span>
+    MemPageInfo <span class="token operator">*</span>memPage<span class="token punctuation">;</span>       <span class="token comment">/* current memPageInfo pointer */</span>
+    <span class="token keyword">char</span> ptr<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>MemBlock<span class="token punctuation">;</span>
+</code></pre> 
+<p>成员说明：</p> 
+<ul><li>size ， 记录当前内存节点的大小；</li><li>memPage，记录当前内存节点所属的内存块，指向内存页结构；</li><li>ptr， 返回给应用程序的内存首地址，这里没有定义大小；在低版本编译器中可能不支持，可以指定数组大小为1；</li></ul> 
+<p>注意，这里ptr必须定义为数组，因为它就是数据的首地址，也就是一段内存的开始；如果定义为指针，需要手动赋值；</p> 
+<h3><a id="font_color224070_32_memPage__font_165"></a><font color="#224070"> 3.2 memPage 申请与释放 </font></h3> 
+<p><strong>内存页的分配</strong></p> 
+<p>当MemPage不够分配时，都需要从操作系统中申请一块新的memPage。</p> 
+<p>先从FreeList中查找，如果找到，就添加到当前使用列表中；</p> 
+<p>如果没有空闲memPage时，直接调用malloc进行分配。</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">AddNewPageToContext</span><span class="token punctuation">(</span>MemPoolManagerContext <span class="token operator">*</span>poolContext<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    MemPageInfo <span class="token operator">*</span>currentMemPage <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    MemPage newPage <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+
+    newPage <span class="token operator">=</span> <span class="token function">GetFreeMemPage</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token constant">NULL</span> <span class="token operator">==</span> newPage<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        newPage <span class="token operator">=</span> <span class="token punctuation">(</span>MemPage<span class="token punctuation">)</span><span class="token function">malloc</span><span class="token punctuation">(</span>MEMORY_POOL_PAGE_SIZE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token constant">NULL</span> <span class="token operator">==</span> newPage<span class="token punctuation">)</span>
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token function">exit</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>        
+
+    currentMemPage <span class="token operator">=</span> <span class="token function">InitMemPage</span><span class="token punctuation">(</span>newPage<span class="token punctuation">,</span> MEMORY_POOL_PAGE_SIZE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        
+    <span class="token comment">/* add to context, and continue to alloc from context. */</span>
+    <span class="token function">AddMemPageToContext</span><span class="token punctuation">(</span>currentMemPage<span class="token punctuation">,</span> poolContext<span class="token punctuation">)</span><span class="token punctuation">;</span>      
+
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>添加到使用列表中，同时将使用中的内存总数进行累加。</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">AddMemPageToContext</span><span class="token punctuation">(</span>MemPageInfo <span class="token operator">*</span>memPage<span class="token punctuation">,</span> MemPoolManagerContext <span class="token operator">*</span>context<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    context<span class="token operator">-&gt;</span>totalSize <span class="token operator">+=</span> memPage<span class="token operator">-&gt;</span>memPageSize<span class="token punctuation">;</span>       
+    
+    <span class="token comment">/* add to mempage list */</span>
+    <span class="token function">AddMemPageNode</span><span class="token punctuation">(</span><span class="token operator">&amp;</span><span class="token punctuation">(</span>context<span class="token operator">-&gt;</span>memPageList<span class="token punctuation">)</span><span class="token punctuation">,</span> memPage<span class="token punctuation">)</span><span class="token punctuation">;</span>   
+    context<span class="token operator">-&gt;</span>currUsePage <span class="token operator">=</span> memPage<span class="token punctuation">;</span>
+    
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>其中<code>AddMemPageNode</code>是将新的内存页加到链表中，这个在链表章节介绍。</p> 
+<h3><a id="font_color224070_33_memNode__font_218"></a><font color="#224070"> 3.3 memNode 释放与释放 </font></h3> 
+<p>每次应用申请内存，都是从内存池中分配一个memNode。</p> 
+<p>当申请的size 小于当前内存页的空闲空间时，在当前页中分配一个memBlock结构；</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> MemPtr <span class="token function">AllocFromMemPage</span><span class="token punctuation">(</span>MemPageInfo <span class="token operator">*</span>mPage<span class="token punctuation">,</span> <span class="token keyword">int</span> size<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    MemBlock <span class="token operator">*</span>memb <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+
+    mPage<span class="token operator">-&gt;</span>freeSize <span class="token operator">-=</span> size<span class="token punctuation">;</span>
+    memb <span class="token operator">=</span> <span class="token punctuation">(</span>MemBlock<span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span><span class="token punctuation">)</span>mPage <span class="token operator">+</span> mPage<span class="token operator">-&gt;</span>useOffset<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    mPage<span class="token operator">-&gt;</span>useOffset <span class="token operator">+=</span> size<span class="token punctuation">;</span>
+
+    memb<span class="token operator">-&gt;</span>memPage <span class="token operator">=</span> mPage<span class="token punctuation">;</span>
+    memb<span class="token operator">-&gt;</span>size <span class="token operator">=</span> size<span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token punctuation">(</span>MemPtr<span class="token punctuation">)</span><span class="token punctuation">(</span>memb<span class="token operator">-&gt;</span>ptr<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>而当应用程序释放内存时，会将memBlock归还给对应的memPage；</p> 
+<p>在分配时，需要记录对应的memPage的地址，此时就可以进行引用。</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">ReleaseToMemPage</span><span class="token punctuation">(</span>MemBlock <span class="token operator">*</span>memb<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    MemPageListInfo <span class="token operator">*</span>memPageList <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    MemPageInfo <span class="token operator">*</span>memPage <span class="token operator">=</span> memb<span class="token operator">-&gt;</span>memPage<span class="token punctuation">;</span>
+    DList <span class="token operator">*</span>header <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> ret <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token constant">NULL</span> <span class="token operator">==</span> memPage<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    memPage<span class="token operator">-&gt;</span>releaseSize <span class="token operator">+=</span> memb<span class="token operator">-&gt;</span>size<span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>释放时只是将待释放的内存大小增加到了 releaseSize；</p> 
+<p>当然这里可以将再进行优化，当memPage为空时，将它从使用列表中移除，并填加到空闲列表中。</p> 
+<h3><a id="font_color224070_34__font_267"></a><font color="#224070"> 3.4 应用申请内存 </font></h3> 
+<p>应用程序申请内存时，不能再使用malloc/free这两个接口了，需要使用自定义的接口。</p> 
+<p><img src="https://images2.imgbox.com/fb/46/ZQET2xL8_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>动态内存申请接口</strong></p> 
+<p>申请的流程如下：</p> 
+<ul><li>需要先定义一个全局的MemPoolManagerContext结构，来保存整个申请的内存页列表；通过GetMemPoolCurrentContext，可以达到单例获取的目的。</li><li>申请的内存size需要增加MemBlock的头部成员的大小；</li><li>当申请的size大于内存页可分配的上限时，直接分配一个非标准的内存页，将将它加到内存管理链表中；</li><li>然后从内存管理中进行分配内存节点；</li></ul> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MEMORY_POOL_BLOCK_HEADER_SIZE</span> <span class="token expression"><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span>MemBlock<span class="token punctuation">)</span><span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MEMPAGE_INFO_LEN</span> <span class="token expression"><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span>MemPageInfo<span class="token punctuation">)</span><span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MEMORY_POOL_MAX_ALLOC_SIZE</span> <span class="token expression"><span class="token punctuation">(</span>MEMORY_POOL_PAGE_SIZE <span class="token operator">-</span> MEMPAGE_INFO_LEN<span class="token punctuation">)</span></span></span>
+
+MemPtr <span class="token function">AllocFromMemPool</span><span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">int</span> size<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    MemPtr mem <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    MemPoolManagerContext <span class="token operator">*</span>currentMemContext <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    MemPageInfo <span class="token operator">*</span>currentMemPage <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    MemPage newPage <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+
+    currentMemContext <span class="token operator">=</span> <span class="token function">GetMemPoolCurrentContext</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token constant">NULL</span> <span class="token operator">==</span> currentMemContext<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">/* add memblock header size */</span>
+    size <span class="token operator">+=</span> MEMORY_POOL_BLOCK_HEADER_SIZE<span class="token punctuation">;</span>
+
+    <span class="token comment">/* oversize */</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span>size <span class="token operator">&gt;=</span> MEMORY_POOL_MAX_ALLOC_SIZE<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        newPage <span class="token operator">=</span> <span class="token punctuation">(</span>MemPage<span class="token punctuation">)</span><span class="token function">malloc</span><span class="token punctuation">(</span>size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        currentMemPage <span class="token operator">=</span> <span class="token function">InitMemPage</span><span class="token punctuation">(</span>newPage<span class="token punctuation">,</span> size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">AddMemPageToContext</span><span class="token punctuation">(</span>currentMemPage<span class="token punctuation">,</span> currentMemContext<span class="token punctuation">)</span><span class="token punctuation">;</span> 
+
+        mem <span class="token operator">=</span> <span class="token function">AllocFromMemPage</span><span class="token punctuation">(</span>currentMemPage<span class="token punctuation">,</span> size<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> mem<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">do</span> <span class="token punctuation">{<!-- --></span>
+        mem <span class="token operator">=</span> <span class="token function">AllocFromMemContext</span><span class="token punctuation">(</span>size<span class="token punctuation">,</span> currentMemContext<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token constant">NULL</span> <span class="token operator">!=</span> mem<span class="token punctuation">)</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+
+        <span class="token function">AddNewPageToContext</span><span class="token punctuation">(</span>currentMemContext<span class="token punctuation">)</span><span class="token punctuation">;</span>     
+    <span class="token punctuation">}</span><span class="token keyword">while</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> mem<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这里有一个小技巧，后面使用了一个<code>do { }while(1)</code>的循环，其实这里就是为了写法简单，当没有空闲空间时，会申请一个内存页，然后继续分配内存节点。</p> 
+<p><strong>动态内存释放接口</strong></p> 
+<p>这里相对简单，就是将当前内存节点释放到对应的内存页上。</p> 
+<pre><code class="prism language-c">
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">GetOffsetSize</span><span class="token expression"><span class="token punctuation">(</span>type<span class="token punctuation">,</span> member<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">long</span><span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token operator">&amp;</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>type <span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span>member<span class="token punctuation">)</span><span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">GetAddrByMember</span><span class="token expression"><span class="token punctuation">(</span>memberaddr<span class="token punctuation">,</span> member<span class="token punctuation">,</span> type<span class="token punctuation">)</span> <span class="token punctuation">(</span>type <span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span>memberaddr<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token function">GetOffsetSize</span><span class="token punctuation">(</span>type<span class="token punctuation">,</span>member<span class="token punctuation">)</span><span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">GetMemBlockHeader</span><span class="token expression"><span class="token punctuation">(</span>memptr<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token function">GetAddrByMember</span><span class="token punctuation">(</span>memptr<span class="token punctuation">,</span> ptr<span class="token punctuation">,</span> MemBlock<span class="token punctuation">)</span><span class="token punctuation">)</span></span></span>
+<span class="token keyword">int</span> <span class="token function">ReleaseToMemPool</span><span class="token punctuation">(</span>MemPtr mem<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token function">ReleaseToMemPage</span><span class="token punctuation">(</span><span class="token function">GetMemBlockHeader</span><span class="token punctuation">(</span>mem<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在应用程序中拿到的是ptr数组首地址，通过它在结构体中的偏移，可以找到memBlock结构的地址，这里定义了一个宏。</p> 
+<p>当然可以使用<code>offsetof</code>，这个预定义的函数来获取结构体成员的偏移。</p> 
+<h2><a id="font_colorA0522D_font_349"></a><font color="#A0522D">四、总结 </font></h2> 
+<hr> 
+<p>在动态内存使用频繁的应用程序中，不仅与操作系统交互多，而且会造成大量的内存碎片，增加额外的系统负担。</p> 
+<p>本文分享了通过动态内存池的方法，每次申请一个内存页，然后在当有动态内存需要时，进行切分，可以避够内存碎片的产生。</p> 
+<p>当然也存在很多可优化的地方，在释放时可以保留一部分内存页在freeList中，这样进一步减少与操作系统的交互。</p> 
+<h2><a id="font_colorA0522D_font_357"></a><font color="#A0522D">结尾 </font></h2> 
+<hr> 
+<blockquote> 
+ <p><strong>非常感谢大家的支持，在浏览的同时别忘了留下您宝贵的评论，如果觉得值得鼓励，请点赞，收藏，我会更加努力！</strong></p> 
+</blockquote> 
+<p>作者邮箱：study@senllang.onaliyun.com<br> 如有错误或者疏漏欢迎指出，互相学习。</p> 
+<p>注：未经同意，不得转载！</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/99eca00b1ced7f4625346e049337d0af/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">开源PHP论坛HadSky本地部署与配置公网地址实现远程访问</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a2ef3d9ae0c0523663a7fa9f6d576a32/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【Vue】Vue3的emits方法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

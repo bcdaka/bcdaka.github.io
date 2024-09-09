@@ -1,0 +1,332 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>多个消费者订阅一个Kafka的Topic(使用@KafkaListener和KafkaTemplate) - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/130c81686626a93ced4faaa1d6b5cd2e/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="多个消费者订阅一个Kafka的Topic(使用@KafkaListener和KafkaTemplate)">
+  <meta property="og:description" content="记录：465
+场景：一个Producer在一个Topic发布消息，多个消费者Consumer订阅Kafka的Topic。每个Consumer指定一个特定的ConsumerGroup，达到一条消息被多个不同的ConsumerGroup消费。
+版本：JDK 1.8,Spring Boot 2.6.3,kafka_2.12-2.8.0,spring-kafka-2.8.2。
+Kafka集群安装：https://blog.csdn.net/zhangbeizhen18/article/details/131156084
+1.基础概念
+Topic：Kafka根据Topic对消息进行归类，发布到Kafka的每条消息都需要指定一个Topic。
+Producer：消息生产者，向Broker发送消息的客户端。
+Consumer：消息消费者，从Broker读取消息的客户端。
+ConsumerGroup：每个Consumer属于一个特定的ConsumerGroup，一条消息可以被多个不同的ConsumerGroup消费；但是一个ConsumerGroup中只能有一个Consumer能够消费该消息。
+publish：发布，使用Producer向Kafka写入数据。
+subscribe：订阅，使用Consumer从Kafka读取数据。
+2.微服务中配置Kafka信息
+(1)在pom.xml添加依赖
+&lt;dependency&gt; &lt;groupId&gt;org.springframework.kafka&lt;/groupId&gt; &lt;artifactId&gt;spring-kafka&lt;/artifactId&gt; &lt;version&gt;2.8.2&lt;/version&gt; &lt;/dependency&gt; 请知悉：spring-kafka框架底层使用了原生的kafka-clients。本例对应版本：3.0.0。
+(2)在application.yml中配置Kafka信息
+配置参考官网的configuration：https://kafka.apache.org/documentation/
+(1)application.yml配置内容
+spring: kafka: #kafka集群的IP和端口,格式:(ip:port) bootstrap-servers: - 192.168.19.161:29092 - 192.168.19.162:29092 - 192.168.19.163:29092 #生产者 producer: #客户端发送服务端失败的重试次数 retries: 2 #多个记录被发送到同一个分区时,生产者将尝试将记录一起批处理成更少的请求. #此设置有助于提高客户端和服务器的性能,配置控制默认批量大小(以字节为单位) batch-size: 16384 #生产者可用于缓冲等待发送到服务器的记录的总内存字节数(以字节为单位) buffer-memory: 33554432 #指定key使用的序列化类 key-serializer: org.apache.kafka.common.serialization.StringSerializer #指定value使用的序列化类 value-serializer: org.apache.kafka.common.serialization.StringSerializer #生产者producer要求leader节点在考虑完成请求之前收到的确认数,用于控制发送记录在服务端的持久化 #acks=0,设置为0,则生产者producer将不会等待来自服务器的任何确认.该记录将立即添加到套接字(socket)缓冲区并视为已发送.在这种情况下,无法保证服务器已收到记录,并且重试配置(retries)将不会生效(因为客户端通常不会知道任何故障),每条记录返回的偏移量始终设置为-1. #acks=1,设置为1,leader节点会把记录写入本地日志,不需要等待所有follower节点完全确认就会立即应答producer.在这种情况下,在follower节点复制前,leader节点确认记录后立即失败的话,记录将会丢失. #acks=all,acks=-1,leader节点将等待所有同步复制副本完成再确认记录,这保证了只要至少有一个同步复制副本存活,记录就不会丢失. acks: -1 consumer: #开启consumer的偏移量(offset)自动提交到Kafka enable-auto-commit: true #consumer的偏移量(offset)自动提交的时间间隔,单位毫秒 auto-commit-interval: 1000 #在Kafka中没有初始化偏移量或者当前偏移量不存在情况 #earliest,在偏移量无效的情况下,自动重置为最早的偏移量 #latest,在偏移量无效的情况下,自动重置为最新的偏移量 #none,在偏移量无效的情况下,抛出异常.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2023-06-26T23:44:27+08:00">
+    <meta property="article:modified_time" content="2023-06-26T23:44:27+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">多个消费者订阅一个Kafka的Topic(使用@KafkaListener和KafkaTemplate)</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p style="margin-left:.0001pt;text-align:left;"><strong><strong>记录</strong></strong>：465</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>场景</strong></strong>：一个Producer在一个Topic发布消息，多个消费者Consumer订阅Kafka的Topic。每个Consumer指定一个特定的ConsumerGroup，达到一条消息被多个不同的ConsumerGroup消费。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>版本</strong></strong>：JDK 1.8,Spring Boot 2.6.3,kafka_2.12-2.8.0,spring-kafka-2.8.2。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>Kafka集群安装</strong></strong>：https://blog.csdn.net/zhangbeizhen18/article/details/131156084</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>1.基础概念</strong></strong></p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>Topic</strong></strong>：Kafka根据Topic对消息进行归类，发布到Kafka的每条消息都需要指定一个Topic。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>Producer</strong></strong>：消息生产者，向Broker发送消息的客户端。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>Consumer</strong></strong>：消息消费者，从Broker读取消息的客户端。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>ConsumerGroup</strong></strong>：每个Consumer属于一个特定的ConsumerGroup，一条消息可以被多个不同的ConsumerGroup消费；但是一个ConsumerGroup中只能有一个Consumer能够消费该消息。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>publish</strong></strong>：发布，使用Producer向Kafka写入数据。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>subscribe</strong></strong>：订阅，使用Consumer从Kafka读取数据。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>2.微服务中</strong></strong><strong><strong>配置Kafka信息</strong></strong></p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>(1)在pom.xml添加依赖</strong></strong></p> 
+<pre><code class="language-XML">&lt;dependency&gt;
+  &lt;groupId&gt;org.springframework.kafka&lt;/groupId&gt;
+  &lt;artifactId&gt;spring-kafka&lt;/artifactId&gt;
+  &lt;version&gt;2.8.2&lt;/version&gt;
+&lt;/dependency&gt;</code></pre> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>请知悉</strong></strong>：spring-kafka框架底层使用了原生的kafka-clients。本例对应版本：3.0.0。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>(2)在application.yml中配置Kafka信息</strong></strong></p> 
+<p style="margin-left:.0001pt;text-align:left;">配置参考官网的configuration：<strong><strong>https://kafka.apache.org/documentation/</strong></strong></p> 
+<p style="margin-left:.0001pt;text-align:left;">(1)application.yml配置内容</p> 
+<pre><code class="language-XML">spring:
+  kafka:
+    #kafka集群的IP和端口,格式:(ip:port)
+    bootstrap-servers:
+      - 192.168.19.161:29092
+      - 192.168.19.162:29092
+      - 192.168.19.163:29092
+    #生产者
+    producer:
+      #客户端发送服务端失败的重试次数
+      retries: 2
+      #多个记录被发送到同一个分区时,生产者将尝试将记录一起批处理成更少的请求.
+      #此设置有助于提高客户端和服务器的性能,配置控制默认批量大小(以字节为单位)
+      batch-size: 16384
+      #生产者可用于缓冲等待发送到服务器的记录的总内存字节数(以字节为单位)
+      buffer-memory: 33554432
+      #指定key使用的序列化类
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      #指定value使用的序列化类
+      value-serializer: org.apache.kafka.common.serialization.StringSerializer
+      #生产者producer要求leader节点在考虑完成请求之前收到的确认数,用于控制发送记录在服务端的持久化
+      #acks=0,设置为0,则生产者producer将不会等待来自服务器的任何确认.该记录将立即添加到套接字(socket)缓冲区并视为已发送.在这种情况下,无法保证服务器已收到记录,并且重试配置(retries)将不会生效(因为客户端通常不会知道任何故障),每条记录返回的偏移量始终设置为-1.
+      #acks=1,设置为1,leader节点会把记录写入本地日志,不需要等待所有follower节点完全确认就会立即应答producer.在这种情况下,在follower节点复制前,leader节点确认记录后立即失败的话,记录将会丢失.
+      #acks=all,acks=-1,leader节点将等待所有同步复制副本完成再确认记录,这保证了只要至少有一个同步复制副本存活,记录就不会丢失.
+      acks: -1
+    consumer:
+      #开启consumer的偏移量(offset)自动提交到Kafka
+      enable-auto-commit: true
+      #consumer的偏移量(offset)自动提交的时间间隔,单位毫秒
+      auto-commit-interval: 1000
+      #在Kafka中没有初始化偏移量或者当前偏移量不存在情况
+      #earliest,在偏移量无效的情况下,自动重置为最早的偏移量
+      #latest,在偏移量无效的情况下,自动重置为最新的偏移量
+      #none,在偏移量无效的情况下,抛出异常.
+      auto-offset-reset: latest
+      #一次调用poll返回的最大记录条数
+      max-poll-records: 500
+      #请求阻塞的最大时间(毫秒)
+      fetch-max-wait: 500
+      #请求应答的最小字节数
+      fetch-min-size: 1
+      #心跳间隔时间(毫秒)
+      heartbeat-interval: 3000
+      #指定key使用的反序列化类
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      #指定value使用的反序列化类
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer</code></pre> 
+<p style="margin-left:.0001pt;text-align:left;">(2)解析</p> 
+<p style="margin-left:.0001pt;text-align:left;">配置类在spring boot自动注解包：spring-boot-autoconfigure-2.6.3.jar。</p> 
+<p style="margin-left:.0001pt;text-align:left;">类：org.springframework.boot.autoconfigure.kafka.KafkaProperties。</p> 
+<p style="margin-left:.0001pt;text-align:left;">使用@ConfigurationProperties注解使其生效，前缀是：spring.kafka。</p> 
+<p style="margin-left:.0001pt;text-align:left;">spring-kafka框架对操作Kafka单机版和Kafka集群版的配置差异：</p> 
+<p style="margin-left:.0001pt;text-align:left;">在于bootstrap-servers属性，单机版配置一个IP:端口对。集群版配置多个IP:端口对就行。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>(3)加载逻辑</strong></strong></p> 
+<p style="margin-left:.0001pt;text-align:left;">Spring Boot微服务在启动时，Spring Boot会读取application.yml的配置信息，根据配置内容在spring-boot-autoconfigure-2.6.3.jar找到KafkaProperties并注入到对应属性。Spring Boot微服务在启动完成后，KafkaProperties的配置信息在Spring环境中就能无缝使用。</p> 
+<p style="margin-left:.0001pt;text-align:left;">Spring的spring-kafka框架将KafkaProperties配置信息注入到KafkaTemplate操作生产者Producer。</p> 
+<p style="margin-left:.0001pt;text-align:left;">Spring的spring-kafka框架使用KafkaProperties和@KafkaListener操作Kafka的消费者Consumer。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>3.生产者(ChangjiangDeltaCityProducerController)</strong></strong></p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>(1)示例代码</strong></strong></p> 
+<pre><code class="language-java">@RestController
+@RequestMapping("/hub/example/delta/producer")
+@Slf4j
+public class ChangjiangDeltaCityProducerController {
+  //1.注入KafkaTemplate
+  @Autowired
+  private KafkaTemplate&lt;String, String&gt; kafkaTemplate;
+  //2.定义Kafka的Topic
+  private final String topicName = "hub-topic-city-delta";
+  @GetMapping("/f01_1")
+  public Object f01_1(String msgContent) {
+    try {
+      //3.获取业务数据对象
+      String uuid=UUID.randomUUID().toString().replace("-","");
+      long now=System.currentTimeMillis();
+      String msgKey = "delta" + ":" + uuid + ":" + now;
+      MsgDto msgDto = MsgDto.buildDto(uuid,now,msgContent);
+      String msgData = JSONObject.toJSONString(msgDto);
+      log.info("KafkaProducer向Kafka集群的Topic: {},写入Key:", topicName);
+      log.info(msgKey);
+      log.info("KafkaProducer向Kafka集群的Topic: {},写入Data:", topicName);
+      log.info(msgData);
+      //4.使用KafkaTemplate向Kafka集群写入数据(topic,key,data)
+      kafkaTemplate.send(topicName, msgKey, msgData);
+    } catch (Exception e) {
+      log.info("Producer写入Topic异常.");
+      e.printStackTrace();
+    }
+    return "写入成功";
+  }
+}</code></pre> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>(2)解析代码</strong></strong></p> 
+<p style="margin-left:.0001pt;text-align:left;">使用KafkaTemplate向Kafka集群的Topic：hub-topic-city-delta写入JSON字符串数据，发布一条消息，给订阅的消费者消费。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>4.消费者一(HangzhouCityConsumer)</strong></strong></p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>(1)示例代码</strong></strong></p> 
+<pre><code class="language-java">@Component
+@Slf4j
+public class HangzhouCityConsumer {
+  // 1.定义Kafka的Topic
+  private final String topicName = "hub-topic-city-delta";
+  // 2.使用@KafkaListener监听Kafka集群的Topic
+  @KafkaListener(
+      topics = {topicName},
+      groupId = "hub-topic-city-delta-group-hangzhou")
+  public void consumeMsg(ConsumerRecord&lt;?, ?&gt; record) {
+    try {
+        //3.KafkaConsumer从集群中监听的消息存储在ConsumerRecord
+        String msgKey= (String) record.key();
+        String msgData = (String) record.value();
+        log.info("HangzhouCityConsumer从Kafka集群中的Topic:{},消费的原始数据的Key:",topicName);
+        log.info(msgKey);
+        log.info("HangzhouCityConsumer从Kafka集群中的Topic:{},消费的原始数据的Data:",topicName);
+        log.info(msgData);
+    } catch (Exception e) {
+        log.info("HangzhouCityConsumer消费Topic异常.");
+        e.printStackTrace();
+    }
+  }
+}</code></pre> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>(2)解析代码</strong></strong></p> 
+<p style="margin-left:.0001pt;text-align:left;">使用@KafkaListener的属性topics指定监听的Topic：hub-topic-city-delta。</p> 
+<p style="margin-left:.0001pt;text-align:left;">使用@KafkaListener的属性groupId 指定消费组：hub-topic-city-delta-group-hangzhou。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>5.消费者二(ShanghaiCityConsumer)</strong></strong></p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>(1)示例代码</strong></strong></p> 
+<pre><code class="language-java">@Component
+@Slf4j
+public class ShanghaiCityConsumer {
+  // 1.定义Kafka的Topic
+  private final String topicName = "hub-topic-city-delta";
+  // 2.使用@KafkaListener监听Kafka集群的Topic
+  @KafkaListener(
+          topics = {topicName},
+          groupId = "hub-topic-city-delta-group-shanghai")
+  public void consumeMsg(ConsumerRecord&lt;?, ?&gt; record) {
+    try {
+        //3.KafkaConsumer从集群中监听的消息存储在ConsumerRecord
+        String msgKey = (String) record.key();
+        String msgData = (String) record.value();
+        log.info("ShanghaiCityConsumer从Kafka集群中的Topic:{},消费的原始数据的Key:", topicName);
+        log.info(msgKey);
+        log.info("ShanghaiCityConsumer从Kafka集群中的Topic:{},消费的原始数据的Data:", topicName);
+        log.info(msgData);
+    } catch (Exception e) {
+        log.info("ShanghaiCityConsumer消费Topic异常.");
+        e.printStackTrace();
+    }
+  }
+}</code></pre> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>(2)解析代码</strong></strong></p> 
+<p style="margin-left:.0001pt;text-align:left;">使用@KafkaListener的属性topics指定监听的Topic：hub-topic-city-delta。</p> 
+<p style="margin-left:.0001pt;text-align:left;">使用@KafkaListener的属性groupId 指定消费组：hub-topic-city-delta-group-shanghai。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>6.测试</strong></strong></p> 
+<p style="margin-left:.0001pt;text-align:left;">(1)使用Postman测试，调用生产者写入数据</p> 
+<p style="margin-left:.0001pt;text-align:left;">请求RUL：http://127.0.0.1:18208/hub-208-kafka/hub/example/delta/producer/f01_1</p> 
+<p style="margin-left:.0001pt;text-align:left;">参数：msgContent="长三角经济带实力强大"</p> 
+<p style="margin-left:.0001pt;text-align:left;">(2)生产者日志</p> 
+<pre><code class="language-java">KafkaProducer向Kafka集群的Topic: hub-topic-city-delta,写入Key:
+delta:b5a669933f4041588d53d53c22888943:1687789723647
+KafkaProducer向Kafka集群的Topic: hub-topic-city-delta,写入Data:
+{"msgContent":"长三角经济带实力强大","publicTime":"2023-06-26 22:28:43","uuid":"b5a669933f4041588d53d53c22888943"}</code></pre> 
+<p style="margin-left:.0001pt;text-align:left;">(3)消费者一日志</p> 
+<pre><code class="language-java">HangzhouCityConsumer从Kafka集群中的Topic:hub-topic-city-delta,消费的原始数据的Key:
+delta:b5a669933f4041588d53d53c22888943:1687789723647
+HangzhouCityConsumer从Kafka集群中的Topic:hub-topic-city-delta,消费的原始数据的Data:
+{"msgContent":"长三角经济带实力强大","publicTime":"2023-06-26 22:28:43","uuid":"b5a669933f4041588d53d53c22888943"}</code></pre> 
+<p style="margin-left:.0001pt;text-align:left;">(4)消费者二日志</p> 
+<pre><code class="language-java">ShanghaiCityConsumer从Kafka集群中的Topic:hub-topic-city-delta,消费的原始数据的Key:
+delta:b5a669933f4041588d53d53c22888943:1687789723647
+ShanghaiCityConsumer从Kafka集群中的Topic:hub-topic-city-delta,消费的原始数据的Data:
+{"msgContent":"长三角经济带实力强大","publicTime":"2023-06-26 22:28:43","uuid":"b5a669933f4041588d53d53c22888943"}</code></pre> 
+<p style="margin-left:.0001pt;text-align:left;">(5)结论</p> 
+<p style="margin-left:.0001pt;text-align:left;">每个Consumer指定一个特定的ConsumerGroup，一条消息可以被多个不同的ConsumerGroup消费。</p> 
+<p style="margin-left:.0001pt;text-align:left;"><strong><strong>7.辅助类</strong></strong></p> 
+<pre><code class="language-java">@Data
+@Builder
+public class MsgDto implements Serializable {
+  private String uuid;
+  private String publicTime;
+  private String msgContent;
+  public static MsgDto buildDto(String uuid,
+                      long publicTime,
+                      String msgContent) {
+      return builder().uuid(uuid)
+          .publicTime(DateUtil.formatDateTime(new Date(publicTime)))
+          .msgContent(msgContent).build();
+  }
+}</code></pre> 
+<p style="margin-left:.0001pt;text-align:left;">以上，感谢。</p> 
+<p style="margin-left:.0001pt;text-align:right;">2023年6月26日</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/20ae6f041abc33be1f56a04f4e32f5f5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">java.lang.IllegalStateException: Failed to load ApplicationContext报错怎么办</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c363bf947bf2c25ec4ae7fac5e631d5a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">基于Java&#43;SpringBoot&#43;Vue前后端分离校园闲置物品交易网站</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

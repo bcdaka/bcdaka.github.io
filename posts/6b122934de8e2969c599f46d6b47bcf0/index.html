@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>大数据-76 Kafka 高级特性 稳定性-消费重复 生产者、Broker、消费者 导致的重复消费问题 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/6b122934de8e2969c599f46d6b47bcf0/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="大数据-76 Kafka 高级特性 稳定性-消费重复 生产者、Broker、消费者 导致的重复消费问题">
+  <meta property="og:description" content="点一下关注吧！！！非常感谢！！持续更新！！！ 目前已经更新到了： Hadoop（已更完）HDFS（已更完）MapReduce（已更完）Hive（已更完）Flume（已更完）Sqoop（已更完）Zookeeper（已更完）HBase（已更完）Redis （已更完）Kafka（正在更新…） 章节内容 上节我们完成了如下内容：
+Kafka 一致性保证LogAndOffset(LEO)HightWatermark(HW)Leader和Follower何时更新 LEOLeader和Follower何时更新 HW 基本介绍 消息重复和丢失是Kafka中很常见的问题，主要发生在以下三个阶段：
+生产者阶段Broke阶段消费者阶段 生产者阶段丢失 出现场景 生产者发送消息没有收到正确Broke的响应，导致生产者重试。
+生产者发送出一条消息，Broker落盘以后因为网络等种种原因发送端得到一个发送失败的响应或者网络中断，然后生产者收到一个可恢复的Exception重试消息导致消息重复。
+重试过程 上图说明：
+new KafkaProducer()创建一个后台线程KafkaThread扫描RecordAccumulator中是否有消息调用KafkaProducer.send()发送消息，实际上只是把消息保存到RecordAccumulator中后台线程KafkaThread扫描到RecordAccumulator中有消息后，将消息发送到Kafka集群如果发送成功，那么返回成功如果发送失败，判断是否重试，如果不允许重试则失败。允许重试则再保存到RecordAccumulator中，等待后台线程KafkaThread扫描再次发送 可恢复异常 异常是 RetriableException类型 或者 TransactionManager允许重试，RetriableException类集成关系如下：
+消息顺序问题 如果设置max.in.flight.requests.per.connection大于1（默认5，单个连接上发送的未确认的请求的最大数量，表示上一个发出的请求没有确认下一个请求又发出去了）。大于1可能会改变记录的顺序，因为如果将两个Batch发送到单个分区，第一个batch处理失败并重试，但是第二个batch处理成功，那么第二个batch处理中的记录可能先出现被消费掉。如果设置max.in.flight.requests.per.connection等于1，则可能会影响吞吐量，可以解决单个生产者发送顺序问题，如果多个生产者，生产者1先发送一个请求，生产者2后发送请求，此时生产者1返回可恢复异常，且重试成功，此时虽然1先发送，但是2是先被消费的。 解决方案 幂等性 启动Kafka幂等性：
+enable.idempotence=trueack=allretries&gt;=1 ack=0且不重试 可能会丢失消息，适用于吞吐量指标重要性高于数据丢失，比如：日志采集。
+生产者-Broker阶段丢失 出现场景 ack=0且不重试 生产者发送消息完，不管结果了，如果发送失败也就丢失了
+ack=1, Leader宕机 生产者发送完消息，只等待Leader写入成功就返回了，Leader分区丢失了，此时Follower没来得及同步，消息丢失。
+unclean.leader.election.enable配置为true 允许选举ISR以外的副本作为Leader，会导致数据丢失，默认为False。生产者发送异步消息，只等待Leader写入成功就返回，Leader分区丢失，此时ISR中就没有Follower，Leader从OSR中选举，因为OSR中本来就落后于Leader，造成了消息的丢失。
+解决方案 禁用unclean选举 ACK=ALL ack=all 或者 -1tries &gt; 1unclean.leader.election.enable = false
+生产者发送完消息后，等待Follower同步完再返回，如果异常则重试。副本的数量可能影响吞吐量，不超过5个，一般是3个。
+不允许unclean的Leader参与选举。 min.insync.replicas &gt; 1 当生产者acks设置all（或-1）时，min.insync.replicas &gt; 1。指定确认消息写成功需要的最小副本数量。达不到这个最小值，生产者将引发一个异常。（可能是NotEnoughReplicas，可能是NotEnoughReplicasAfterAppend）。
+当一起使用时，min.insync.replicas和ack允许执行更大的持久性保证。一个典型的场景是创建一个复制因子为3的主题，设置min.insync复制到2个，用all配置发送。将确保如果大多数副本没有收到写操作，则生产者将引发异常。
+失败的offset单独记录 生产者发送消息，会自动重试，遇到不可能恢复异常会跳出。这是可以捕获异常记录到数据库或者缓存，进行单独的处理。
+消费者数据重复场景 出现场景 数据消费完没有及时的提交offset到Broker。
+消费消息端在消费过程中挂掉没有及时的提交offset到Broker，另一个消费端启动之后拿到之前的offset记录开始消费，由于offset的滞后性可能会导致启动的客户端有少量的重复消费。
+解决方案 取消自动提交 每次消费完或者程序退出时手动提交，这可能也没法保证一条重复。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-08-10T09:11:09+08:00">
+    <meta property="article:modified_time" content="2024-08-10T09:11:09+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">大数据-76 Kafka 高级特性 稳定性-消费重复 生产者、Broker、消费者 导致的重复消费问题</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>点一下关注吧！！！非常感谢！！持续更新！！！</h2> 
+<h2><a id="_1"></a>目前已经更新到了：</h2> 
+<ul><li>Hadoop（已更完）</li><li>HDFS（已更完）</li><li>MapReduce（已更完）</li><li>Hive（已更完）</li><li>Flume（已更完）</li><li>Sqoop（已更完）</li><li>Zookeeper（已更完）</li><li>HBase（已更完）</li><li>Redis （已更完）</li><li>Kafka（正在更新…）</li></ul> 
+<h2><a id="_13"></a>章节内容</h2> 
+<p>上节我们完成了如下内容：</p> 
+<ul><li>Kafka 一致性保证</li><li>LogAndOffset(LEO)</li><li>HightWatermark(HW)</li><li>Leader和Follower何时更新 LEO</li><li>Leader和Follower何时更新 HW</li></ul> 
+<p><img src="https://images2.imgbox.com/4e/57/KoZ0xP9X_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_22"></a>基本介绍</h2> 
+<p>消息重复和丢失是Kafka中很常见的问题，主要发生在以下三个阶段：</p> 
+<ul><li>生产者阶段</li><li>Broke阶段</li><li>消费者阶段</li></ul> 
+<h2><a id="_28"></a>生产者阶段丢失</h2> 
+<h3><a id="_29"></a>出现场景</h3> 
+<p>生产者发送消息没有收到正确Broke的响应，导致生产者重试。<br> 生产者发送出一条消息，Broker落盘以后因为网络等种种原因发送端得到一个发送失败的响应或者网络中断，然后生产者收到一个可恢复的Exception重试消息导致消息重复。</p> 
+<h3><a id="_33"></a>重试过程</h3> 
+<p><img src="https://images2.imgbox.com/9a/d4/0IuOW8Pz_o.png" alt="在这里插入图片描述"><br> 上图说明：</p> 
+<ul><li>new KafkaProducer()创建一个后台线程KafkaThread扫描RecordAccumulator中是否有消息</li><li>调用KafkaProducer.send()发送消息，实际上只是把消息保存到RecordAccumulator中</li><li>后台线程KafkaThread扫描到RecordAccumulator中有消息后，将消息发送到Kafka集群</li><li>如果发送成功，那么返回成功</li><li>如果发送失败，判断是否重试，如果不允许重试则失败。允许重试则再保存到RecordAccumulator中，等待后台线程KafkaThread扫描再次发送</li></ul> 
+<h3><a id="_42"></a>可恢复异常</h3> 
+<p>异常是 RetriableException类型 或者 TransactionManager允许重试，RetriableException类集成关系如下：<br> <img src="https://images2.imgbox.com/6d/3e/olq4gk3o_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_45"></a>消息顺序问题</h3> 
+<ul><li>如果设置max.in.flight.requests.per.connection大于1（默认5，单个连接上发送的未确认的请求的最大数量，表示上一个发出的请求没有确认下一个请求又发出去了）。大于1可能会改变记录的顺序，因为如果将两个Batch发送到单个分区，第一个batch处理失败并重试，但是第二个batch处理成功，那么第二个batch处理中的记录可能先出现被消费掉。</li><li>如果设置max.in.flight.requests.per.connection等于1，则可能会影响吞吐量，可以解决单个生产者发送顺序问题，如果多个生产者，生产者1先发送一个请求，生产者2后发送请求，此时生产者1返回可恢复异常，且重试成功，此时虽然1先发送，但是2是先被消费的。</li></ul> 
+<h3><a id="_49"></a>解决方案</h3> 
+<h4><a id="_50"></a>幂等性</h4> 
+<p>启动Kafka幂等性：</p> 
+<ul><li>enable.idempotence=true</li><li>ack=all</li><li>retries&gt;=1</li></ul> 
+<h4><a id="ack0_56"></a>ack=0且不重试</h4> 
+<p>可能会丢失消息，适用于吞吐量指标重要性高于数据丢失，比如：日志采集。</p> 
+<h2><a id="Broker_60"></a>生产者-Broker阶段丢失</h2> 
+<h3><a id="_61"></a>出现场景</h3> 
+<h4><a id="ack0_62"></a>ack=0且不重试</h4> 
+<p>生产者发送消息完，不管结果了，如果发送失败也就丢失了</p> 
+<h4><a id="ack1_Leader_65"></a>ack=1, Leader宕机</h4> 
+<p>生产者发送完消息，只等待Leader写入成功就返回了，Leader分区丢失了，此时Follower没来得及同步，消息丢失。</p> 
+<h4><a id="uncleanleaderelectionenabletrue_68"></a>unclean.leader.election.enable配置为true</h4> 
+<p>允许选举ISR以外的副本作为Leader，会导致数据丢失，默认为False。生产者发送异步消息，只等待Leader写入成功就返回，Leader分区丢失，此时ISR中就没有Follower，Leader从OSR中选举，因为OSR中本来就落后于Leader，造成了消息的丢失。</p> 
+<h3><a id="_71"></a>解决方案</h3> 
+<h4><a id="unclean_ACKALL_72"></a>禁用unclean选举 ACK=ALL</h4> 
+<ul><li>ack=all 或者 -1</li><li>tries &gt; 1</li><li>unclean.leader.election.enable = false<br> 生产者发送完消息后，等待Follower同步完再返回，如果异常则重试。副本的数量可能影响吞吐量，不超过5个，一般是3个。<br> 不允许unclean的Leader参与选举。</li></ul> 
+<h4><a id="mininsyncreplicas__1_79"></a>min.insync.replicas &gt; 1</h4> 
+<p>当生产者acks设置all（或-1）时，min.insync.replicas &gt; 1。指定确认消息写成功需要的最小副本数量。达不到这个最小值，生产者将引发一个异常。（可能是NotEnoughReplicas，可能是NotEnoughReplicasAfterAppend）。<br> 当一起使用时，min.insync.replicas和ack允许执行更大的持久性保证。一个典型的场景是创建一个复制因子为3的主题，设置min.insync复制到2个，用all配置发送。将确保如果大多数副本没有收到写操作，则生产者将引发异常。</p> 
+<h4><a id="offset_83"></a>失败的offset单独记录</h4> 
+<p>生产者发送消息，会自动重试，遇到不可能恢复异常会跳出。这是可以捕获异常记录到数据库或者缓存，进行单独的处理。</p> 
+<h2><a id="_86"></a>消费者数据重复场景</h2> 
+<h3><a id="_87"></a>出现场景</h3> 
+<p>数据消费完没有及时的提交offset到Broker。<br> 消费消息端在消费过程中挂掉没有及时的提交offset到Broker，另一个消费端启动之后拿到之前的offset记录开始消费，由于offset的滞后性可能会导致启动的客户端有少量的重复消费。</p> 
+<h3><a id="_91"></a>解决方案</h3> 
+<h4><a id="_92"></a>取消自动提交</h4> 
+<p>每次消费完或者程序退出时手动提交，这可能也没法保证一条重复。</p> 
+<h4><a id="_95"></a>下游做幂等</h4> 
+<p>一般是让下游做幂等或者尽量每消费一条消息都记录offset，对于少数严格的场景可能需要把offset或唯一ID（例如订单ID）和下游状态更新放在同一个数据库里做事务来保证精确的一次更新。<br> 或在下游数据表里同时记录消费offset，然后更新下游数据时用消费位移做乐观锁拒绝旧位移的数据更新</p> 
+<h2><a id="__Consumer_offsets_100"></a>__Consumer_offsets</h2> 
+<p>ZooKeeper不适合大批量的频繁写入操作<br> Kafka1.0.2将Consumer的位移信息保存在Kafka内部的topic中，即__consumer_offsets主题，并且默认提供了kafka-consumer-groups.sh脚本供用户查看consumer的信息。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6e270be4cac88ca564bfb9cefebb3935/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">AI大模型额外学习一：斯坦福AI西部世界小镇笔记（包括部署和源码分析）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c33650ad70dd6abc14796bc4b756efe0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【C&#43;&#43;】—— 类与对象（四）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

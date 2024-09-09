@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink Job 执行流程 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/f7b8162e66d9d352543e0cdd495fff20/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Flink Job 执行流程">
+  <meta property="og:description" content="Flink On Yarn 模式 ​
+基于Yarn层面的架构类似 Spark on Yarn模式，都是由Client提交App到RM上面去运行，然后 RM分配第一个container去运行AM，然后由AM去负责资源的监督和管理。需要说明的是，Flink的Yarn模式更加类似Spark on Yarn的cluster模式，在cluster模式中，dirver将作为AM中的一个线程去运行。Flink on Yarn模式也是会将JobManager启动在container里面，去做个driver类似的任务调度和分配，Yarn AM与Flink JobManager在同一个Container中，这样AM可以知道Flink JobManager的地址，从而AM可以申请Container去启动Flink TaskManager。待Flink成功运行在Yarn集群上，Flink Yarn Client就可以提交Flink Job到Flink JobManager，并进行后续的映射、调度和计算处理。
+Fink on Yarn 的缺陷 【1】资源分配是静态的，一个作业需要在启动时获取所需的资源并且在它的生命周期里一直持有这些资源。这导致了作业不能随负载变化而动态调整，在负载下降时无法归还空闲的资源，在负载上升时也无法动态扩展。
+【2】On-Yarn模式下，所有的container都是固定大小的，导致无法根据作业需求来调整container的结构。譬如CPU密集的作业或需要更多的核，但不需要太多内存，固定结构的container会导致内存被浪费。
+【3】与容器管理基础设施的交互比较笨拙，需要两个步骤来启动Flink作业：1.启动Flink守护进程；2.提交作业。如果作业被容器化并且将作业部署作为容器部署的一部分，那么将不再需要步骤2。
+【4】On-Yarn模式下，作业管理页面会在作业完成后消失不可访问。
+【5】Flink推荐 per job clusters 的部署方式，但是又支持可以在一个集群上运行多个作业的session模式，令人疑惑。
+在Flink版本1.5中引入了Dispatcher，Dispatcher是在新设计里引入的一个新概念。Dispatcher会从Client端接受作业提交请求并代表它在集群管理器上启动作业。引入Dispatcher的原因主要有两点：
+【1】一些集群管理器需要一个中心化的作业生成和监控实例；
+【2】能够实现Standalone模式下JobManager的角色，且等待作业提交。在一些案例中，Dispatcher是可选的Yarn或者不兼容的kubernetes。
+资源调度模型重构下的 Flink On Yarn 模式 客户端提交JobGraph以及依赖jar包到YarnResourceManager，接着Yarn ResourceManager分配第一个container以此来启动AppMaster，Application Master中会启动一个FlinkResourceManager以及JobManager，JobManager会根据JobGraph生成的ExecutionGraph以及物理执行计划向FlinkResourceManager申请slot，FlinkResoourceManager会管理这些slot以及请求，如果没有可用slot就向Yarn的ResourceManager申请container，container启动以后会注册到FlinkResourceManager，最后JobManager会将subTask deploy到对应container的 slot中去。
+在有Dispatcher的模式下：会增加一个过程，就是Client会直接通过HTTP Server的方式，然后用Dispatcher将这个任务提交到Yarn ResourceManager中。
+新框架具有四大优势，详情如下：
+【1】client直接在Yarn上启动作业，而不需要先启动一个集群然后再提交作业到集群。因此client再提交作业后可以马上返回。
+【2】所有的用户依赖库和配置文件都被直接放在应用的classpath，而不是用动态的用户代码classloader去加载。
+【3】container在需要时才请求，不再使用时会被释放。
+【4】“需要时申请”的container分配方式允许不同算子使用不同profile (CPU和内存结构)的container。
+新的资源调度框架下 single cluster job on Yarn 流程介绍 single cluster job on Yarn模式涉及三个实例对象：">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2023-12-27T22:53:04+08:00">
+    <meta property="article:modified_time" content="2023-12-27T22:53:04+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink Job 执行流程</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="Flink_On_Yarn__0"></a>Flink On Yarn 模式</h3> 
+<p><img src="https://images2.imgbox.com/ba/a7/K2NhkhYg_o.png" alt="在这里插入图片描述"></p> 
+<p>​</p> 
+<p>基于<code>Yarn</code>层面的架构类似 <strong><code>Spark on Yarn</code>模式</strong>，都是由<code>Client</code>提交<code>App</code>到<code>RM</code>上面去运行，然后 <strong><code>RM</code>分配第一个<code>container</code>去运行<code>AM</code>，然后由<code>AM</code>去负责资源的监督和管理</strong>。需要说明的是，<code>Flink</code>的<code>Yarn</code>模式更加类似<code>Spark on Yarn</code>的<code>cluster</code>模式，在<code>cluster</code>模式中，<code>dirver</code>将作为<code>AM</code>中的一个线程去运行。<strong><code>Flink on Yarn</code>模式也是会将<code>JobManager</code>启动在<code>container</code>里面</strong>，去做个<code>driver</code>类似的任务调度和分配，<strong><code>Yarn AM</code>与<code>Flink JobManager</code>在同一个<code>Container</code>中</strong>，这样<code>AM</code>可以知道<code>Flink JobManager</code>的地址，从而<code>AM</code>可以申请<code>Container</code>去启动<code>Flink TaskManager</code>。待<code>Flink</code>成功运行在<code>Yarn</code>集群上，<code>Flink Yarn Client</code>就可以提交<code>Flink Job</code>到<code>Flink JobManager</code>，并进行后续的映射、调度和计算处理。</p> 
+<h3><a id="Fink_on_Yarn__6"></a>Fink on Yarn 的缺陷</h3> 
+<p>【1】资源分配是静态的，一个作业需要在启动时获取所需的资源并且在它的生命周期里一直持有这些资源。这导致了作业不能随负载变化而动态调整，在负载下降时无法归还空闲的资源，在负载上升时也无法动态扩展。<br> 【2】<strong><code>On-Yarn</code>模式</strong>下，所有的<code>container</code>都是固定大小的，导致无法根据作业需求来调整<code>container</code>的结构。譬如<code>CPU</code>密集的作业或需要更多的核，但不需要太多内存，固定结构的<code>container</code>会导致内存被浪费。<br> 【3】与容器管理基础设施的交互比较笨拙，需要两个步骤来启动<code>Flink</code>作业：1.启动<code>Flink</code>守护进程；2.提交作业。如果作业被容器化并且将作业部署作为容器部署的一部分，那么将不再需要步骤2。<br> 【4】<code>On-Yarn</code>模式下，作业管理页面会在作业完成后消失不可访问。<br> 【5】<code>Flink</code>推荐 <strong><code>per job clusters</code></strong> 的部署方式，但是又支持可以在一个集群上运行多个作业的<code>session</code>模式，令人疑惑。</p> 
+<p>在<code>Flink</code>版本<code>1.5</code>中引入了<code>Dispatcher</code>，<code>Dispatcher</code>是在新设计里引入的一个新概念。<code>Dispatcher</code>会从<code>Client</code>端接受作业提交请求并代表它在集群管理器上启动作业。引入<code>Dispatcher</code>的原因主要有两点：<br> 【1】一些集群管理器需要一个中心化的作业生成和监控实例；<br> 【2】能够实现<code>Standalone</code>模式下<code>JobManager</code>的角色，且等待作业提交。在一些案例中，<code>Dispatcher</code>是可选的<code>Yarn</code>或者不兼容的<code>kubernetes</code>。</p> 
+<h3><a id="_Flink_On_Yarn__17"></a>资源调度模型重构下的 Flink On Yarn 模式</h3> 
+<p><img src="https://images2.imgbox.com/cd/25/PujcO70f_o.png" alt="[点击并拖拽以移动] ​"></p> 
+<p>客户端提交<code>JobGraph</code>以及依赖<code>jar</code>包到<code>YarnResourceManager</code>，接着<code>Yarn ResourceManager</code>分配第一个<code>container</code>以此来启动<code>AppMaster</code>，<code>Application Master</code>中会启动一个<code>FlinkResourceManager</code>以及<code>JobManager</code>，<code>JobManager</code>会根据<code>JobGraph</code>生成的<code>ExecutionGraph</code>以及物理执行计划向<code>FlinkResourceManager</code>申请<code>slot</code>，<code>FlinkResoourceManager</code>会管理这些<code>slot</code>以及请求，如果没有可用<code>slot</code>就向<code>Yarn</code>的<code>ResourceManager</code>申请<code>container</code>，<code>container</code>启动以后会注册到<code>FlinkResourceManager</code>，最后<code>JobManager</code>会将<code>subTask deploy</code>到对应<code>container</code>的 <code>slot</code>中去。<br> <img src="https://images2.imgbox.com/96/35/pUD1iIhw_o.png" alt="[点击并拖拽以移动] ​"></p> 
+<p>在有<code>Dispatcher</code>的模式下：会增加一个过程，就是<code>Client</code>会直接通过<code>HTTP Server</code>的方式，然后用<code>Dispatcher</code>将这个任务提交到<code>Yarn ResourceManager</code>中。</p> 
+<p>新框架具有四大优势，详情如下：<br> 【1】<code>client</code>直接在<code>Yarn</code>上启动作业，而不需要先启动一个集群然后再提交作业到集群。因此<code>client</code>再提交作业后可以马上返回。<br> 【2】所有的用户依赖库和配置文件都被直接放在应用的<code>classpath</code>，而不是用动态的用户代码<code>classloader</code>去加载。<br> 【3】<code>container</code>在需要时才请求，不再使用时会被释放。<br> 【4】“需要时申请”的<code>container</code>分配方式允许不同算子使用不同<code>profile</code> (<code>CPU</code>和内存结构)的<code>container</code>。</p> 
+<h3><a id="_single_cluster_job_on_Yarn__32"></a>新的资源调度框架下 single cluster job on Yarn 流程介绍</h3> 
+<p><img src="https://images2.imgbox.com/3b/19/2ByKjwPU_o.png" alt="[点击并拖拽以移动] ​"></p> 
+<p><strong><code>single cluster job on Yarn</code>模式</strong>涉及三个实例对象：<br> <strong>【1】<code>clifrontend</code>：</strong> <code>Invoke App code</code>；生成<code>StreamGraph</code>，然后转化为<code>JobGraph</code>；<br> <strong>【2】<code>YarnJobClusterEntrypoint（Master）</code>：</strong> 依次启动<code>YarnResourceManager</code>、<code>MinDispatcher</code>、<code>JobManagerRunner</code>三者都服从分布式协同一致的策略；<code>JobManagerRunner</code>将<code>JobGraph</code>转化为<code>ExecutionGraph</code>，然后转化为物理执行任务<code>Execution</code>，然后进行<code>deploy</code>，<code>deploy</code>过程会向 <code>YarnResourceManager</code>请求<code>slot</code>，如果有直接<code>deploy</code>到对应的<code>YarnTaskExecutiontor</code>的<code>slot</code>里面，没有则向<code>Yarn</code>的<code>ResourceManager</code>申请，带<code>container</code>启动以后<code>deploy</code>。<br> <strong>【3】<code>YarnTaskExecutorRunner (slave)</code>：</strong> 负责接收<code>subTask</code>，并运行。</p> 
+<p>整个任务运行代码调用流程如下图</p> 
+<p><img src="https://images2.imgbox.com/9c/0c/6jLv2kce_o.png" alt="[点击并拖拽以移动] ​"></p> 
+<p><strong><code>subTask</code>在执行时是怎么运行的？</strong></p> 
+<p><strong>调用<code>StreamTask</code>的<code>invoke</code>方法，执行步骤如下：</strong><br> 【1】<code>initializeState()</code>即<code>operator</code>的<code>initializeState()</code>；<br> 【2】<code>openAllOperators()</code>即<code>operator</code>的<code>open()</code>方法；<br> 【3】最后调用<code>run</code>方法来进行真正的任务处理；</p> 
+<p>我们来看下<code>flatMap</code>对应的<code>OneInputStreamTask</code>的<code>run</code>方法具体是怎么处理的。</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Override</span>
+<span class="token keyword">protected</span> <span class="token keyword">void</span> <span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 在堆栈上缓存处理器引用，使代码更易于JIT</span>
+    <span class="token keyword">final</span> <span class="token class-name">StreamInputProcessor</span><span class="token generics"><span class="token punctuation">&lt;</span>IN<span class="token punctuation">&gt;</span></span> inputProcessor <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>inputProcessor<span class="token punctuation">;</span>
+
+    <span class="token keyword">while</span> <span class="token punctuation">(</span>running <span class="token operator">&amp;&amp;</span> inputProcessor<span class="token punctuation">.</span><span class="token function">processInput</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 所有的工作都发生在“processInput”方法中</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>最终是调用<code>StreamInputProcessor</code>的<code>processInput()</code>做数据的处理，这里面包含用户的处理逻辑。</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">boolean</span> <span class="token function">processInput</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>isFinished<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>numRecordsIn <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            numRecordsIn <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">OperatorMetricGroup</span><span class="token punctuation">)</span> streamOperator<span class="token punctuation">.</span><span class="token function">getMetricGroup</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getIOMetricGroup</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getNumRecordsInCounter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span><span class="token string">"An exception occurred during the metrics setup."</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+           numRecordsIn <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">SimpleCounter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+       <span class="token punctuation">}</span>
+   <span class="token punctuation">}</span>
+   <span class="token keyword">while</span> <span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token keyword">if</span> <span class="token punctuation">(</span>currentRecordDeserializer <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+           <span class="token class-name">DeserializationResult</span> result <span class="token operator">=</span> currentRecordDeserializer<span class="token punctuation">.</span><span class="token function">getNextRecord</span><span class="token punctuation">(</span>deserializationDelegate<span class="token punctuation">)</span><span class="token punctuation">;</span>
+           <span class="token keyword">if</span> <span class="token punctuation">(</span>result<span class="token punctuation">.</span><span class="token function">isBufferConsumed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+               currentRecordDeserializer<span class="token punctuation">.</span><span class="token function">getCurrentBuffer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">recycleBuffer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+               currentRecordDeserializer <span class="token operator">=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+           <span class="token punctuation">}</span>
+           <span class="token keyword">if</span> <span class="token punctuation">(</span>result<span class="token punctuation">.</span><span class="token function">isFullRecord</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+               <span class="token class-name">StreamElement</span> recordOrMark <span class="token operator">=</span> deserializationDelegate<span class="token punctuation">.</span><span class="token function">getInstance</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+               <span class="token comment">//处理watermark</span>
+               <span class="token keyword">if</span> <span class="token punctuation">(</span>recordOrMark<span class="token punctuation">.</span><span class="token function">isWatermark</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                   <span class="token comment">// handle watermark</span>
+                   <span class="token comment">//watermark处理逻辑，这里可能引起timer的trigger</span>
+                   statusWatermarkValve<span class="token punctuation">.</span><span class="token function">inputWatermark</span><span class="token punctuation">(</span>recordOrMark<span class="token punctuation">.</span><span class="token function">asWatermark</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> currentChannel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                   <span class="token keyword">continue</span><span class="token punctuation">;</span>
+               <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>recordOrMark<span class="token punctuation">.</span><span class="token function">isStreamStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                   <span class="token comment">// handle stream status</span>
+                   statusWatermarkValve<span class="token punctuation">.</span><span class="token function">inputStreamStatus</span><span class="token punctuation">(</span>recordOrMark<span class="token punctuation">.</span><span class="token function">asStreamStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> currentChannel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                   <span class="token keyword">continue</span><span class="token punctuation">;</span>
+                   <span class="token comment">//处理latency watermark</span>
+               <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>recordOrMark<span class="token punctuation">.</span><span class="token function">isLatencyMarker</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                   <span class="token comment">// handle latency marker</span>
+                   <span class="token keyword">synchronized</span> <span class="token punctuation">(</span>lock<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                       streamOperator<span class="token punctuation">.</span><span class="token function">processLatencyMarker</span><span class="token punctuation">(</span>recordOrMark<span class="token punctuation">.</span><span class="token function">asLatencyMarker</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                   <span class="token punctuation">}</span>
+                   <span class="token keyword">continue</span><span class="token punctuation">;</span>
+               <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                   <span class="token comment">//用户的真正的代码逻辑</span>
+                   <span class="token comment">// now we can do the actual processing</span>
+                   <span class="token class-name">StreamRecord</span><span class="token generics"><span class="token punctuation">&lt;</span>IN<span class="token punctuation">&gt;</span></span> record <span class="token operator">=</span> recordOrMark<span class="token punctuation">.</span><span class="token function">asRecord</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                   <span class="token keyword">synchronized</span> <span class="token punctuation">(</span>lock<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                       numRecordsIn<span class="token punctuation">.</span><span class="token function">inc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                       streamOperator<span class="token punctuation">.</span><span class="token function">setKeyContextElement1</span><span class="token punctuation">(</span>record<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                       <span class="token comment">//处理数据</span>
+                       streamOperator<span class="token punctuation">.</span><span class="token function">processElement</span><span class="token punctuation">(</span>record<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                   <span class="token punctuation">}</span>
+                   <span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+               <span class="token punctuation">}</span>
+           <span class="token punctuation">}</span>
+       <span class="token punctuation">}</span>
+            
+       <span class="token comment">//这里会进行checkpoint barrier的判断和对齐，以及不同partition 里面checkpoint barrier不一致时候的，数据buffer，</span>
+       <span class="token keyword">final</span> <span class="token class-name">BufferOrEvent</span> bufferOrEvent <span class="token operator">=</span> barrierHandler<span class="token punctuation">.</span><span class="token function">getNextNonBlocked</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+       <span class="token keyword">if</span> <span class="token punctuation">(</span>bufferOrEvent <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+           <span class="token keyword">if</span> <span class="token punctuation">(</span>bufferOrEvent<span class="token punctuation">.</span><span class="token function">isBuffer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+               currentChannel <span class="token operator">=</span> bufferOrEvent<span class="token punctuation">.</span><span class="token function">getChannelIndex</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+               currentRecordDeserializer <span class="token operator">=</span> recordDeserializers<span class="token punctuation">[</span>currentChannel<span class="token punctuation">]</span><span class="token punctuation">;</span>
+               currentRecordDeserializer<span class="token punctuation">.</span><span class="token function">setNextBuffer</span><span class="token punctuation">(</span>bufferOrEvent<span class="token punctuation">.</span><span class="token function">getBuffer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+           <span class="token punctuation">}</span>
+           <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+               <span class="token comment">// Event received</span>
+               <span class="token keyword">final</span> <span class="token class-name">AbstractEvent</span> event <span class="token operator">=</span> bufferOrEvent<span class="token punctuation">.</span><span class="token function">getEvent</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+               <span class="token keyword">if</span> <span class="token punctuation">(</span>event<span class="token punctuation">.</span><span class="token function">getClass</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token class-name">EndOfPartitionEvent</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                   <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">IOException</span><span class="token punctuation">(</span><span class="token string">"Unexpected event: "</span> <span class="token operator">+</span> event<span class="token punctuation">)</span><span class="token punctuation">;</span>
+               <span class="token punctuation">}</span>
+           <span class="token punctuation">}</span>
+       <span class="token punctuation">}</span>
+       <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+           isFinished <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+           <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>barrierHandler<span class="token punctuation">.</span><span class="token function">isEmpty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+               <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">IllegalStateException</span><span class="token punctuation">(</span><span class="token string">"Trailing data in checkpoint barrier handler."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+           <span class="token punctuation">}</span>
+           <span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+       <span class="token punctuation">}</span>
+   <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><code>streamOperator.processElement(record)</code>最终会调用用户的代码处理逻辑，假如<code>operator</code>是<code>StreamFlatMap</code>的话。</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Override</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">processElement</span><span class="token punctuation">(</span><span class="token class-name">StreamRecord</span><span class="token generics"><span class="token punctuation">&lt;</span>IN<span class="token punctuation">&gt;</span></span> element<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+    collector<span class="token punctuation">.</span><span class="token function">setTimestamp</span><span class="token punctuation">(</span>element<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    userFunction<span class="token punctuation">.</span><span class="token function">flatMap</span><span class="token punctuation">(</span>element<span class="token punctuation">.</span><span class="token function">getValue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> collector<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//用户代码</span>
+<span class="token punctuation">}</span>
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8979ad03d03f3b51e207dfbc42078761/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">网络渗透CTF实践：获取靶机Web Developer 文件/root/flag.txt中flag</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/be930348edea58c7183b1e9de3a15657/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">最新最详细的linux当中安装mongodb教程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

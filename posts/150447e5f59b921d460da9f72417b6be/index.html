@@ -1,0 +1,900 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>控制欲过强的Linux小进程 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/150447e5f59b921d460da9f72417b6be/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="控制欲过强的Linux小进程">
+  <meta property="og:description" content="控制欲强?视奸？普通人那才叫视奸，您是皇帝，天下大事无一逃过您的耳目，您想看什么就看什么，臣怀疑他在朋友圈私养兵士，囤积枪甲，蓄意谋反，图谋皇位啊！
+哈哈哈哈开个玩笑，这篇就主要讲讲Linux进程的控制吧~ fork( ) 由于fork（）之前也说过啦（从已存在进程中创建一个新进程：新进程为子进程，原进程为父进程），所以下面主要讲内核的操作，进程调用fork，当控制转移到内核中的fork代码后，内核做：
+1.分配新的内存块和内核数据结构给子进程
+2.将父进程部分数据结构内容拷贝至子进程
+3.添加子进程到系统进程列表当中
+4.fork返回，开始调度器调度
+当一个进程调用fork之后，就有两个二进制代码相同的进程。而且它们都运行到相同的地方。但每个进程都将可以 开始它们自己的旅程：
+#include &lt;unistd.h&gt; #include&lt;stdio.h&gt; int main(void) { pid_t pid; printf(&#34;Before: pid is %d\n&#34;, getpid()); if ((pid = fork()) == -1) perror(&#34;fork()&#34;), exit(1); printf(&#34;After:pid is %d, fork return %d\n&#34;, getpid(), pid); sleep(1); return 0; } 先来下个定义：
+进程=内核的相关管理数据结构（task_struct &#43; mm_struct &#43; 页表）&#43; 代码和数据
+已知fork函数的返回值是这样的：
+子进程返回0
+父进程返回子进程的pid
+那为什么捏？
+原因其实也很简单，爹得知道儿子名，杀掉他啊等待他啊，爹总要知道的（为了方便父进程对紫禁城进行标识，进而进行管理） 进程具有独立性就在于紫禁城代码数据和父进程共享，但因为写时拷贝又不影响父进程
+fork常规用法 一个父进程希望复制自己，使父子进程同时执行不同的代码段（父进程等待客户端请求，生成子 进程来处理请求）
+一个进程要执行一个不同的程序（子进程从fork返回后，调用exec函数）
+fork调用失败原因 系统中有太多的进程
+实际用户的进程数超过了限制
+进程终止 终止是在做什么 进程终止就是在释放曾经的代码和数据所占据的空间，也是在释放内核数据结构（task_struct，当进程状态是Z就要释放对应PCB）
+终止三种情况 先来看两段代码： #include&lt;stdio.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-20T11:26:44+08:00">
+    <meta property="article:modified_time" content="2024-07-20T11:26:44+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">控制欲过强的Linux小进程</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><img alt="" height="232" src="https://images2.imgbox.com/63/39/S5pXNzPt_o.jpg" width="193"></p> 
+<p>控制欲强?视奸？普通人那才叫视奸，您是皇帝，天下大事无一逃过您的耳目，您想看什么就看什么，臣怀疑他在朋友圈私养兵士，囤积枪甲，蓄意谋反，图谋皇位啊！</p> 
+<p><img alt="" height="402" src="https://images2.imgbox.com/2b/d0/FKsYGkEL_o.png" width="663"></p> 
+<p>哈哈哈哈开个玩笑，这篇就主要讲讲Linux进程的控制吧~ </p> 
+<h4>fork( )</h4> 
+<p>由于fork（）之前也说过啦（从已存在进程中创建一个新进程：新进程为子进程，原进程为父进程），所以下面主要讲内核的操作，进程调用fork，当控制转移到内核中的fork代码后，内核做：</p> 
+<blockquote> 
+ <p>1.分配新的内存块和内核数据结构给子进程</p> 
+ <p>2.将父进程部分数据结构内容拷贝至子进程</p> 
+ <p>3.添加子进程到系统进程列表当中</p> 
+ <p>4.fork返回，开始调度器调度</p> 
+</blockquote> 
+<p><img alt="" height="282" src="https://images2.imgbox.com/81/d6/WNAUqhdV_o.png" width="672"></p> 
+<p> 当一个进程调用fork之后，就有两个二进制代码相同的进程。而且它们都运行到相同的地方。但每个进程都将可以 开始它们自己的旅程：</p> 
+<pre><code class="language-cpp">#include &lt;unistd.h&gt;
+#include&lt;stdio.h&gt;
+int main(void)
+{
+	pid_t pid;
+
+	printf("Before: pid is %d\n", getpid());
+	if ((pid = fork()) == -1)
+		perror("fork()"), exit(1);
+	printf("After:pid is %d, fork return %d\n", getpid(), pid);
+	sleep(1);
+	return 0;
+}</code></pre> 
+<p><img alt="" height="242" src="https://images2.imgbox.com/1b/fc/WergxAXk_o.png" width="664"></p> 
+<p>先来下个定义：</p> 
+<p>进程=内核的相关管理数据结构（task_struct + mm_struct + 页表）+ 代码和数据</p> 
+<p>已知fork函数的返回值是这样的：</p> 
+<blockquote> 
+ <p>子进程返回0</p> 
+ <p>父进程返回子进程的pid</p> 
+</blockquote> 
+<p>那为什么捏？</p> 
+<p>原因其实也很简单，爹得知道儿子名，杀掉他啊等待他啊，爹总要知道的（为了方便父进程对紫禁城进行标识，进而进行管理） </p> 
+<p>进程具有独立性就在于紫禁城代码数据和父进程共享，但因为写时拷贝又不影响父进程</p> 
+<h5>fork常规用法</h5> 
+<p>一个父进程希望复制自己，使父子进程同时执行不同的代码段（父进程等待客户端请求，生成子 进程来处理请求）</p> 
+<p>一个进程要执行一个不同的程序（子进程从fork返回后，调用exec函数）</p> 
+<h5>fork调用失败原因</h5> 
+<p>系统中有太多的进程</p> 
+<p>实际用户的进程数超过了限制</p> 
+<h4>进程终止</h4> 
+<h5>终止是在做什么</h5> 
+<p>进程终止就是在释放曾经的代码和数据所占据的空间，也是在释放内核数据结构（task_struct，当进程状态是Z就要释放对应PCB）</p> 
+<h5>终止三种情况</h5> 
+<p>先来看两段代码： </p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;unistd.h&gt;
+
+int main()
+{
+	printf("hello world!\n");
+	return 0;
+}</code></pre> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;unistd.h&gt;
+
+int main()
+{
+	printf("hello world!\n");
+	return 100;
+}</code></pre> 
+<p>只有返回值不一样对吧，对？取内容会发现也不一样： </p> 
+<p> <img alt="" height="148" src="https://images2.imgbox.com/4e/3c/MpoBrM1L_o.png" width="664"></p> 
+<p> echo是内建命令，打印的都是bash内部的变量数据</p> 
+<p>？：父进程bash获取到的最近一个紫禁城的退出码 （0：成功，！0：失败）</p> 
+<p>退出码存在意义：告诉关心方（父进程）任务完成如何</p> 
+<p>因为成功的退出码就是0，而！0有很多，所以不同！0值一方面表示失败，一方面还表示失败的原因</p> 
+<p>可以这样打印下错误信息：</p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;unistd.h&gt;
+#include&lt;string.h&gt;
+
+int main()
+{
+	int errcode = 0;
+	for (errcode = 0; errcode &lt;= 255; errcode++)
+	{
+		printf("%d:%s\n", errcode, strerror(errcode));
+	}
+	return 0;
+}</code></pre> 
+<p> 那么父进程知道紫禁城退出码因为点撒捏？</p> 
+<p>因为：！要知道紫禁城退出情况，正常退出了嘛，错误了嘛，错哪了呀，，，</p> 
+<p>错误码可以自己设定：</p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;unistd.h&gt;
+#include&lt;string.h&gt;
+int Div(int x, int y)
+{
+	if (0 == y)
+	{
+		return -1;
+	}
+	else
+	{
+		return x / y;
+	}
+}
+int main()
+{
+    printf("%d\n",Div(-1,1));
+	return 0;
+}</code></pre> 
+<p>但是这样没法判断是y==0导致返回错误码-1，还是本来的计算结果就是-1</p> 
+<p>所以可以这样改：</p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;unistd.h&gt;
+#include&lt;string.h&gt;
+
+//自定义枚举常量
+enum
+{
+	Success = 0,
+	Div_Zero,
+	Mod_Zero,
+};
+
+int exit_code = Success;
+
+int Div(int x, int y)
+{
+	if (0 == y)
+	{
+		exit_code = Div_Zero;
+		return -1;
+	}
+	else
+	{
+		return x / y;
+	}
+}
+int main()
+{
+	printf("%d\n", Div(-1, 1));
+	return exit_code;
+}</code></pre> 
+<p>还可以接着写接口补充错误信息：</p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;unistd.h&gt;
+#include&lt;string.h&gt;
+
+//自定义枚举常量
+enum
+{
+	Success = 0,
+	Div_Zero,
+	Mod_Zero,
+};
+
+int exit_code = Success;
+
+const char* CodeToErrString(int code)
+{
+	switch (code)
+	{
+		case Success:
+			return "Success";
+		case Div_Zero:
+			return "div zero!";
+		case Mod_Zero:
+			return "mod zero!";
+		default:
+			return "unknow error!";
+	}
+}
+
+int Div(int x, int y)
+{
+	if (0 == y)
+	{
+		exit_code = Div_Zero;
+		return -1;
+	}
+	else
+	{
+		return x / y;
+	}
+}
+int main()
+{
+	printf("%d\n", Div(-1, 1));
+	printf("%s\n", CodeToErrString(exit_code));
+	return exit_code;
+}</code></pre> 
+<p> 来看看进程终止的三种情况吧：</p> 
+<blockquote> 
+ <p>1.代码跑完，结果正确</p> 
+ <p>2.代码跑完，结果不正确（正确与否可通过进程退出码决定）</p> 
+ <p>3.代码执行时，出现了异常，提前退出了（系统&amp;&amp;自定义退出码）</p> 
+</blockquote> 
+<p>什么是崩溃？</p> 
+<p>就是编译运行的时候，操作系统发现你的进程做了不该做的是事，于是OS杀掉了你的进程 </p> 
+<p>那异常了退出码还有意义吗（肯定没有啊，作弊拿到60和作弊拿到100被抓没区别）</p> 
+<p>进程出现了异常，本质是因为进程收到了OS发给进程的信号</p> 
+<p>比如说，来上一份妇孺皆知的代码：</p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;unistd.h&gt;
+int main()
+{
+	while (1)
+	{
+		printf("I am a process,pid:%d\n", getpid());
+	}
+	return 0;
+}</code></pre> 
+<p>这进程能一直运行下去，但是我们可以通过kill的方式干掉它：</p> 
+<pre><code class="language-bash">kill -9 pid;</code></pre> 
+<p>这进程没有出现异常，但是由于进程收到了OS发给进程的信号，所以进程不得不终止 </p> 
+<p>再来一瓶野指针：</p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;unistd.h&gt;
+int main()
+{
+	int* p = NULL;
+	while (1)
+	{
+		printf("I am a process,pid:%d\n", getpid());
+		sleep(1);
+		*p = 100;       //看好了小登中登老登，这是故意哒！
+	}
+	return 0;
+}</code></pre> 
+<p>在Linux中运行这段代码会发现出现段错误：Segmentation fault：</p> 
+<p> <img alt="" height="69" src="https://images2.imgbox.com/85/b6/SQEuMq0U_o.png" width="676"></p> 
+<p>不嘻嘻 ，段错误，OS提前终止进程                              </p> 
+<p>我们通过观察进程退出的时候退出信号是多少就可以判断我们的进程为何异常了</p> 
+<blockquote> 
+ <p>判断流程：</p> 
+ <p>1.先确认是否异常</p> 
+ <p>2.不是异常就是代码跑完了，直接看退出码</p> 
+</blockquote> 
+<p> 衡量一个进程退出，只需要两个数字：退出码，退出信号</p> 
+<p>进程退出时会把退出码和退出信号写入PCB（方便父进程知道）</p> 
+<h5>如何进行终止</h5> 
+<p>main函数return就表示进程终止啦（非main函数return，代表函数结束）</p> 
+<p>代码调用exit函数（头文件为stdlib.h）</p> 
+<pre><code class="language-cpp">exit(0);        //里面数字是return数</code></pre> 
+<p>还有个东西叫_exit( )</p> 
+<p>和exit的区别就是，它在程序结束的时候并不会冲刷缓冲区</p> 
+<p>缓冲区必定在_exit()之上</p> 
+<p><img alt="" height="343" src="https://images2.imgbox.com/47/bf/ad3w84Rv_o.png" width="670"></p> 
+<p>exit在调用_exit前还做了其他工作：</p> 
+<blockquote> 
+ <p>1. 执行用户通过 atexit或on_exit定义的清理函数</p> 
+ <p>2. 关闭所有打开的流，所有的缓存数据均被写入</p> 
+ <p>3. 调用_exit</p> 
+</blockquote> 
+<p>除了exit，return是一种更常见的退出进程方法。执行return n等同于执行exit(n)（调用main的运行时函数会将main的返回值当做 exit的参数）</p> 
+<h4>进程等待</h4> 
+<h5>是什么 </h5> 
+<p>任何子进程在退出的情况下，一般必须要被父进程进行等待 </p> 
+<h5>为什么捏？</h5> 
+<p>你想奥，如果进程在退出时，父进程不管不顾，退出进程，状态将会变成Z（僵尸状态），发生内存泄漏（进程一旦变成僵尸状态，那就刀枪不入，“杀人不眨眼”的kill -9 也无能为力，因为谁也没有办法杀死一个已经死去的进程，就像是永远没办法叫醒一个装睡的人）</p> 
+<p>1.父进程通过等待，解决紫禁城退出的僵尸问题，回收系统资源（一定要考虑的）</p> 
+<p>2.获取紫禁城的退出信息知道紫禁城是什么原因退出的（可选功能）</p> 
+<h5 style="background-color:transparent;">怎么办</h5> 
+<p>要来看两个可爱的函数：wait、waitpid</p> 
+<p>wait：</p> 
+<p>返回值：等待成功时，紫禁城pid</p> 
+<p>参数：等待任意一个紫禁城退出（是输出型的参数，获取紫禁城退出状态，不关心可以置NULL）</p> 
+<pre><code class="language-bash">pid_t wait(int* status);</code></pre> 
+<p><img alt="" height="555" src="https://images2.imgbox.com/ab/78/vzkjGCte_o.png" width="676"></p> 
+<p> 上代码！</p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;unistd.h&gt;
+#include&lt;string.h&gt;
+#include&lt;stdlib.h&gt;
+#include&lt;sys/types.h&gt;
+#include&lt;sys/wait.h&gt;
+
+void ChildRun()
+{
+	int cnt = 5;
+	while (cnt)
+	{
+		printf("I am child process,pid:%d,ppid:%d\n", getpid(), getppid());
+		sleep(1);
+		cnt--;
+	}
+}
+
+int main()
+{
+	printf("I am father,pid:%d,ppid:%d\n", getpid(), getppid());
+
+	pid_t id = fork();
+	if (id == 0)
+	{
+		ChildRun();
+		printf("child quit ...\n");
+		exit(0);
+	}
+	sleep(3);
+	pid_t rid = wait(NULL);
+	if (rid &gt; 0)
+	{
+		printf("wait success,rid:%d\n", rid);
+	}
+	sleep(3);
+	printf("father quit\n");
+	return 0;
+}</code></pre> 
+<p>一遍运行一边开监控脚本看看怎么个事： </p> 
+<pre><code class="language-bash">while :; do ps ajx | head -1 &amp;&amp; ps ajx | grep myprocess | grep -v grep; sleep 1;done</code></pre> 
+<p>可以看到紫禁城在被父进程回收前是处于僵尸状态的： </p> 
+<p> <img alt="" height="695" src="https://images2.imgbox.com/01/81/pYu8j9JX_o.png" width="664"></p> 
+<p><img alt="" height="216" src="https://images2.imgbox.com/5b/a9/fdKVHus0_o.png" width="664"></p> 
+<p> 父进程在等待时候也没干其他事，只是等</p> 
+<p>给大家看看单核处理器小猫：</p> 
+<p><img alt="" height="933" src="https://images2.imgbox.com/00/64/t3HBFruX_o.png" width="676"></p> 
+<p>polo  tiu ~，橘域网链接已断开</p> 
+<p>如果紫禁城没有退出，父进程其实一直在进行阻塞等待</p> 
+<p>紫禁城本身就是软件，父进程本质是在等待某种软件条件就绪</p> 
+<p>阻塞等待？</p> 
+<p>怎么个事？</p> 
+<p>等待硬件or软件，本质都是数据结构对象</p> 
+<p>来康康waitpid：</p> 
+<p><img alt="" height="533" src="https://images2.imgbox.com/ae/ae/O5NV5K0B_o.png" width="666"></p> 
+<p>关于这个就改一下就好：</p> 
+<pre><code class="language-cpp">pid_t rid = waitpid(-1, NULL, 0);</code></pre> 
+<p>作用和上面的也一样（-1是在等任意一个的意思），等待紫禁城，等待到了哪个就返回哪个，那样的还准备俩函数干啥，别着急，这样就能等待特定的了，我是在等，可我在等的只是你：</p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;unistd.h&gt;
+#include&lt;string.h&gt;
+#include&lt;stdlib.h&gt;
+#include&lt;sys/types.h&gt;
+#include&lt;sys/wait.h&gt;
+
+void ChildRun()
+{
+	int cnt = 5;
+	while (cnt)
+	{
+		printf("I am child process,pid:%d,ppid:%d\n", getpid(), getppid());
+		sleep(1);
+		cnt--;
+	}
+}
+
+int main()
+{
+	printf("I am father,pid:%d,ppid:%d\n", getpid(), getppid());
+
+	pid_t id = fork();
+	if (id == 0)
+	{
+		ChildRun();
+		printf("child quit ...\n");
+		exit(0);
+	}
+	sleep(3);
+	pid_t rid = waitpid(id, NULL, 0);
+	if (rid &gt; 0)
+	{
+		printf("wait success,rid:%d\n", rid);
+	}
+	sleep(3);
+	printf("father quit\n");
+	return 0;
+}</code></pre> 
+<p>也是可能失败的（但基本上不会失败）：</p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;unistd.h&gt;
+#include&lt;string.h&gt;
+#include&lt;stdlib.h&gt;
+#include&lt;sys/types.h&gt;
+#include&lt;sys/wait.h&gt;
+
+void ChildRun()
+{
+	int cnt = 5;
+	while (cnt)
+	{
+		printf("I am child process,pid:%d,ppid:%d\n", getpid(), getppid());
+		sleep(1);
+		cnt--;
+	}
+}
+
+int main()
+{
+	printf("I am father,pid:%d,ppid:%d\n", getpid(), getppid());
+
+	pid_t id = fork();
+	if (id == 0)
+	{
+		ChildRun();
+		printf("child quit ...\n");
+		exit(0);
+	}
+	sleep(3);
+	pid_t rid = waitpid(id+1, NULL, 0);
+	if (rid &gt; 0)
+	{
+		printf("wait success,rid:%d\n", rid);
+	}
+	else
+	{
+		printf("wait failed\n");
+	}
+	sleep(3);
+	printf("father quit\n");
+	return 0;
+}</code></pre> 
+<p>再来回看这个函数：</p> 
+<pre><code class="language-cpp">pid_t waitpid(pid_t pid, int status, int options);</code></pre> 
+<blockquote> 
+ <p>返回值：</p> 
+ <p>        当正常返回的时候waitpid返回收集到的子进程的进程ID（等待成功，紫禁城退出</p> 
+ <p>        父进程回收成功）</p> 
+ <p>        若返回值为0，那证明检测成功，但紫禁城并未退出，需要再次进行等待</p> 
+ <p>        若设置了选项WNOHANG,调用中waitpid发现没有已退出的子进程可收集,则返回0        </p> 
+ <p>        如果调用中出错,则返回-1,这时errno会被设置成相应的值以指示错误所在</p> 
+ <p>参数：</p> 
+ <p>        Pid：</p> 
+ <p>                Pid=-1：等待任一个子进程，与wait等效</p> 
+ <p>                Pid&gt;0：等待其进程ID与pid相等的子进程</p> 
+ <p>        Status：</p> 
+ <p>                WIFEXITED(status): 若为正常终止子进程返回的状态，则为真（查看进程是否是正常退出）</p> 
+ <p>                WEXITSTATUS(status): 若WIFEXITED非零，提取子进程退出码（查看进程的退出码）</p> 
+ <p>        options：</p> 
+ <p>                WNOHANG: 若pid指定的子进程没有结束，则waitpid()函数返回0，不予以等待</p> 
+ <p>                若正常结束，则返回该子进程的ID</p> 
+ <p>                若子进程已经退出，调用wait/waitpid时，</p> 
+ <p>                wait/waitpid会立即返回，并且释放资源，获得子进程退出信息</p> 
+ <p>                若在任意时刻调用wait/waitpid，子进程存在且正常运行，则进程可能阻塞</p> 
+ <p>                若不存在该子进程，则立即出错返回</p> 
+</blockquote> 
+<p><img alt="" height="375" src="https://images2.imgbox.com/d0/d2/kQSTosdz_o.png" width="675"></p> 
+<p> 退出信息就退出码和退出信号啦，可是Status只有一个数哎（别猜了人家有特殊格式，可以当做位图看待，图中表示比特位）：</p> 
+<p><img alt="" height="199" src="https://images2.imgbox.com/9a/fe/ExZSEUdL_o.png" width="672"></p> 
+<p>退出码：0~255（最多就那么多）</p> 
+<p>这样可以直接看：</p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;unistd.h&gt;
+#include&lt;string.h&gt;
+#include&lt;stdlib.h&gt;
+#include&lt;sys/types.h&gt;
+#include&lt;sys/wait.h&gt;
+
+void ChildRun()
+{
+	int cnt = 5;
+	while (cnt)
+	{
+		printf("I am child process,pid:%d,ppid:%d\n", getpid(), getppid());
+		sleep(1);
+		cnt--;
+	}
+}
+
+int main()
+{
+	printf("I am father,pid:%d,ppid:%d\n", getpid(), getppid());
+
+	pid_t id = fork();
+	if (id == 0)
+	{
+		ChildRun();
+		printf("child quit ...\n");
+		exit(49);
+	}
+	sleep(3);
+	int status = 0;
+	pid_t rid = waitpid(id, &amp;status , 0);
+	if (rid &gt; 0)
+	{
+		printf("wait success,rid:%d\n", rid);
+	}
+	else
+	{
+		printf("wait failed\n");
+	}
+	sleep(3);
+	printf("father quit,status:%d,child quit code:%d,child quit signal:%d\n",status,(status&gt;&gt;8)&amp;0xFF, status &amp; 0x7F);
+	return 0;
+}</code></pre> 
+<p> 退出后会发现是正常退出的：</p> 
+<p><img alt="" height="200" src="https://images2.imgbox.com/47/4f/IJsmiyDq_o.png" width="666"></p> 
+<p>上面的宏和这个位操作差不多，使用的话就是（结果是紫禁城退出码，想知道退出信号就自己去按位与去）：</p> 
+<pre><code class="language-cpp">if(WIFEXITED(status))</code></pre> 
+<p>很好，正和我意</p> 
+<p>那假如紫禁城死循环怎么办？</p> 
+<p>看看不就知道了：</p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;unistd.h&gt;
+#include&lt;string.h&gt;
+#include&lt;stdlib.h&gt;
+#include&lt;sys/types.h&gt;
+#include&lt;sys/wait.h&gt;
+
+void ChildRun()
+{
+	int cnt = 5;
+	while (1)
+	{
+		printf("I am child process,pid:%d,ppid:%d\n", getpid(), getppid());
+		sleep(1);
+		cnt--;
+	}
+}
+
+int main()
+{
+	printf("I am father,pid:%d,ppid:%d\n", getpid(), getppid());
+
+	pid_t id = fork();
+	if (id == 0)
+	{
+		ChildRun();
+		printf("child quit ...\n");
+		exit(123);
+	}
+	sleep(3);
+	int status = 0;
+	pid_t rid = waitpid(id, &amp;status , 0);
+	if (rid &gt; 0)
+	{
+		printf("wait success,rid:%d\n", rid);
+	}
+	else
+	{
+		printf("wait failed\n");
+	}
+	sleep(3);
+	printf("father quit,status:%d,child quit code:%d,child qiut signal:%d\n",status,(status&gt;&gt;8)&amp;0xFF, status &amp; 0x7F);
+	return 0;
+}</code></pre> 
+<p><img alt="" height="681" src="https://images2.imgbox.com/9b/8c/flZwX7hs_o.png" width="672"></p> 
+<p>当然是爹一直等了，，，把紫禁城干掉回收</p> 
+<p>如果紫禁城异常怎么办？</p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;unistd.h&gt;
+#include&lt;string.h&gt;
+#include&lt;stdlib.h&gt;
+#include&lt;sys/types.h&gt;
+#include&lt;sys/wait.h&gt;
+
+void ChildRun()
+{
+	int cnt = 5;
+	int* p = NULL;
+	while (cnt)
+	{
+		printf("I am child process,pid:%d,ppid:%d\n", getpid(), getppid());
+		sleep(1);
+		cnt--;
+	}
+	*p = 10;
+}
+
+int main()
+{
+	printf("I am father,pid:%d,ppid:%d\n", getpid(), getppid());
+
+	pid_t id = fork();
+	if (id == 0)
+	{
+		ChildRun();
+		printf("child quit ...\n");
+		exit(123);
+	}
+	sleep(3);
+	int status = 0;
+	pid_t rid = waitpid(id, &amp;status , 0);
+	if (rid &gt; 0)
+	{
+		printf("wait success,rid:%d\n", rid);
+	}
+	else
+	{
+		printf("wait failed\n");
+	}
+	sleep(3);
+	printf("father quit,status:%d,child quit code:%d,child qiut signal:%d\n",status,(status&gt;&gt;8)&amp;0xFF, status &amp; 0x7F);
+	return 0;
+}</code></pre> 
+<p>也看看：</p> 
+<p><img alt="" height="187" src="https://images2.imgbox.com/83/46/jU8aZ2MH_o.png" width="672"></p> 
+<p>可以发现直接挂了，退出信息告诉程序猿：赶紧回去查查你的代码，有bug！！！ </p> 
+<p>如果紫禁城没有退出，父进程在进行执行waitpid进行等待（等待某种条件发生，只不过如今的条件恰好是紫禁城退出），阻塞等待（进程阻塞，父进程什么事都没干）</p> 
+<p>但是现在我们使用的大部分进程都是阻塞板的，WNOHANG选项就是非阻塞等待，如果一直hang住什么都做不了，我们把这种情况叫做服务器宕机</p> 
+<p>讲个小故事来阐述这个故事吧：</p> 
+<p>从前有一只学生名为燃燃子，她舍友是个学霸叫挽鸢（超级厉害，什么都会的那种，你问她要课堂笔记没有一个是不记录的，平时都不逃课），有天燃燃子给挽鸢说，宝宝下午C语言要考试了，给我画个重点呗，考完咱俩出去吃好吃的我请客，挽鸢欣然答应，但是挽鸢当时正在学cpp的一本书，就问燃燃子能不能等她半小时，她学完就干，燃燃子一听说那好吧，你先忙，燃燃子在等待挽鸢的过程中，一会开局王者，一会刷会视频号，一会拿出书装样子看看，过了差不多半小时，燃燃子给挽鸢打电话，问她好了没，挽鸢说还有两分钟就好（怎么可能），等待是周而复始的，但燃燃子在等待挽鸢的过程中还做了其他事，所以这是非阻塞等待，打电话的过程是函数调用（调用的本质是在检测挽鸢的状态），燃燃子和挽鸢说话的过程是函数传参，挽鸢告诉燃燃子自己还需要一会的过程就是函数返回值</p> 
+<p><img alt="" height="657" src="https://images2.imgbox.com/2e/c4/6XxJSgf1_o.jpg" width="658"></p> 
+<p>故事拉长，燃燃子在挽鸢的帮助下顺利考过了C语言考试，燃燃子狂喜，但是先别急着高兴，过两天考操作系统了（燃燃子：我嘞个骚刚，操作系统是啥啊），于是燃燃子顺理成章找到挽鸢，哎嘿能不能再帮我划个操作系统重点，这两天饭我包了，挽鸢说OK啊，但是挽鸢当时在学Linux网络编程，就问燃燃子能不能等她一会，她还没看完，但是燃燃子觉得来回打电话有点麻烦，就和挽鸢说你不用挂电话，就把手机放旁边，好了直接叫我就好，这个时候燃燃子墨墨听着电话那头的无尽的翻书声，只是沉默着，她什么也没干，这个时候燃燃子在进行的是阻塞等待（同时状态不就绪就不返回），这时路过一只笙宝，看燃燃子啥也不干就在那扒着手机听听听，于是笙宝过去问：“干啥呢干在这坐着”，燃燃子也不理，过会笙宝自讨没趣走了，那燃燃子为何要进行这样的苦等呢？有很多种可能，可能单纯就是想等着，还有可能是挽鸢比较受欢迎，不太容易约到（但是阻塞等待在现实中不太能存在吧，应该），waitpid检测紫禁城状态变化的</p> 
+<p>当我们采用非阻塞等待的时候，一般要加上循环，直到检测到紫禁城退出，我们把这种方案叫做非阻塞轮询方案</p> 
+<p>而阻塞等待优点也很明显了，就是简单可靠，但非阻塞时父进程可以做其他的事</p> 
+<p>各有千秋</p> 
+<p>写段非阻塞轮询的代码吧：</p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;string.h&gt;
+#include&lt;sys/types.h&gt;
+#include&lt;sys/wait.h&gt;
+#include&lt;stdlib.h&gt;
+#include&lt;unistd.h&gt;
+
+void ChildRun()
+{
+	int cnt = 5;
+	while (cnt)
+	{
+		printf("I am child process,pid:%d,ppid:%d,cnt:%d\n", getpid(), getppid(), cnt);
+		cnt--;
+		sleep(1);
+	}
+}
+
+int main()
+{
+	printf("I am father process,pid:%d,pid:%d\n", getpid(), getppid());
+
+	pid_t id = fork();
+	if (id == 0)
+	{
+		ChildRun();
+		printf("child quit\n");
+		exit(123);
+	}
+	while (1)
+	{
+		int status = 0;
+		pid_t rid = waitpid(id, &amp;status, WNOHANG);	//进行非阻塞等待
+		if (rid == 0)
+		{
+			printf("child is running, father check next time!\n");
+			//DoOtherThing();
+		}
+		else if (rid &gt; 0)
+		{
+			if (WIFEXITED(status))
+			{
+				printf("child quit success,child exit code:%d\n", WEXITSTATUS(status));
+			}
+			else
+			{
+				printf("child quit unnormal!\n");
+			}
+			break;
+		}
+		else
+		{
+			printf("waitpid failed!\n");
+			break;
+		}
+	}
+	return 0;
+}</code></pre> 
+<p>刚说在父进程等待的时候还可以做其他事，下面来举个栗子：基于函数指针级别的对父进程完成任务进行解耦</p> 
+<p><strong>myprocess.c</strong></p> 
+<pre><code class="language-cpp">#include&lt;stdio.h&gt;
+#include&lt;string.h&gt;
+#include&lt;sys/types.h&gt;
+#include&lt;sys/wait.h&gt;
+#include&lt;stdlib.h&gt;
+#include&lt;unistd.h&gt;
+#include"task.h"
+
+typedef void(*func_t)();
+
+#define N 3
+func_t tasks[N] = { NULL };
+
+void LoadTask()
+{
+	tasks[0] = Printlog;
+	tasks[1] = Download;
+	tasks[2] = MysqlDataSync;
+}
+
+void HanderTask()
+{
+	for (int i = 0; i &lt; N; i++)
+	{
+		tasks[i]();
+	}
+}
+
+void DoOtherThing()
+{
+	HanderTask();
+}
+
+void ChildRun()
+{
+	int cnt = 5;
+	while (cnt)
+	{
+		printf("I am child process,pid:%d,ppid:%d,cnt:%d\n", getpid(), getppid(), cnt);
+		cnt--;
+		sleep(1);
+	}
+}
+
+int main()
+{
+	printf("I am father process,pid:%d,pid:%d\n", getpid(), getppid());
+
+	pid_t id = fork();
+	if (id == 0)
+	{
+		ChildRun();
+		printf("child quit\n");
+		exit(123);
+	}
+	LoadTask();
+	while (1)
+	{
+		int status = 0;
+		pid_t rid = waitpid(id, &amp;status, WNOHANG);	//进行非阻塞等待
+		if (rid == 0)
+		{
+			printf("child is running, father check next time!\n");
+			//DoOtherThing();
+		}
+		else if (rid &gt; 0)
+		{
+			if (WIFEXITED(status))
+			{
+				printf("child quit success,child exit code:%d\n", WEXITSTATUS(status));
+			}
+			else
+			{
+				printf("child quit unnormal!\n");
+			}
+			break;
+		}
+		else
+		{
+			printf("waitpid failed!\n");
+			break;
+		}
+	}
+	return 0;
+}</code></pre> 
+<p><strong>task.h</strong></p> 
+<pre><code class="language-cpp">#pragma once
+#include&lt;stdio.h&gt;
+#include&lt;string.h&gt;
+#include&lt;sys/types.h&gt;
+#include&lt;sys/wait.h&gt;
+#include&lt;stdlib.h&gt;
+#include&lt;unistd.h&gt;
+
+void Printlog();
+void Download();
+void MysqlDataSync();</code></pre> 
+<p><strong>task.c</strong></p> 
+<pre><code class="language-cpp">#include"task.h"
+
+void Printlog()
+{
+	printf("begin Printlog...\n");
+}
+
+void Download()
+{
+	printf("begin Download...\n");
+}
+
+void MysqlDataSync()
+{
+	printf("begin MysqlDataSync...\n");
+}</code></pre> 
+<p><strong>makefile </strong></p> 
+<pre><code class="language-bash">myprocess:myprocess.c task.c
+gcc - o $@ $ ^
+.PHONT:clean
+clean:
+	rm -f myprocess</code></pre> 
+<p>父进程就完成了在轮询检测时还做其他事 </p> 
+<p>就这些捏，到目前为止说的差不多啦，再会啦~</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/79bdcbd8e191524367e8ddd0ea587bf3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">重生之我们在ES顶端相遇第5章-常用字段类型</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a9b50168de088b8f866f8a7338c9620b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">FLINK-checkpoint失败原因及处理方式</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

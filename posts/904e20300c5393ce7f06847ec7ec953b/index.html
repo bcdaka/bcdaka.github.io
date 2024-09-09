@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ES 数据写入方式:直连 VS Flink 集成系统 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/904e20300c5393ce7f06847ec7ec953b/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="ES 数据写入方式:直连 VS Flink 集成系统">
+  <meta property="og:description" content="ES 作为一个分布式搜索引擎，从扩展能力和搜索特性上而言无出其右，然而它有自身的弱势存在，其作为近实时存储系统，由于其分片和复制的设计原理，也使其在数据延迟和一致性方面都是无法和 OLTP（Online Transaction Processing）系统相媲美的。
+也正因如此，通常它的数据都来源于其他存储系统同步而来，做二次过滤和分析的。这就引入了一个关键节点，即 ES 数据的同步写入方式，本文介绍的则是 MySQL 同步 ES 方式。
+将 MySQL 数据写入 ES，首先想到的一定是消费 Binlog 直连 ES 写入，这种方式简单明了，然而如果稍微考量维度多一点，就会发现该方式的一些弊端。因此还有另外一个方式，即【RocketMQ &#43; Flink Consumer &#43; ES Bulk】集成生态，我们将从同步延迟、消费特性，ES 写入性能、系统容灾能力四个方面评估这两种接入方式，希望给到大家灵感并选择适合业务的同步方式。
+ES 基础写入原理 ES 写入属于追加式写入，先形成特定大小的 Segment，然后定时 Merge 小数据段为大数据段以减少内存碎片，提升查询效率的过程。一个 Index 由 N 个 Shard 及其副本构成，存储了同一种 Type 类型的 Documents，由 Mapping 定义了其索引方式，每一个 Shard 由 N 个 Segment 组成，每个 Shard 都是一个全功能且完整的 Lucene 索引，它是 ES 的最小处理单元；Segment 是 ES 最小的数据处理单位，每个 Segment 都是一个独立的倒排索引。
+ES 写入其实是不断将数据写入到同一个 Segment（内存），然后触发 Refresh 刷新，将 Segment 刷新到 OS Cache（默认 1s），此时数据就可以查询到了，OS Cache 会由操作系统触发 Flush 操作持久化到磁盘。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-15T14:57:38+08:00">
+    <meta property="article:modified_time" content="2024-05-15T14:57:38+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">ES 数据写入方式:直连 VS Flink 集成系统</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>ES 作为一个分布式搜索引擎，从扩展能力和搜索特性上而言无出其右，然而它有自身的弱势存在，其作为近实时存储系统，由于其分片和复制的设计原理，也使其在数据延迟和一致性方面都是无法和 OLTP（Online Transaction Processing）系统相媲美的。</p> 
+<p>也正因如此，通常它的数据都来源于其他存储系统同步而来，做二次过滤和分析的。这就引入了一个关键节点，即 ES 数据的同步写入方式，本文介绍的则是 MySQL 同步 ES 方式。</p> 
+<p>将 MySQL 数据写入 ES，首先想到的一定是消费 Binlog 直连 ES 写入，这种方式简单明了，然而如果稍微考量维度多一点，就会发现该方式的一些弊端。因此还有另外一个方式，即<strong>【RocketMQ</strong><strong> </strong><strong>+</strong><strong> </strong><strong>Flink Consumer</strong><strong> </strong><strong>+</strong><strong> </strong><strong>ES Bulk】集成生态，</strong>我们将从<strong>同步延迟、</strong><strong>消费特性，</strong><strong>ES 写入性能、</strong><strong>系统容灾能力四</strong><strong>个方面评估这两种接入方式</strong>，希望给到大家灵感并选择适合业务的同步方式。</p> 
+<h3>ES 基础写入原理</h3> 
+<p>ES 写入属于追加式写入，先形成特定大小的 Segment，然后定时 Merge 小数据段为大数据段以减少内存碎片，提升查询效率的过程。一个 Index 由 N 个 Shard 及其副本构成，存储了同一种 Type 类型的 Documents，由 Mapping 定义了其索引方式，每一个 Shard 由 N 个 Segment 组成，每个 Shard 都是一个全功能且完整的 Lucene 索引，它是 ES 的最小处理单元；Segment 是 ES 最小的数据处理单位，每个 Segment 都是一个独立的倒排索引。</p> 
+<p>ES 写入其实是不断将数据写入到同一个 Segment（内存），然后触发 Refresh 刷新，将 Segment 刷新到 OS Cache（默认 1s），此时数据就可以查询到了，OS Cache 会由操作系统触发 Flush 操作持久化到磁盘。</p> 
+<p>引发思考：ES 是如何保证数据不丢失的呢？追加式写入的优劣点是什么？追加式写入是如何处理数据更新问题的？MySQL 是属于哪种写入方式呢？本文重点不在此处，大家可以另行查阅文章。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/b5/d1/WyVCDEie_o.png"></p> 
+<p style="text-align:center;">ES 基本概念</p> 
+<p><img alt="" src="https://images2.imgbox.com/cc/bb/ZZq37g5h_o.png"></p> 
+<p style="text-align:center;">ES 写入过程</p> 
+<h3>ES 直连写入</h3> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/43/2c/73MXcdOn_o.png"></p> 
+<p></p> 
+<p>采用 ES 直连写入的优点是因为路径短，依赖组件少，加上 Dsyncer（异构存储转换系统）通常已经提供了完善的限流重试机制，所以消费延迟和消费的数据完整性都是可以保证的。</p> 
+<p>缺点：</p> 
+<ol><li> <p>不易于接入多机房容灾部署，目前 ES 容灾机房都属于独立部署，独立读写模式，所以如果采用该方式，则难以同时对多机房写入分别做管控，达不到容灾效果。Binlog--&gt;Dsyncer 通常一个 MySQL Table 对应一个转换任务，如果为了写多机房起多个重复的转换任务，则显得有些愚笨。</p> </li><li> <p>如果自身业务场景有对同一条记录并发写场景，但写不一定全部来源于 Binlog 的情况下，那全局考虑直写 ES 则更容易遇到写入冲突问题，因为缺乏有序队列的保障。</p> </li></ol> 
+<h3>通过 Flink 搭建 ES 集成系统</h3> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/40/64/ksYvGd7M_o.png"></p> 
+<p>Flink 搭建 ES 集成系统，则指的是所有的 ES 写入都由 Flink 任务完成，Flink 监听 RocketMQ 实时数据流，既保证了数据的分区有序性，又充分利用了 ES 的批量写入能力，ES 的批量写入能力比单条写入性能高出多倍。同时由于 Flink 本身的容错性，即使在异常场景下，也能保证数据的最终一致性。</p> 
+<p style="text-align:center;"><img alt="" height="252" src="https://images2.imgbox.com/ad/3a/1coxhjqm_o.jpg" width="478"></p> 
+<p><strong>优点</strong>：</p> 
+<ol><li> <p>通过 MQ 可以更快捷的接入多机房 ES 集群，写入解耦，三机房分别起消费者写入数据，<strong>彼此独立</strong>，当出现单机房故障时，只要有可用机房，直接处理读流量切流即可，<strong>容灾方案简单清晰</strong>；</p> </li><li> <p>网络抖动等问题会导致 ES 暂时性写入失败时，不影响其他集群写入的情况下，RocketMQ 会暂存消息，Flink 会保存消费快照，不断重试直至成功，<strong>更好的保障了数据最终一致性</strong>；</p> </li><li> <p>多数据源写入能保证全局分区一致性。</p> </li></ol> 
+<p><strong>缺点</strong>：</p> 
+<ol><li> <p>依赖了更多组件，会增加全链路数据同步延迟，而 ES 默认的 Refresh 频率是每秒一次，经测试该链路正常情况下数据延迟都是秒级的，不是完全不可接受；</p> </li><li> <p>依赖了更多组件，对基础组件的稳定性有更高的要求，RocketMQ 异常，或者 Flink 任务异常都会导致同步链路出现问题，增加一定的业务异常风险。</p> </li></ol> 
+<p>在这里需要注意的一个问题是有人可能会考虑接入多机房 ES 集群，是怎么保证多机房同时成功的、以及怎么保证写入成功后就可以查询得到？目前这两点暂时无法做到，因为多个机房都是独立写入的，互不影响，且 ES 集群属于弱数据一致性集群，无法保证写入成功立刻就能查到。</p> 
+<p></p> 
+<p><strong>搭建并运行一个</strong><strong> </strong><strong>ES Flink</strong><strong> </strong><strong>消费程序</strong><strong>的必备条件</strong>：</p> 
+<ul><li> <p><strong>Flink</strong><strong> </strong><strong>运行环境</strong>：首先需要有 Flink 任务的运行环境，通常企业级的 Flink 任务会作为一个 YARN 作业在分布式系统中被调度并分配资源执行，但同时 Flink 也可作为单机进程，亦或搭建一个独立集群运行。</p> </li><li> <p><strong>ES</strong><strong> </strong><strong>消息格式</strong>：需要约定一种 ES 消息传输格式和序列化方式，一套范式解决所有同步场景，目前流行的序列化方式是 pb 格式或 json 格式，目前我们都是推荐使用 pb 格式的，数据格式 Schema 定义：</p> </li></ul> 
+<table><tbody><tr><td colspan="1" rowspan="1"> <p>字段名</p> </td><td colspan="1" rowspan="1"> <p>值类型</p> </td><td colspan="1" rowspan="1" style="width:83px;"> <p>必需/可选</p> </td><td colspan="1" rowspan="1" style="width:472px;"> <p>描述</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>_index</p> </td><td colspan="1" rowspan="1"> <p>string</p> </td><td colspan="1" rowspan="1" style="width:83px;"> <p>必需</p> </td><td colspan="1" rowspan="1" style="width:472px;"> <p><strong>文档要写入索引的名称或别名</strong></p> </td></tr><tr><td colspan="1" rowspan="1"> <p>_type</p> </td><td colspan="1" rowspan="1"> <p>string</p> </td><td colspan="1" rowspan="1" style="width:83px;"> <p>必需/可选</p> </td><td colspan="1" rowspan="1" style="width:472px;"> <p><strong>文档的类型</strong></p> </td></tr><tr><td colspan="1" rowspan="1"> <p>_op_type</p> </td><td colspan="1" rowspan="1"> <p>string</p> </td><td colspan="1" rowspan="1" style="width:83px;"> <p>必需</p> </td><td colspan="1" rowspan="1" style="width:472px;"> <p><strong>文档写入操作类型</strong>，取值范围: <strong>index, create, update, upsert, delete</strong></p> </td></tr><tr><td colspan="1" rowspan="1"> <p>_id</p> </td><td colspan="1" rowspan="1"> <p>string</p> </td><td colspan="1" rowspan="1" style="width:83px;"> <p>可选</p> </td><td colspan="1" rowspan="1" style="width:472px;"> <p><strong>文档 ID</strong>，不指定时写入 ES 会<strong><a href="https://www.elastic.co/guide/en/elasticsearch/reference/7.10/docs-index_.html#create-document-ids-automatically" rel="nofollow" title="自动生成">自动生成</a></strong>，但同一条数据被重复消费写入 ES 会生成多个文档</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>_routing</p> </td><td colspan="1" rowspan="1"> <p>string</p> </td><td colspan="1" rowspan="1" style="width:83px;"> <p>可选</p> </td><td colspan="1" rowspan="1" style="width:472px;"> <p><strong>文档</strong><strong><a href="https://www.elastic.co/guide/en/elasticsearch/reference/7.10/mapping-routing-field.html" rel="nofollow" title="路由">路由</a></strong>，不指定时默认使用 _id 字段值路由</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>_version</p> </td><td colspan="1" rowspan="1"> <p>int64</p> </td><td colspan="1" rowspan="1" style="width:83px;"> <p>可选</p> </td><td colspan="1" rowspan="1" style="width:472px;"> <p><strong>文档版本</strong>，指定时大于 0 <strong>且仅操作为 index/delete 有效</strong>，默认使用 <strong><a href="https://www.elastic.co/guide/en/elasticsearch/reference/7.10/docs-index_.html#index-versioning" rel="nofollow" title="external_gte">external_gte</a></strong><strong> </strong>版本类型</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>_source</p> </td><td colspan="1" rowspan="1"> <p>object</p> </td><td colspan="1" rowspan="1" style="width:83px;"> <p>必需/可选</p> </td><td colspan="1" rowspan="1" style="width:472px;"> <p><strong>文档内容</strong>，操作类型为 delete 时可不指定</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>_script</p> </td><td colspan="1" rowspan="1"> <p>object</p> </td><td colspan="1" rowspan="1" style="width:83px;"> <p>可选</p> </td><td colspan="1" rowspan="1" style="width:472px;"> <p><strong>文档脚本</strong>，操作类型为 update/upsert 时有效，但和 _source 不能同时存在</p> </td></tr></tbody></table> 
+<pre><code class="language-Go">syntax = "proto3";
+
+message ESIndexInfo {
+    string Name = 1;  // 文档要写入索引的名称或别名
+}
+
+enum ESOPType { // 文档写入操作类型
+    DELETE = 0; // 删除文档
+    INDEX = 1;  // 创建新文档或更新老文档，只能全量更新 (替换老文档)
+    UPDATE = 2; // 更新老文档，支持部分更新 (合并老文档)
+    UPSERT = 3; // 创建新文档或更新老文档，支持部分更新 (合并老文档)
+    CREATE = 4; // 创建新文档，存在时报错丢弃
+}
+
+message ESDocAction {
+    ESIndexInfo IndexInfo = 1; // 索引信息 (必需)
+    ESOPType OPType = 2;       // 操作类型 (必需)
+    string ID = 3;             // 文档 ID (可选)
+    string Doc = 4;            // 文档内容 (JSON 格式, 删除操作时不需要)
+    int64 Version = 5;         // 文档版本 (可选, 大于 0 且操作为 index/create/delete 有效)
+    string Routing = 6;        // 文档路由 (可选, 非空有效)
+    string Script = 7;         // 文档脚本 (JSON 格式, 操作类型为 update/upsert 有效，但和 Doc 不能同时存在)
+}</code></pre> 
+<ul><li> <p><strong>Flink</strong><strong> </strong><strong>任务必要配置</strong>：监听的 RocketMQ Topic 信息，写 ES 集群信息；</p> </li><li> <p><strong>Flink</strong><strong> </strong><strong>执行函数</strong>：Flink 处理流式消息有流式 SQL 和自定义应用程序两种方式，流式 SQL 约束于本身的一些限制，比如不支持同一个 MQ 有多个索引消息，而自定义编程更加灵活，比如添加各种打点，日志，错误码处理等，推荐该方式；</p> </li><li> <p><strong>Flink</strong><strong> </strong><strong>资源配置</strong>：JobManager 资源配置，TaskManager 资源配置等等；</p> </li><li> <p><strong>Flink</strong><strong> </strong><strong>自定义参数配置</strong>：可以自定义一些与应用程序紧密相关的动态配置，方便动态调节 Flink 消费能力，比如：</p> </li></ul> 
+<table><tbody><tr><td colspan="1" rowspan="1"> <p><strong>参数名</strong></p> </td><td colspan="1" rowspan="1"> <p><strong>用途</strong></p> </td><td colspan="1" rowspan="1"> <p><strong>默认值</strong></p> </td></tr><tr><td colspan="1" rowspan="1"> <p>job.writer.connector.bulk-flush.max-actions</p> </td><td colspan="1" rowspan="1"> <p>单次 bulk 最大文档数，超过进行一次 flush (即执行一次 es 的 bulk 请求)</p> </td><td colspan="1" rowspan="1"> <p>默认 300</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>job.writer.connector.bulk-flush.max-size</p> </td><td colspan="1" rowspan="1"> <p>单次 bulk 最大字节数，超过进行一次 flush (即执行一次 es 的 bulk 请求)</p> </td><td colspan="1" rowspan="1"> <p>默认 10MB</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>job.writer.connector.bulk-flush.interval</p> </td><td colspan="1" rowspan="1"> <p>两次 bulk 最大间隔，超过进行一次 flush (即执行一次 es 的 bulk 请求)</p> </td><td colspan="1" rowspan="1"> <p>默认 1000ms</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>job.writer.connector.global-rate-limit</p> </td><td colspan="1" rowspan="1"> <p>全局写入限速值</p> </td><td colspan="1" rowspan="1"> <p>默认 -1，不限速</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>job.writer.connector.failure-handler</p> </td><td colspan="1" rowspan="1"> <p>指定自定义失败处理器，比如处理4xx错误，5xx错误的方式不同，429总是无限重试等；</p> </td><td colspan="1" rowspan="1"> <p></p> </td></tr><tr><td colspan="1" rowspan="1"> <p>global_parallelism_num</p> </td><td colspan="1" rowspan="1"> <p>flink 任务全局并发度</p> </td><td colspan="1" rowspan="1"> <p>rmq 是 queue/4，bmq/kafka 是 partition/3</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>max_parallelism_num</p> </td><td colspan="1" rowspan="1"> <p>flink 任务最大并发度</p> </td><td colspan="1" rowspan="1"> <p>mq 的 queue/partition 的个数</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>checkpoint_interval</p> </td><td colspan="1" rowspan="1"> <p>创建 Checkpoint 的间隔，单位 ms (5min=300000)</p> </td><td colspan="1" rowspan="1"> <p>默认 15min</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>checkpoint_timeout</p> </td><td colspan="1" rowspan="1"> <p>创建 Checkpoint 的超时时间，单位 ms (5min=300000)</p> </td><td colspan="1" rowspan="1"> <p>默认 10min</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>rebalance_enable</p> </td><td colspan="1" rowspan="1"> <p>开启乱序消费</p> </td><td colspan="1" rowspan="1"> <p>默认 false</p> </td></tr></tbody></table> 
+<h3>对比建议</h3> 
+<table><tbody><tr><td colspan="1" rowspan="1"> <p>写入方式</p> </td><td colspan="1" rowspan="1"> <p>同步延迟</p> </td><td colspan="1" rowspan="1"> <p>写入特性</p> </td><td colspan="1" rowspan="1"> <p>ES写入性能</p> </td><td colspan="1" rowspan="1"> <p>消费者</p> </td><td colspan="1" rowspan="1"> <p>容灾能力</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>直连</p> </td><td colspan="1" rowspan="1"> <p>依赖组件少，延迟低</p> </td><td colspan="1" rowspan="1"> <p>Binlog 单 key 有序</p> </td><td colspan="1" rowspan="1"> <p>bulk写入</p> </td><td colspan="1" rowspan="1"> <p>FaaS</p> </td><td colspan="1" rowspan="1"> <p>较差</p> </td></tr><tr><td colspan="1" rowspan="1"> <p>RocketMQ+Flink+ES</p> </td><td colspan="1" rowspan="1"> <p>依赖组件多，延迟较高/秒级</p> </td><td colspan="1" rowspan="1"> <p>全局单 key 有序</p> </td><td colspan="1" rowspan="1"> <p>bulk写入</p> </td><td colspan="1" rowspan="1"> <p>Flink</p> </td><td colspan="1" rowspan="1"> <p>好</p> </td></tr></tbody></table> 
+<p>经过以上介绍如果业务在都可接受秒级延迟的条件下，使用 RocketMQ+Flink 的方式能够更好的实现有序性和容灾能力，Flink 在流式任务处理能力上也远优 FaaS，但是直连方式明显链路更加简洁，架构更加轻量，系统集成和维护成本较低，所以还是需要依照业务特性选择最适合的才是最好的。</p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/cfd9756dffd442304ea62bcab07c60ab/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Stable Diffusion本地安装详细教程（Mac篇）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/91f22b70a6e161d5a3cb3273577eecf4/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">基于Python的jieba库分析《斗破苍穹》文本中的高频词汇</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

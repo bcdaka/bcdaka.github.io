@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>基于Doris的日志存储分析平台（同步Kafka日志数据） - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/c768ffe408bf8d50ae645addaf5163b2/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="基于Doris的日志存储分析平台（同步Kafka日志数据）">
+  <meta property="og:description" content="Kafka日志写入Doris 实现方式 采用 Routine Load 官方文档：Routine Load - Apache Doris采用 SparkStreaming实时消费Kafka后写入Doris，在日志记录场景（只写不删，不覆盖，不聚合...），我们使们前者；Doris 可以通过 Routine Load 导入方式持续消费 Kafka Topic 中的数据。在提交 Routine Load 作业后，Doris 会持续运行该导入作业，实时生成导入任务不断消费 Kakfa 集群中指定 Topic 中的消息。我们的日志数据由log4net推入Kafka后是一串JSON格式，大致如下格式： [ { &#34;partition&#34;: 0, &#34;offset&#34;: 49, &#34;msg&#34;: &#34;{\&#34;log_timestamp\&#34;:1715752796717,\&#34;business\&#34;:\&#34;example.business.project\&#34;,\&#34;service\&#34;:\&#34;example.service\&#34;,\&#34;host_ip\&#34;:\&#34;YFB-CTO\&#34;,\&#34;level\&#34;:\&#34;INFO\&#34;,\&#34;logger_name\&#34;:\&#34;Web.Controllers.RoleController\&#34;,\&#34;message\&#34;:\&#34;########### \\u8FD9\\u662F\\u624B\\u52A8\\u8F93\\u51FA\\u7684\\u4E2D\\u6587\\u65E5\\u5FD7\\u4FE1\\u606F ###########\&#34;,\&#34;request_path\&#34;:null,\&#34;request_parameter\&#34;:null,\&#34;request_method\&#34;:null,\&#34;request_header\&#34;:null,\&#34;status_code\&#34;:null,\&#34;request_response_time\&#34;:0,\&#34;exception\&#34;:null}&#34;, &#34;timespan&#34;: 1715752796716, &#34;date&#34;: &#34;2024-05-15 13:59:56&#34; } ] 创建 Routine Load 导入作业语法 CREATE ROUTINE LOAD [db.]job_name [ON tbl_name] [merge_type] [load_properties] [job_properties] FROM data_source [data_source_properties] [COMMENT &#34;comment&#34;] 在 Doris 中，使用 CREATE ROUTINE LOAD 命令，创建导入作业 CREATE ROUTINE LOAD biz_log_db.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-20T08:59:56+08:00">
+    <meta property="article:modified_time" content="2024-05-20T08:59:56+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">基于Doris的日志存储分析平台（同步Kafka日志数据）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h5 id="kafka日志写入doris">Kafka日志写入Doris</h5> 
+<ul><li>实现方式 
+  <ul><li>采用 Routine Load 官方文档：<a href="https://doris.apache.org/zh-CN/docs/dev/data-operate/import/routine-load-manual" rel="nofollow" title="Routine Load - Apache Doris">Routine Load - Apache Doris</a></li><li>采用 SparkStreaming实时消费Kafka后写入Doris，在日志记录场景（只写不删，不覆盖，不聚合...），我们使们前者；</li><li>Doris 可以通过 Routine Load 导入方式持续消费 Kafka Topic 中的数据。在提交 Routine Load 作业后，Doris 会持续运行该导入作业，实时生成导入任务不断消费 Kakfa 集群中指定 Topic 中的消息。</li></ul></li><li>我们的日志数据由log4net推入Kafka后是一串JSON格式，大致如下格式：</li></ul> 
+<pre><code>[
+  {
+      "partition": 0,
+      "offset": 49,
+      "msg": "{\"log_timestamp\":1715752796717,\"business\":\"example.business.project\",\"service\":\"example.service\",\"host_ip\":\"YFB-CTO\",\"level\":\"INFO\",\"logger_name\":\"Web.Controllers.RoleController\",\"message\":\"########### \\u8FD9\\u662F\\u624B\\u52A8\\u8F93\\u51FA\\u7684\\u4E2D\\u6587\\u65E5\\u5FD7\\u4FE1\\u606F ###########\",\"request_path\":null,\"request_parameter\":null,\"request_method\":null,\"request_header\":null,\"status_code\":null,\"request_response_time\":0,\"exception\":null}",
+      "timespan": 1715752796716,
+      "date": "2024-05-15 13:59:56"
+    }
+]</code></pre> 
+<ul><li>创建 Routine Load 导入作业</li><li>语法</li><li> <pre><code> CREATE ROUTINE LOAD [db.]job_name [ON tbl_name]
+  [merge_type]
+  [load_properties]
+  [job_properties]
+  FROM data_source [data_source_properties]
+  [COMMENT "comment"]</code></pre> <p></p> </li><li>在 Doris 中，使用 CREATE ROUTINE LOAD 命令，创建导入作业</li><li> <pre><code>CREATE ROUTINE LOAD biz_log_db.ods_example_service_log_routine_load_json ON ods_example_service_log
+    COLUMNS(log_timestamp,business,service,host_ip,level,logger_name,message,request_path,request_parameter,request_method,request_header,response_content,status_code,request_response_time,exception,log_time=from_millisecond(log_timestamp))
+    PROPERTIES(
+        "desired_concurrent_number"="3",
+        "max_batch_interval" = "20",
+        "max_batch_rows" = "300000",
+        "max_batch_size" = "209715200",
+        "strict_mode" = "false",
+        "format"="json",
+        "jsonpaths"="[\"$.log_timestamp\",\"$.business\",\"$.service\",\"$.host_ip\",\"$.level\",\"$.logger_name\",\"$.message\",\"$.request_path\",\"$.request_parameter\",\"$.request_method\",\"$.request_header\",\"$.response_content\",\"$.status_code\",\"$.request_response_time\",\"$.exception\"]"
+    )
+    FROM KAFKA(
+        "kafka_broker_list" = "192.168.2.111:9092,192.168.2.184:9092,192.168.2.156:9092",
+        "kafka_topic" = "example-service-log",
+        "property.kafka_default_offsets" = "OFFSET_BEGINNING",
+        "property.deserializer.encoding" = "UTF-8"
+    )
+    COMMENT "示例服务日志记录同步 KAFKA ROUTINE LOAD 配置";</code></pre> <p></p> </li><li>说明 
+  <ul><li>请参考官方文档：<a href="https://doris.apache.org/zh-CN/docs/dev/sql-manual/sql-statements/Data-Manipulation-Statements/Load/CREATE-ROUTINE-LOAD" rel="nofollow" title="CREATE-ROUTINE-LOAD - Apache Doris">CREATE-ROUTINE-LOAD - Apache Doris</a></li><li>示例中通过 json_root 抽取根节点的元素进行解析，以简化配置。</li><li>OFFSET_BEGINNING: 表示从有数据的位置开始订阅。</li><li>上述配置表示：自动默认消费所有分区，且从有数据的位置（OFFSET_BEGINNING）开始订阅</li><li>查看导入运行任务</li><li style="text-align:center;"><img alt="" src="https://images2.imgbox.com/e3/91/ySBMweHp_o.png"></li><li>查看导入运行作业 
+    <ul><li>创建 routine load 任务之后,可以通过show routine load命令查看运行状态的例行任务，如果在show routine load中没有找到对应的例行任务，则可能因为例行任务失败或者错误数过多被停止或者暂停，使用show all routine load查看所有状态的例行任务。</li><li style="text-align:center;"><img alt="" src="https://images2.imgbox.com/18/a0/aaMoGFKX_o.png"></li></ul></li><li>暂停导入作业 
+    <ul><li><a href="https://doris.apache.org/zh-CN/docs/dev/sql-manual/sql-statements/Data-Manipulation-Statements/Load/PAUSE-ROUTINE-LOAD" rel="nofollow" title="PAUSE-ROUTINE-LOAD - Apache Doris">PAUSE-ROUTINE-LOAD - Apache Doris</a></li></ul></li><li>恢复（重启）导入作业 
+    <ul><li><a href="https://doris.apache.org/zh-CN/docs/dev/sql-manual/sql-statements/Data-Manipulation-Statements/Load/RESUME-ROUTINE-LOAD" rel="nofollow" title="RESUME-ROUTINE-LOAD - Apache Doris">RESUME-ROUTINE-LOAD - Apache Doris</a></li></ul></li><li>修改导入作业 
+    <ul><li><a href="https://doris.apache.org/zh-CN/docs/dev/sql-manual/sql-statements/Data-Manipulation-Statements/Load/ALTER-ROUTINE-LOAD" rel="nofollow" title="ALTER-ROUTINE-LOAD - Apache Doris">ALTER-ROUTINE-LOAD - Apache Doris</a></li></ul></li><li>取消(停止)导入作业 
+    <ul><li><a href="https://doris.apache.org/zh-CN/docs/dev/sql-manual/sql-statements/Data-Manipulation-Statements/Load/STOP-ROUTINE-LOAD" rel="nofollow" title="STOP-ROUTINE-LOAD - Apache Doris">STOP-ROUTINE-LOAD - Apache Doris</a></li></ul></li><li><strong>问题排查</strong> 
+    <ul><li>先执行“SHOW ALL ROUTINE LOAD;”，找出有问题的ROUTINE-LOAD，拖到最右边，看到“ErrorLogUrls”，如下：</li><li style="text-align:center;"><img alt="" src="https://images2.imgbox.com/48/2a/tkgio4wW_o.png"></li><li>复制ErrorLogUrls，在浏览器里打开，查看错误信息，如下：</li><li><img alt="" src="https://images2.imgbox.com/f3/9f/j0Pa7OQy_o.png"></li><li>看一下数据</li><li style="text-align:center;"><img alt="" src="https://images2.imgbox.com/a4/33/FtRyYVVA_o.png"></li><li style="text-align:center;">最后：经过实测，已经取消的ROUTINE LOAD是没办法手动删除的，Doris会自动删除，不过这个过程等了好几天，过了一个周未才发现自动删除了已经取消的ROUTINE LOAD，如下：</li><li><img alt="" src="https://images2.imgbox.com/bf/b0/tJ6xMYlR_o.png"></li></ul></li></ul></li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8aca9cd777381e9b9d5b386be6672ced/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【C语言】探索结构体基础知识：简明概要</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b315e8317c4264316beb9fec74138395/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">手把手教你用LoRA训练自己的Stable Diffusion模型</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Pytorch深度解析：Transformer嵌入层源码逐行解读 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/52e4e11ca2d61d07bb4a05695daa0cdd/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Pytorch深度解析：Transformer嵌入层源码逐行解读">
+  <meta property="og:description" content="前言 本部分博客需要先阅读博客：
+《Transformer实现以及Pytorch源码解读（一）-数据输入篇》
+作为知识储备。
+Embedding使用方式 如下面的代码中所示，embedding一般是先实例化nn.Embedding(vocab_size, embedding_dim)。实例化的过程中输入两个参数：vocab_size和embedding_dim。其中的vocab_size是指输入的数据集合中总共涉及多少个去重后的单词；embedding_dim是指，每个单词你希望用多少维度的向量表示。随后，实例化的embedding在forward中被调用self.embeddings(inputs)。
+class Transformer(nn.Module): def __init__(self, vocab_size, embedding_dim, hidden_dim, num_class, dim_feedforward=512, num_head=2, num_layers=2, dropout=0.1, max_len=512, activation: str = &#34;relu&#34;): super(Transformer, self).__init__() # 词嵌入层 self.embedding_dim = embedding_dim self.embeddings = nn.Embedding(vocab_size, embedding_dim) self.position_embedding = PositionalEncoding(embedding_dim, dropout, max_len) # 编码层：使用Transformer encoder_layer = nn.TransformerEncoderLayer(hidden_dim, num_head, dim_feedforward, dropout, activation) self.transformer = nn.TransformerEncoder(encoder_layer, num_layers) # 输出层 self.output = nn.Linear(hidden_dim, num_class) def forward(self, inputs, lengths): inputs = torch.transpose(inputs, 0, 1) hidden_states = self.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-17T14:11:25+08:00">
+    <meta property="article:modified_time" content="2024-06-17T14:11:25+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Pytorch深度解析：Transformer嵌入层源码逐行解读</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_2"></a>前言</h3> 
+<p>本部分博客需要先阅读博客：<br> <a href="/" rel="nofollow">《Transformer实现以及Pytorch源码解读（一）-数据输入篇》</a><br> 作为知识储备。</p> 
+<h3><a id="Embedding_13"></a>Embedding使用方式</h3> 
+<p>如下面的代码中所示，embedding一般是先实例化nn.Embedding(vocab_size, embedding_dim)。实例化的过程中输入两个参数：vocab_size和embedding_dim。其中的vocab_size是指输入的数据集合中总共涉及多少个去重后的单词；embedding_dim是指，每个单词你希望用多少维度的向量表示。随后，实例化的embedding在forward中被调用self.embeddings(inputs)。</p> 
+<pre><code>class Transformer(nn.Module):
+    def __init__(self, vocab_size, embedding_dim, hidden_dim, num_class,
+                 dim_feedforward=512, num_head=2, num_layers=2, dropout=0.1, max_len=512, activation: str = "relu"):
+        super(Transformer, self).__init__()
+        # 词嵌入层
+        self.embedding_dim = embedding_dim
+        self.embeddings = nn.Embedding(vocab_size, embedding_dim)
+        self.position_embedding = PositionalEncoding(embedding_dim, dropout, max_len)
+        # 编码层：使用Transformer
+        encoder_layer = nn.TransformerEncoderLayer(hidden_dim, num_head, dim_feedforward, dropout, activation)
+        self.transformer = nn.TransformerEncoder(encoder_layer, num_layers)
+        # 输出层
+        self.output = nn.Linear(hidden_dim, num_class)
+
+    def forward(self, inputs, lengths):
+        inputs = torch.transpose(inputs, 0, 1)
+        hidden_states = self.embeddings(inputs)
+        hidden_states = self.position_embedding(hidden_states)
+        attention_mask = length_to_mask(lengths) == False
+        hidden_states = self.transformer(hidden_states, src_key_padding_mask=attention_mask).transpose(0, 1)
+        logits = self.output(hidden_states)
+        log_probs = F.log_softmax(logits, dim=-1)
+        return log_probs
+
+</code></pre> 
+<h3><a id="_50"></a>数据被怎样变换了？</h3> 
+<p>如下图所示，第一个tensor表示input,该input表示一个句子（ sentence）,只是该句子中的单词用整数进行了代替，相同的整数表示相同的单词。而每个1在embedding之后，变成了相同过的向量。</p> 
+<p><img src="https://images2.imgbox.com/04/b9/5jRIy4XT_o.png" alt=""></p> 
+<p>我们将以上的代码重新的运行一遍，发现表示1的向量改变了，这说明embedding 的过程不是确定的，而是随机的。</p> 
+<p><img src="https://images2.imgbox.com/87/8a/pzLpX8sB_o.png" alt=""></p> 
+<h3><a id="_70"></a>数据是怎样被变化的？</h3> 
+<p>Embedding类在调用过程中主要涉及到以下几个核心方法：_<br> <em>init</em><br> ,rest_parameters,forward:</p> 
+<p><img src="https://images2.imgbox.com/94/da/rev7IMdI_o.png" alt=""></p> 
+<p>Embedding类的初始化过程如下所示。当_weight没有的情况下调用Parameter初始化一个空的向量，该向量的维度与输入数据中的去重单词个数（num_bembeddings）一样。然后调用reset_parameters方法。</p> 
+<pre><code> def __init__(self, num_embeddings: int, embedding_dim: int, padding_idx: Optional[int] = None,
+                 max_norm: Optional[float] = None, norm_type: float = 2., scale_grad_by_freq: bool = False,
+                 sparse: bool = False, _weight: Optional[Tensor] = None,
+                 device=None, dtype=None) -&gt; None:
+        factory_kwargs = {'device': device, 'dtype': dtype}
+        super(Embedding, self).__init__()
+        self.num_embeddings = num_embeddings
+        self.embedding_dim = embedding_dim
+        if padding_idx is not None:
+            if padding_idx &gt; 0:
+                assert padding_idx &lt; self.num_embeddings, 'Padding_idx must be within num_embeddings'
+            elif padding_idx &lt; 0:
+                assert padding_idx &gt;= -self.num_embeddings, 'Padding_idx must be within num_embeddings'
+                padding_idx = self.num_embeddings + padding_idx
+        self.padding_idx = padding_idx
+        self.max_norm = max_norm
+        self.norm_type = norm_type
+        self.scale_grad_by_freq = scale_grad_by_freq
+        if _weight is None:
+            self.weight = Parameter(torch.empty((num_embeddings, embedding_dim), **factory_kwargs))
+            # print("===========================================1")
+            # print(self.weight)
+            #将self.weight进行nornal归一化
+            self.reset_parameters()
+            print("===========================================2")
+            print(self.weight)
+        else:
+            assert list(_weight.shape) == [num_embeddings, embedding_dim], \
+                'Shape of weight does not match num_embeddings and embedding_dim'
+            self.weight = Parameter(_weight)
+
+        self.sparse = sparse
+
+</code></pre> 
+<p>reset_parameters的实现如下所示，主要是调用了init.norma_方法。</p> 
+<pre><code>    def reset_parameters(self) -&gt; None:
+        init.normal_(self.weight)
+        self._fill_padding_idx_with_zero()
+
+</code></pre> 
+<p>init.normal_又调用了torch.nn.init中的normal方法。该方法将空的self.weight矩阵填充为一个符合 （0，1）正太分布的矩阵。</p> 
+<p>N</p> 
+<p>(</p> 
+<p>mean</p> 
+<p>,</p> 
+<p>std</p> 
+<p>2</p> 
+<p>)</p> 
+<p>.</p> 
+<p>\mathcal{N}(\text{mean}, \text{std}^2).</p> 
+<p>N</p> 
+<p>(</p> 
+<p>mean</p> 
+<p>,</p> 
+<p>std</p> 
+<p>2</p> 
+<p>)</p> 
+<p>.</p> 
+<pre><code>def normal_(tensor: Tensor, mean: float = 0., std: float = 1.) -&gt; Tensor:
+    r"""Fills the input Tensor with values drawn from the normal
+    distribution :math:`\mathcal{N}(\text{mean}, \text{std}^2)`.
+
+    Args:
+        tensor: an n-dimensional `torch.Tensor`
+        mean: the mean of the normal distribution
+        std: the standard deviation of the normal distribution
+
+    Examples:
+        &gt;&gt;&gt; w = torch.empty(3, 5)
+        &gt;&gt;&gt; nn.init.normal_(w)
+    """
+    return _no_grad_normal_(tensor, mean, std)
+
+</code></pre> 
+<p>继续追踪_no_grad_normal_(tensor, mean, std)我们发现，该方法是通过c++实现，所在的源码文件目录为：</p> 
+<pre><code>namespace torch {
+namespace nn {
+namespace init {
+namespace {
+struct Fan {
+  explicit Fan(Tensor&amp; tensor) {
+    const auto dimensions = tensor.ndimension();
+    TORCH_CHECK(
+        dimensions &gt;= 2,
+        "Fan in and fan out can not be computed for tensor with fewer than 2 dimensions");
+
+    if (dimensions == 2) {
+      in = tensor.size(1);
+      out = tensor.size(0);
+    } else {
+      in = tensor.size(1) * tensor[0][0].numel();
+      out = tensor.size(0) * tensor[0][0].numel();
+    }
+  }
+
+  int64_t in;
+  int64_t out;
+};
+Tensor normal_(Tensor tensor, double mean, double std) {
+  NoGradGuard guard;
+  return tensor.normal_(mean, std);
+}
+
+</code></pre> 
+<p>forward方法的c++实现如下所示。</p> 
+<pre><code>torch::Tensor EmbeddingImpl::forward(const Tensor&amp; input) {
+  return F::detail::embedding(
+      input,
+      weight,
+      options.padding_idx(),
+      options.max_norm(),
+      options.norm_type(),
+      options.scale_grad_by_freq(),
+      options.sparse());
+}
+
+</code></pre> 
+<p>继续追踪,发现weight中的每个变量被下面的c++代码填充了正太分布的随机数。</p> 
+<pre><code>void normal_kernel(const TensorBase &amp;self, double mean, double std, c10::optional&lt;Generator&gt; gen) {
+  CPUGeneratorImpl* generator = get_generator_or_default&lt;CPUGeneratorImpl&gt;(gen, detail::getDefaultCPUGenerator());
+  templates::cpu::normal_kernel(self, mean, std, generator);
+}
+
+</code></pre> 
+<p>随机数的生成调用如下的代码，首先询问：目前代码是在什么设备上运行，并调用cpu或者gup上的随机数生成方法。</p> 
+<pre><code>template &lt;typename T&gt;
+static inline T * check_generator(c10::optional&lt;Generator&gt; gen) {
+  TORCH_CHECK(gen.has_value(), "Expected Generator but received nullopt");
+  TORCH_CHECK(gen-&gt;defined(), "Generator with undefined implementation is not allowed");
+  TORCH_CHECK(T::device_type() == gen-&gt;device().type(), "Expected a '", T::device_type(), "' device type for generator but found '", gen-&gt;device().type(), "'");
+  return gen-&gt;get&lt;T&gt;();
+}
+
+/**
+ * Utility function used in tensor implementations, which
+ * supplies the default generator to tensors, if an input generator
+ * is not supplied. The input Generator* is also static casted to
+ * the backend generator type (CPU/CUDAGeneratorImpl etc.)
+ */
+template &lt;typename T&gt;
+static inline T* get_generator_or_default(const c10::optional&lt;Generator&gt;&amp; gen, const Generator&amp; default_gen) {
+  return gen.has_value() &amp;&amp; gen-&gt;defined() ? check_generator&lt;T&gt;(gen) : check_generator&lt;T&gt;(default_gen);
+}
+
+</code></pre> 
+<p>至此，embedding的每个随机数的生成过程都清楚了。</p> 
+<h3><a id="_355"></a>总结</h3> 
+<p>Embedding的过程，其实就是为每个单词对应一个向量的过程。该向量为（0，1）正太分布，该矩阵在Embedding的实例化过程就已经被初始化完成。在调用Embedding示例的时候即forward开始工作的时候，只是做了一个匹配的过程，也就是将&lt;字典,向量&gt;的对应关系应用到input上。前期解读该部分源码的困惑是一只找不到forward中的对应处理过程，以为embedding的处理逻辑是在forward的阶段展开的，显然这种想法是不对的。Pytorch的架构设计的的确优雅！</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2b40b2664a5c3870a9f26471750638e6/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">详解各种LLM系列｜（5）LLaMA 3模型解析（Meta重磅发布！）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/087a4774f3441a084ae5a177e8ff2a26/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Matlab r2023a v23.2.0 解锁版安装步骤 （工程计算商业数学软件）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

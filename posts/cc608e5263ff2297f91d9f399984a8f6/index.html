@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>扩展阅读-穿越Redis单线程迷雾：从面试场景到技术内核的解读 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/cc608e5263ff2297f91d9f399984a8f6/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="扩展阅读-穿越Redis单线程迷雾：从面试场景到技术内核的解读">
+  <meta property="og:description" content="目录
+​编辑
+前言
+Redis中的多线程
+I/O多线程
+Redis中的多进程
+结论
+延伸阅读
+前言 很多人都遇到过这么一道面试题：Redis是单线程还是多线程？这个问题既简单又复杂。说他简单是因为大多数人都知道Redis是单线程，说复杂是因为这个答案其实并不准确。
+难道Redis不是单线程？我们启动一个Redis实例，验证一下就知道了。Redis安装部署方式如下所示：
+// 下载 wget https://download.redis.io/redis-stable.tar.gz tar -xzvf redis-stable.tar.gz // 编译安装 cd redis-stable make // 验证是否安装成功 ./src/redis-server -v Redis server v=7.2.4 接下来启动Redis实例，使用命令ps查看所有线程，如下所示：
+// 启动Redis实例 ./src/redis-server ./redis.conf // 查看实例进程ID ps aux | grep redis root 385806 0.0 0.0 245472 11200 pts/2 Sl&#43; 17:32 0:00 ./src/redis-server 127.0.0.1:6379 // 查看所有线程 ps -L -p 385806 PID LWP TTY TIME CMD 385806 385806 pts/2 00:00:00 redis-server 385806 385809 pts/2 00:00:00 bio_close_file 385806 385810 pts/2 00:00:00 bio_aof 385806 385811 pts/2 00:00:00 bio_lazy_free 385806 385812 pts/2 00:00:00 jemalloc_bg_thd 385806 385813 pts/2 00:00:00 jemalloc_bg_thd 竟然有6个线程！不是说Redis是单线程吗？怎么会有这么多线程呢？">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-04-29T09:09:29+08:00">
+    <meta property="article:modified_time" content="2024-04-29T09:09:29+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">扩展阅读-穿越Redis单线程迷雾：从面试场景到技术内核的解读</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3 id="%E2%80%8B%E7%BC%96%E8%BE%91" style="text-align:center;"><img alt="" src="https://images2.imgbox.com/af/03/tjEx1Odi_o.png"></h3> 
+<p id="main-toc"><strong>目录</strong></p> 
+<p id="%E2%80%8B%E7%BC%96%E8%BE%91-toc" style="margin-left:40px;"><a href="#%E2%80%8B%E7%BC%96%E8%BE%91" rel="nofollow">​编辑</a></p> 
+<p id="%E5%89%8D%E8%A8%80-toc" style="margin-left:40px;"><a href="#%E5%89%8D%E8%A8%80" rel="nofollow">前言</a></p> 
+<p id="Redis%E4%B8%AD%E7%9A%84%E5%A4%9A%E7%BA%BF%E7%A8%8B-toc" style="margin-left:40px;"><a href="#Redis%E4%B8%AD%E7%9A%84%E5%A4%9A%E7%BA%BF%E7%A8%8B" rel="nofollow">Redis中的多线程</a></p> 
+<p id="I%2FO%E5%A4%9A%E7%BA%BF%E7%A8%8B-toc" style="margin-left:40px;"><a href="#I%2FO%E5%A4%9A%E7%BA%BF%E7%A8%8B" rel="nofollow">I/O多线程</a></p> 
+<p id="Redis%E4%B8%AD%E7%9A%84%E5%A4%9A%E8%BF%9B%E7%A8%8B-toc" style="margin-left:40px;"><a href="#Redis%E4%B8%AD%E7%9A%84%E5%A4%9A%E8%BF%9B%E7%A8%8B" rel="nofollow">Redis中的多进程</a></p> 
+<p id="%E7%BB%93%E8%AE%BA-toc" style="margin-left:40px;"><a href="#%E7%BB%93%E8%AE%BA" rel="nofollow">结论</a></p> 
+<p id="%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB-toc" style="margin-left:80px;"><a href="#%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB" rel="nofollow">延伸阅读</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h3 id="%E5%89%8D%E8%A8%80">前言</h3> 
+<p>很多人都遇到过这么一道面试题：Redis是单线程还是多线程？这个问题既简单又复杂。说他简单是因为大多数人都知道Redis是单线程，说复杂是因为这个答案其实并不准确。</p> 
+<p>难道Redis不是单线程？我们启动一个Redis实例，验证一下就知道了。Redis安装部署方式如下所示：</p> 
+<pre><code class="language-bash">// 下载
+wget https://download.redis.io/redis-stable.tar.gz
+tar -xzvf redis-stable.tar.gz
+// 编译安装
+cd redis-stable
+make
+// 验证是否安装成功
+./src/redis-server -v
+Redis server v=7.2.4
+</code></pre> 
+<p>接下来启动Redis实例，使用命令ps查看所有线程，如下所示：</p> 
+<pre><code class="language-bash">// 启动Redis实例
+./src/redis-server ./redis.conf
+
+// 查看实例进程ID
+ps aux | grep redis
+root     385806  0.0  0.0 245472 11200 pts/2    Sl+  17:32   0:00 ./src/redis-server 127.0.0.1:6379
+
+// 查看所有线程
+ps -L -p 385806
+   PID    LWP TTY          TIME CMD
+385806 385806 pts/2    00:00:00 redis-server
+385806 385809 pts/2    00:00:00 bio_close_file
+385806 385810 pts/2    00:00:00 bio_aof
+385806 385811 pts/2    00:00:00 bio_lazy_free
+385806 385812 pts/2    00:00:00 jemalloc_bg_thd
+385806 385813 pts/2    00:00:00 jemalloc_bg_thd
+</code></pre> 
+<p>竟然有6个线程！不是说Redis是单线程吗？怎么会有这么多线程呢？</p> 
+<p>这6个线程的含义你可能不太了解，但是通过这个示例至少说明Redis并不是单线程。</p> 
+<h3 id="Redis%E4%B8%AD%E7%9A%84%E5%A4%9A%E7%BA%BF%E7%A8%8B">Redis中的多线程</h3> 
+<p>接下来我们逐个介绍上述6个线程的作用：</p> 
+<p>1）<strong>redis-server：</strong></p> 
+<p>主线程，用于接收并处理客户端请求。</p> 
+<p>2）<strong>jemalloc_bg_thd：</strong></p> 
+<p>jemalloc 是新一代的内存分配器，Redis底层使用他管理内存。</p> 
+<p>3）<strong>bio_xxx：</strong></p> 
+<p>以bio前缀开始的都是异步线程，用于异步执行一些耗时任务。其中，线程bio_close_file用于异步删除文件，线程bio_aof用于异步将AOF文件刷到磁盘，线程bio_lazy_free用于异步删除数据（懒删除）。</p> 
+<p>需要说明的是，主线程是通过队列将任务分发给异步线程的，并且这一操作是需要加锁的。主线程与异步线程的关系如下图所示：</p> 
+<p><img alt="" height="425" src="https://images2.imgbox.com/41/34/LwUKuSN6_o.png" width="1080"></p> 
+<p>这里我们以懒删除为例，讲解为什么要使用异步线程。Redis是一款内存数据库，支持多种数据类型，包括字符串、列表、哈希表、集合等。思考一下，删除（DEL）列表类型数据的流程是怎样的呢？第一步从数据库字典中删除该键值对，第二步遍历并删除列表中的所有元素（释放内存）。想想如果列表中的元素数目非常多呢？这一步将非常耗时。这种删除方式称为同步删除，流程如下图所示：</p> 
+<p><img alt="" height="986" src="https://images2.imgbox.com/51/2f/yCOWvMTx_o.png" width="980"></p> 
+<p>针对上述问题，Redis提出了懒删除（异步删除），主线程在收到删除命令（UNLINK）时，首先从数据库字典中删除该键值对，随后再将删除任务分发给异步线程bio_lazy_free，由异步线程执行第二步耗时逻辑。这时候的流程如下图所示：</p> 
+<p><img alt="" height="969" src="https://images2.imgbox.com/7c/ed/lP4C5DIJ_o.png" width="1080"></p> 
+<h3 id="I%2FO%E5%A4%9A%E7%BA%BF%E7%A8%8B">I/O多线程</h3> 
+<p>难道Redis是多线程？那为什么我们老说Redis是单线程呢？这是因为读取客户端命令请求，执行命令以及向客户端返回结果都是在主线程完成的。不然的话，多线程同时操作内存数据库，并发问题如何解决？如果每次操作之前都加锁，那和单线程又有什么区别呢？</p> 
+<p>当然这一流程在Redis6.0版本也发生了改变，Redis官方指出，Redis是基于内存的键值对数据库，执行命令的过程是非常快的，读取客户端命令请求和向客户端返回结果（即网络I/O）通常会成为Redis的性能瓶颈。</p> 
+<p>因此，在Redis 6.0版本，作者加入了多线程I/O的能力，即可以开启多个I/O线程，并行读取客户端命令请求，并行向客户端返回结果。I/O多线程能力使得Redis性能提升至少一倍。</p> 
+<p>为了开启多线程I/O能力，需要先修改配置文件redis.conf：</p> 
+<pre><code>io-threads-do-reads yes
+io-threads 4
+</code></pre> 
+<p>这两个配置含义如下：</p> 
+<ul><li> <p>io-threads-do-reads：是否开启多线程I/O能力，默认为"no"；</p> </li><li> <p>io-threads：I/O线程数目，默认为1，即只使用主线程执行网络I/O，线程数最大为128；该配置应该根据CPU核数设置，作者建议，4核CPU设置2~3个I/O线程，8核CPU设置6个I/O线程。</p> </li></ul> 
+<p>开启多线程I/O能力之后，重新启动Redis实例，查看所有线程，结果如下：</p> 
+<pre><code>ps -L -p 104648
+   PID    LWP TTY          TIME CMD
+104648 104648 pts/1    00:00:00 redis-server
+104648 104654 pts/1    00:00:00 io_thd_1
+104648 104655 pts/1    00:00:00 io_thd_2
+104648 104656 pts/1    00:00:00 io_thd_3
+……
+</code></pre> 
+<p>由于我们设置了io-threads等于4，所以会创建4个线程用于执行I/O操作（包括主线程），上述结果符合预期。</p> 
+<p>当然，只有I/O阶段才使用了多线程，处理命令请求还是单线程，毕竟多线程操作内存数据存在并发问题。</p> 
+<p>最后，开启了I/O多线程之后，命令的执行流程如下图所示：</p> 
+<p><img alt="" height="856" src="https://images2.imgbox.com/87/11/BXbgPZqA_o.png" width="1080"></p> 
+<h3 id="Redis%E4%B8%AD%E7%9A%84%E5%A4%9A%E8%BF%9B%E7%A8%8B">Redis中的多进程</h3> 
+<p>Redis还有多进程？是的。在某些场景下，Redis也会创建多个子进程来执行一些任务。以持久化为例，Redis支持两种类型的持久化：</p> 
+<ul><li> <p>AOF（Append Only File）：可以看作是命令的日志文件，Redis会将每一个写命令都追加到AOF文件。</p> </li><li> <p>RDB（Redis Database）：以快照的方式存储Redis内存中的数据。命令SAVE用于手动触发RDB持久化。想想如果Redis中的数据量非常大，持久化操作必然耗时比较长，而Redis是单线程处理命令请求，那么当命令SAVE的执行时间过长时，必然会影响其他命令的执行。</p> </li></ul> 
+<p>命令SAVE有可能会阻塞其他请求，为此，Redis又引入了命令BGSAVE，该命令会创建一个子进程来执行持久化操作，这样就不会影响主进程执行其他请求了。</p> 
+<p>我们可以手动执行命令BGSAVE验证。首先，使用GDB跟踪Redis进程，添加断点，让子进程阻塞在持久化逻辑。如下所示：</p> 
+<pre><code class="language-bash">// 查询Redis进程ID
+ps aux | grep redis
+root     448144  0.1  0.0 270060 11520 pts/1    tl+  17:00   0:00 ./src/redis-server 127.0.0.1:6379
+
+// GDB跟踪进程
+gdb -p 448144
+
+// 跟踪创建的子进程（默认GDB只跟踪主进程，需手动设置）
+(gdb) set follow-fork-mode child
+// 函数rdbSaveDb用于持久化数据快照
+(gdb) b rdbSaveDb
+Breakpoint 1 at 0x541a10: file rdb.c, line 1300.
+(gdb) c
+</code></pre> 
+<p>设置好断点之后，使用Redis客户端发送命令BGSAVE，结果如下：</p> 
+<pre><code class="language-bash">// 请求立即返回
+127.0.0.1:6379&gt; bgsave
+Background saving started
+
+// GDB输出以下信息
+[New process 452541]
+Breakpoint 1, rdbSaveDb (...) at rdb.c:1300
+</code></pre> 
+<p>可以看到，GDB目前跟踪的是子进程，进程ID是452541。也可以通过Linux命令 ps 查看所有进程，结果如下：</p> 
+<pre><code class="language-bash">ps aux | grep redis
+root     448144  0.0  0.0 270060 11520 pts/1    Sl+  17:00   0:00 ./src/redis-server 127.0.0.1:6379
+root     452541  0.0  0.0 270064 11412 pts/1    t+   17:19   0:00 redis-rdb-bgsave 127.0.0.1:6379
+</code></pre> 
+<p>可以看到子进程的名称是redis-rdb-bgsave，也就是该进程将所有数据的快照持久化在RDB文件。</p> 
+<p>最后再思考两个问题。</p> 
+<ul><li> <p><strong>问题1：为什么采用子进程而不是子线程呢？</strong></p> </li></ul> 
+<p>因为RDB是将数据快照持久化存储，如果采用子线程，主线程与子线程将会共享内存数据，主线程在持久化的同时还会修改内存数据，这有可能导致数据不一致。而主进程与子进程的内存数据是完全隔离的，不存在此问题。</p> 
+<ul><li> <p><strong>问题2：假设Redis内存中存储了10GB的数据，在创建子进程执行持久化操作之后，此时子进程也需要10GB的内存吗？复制10GB的内存数据，也会比较耗时吧？另外如果系统只有15GB的内存，还能执行BGSAVE命令吗？</strong></p> </li></ul> 
+<p>这里有一个概念叫写时复制（copy on write），在使用系统调用fork创建子进程之后，主进程与子进程的内存数据暂时还是共享的，但是当主进程需要修改内存数据时，系统会自动将该内存块复制一份，以此实现内存数据的隔离。<br> 命令BGSAVE的执行流程如下图所示：</p> 
+<p><img alt="" height="811" src="https://images2.imgbox.com/0c/a9/Dws2tVK3_o.png" width="1080"></p> 
+<h3 id="%E7%BB%93%E8%AE%BA">结论</h3> 
+<p>Redis的进程模型/线程模型还是比较复杂的，这里也只是简单介绍了部分场景下的多线程以及多进程，其他场景下的多线程、多进程还有待读者自己研究。</p> 
+<h4 id="%E5%BB%B6%E4%BC%B8%E9%98%85%E8%AF%BB"><strong>延伸阅读</strong></h4> 
+<p><strong>书本名称：</strong>《 高效使用Redis：一书学透数据存储与高可用集群 》</p> 
+<p><img alt="" height="1080" src="https://images2.imgbox.com/32/16/lvZdRg5n_o.png" width="1080"></p> 
+<p><strong>推荐语： </strong>深入Redis数据结构与底层实现，攻克Redis数据存储与集群管理难题。</p> 
+<blockquote> 
+ <p><strong>作者介绍</strong><br><strong>李乐</strong>：好未来Golang开发专家、西安电子科技大学硕士，曾就职于滴滴，乐于钻研技术与源码，合著有《高效使用Redis：一书学透数据存储与 高可用 集群》《Redis5设计与源码分析》《Nginx底层设计与源码分析》。</p> 
+</blockquote>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/bb05d93ff7b504978170ffb45adc84ca/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">苹果电脑如何轻松抹掉NTFS格式磁盘 如何将Mac系统下硬盘格式化为NTFS Mac硬盘格式化</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/bc646c4fd2ee5b8a01af8db6e30fc5d3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Stable Diffusion基础：ControlNet之线稿成图</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

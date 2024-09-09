@@ -1,0 +1,343 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【MySQL】事务二 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/8b3d54ec60fe8e51147191d00e223881/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【MySQL】事务二">
+  <meta property="og:description" content="事务二 1.数据库并发的场景2.读-写2.1 3个记录隐藏字段2.2 undo日志2.3 模拟 MVCC2.4 Read View2.5 RR 与 RC的本质区别 3.读-读4.写-写 点赞👍👍收藏🌟🌟关注💖💖
+你的支持是对我最大的鼓励，我们一起努力吧!😃😃
+关于事务的所有知识上篇博客我们都说过了，今天这篇博客主要是为了解密，RC和RR隔离级别，它怎么做到一个事务提交了，其他事务还看不到。数据不是只有一份吗，他改了我怎么看不到，这个原理是怎么样的？
+之前说的隔离性和隔离级别的话题，前提是多事务进行并发运行，所以我们应该想明白的是一个数据库在被并发访问时它的场景有那些，因为只有知道场景才能针对不同场景提供不同方案。
+1.数据库并发的场景 数据库并发的场景有三种：
+读-读 ：不存在任何问题，也不需要并发控制，因为没有人去修改读-写 ：有线程安全问题，可能会造成事务隔离性问题，可能遇到脏读，幻读，不可重复读写-写 ：数据库只会被人写，事务都是写事务，一定通过加锁来保证数据安全。否则有线程安全问题，事务不是有回滚吗，有可能一个事务在更新另一个事务回滚了彼此交叉运行，可能会存在更新丢失问题，比如第一类更新丢失，第二类更新丢失(后面补充)， 2.读-写 就像之前做的实验，读到的数据和写的数据是不一样的，其实这已经证明读写的数据不是同一份。后面再说。在读写并发实现很好的隔离性采用的核心技术之一多版本并发控制。
+多版本并发控制（ MVCC ） 是一种用来解决 读-写冲突 的无锁并发控制
+历史上在说事务的时候一直强调事务是原子的，但是事务在执行一定是有执行中，mysql为了解决执行中对应的并发问题，也一定要让事务在执行的时候有先有后，保证事务那些数据能看到那些数据看不到，所以它一定要判定事务的先后问题！事务在怎么同时到来一定有先有后。那问题是怎么区分事务的先后问题？
+mysql为事务分配单向增长的事务ID，事务与事务ID是一对一的关系。事务ID越小代表来的越早，ID越大代表来的越晚，所以可以通过ID来判定事务的先后顺序。为每个修改保存一个版本，版本与事务ID关联，读操作只读该事务开始前的数据库的快照。 所以 MVCC 可以为数据库解决以下问题
+在并发读写数据库时，可以做到在读操作时不用阻塞写操作，写操作也不用阻塞读操作，提高了数据库并发读写的性能同时还可以解决脏读，幻读，不可重复读等事务隔离问题，但不能解决更新丢失问题 每个事务都要有自己的事务ID，可以根据事务ID的大小，来决定事务到来的先后顺序。
+一个事务可以交给mysql运行，两个十个都可以由多个客户端并发的交给mysql，也就是说mysqld可能会面临同时处理多个事务的情况， 事务在使用mysql的人看来它是原子的，但在mysql内部它一定要有个执行的过程，所以它的执行过程就证明mysql中事务也有自己的生命周期，事务要被创建，要被放到某个等待队列里，要被执行，执行出错要被回滚，执行完毕事务要被消除，这些都指向一点mysqld要对多个事务进行管理，先描述，在组织！ 换句话说事务在我看来，mysqld中一定是对应的一个或者一套结构体对象/类对象，事务也要有自己的结构体那每个事务都要有自己的事务ID是不是就好理解了。来一个事务就new一个事务对象，对事务的管理就变成了对某种数据结构的增删查改。
+有了这个概念，我们再来谈事务隔离级别具体的解决方案MVCC。不过在谈MVCC之前我们要先知道三个前提知识：
+3个记录隐藏字段undo 日志Read View 2.1 3个记录隐藏字段 其实我们在建表的时候指明有多少列，你以为有4列、5列等等，可实际上mysql都要默认给添加上3个隐藏字段。
+DB_TRX_ID ：6 byte，最近修改( 修改/插入 )事务ID，记录这条记录/最后一次修改该记录的事务ID。 比如说未来在表中插入任何数据，插入的这条记录是那个事务插入的，事务ID是谁，要把事务ID放在表中。无论是手动启动事务还是单SQL由系统默认封装的事务，最终在数据库中所以操作的SQL必须以事务的方式让mysql统一执行。每一个事务都有ID，所以所有表的操作都要和事务ID关联起来保存到表里。
+DB_ROLL_PTR : 7 byte，回滚指针，指向这条记录的上一个版本（简单理解成，指向历史版本就行，这些数据一般在 undo log 中） 实际上你对表中某一行记录做修改，mysql在特定的隔离级别下，不是让直接去改表中的数据，它会把你要改的这条记录先保存一份，让你改最新表中的数据，这样的话就可以在改之后也可以知道历史的数据是什么，这种策略特别想像 写时拷贝。增加、修改、删除都是要先把数据保存一份，然后改最新的数据。然后最新记录要能找到它历史的最新信息，所以有了这个 回滚指针。指向被修改之前的上一个版本。
+DB_ROW_ID : 6 byte，隐含的自增ID（隐藏主键），如果数据表没有主键， InnoDB 会自动以DB_ROW_ID 产生一个聚簇索引补充：实际还有一个删除flag隐藏字段， 记录当前记录的状态，是被更新过还是被删除了。一般删除并不是把这条记录真的删除了，只是把flag变了。我们建立的表结构是在聚簇索引的叶子节点中以page方式存在，它是内存级的。所以删除的时候我们并不需要把数据情况还要做各自表结构的移动那太麻烦了。所以我只需要把它清掉就可以，清掉之后只需要最终维持page是脏的或者干净的，后面刷盘的时候在把数据排列到磁盘中。下次在不就连续了嘛。 建一个学生表">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-20T09:06:43+08:00">
+    <meta property="article:modified_time" content="2024-06-20T09:06:43+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【MySQL】事务二</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>事务二</h4> 
+ <ul><li><a href="#1_10" rel="nofollow">1.数据库并发的场景</a></li><li><a href="#2_16" rel="nofollow">2.读-写</a></li><li><ul><li><a href="#21_3_37" rel="nofollow">2.1 3个记录隐藏字段</a></li><li><a href="#22_undo_69" rel="nofollow">2.2 undo日志</a></li><li><a href="#23__MVCC_80" rel="nofollow">2.3 模拟 MVCC</a></li><li><a href="#24_Read_View_170" rel="nofollow">2.4 Read View</a></li><li><a href="#25_RR__RC_299" rel="nofollow">2.5 RR 与 RC的本质区别</a></li></ul> 
+  </li><li><a href="#3_416" rel="nofollow">3.读-读</a></li><li><a href="#4_418" rel="nofollow">4.写-写</a></li></ul> 
+</div> 
+<p></p> 
+<p><img src="https://images2.imgbox.com/9d/d0/EjOJRTJN_o.jpg" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p><strong>点赞</strong>👍👍<strong>收藏</strong>🌟🌟<strong>关注</strong>💖💖<br> <font color="red"><strong>你的支持是对我最大的鼓励，我们一起努力吧!😃😃</strong></font></p> 
+</blockquote> 
+<p>关于事务的所有知识上篇博客我们都说过了，今天这篇博客主要是为了解密，RC和RR隔离级别，它怎么做到一个事务提交了，其他事务还看不到。数据不是只有一份吗，他改了我怎么看不到，这个原理是怎么样的？</p> 
+<p>之前说的隔离性和隔离级别的话题，前提是多事务进行并发运行，所以我们应该想明白的是一个数据库在被并发访问时它的场景有那些，因为只有知道场景才能针对不同场景提供不同方案。</p> 
+<h2><a id="1_10"></a>1.数据库并发的场景</h2> 
+<p><strong>数据库并发的场景有三种：</strong></p> 
+<ul><li>读-读 ：<strong>不存在任何问题，也不需要并发控制，因为没有人去修改</strong></li><li>读-写 ：<strong>有线程安全问题，可能会造成事务隔离性问题，可能遇到脏读，幻读，不可重复读</strong></li><li>写-写 ：<strong>数据库只会被人写，事务都是写事务，一定通过加锁来保证数据安全。否则有线程安全问题，事务不是有回滚吗，有可能一个事务在更新另一个事务回滚了彼此交叉运行，可能会存在更新丢失问题，比如第一类更新丢失，第二类更新丢失(后面补充)，</strong></li></ul> 
+<h2><a id="2_16"></a>2.读-写</h2> 
+<p>就像之前做的实验，读到的数据和写的数据是不一样的，其实这已经证明读写的数据不是同一份。后面再说。在读写并发实现很好的隔离性采用的核心技术之一多版本并发控制。</p> 
+<p><strong>多版本并发控制（ MVCC ）</strong> 是一种用来解决 读-写冲突 的<strong>无锁并发控制</strong></p> 
+<p>历史上在说事务的时候一直强调事务是原子的，但是事务在执行一定是有执行中，mysql为了解决执行中对应的并发问题，也一定要让事务在执行的时候有先有后，保证事务那些数据能看到那些数据看不到，所以它一定要判定事务的先后问题！事务在怎么同时到来一定有先有后。那问题是<strong>怎么区分事务的先后问题</strong>？</p> 
+<p><strong>mysql为事务分配单向增长的事务ID</strong>，事务与事务ID是一对一的关系。<strong>事务ID越小代表来的越早，ID越大代表来的越晚</strong>，所以可以通过ID来判定事务的先后顺序。为每个修改保存一个版本，<strong>版本与事务ID关联</strong>，读操作只读该事务开始前的数据库的快照。 所以 MVCC 可以为数据库解决以下问题</p> 
+<ul><li>在并发读写数据库时，可以做到在读操作时不用阻塞写操作，写操作也不用阻塞读操作，提高了数据库并发读写的性能</li><li>同时还可以解决脏读，幻读，不可重复读等事务隔离问题，但不能解决更新丢失问题</li></ul> 
+<p><strong>每个事务都要有自己的事务ID，可以根据事务ID的大小，来决定事务到来的先后顺序。</strong></p> 
+<p>一个事务可以交给mysql运行，两个十个都可以由多个客户端并发的交给mysql，也就是说<strong>mysqld可能会面临同时处理多个事务的情况，</strong> 事务在使用mysql的人看来它是原子的，但在mysql内部它一定要有个执行的过程，所以它的执行过程就证明mysql中<strong>事务也有自己的生命周期</strong>，事务要被创建，要被放到某个等待队列里，要被执行，执行出错要被回滚，执行完毕事务要被消除，这些都指向一点<strong>mysqld要对多个事务进行管理，先描述，在组织！</strong> 换句话说<strong>事务在我看来，mysqld中一定是对应的一个或者一套结构体对象/类对象，事务也要有自己的结构体</strong>那每个事务都要有自己的事务ID是不是就好理解了。来一个事务就new一个事务对象，对事务的管理就变成了对某种数据结构的增删查改。</p> 
+<p>有了这个概念，我们再来谈事务隔离级别具体的解决方案MVCC。不过在谈MVCC之前我们要先知道三个前提知识：</p> 
+<ul><li>3个记录隐藏字段</li><li>undo 日志</li><li>Read View</li></ul> 
+<h3><a id="21_3_37"></a>2.1 3个记录隐藏字段</h3> 
+<p>其实我们在建表的时候指明有多少列，你以为有4列、5列等等，可实际上mysql都要默认给添加上3个隐藏字段。</p> 
+<ul><li><strong>DB_TRX_ID</strong> ：6 byte，最近修改( 修改/插入 )事务ID，记录这条记录/最后一次修改该记录的事务ID。</li></ul> 
+<p>比如说未来在表中插入任何数据，插入的这条记录是那个事务插入的，事务ID是谁，要把事务ID放在表中。无论是手动启动事务还是单SQL由系统默认封装的事务，最终在数据库中所以操作的SQL必须以事务的方式让mysql统一执行。每一个事务都有ID，所以所有表的操作都要和事务ID关联起来保存到表里。</p> 
+<ul><li><strong>DB_ROLL_PTR</strong> : 7 byte，回滚指针，指向这条记录的上一个版本（简单理解成，指向历史版本就行，这些数据一般在 undo log 中）</li></ul> 
+<p>实际上你对表中某一行记录做修改，mysql在特定的隔离级别下，不是让直接去改表中的数据，它会把你要改的这条记录先保存一份，让你改最新表中的数据，这样的话就可以在改之后也可以知道历史的数据是什么，这种策略特别想像 写时拷贝。增加、修改、删除都是要先把数据保存一份，然后改最新的数据。然后最新记录要能找到它历史的最新信息，所以有了这个 回滚指针。指向被修改之前的上一个版本。</p> 
+<ul><li><strong>DB_ROW_ID</strong> : 6 byte，隐含的自增ID（隐藏主键），如果数据表没有主键， InnoDB 会自动以DB_ROW_ID 产生一个聚簇索引</li><li>补充：实际还有一个<strong>删除flag隐藏字段</strong>， 记录当前记录的状态，是被更新过还是被删除了。一般删除并不是把这条记录真的删除了，只是把flag变了。我们建立的表结构是在聚簇索引的叶子节点中以page方式存在，它是内存级的。所以删除的时候我们并不需要把数据情况还要做各自表结构的移动那太麻烦了。所以我只需要把它清掉就可以，清掉之后只需要最终维持page是脏的或者干净的，后面刷盘的时候在把数据排列到磁盘中。下次在不就连续了嘛。</li></ul> 
+<p>建一个学生表</p> 
+<pre><code class="prism language-powershell">create table <span class="token keyword">if</span> not exists student<span class="token punctuation">(</span>
+	name varchar<span class="token punctuation">(</span>11<span class="token punctuation">)</span> not null<span class="token punctuation">,</span>
+	age int not null
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/b6/85/fVvxsyPP_o.png" alt="在这里插入图片描述"></p> 
+<p>我们查的时候只能看到两列，自动提交是被打开的，实际上insert就是一个事务，在插入张三 28后面也一定会有这个数据是那个事务插入的，没有指明主键mysql会有一个默认主键，因为历史上没有数据所以回滚指针为null。</p> 
+<table><thead><tr><th>name</th><th>gae</th><th>DB_TRX_ID(创建该记录的事务ID)</th><th>DB_ROW_ID(隐式主键)</th><th>DB_ROLL_PTR(回滚指针)</th></tr></thead><tbody><tr><td>张三</td><td>28</td><td>null</td><td>1</td><td>null</td></tr></tbody></table> 
+<p>我们目前并不知道创建该记录的事务ID，隐式主键，我们就默认设置成null，1。第一条记录也没有其他版本，我们设置回滚指针为null。</p> 
+<h3><a id="22_undo_69"></a>2.2 undo日志</h3> 
+<p>以前说过mysql中有很多日志，其中undo日志是mysql中比较重要的模板。这个模块是什么东西呢</p> 
+<p>mysql在启动的的时候会申请对应的缓存区，实际上msyql中还有一大堆日志缓存区，其中有一块叫做undo log，从名字上看 undo 是撤销的意思 log 是日志的意思，关于它我们今天给它就一个结论，它是我们在应用层由Mysql维护的内存空间！</p> 
+<p>MySQL 将来是以服务进程的方式，在内存中运行。我们之前所讲的所有机制：索引，事务，隔离性，日志等，都是在内存中完成的，即在 MySQL 内部的相关缓冲区中，保存相关数据，完成各种判断操作。然后在合适的时候，将相关数据刷新到磁盘当中的。</p> 
+<p>所以，我们这里理解<strong>undo log</strong>，简单理解成，就是 <strong>MySQL 中的一段内存缓冲区</strong>，用来保存日志数据的就行。</p> 
+<p>有了上面两个预备知识，一个是3个隐藏字段，一个是undo log，下面我们来模拟一下多版本并发控制（ MVCC ）是怎么做的。</p> 
+<h3><a id="23__MVCC_80"></a>2.3 模拟 MVCC</h3> 
+<p>现在假设我们目前表中就一条张三的数据。是事务9将它insert进来的。这个记录在B+数的叶子节点存着。<br> <img src="https://images2.imgbox.com/ca/5b/79BAehJP_o.png" alt="在这里插入图片描述"></p> 
+<p>我们的场景是有一个事务10(仅仅为了好区分)，对student表中记录进行修改(update)：将name(张三)改成name(李四)。</p> 
+<ul><li>因为事务10要对数据进行修改，所以一定要先给对应记录先加行锁。</li><li>修改前，先将这个记录拷贝到undo log中，所以，undo log中就有了一行副本数据。(原理就是写时拷贝)，只要放到undo log里这个记录就一定在undo log有起始地址。假设是0xaa，<br> <img src="https://images2.imgbox.com/43/47/f1YB4cxt_o.png" alt="在这里插入图片描述"><br> 这个原始数据里面有隐藏字段，其中有一个DB_ROLL_PTR 回滚指针，初始默认为null因为它没有历史版本，但是现在不是已经把老版本已经在undo log里保存一份了吗，然后在这个回滚指针里填入0xaa保存起来。然后这条最新记录不就指向了undo log里面的叫做历史版本。严格起来说应该是版本列。</li></ul> 
+<p><img src="https://images2.imgbox.com/ac/43/8nZLydyO_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>所以现在 MySQL 中有两行同样的记录。然后我们不是要做name张三改李四吗， 所以我们直接把原始记录的张三改成李四。改完之后，你不也是事务吗，也有自己的事务ID，所以修改原始记录的隐藏字段 DB_TRX_ID 为当前 事务10 的ID。换句话说我们就可以记录下来这个记录被谁修改。</li><li></ul> 
+<p><img src="https://images2.imgbox.com/94/1b/RDoxsqIF_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>这个事务完了就提交，然后对这个记录释放锁。</li></ul> 
+<p>整个过程是在加锁的环境下进行的，所以意味着当你在做update的时候，其他事务也对这条记录修改它一定是要等你把这个update操作做完的。这就串行起来了。所以写写并发加锁是常见的。至此我们就完成了一次对记录修改的操作。此时在mysql表里最新叶子节点记录就是这个被修改的数据。undo log里面的是历史数据。</p> 
+<p>现在又有一个事务11，对student表中记录进行修改(update)：将age(28)改成age(38)。</p> 
+<p>它要改的话，要改那条数据呢？<br> 历史数据决定不能改，你没有资格去改历史数据。你只能去改最新的数据。</p> 
+<ul><li>事务11，因为也要修改，所以要先给该记录加行锁。</li><li>修改前，先将老记录拷贝到undo log中，所以，undo log中就又有了一行副本数据。此时，新的副本，我们采用头插方式，插入undo log。这条记录拷贝到undo log里一定也有自己的地址 0xbb。然后这个新拷贝到undo log记录里的回滚指针一定是指向之前上一条老记录。还没有完，因为要做修改，所以最新记录要填充自己的回滚指针。所以这个最新记录里的 DB_ROLL_PTR 回滚指针要指向它自己修改之前它自己任务的老的版本 0xbb。<br> <img src="https://images2.imgbox.com/2c/e6/aPPe5vS4_o.png" alt="在这里插入图片描述"></li><li>然后修改最新记录中的age，改成 38。改的是当前最新记录，不是历史版本，历史版本就不能更改！并且修改最新记录的隐藏字段 DB_TRX_ID 为当前 事务11 的ID。<br> <img src="https://images2.imgbox.com/bf/3c/0gQ0Pv0Q_o.png" alt="在这里插入图片描述"></li><li>事务11提交，释放锁。</li></ul> 
+<p>如果事务11、12、13都要对这条记录修改没关系，只要一直在被访问就会一直形成版本链。所以此时外面是最新版，undo log是历史版，它们是用指针的方式形成了一个链表。这样，我们就有了一个基于链表记录的历史版本链。所谓的<strong>回滚，无非就是把undo log里的历史数据拿出来，覆盖当前最新记录。</strong> 还有做插入操作除了形成版本链为了支持事务隔离，mysql还做了一件工作，我们insert它就会在日志里记录一条相反的sql delete，如果是delete 就会在日志里面记录insert ，所以回滚的时候直接逆向的把历史里的新增的sql全部再跑一遍，数据就恢复起来了。</p> 
+<p>这些多版本数据肯定是由mysql帮我们维护，它我们就称之为<strong>MVCC多版本控制</strong>。<br> 上面的一个一个版本，我们可以称之为一个一个的<strong>快照</strong>。</p> 
+<p>当前外面的记录就是最新记录，undo log里的是历史记录。如果一直对一个表的信息进行修改，难道要一直给我形成版本链吗。undo log是不是就有可能被塞满了？</p> 
+<p>首先undo log是一个临时缓存区，它里面保存的历史版本通常指的是这个事务运行期间，但是这个事务一旦提交了，这个undo log里面的对于这个事务的历史版本就会free掉。那什么时候undo log里的历史数据还要呢，有的人要访问当前数据，有的人要访问历史数据，所以访问当前数据的事务结束了并不代表历史数据就要被清掉。换句话说undo log里面的数据有进就有出，出的时候没有人用我的时候undo log就会被mysql自动清理，所以不用担心打满。</p> 
+<blockquote> 
+ <p><strong>一些思考</strong></p> 
+</blockquote> 
+<p><strong>如果一个事务已经提交了是不能被回滚的，因为undo log被清理了</strong>！事务没有被提交，不断被修改时就不断形成新的版本，这样的话可以定点回滚或者整体回滚。</p> 
+<p>上面是以更新（<code>upadte</code>）主讲的，如果是<code>delete</code>删一条数据呢？一样的，别忘了，删数据不是清空，而是把被删除的数据flag置为删除。其实删的时候也是可以把老的数据形成版本，然后再把当前版本的flag置为删除。也可有自己的版本链。</p> 
+<p>如果是<code>insert</code>呢？因为<code>insert</code>是插入，也就是之前没有数据，那么<code>insert</code>也就没有历史版本。但是一般为了回滚操作，mysql内部除了要把insert里的数据也放入undo log中也要记录一下insert对于的语句delete，所以回滚的时候就把delete执行一下。如果当前事务commit了，那么这个undolog 的历史insert记录就可以被清空了。</p> 
+<p>总结一下，也就是我们可以理解成，<code>update</code>和<code>delete</code>可以形成版本链，<code>insert</code>暂时不考虑。</p> 
+<p><strong>那么<code>select</code>呢？</strong></p> 
+<p>对数据做更新删除插入肯定要加锁因为要保证数据的安全。可是读写并不会阻塞是可以同时跑的。但update、delete、insert一定修改的时最新数据，历史版本的数据没有资格修改所以加锁。<code>select</code>不会对数据做任何修改，所以，为<code>select</code>维护多版本，没有意义。不过，此时有个问题，</p> 
+<p>就是：<br> <strong>select读取，是读取最新的版本呢？还是读取历史版本？</strong></p> 
+<p><font color="red"><strong>当前读</strong></font>：<strong>读取最新的记录，就是当前读</strong>。增删改，都叫做当前读，select也有可能当前读，比如：selectlock in share mode(共享锁), select for update</p> 
+<p><font color="red"><strong>快照读</strong></font>：<strong>读取历史版本不读最新记录，就叫做快照读</strong>。</p> 
+<p>历史经验告送我，读写并发不管是在RC还是在RR级别下读写都可以并发，写写要相互阻塞。读写并发并且根据隔离性的不同我们确实发现，一个事务提交修改其他事务都有可能看不到，那么就注定了读写一定是不同的数据。<strong>为什么读写可以并发呢？</strong></p> 
+<p><strong>因为写是写的当前最新数据，读是读的历史版本，所以不会出现访问同一个位置，就不需要加锁，不需要加锁就不会出现互相阻塞的情况，访问不同的位置就没有加锁，我们就可以并发进行读写操作。</strong></p> 
+<p>那一个事务把数据改了，但是另一个事务读的还是老数据，你告送我是有隔离性的体现，所以隔离性本质上在数据层面上隔离，再<strong>本质是在版本上隔离</strong>！所以在不同隔离级别下看到的数据不一样。因为有了MVCC有了多版本，所以我们可以理解读写并发的原因，我们也能理解隔离性它是怎么做到让我们看到不同的数据。然后才有了那一个事物具体应该看到那些版本，看到历史的那些版本，要不要看到最新版本，那历史有很多版应该看那些版，这完完全全是由隔离级别决定。我们应该看到那些版本。隔离性隔离版本是用MVCC实现的，回滚也是用MVCC来完成事务回滚的。</p> 
+<p>我们可以看到，<strong>在多个事务同时删改查的时候，都是当前读，是要加锁的。那同时有<code>select</code>过来，如果也要读取最新版(当前读)，那么也就需要加锁，这就是串行化</strong>。</p> 
+<p>但<strong>如果<code>select</code>是快照读，读取历史版本的话，是不受加锁限制的</strong> 。不让增删改碰历史版本只让它们访问最新版。而select只需要关心历史版本，因为select都是读没有人改，所以读历史版本完全不用加锁也就是可以并行执行！换言之，提高了效率，即MVCC的意义所在。</p> 
+<p>那么，<strong>是什么决定了，select是当前读，还是快照读呢</strong>？<br> <strong>隔离级别!</strong> 就如RU读未提交，一定读的最新数据。RC/RR 读的是历史数据。</p> 
+<p><strong>那为什么要有隔离级别呢？也就是说为什么要让不同事务看到不同的版本？</strong><br> 事务都是原子的。所以，无论如何，事务到来时一定是有先有后。</p> 
+<p>但是经过上面的操作我们发现，事务从begin-&gt;CURD-&gt;commit，是有一个阶段的。也就是事务有执行前，执行中，执行后的阶段。但，不管怎么启动多个事务，总是在启动时有先有后的。</p> 
+<p>那么多个事务在执行中，CURD操作是会交织在一起的。那么，为了保证事务的“有先有后”，比如后来的可以看到先来的数据等等，是不是应该让不同的事务看到它该看到的内容，这就是所谓的隔离性与隔离级别要解决的问题。根据先后顺序，让不同事务看到不同内容的问题。</p> 
+<p>最终总结一下：<strong>所谓隔离性就是读取的时候看的是那些版本，看的历史版本不一样最终看到的数据也不一样。最后应该看到那些版本由隔离级别决定。</strong></p> 
+<p>那为什么隔离级别RC和RR会看到不同的结果呢？所以我们要进入第三个预备知识<br> read view。</p> 
+<h3><a id="24_Read_View_170"></a>2.4 Read View</h3> 
+<p>Read View就是事务进行 <strong>快照读</strong> 操作的时候生产的 读视图 (Read View)，在该事务执行的快照读的那一刻，会生成数据库系统当前的一个<strong>快照</strong>，记录并维护系统当前活跃事务的ID(当每个事务开启时，都会被分配一个ID, 这个ID是递增的，所以最新的事务，ID值越大)</p> 
+<p>Read View 在 MySQL 源码中，就是一个类，本质是用来进行可见性判断的。 即<strong>当我们某个事务执行快照读的时候，对该记录创建一个 Read View 读视图</strong>，把它比作条件，用来判断当前事务能够看到哪个版本的数据，既可能是当前最新的数据，也有可能是该行记录的 undo log 里面的某个版本的数据。</p> 
+<p>下面是 ReadView 结构，但为了减少负担，我们简化一下</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">class</span> <span class="token class-name">ReadView</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// 省略...</span>
+	<span class="token keyword">private</span><span class="token operator">:</span>
+	<span class="token comment">/** 高水位，大于等于这个ID的事务均不可见*/</span>
+	trx_id_t m_low_limit_id
+	
+	<span class="token comment">/** 低水位：小于这个ID的事务均可见 */</span>
+	trx_id_t m_up_limit_id<span class="token punctuation">;</span>
+	
+	<span class="token comment">/** 创建该 Read View 的事务ID*/</span>
+	trx_id_t m_creator_trx_id<span class="token punctuation">;</span>
+	
+	<span class="token comment">/** 创建视图时的其他活跃事务id列表*/</span>
+	ids_t m_ids<span class="token punctuation">;</span>
+	
+	<span class="token comment">/** 配合purge，标识该视图不需要小于m_low_limit_no的UNDO LOG，
+	* 如果其他视图也不需要，则可以删除小于m_low_limit_no的UNDO LOG*/</span>
+	trx_id_t m_low_limit_no<span class="token punctuation">;</span>
+	
+	<span class="token comment">/** 标记视图是否被关闭*/</span>
+	<span class="token keyword">bool</span> m_closed<span class="token punctuation">;</span>
+	
+	<span class="token comment">// 省略...</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>上面的字段，我们仅需要关注下面四个</p> 
+<blockquote> 
+ <p><strong>m_ids</strong>; //一张列表，用来维护Read View生成时刻，系统正活跃的事务ID</p> 
+</blockquote> 
+<blockquote> 
+ <p><strong>up_limit_id</strong>; //记录m_ids列表中事务ID最小的ID(没有写错)</p> 
+</blockquote> 
+<blockquote> 
+ <p><strong>low_limit_id</strong>; //ReadView生成时刻系统尚未分配的下一个事务ID，也就是目前已出现过的事务ID的最大值+1(也没有写错)。并不是m_ids最大值+1。</p> 
+</blockquote> 
+<p>比如说我是5号事务，当我到来的时候我看到3，4，6号事务在运行，可能在我到来的时候整个系统早就有7、8、9早就跑完了。所以整个系统中分配最大的事务ID是9。系统尚未分配的下一个事务ID就是9+1 也就是10。</p> 
+<blockquote> 
+ <p><strong>creator_trx_id</strong> //创建该ReadView的事务ID</p> 
+</blockquote> 
+<p>现在我们既有了事务所对应的read view，又有对数据进行修改而会生成的版本链。在实际读取数据版本链的时候，是能读取到每一个版本对应的事务ID的，即：当前记录的DB_TRX_ID 。</p> 
+<p>那么，我们现在手里面有的东西就有，当前快照读的 ReadView 和 版本链中的某一个记录的DB_TRX_ID 。</p> 
+<p>所以现在的工作就是怎么去根据当前事务的ReadView 里面字段的事务ID和当前版本链每一条记录事务ID做对比，来确认该版本链中某条记录应不应该看到。做这个不就是在做可见性判断吗。</p> 
+<p>所以现在的问题就是，当前快照读，应不应该读到版本链中某一个版本。一张图，解决所有问题！</p> 
+<p>下面来解释一下这个图，上面是对表中数据进行修改形成的版本链，横着的先代表时间的流逝，在时间的流逝中一定会存在很多的事务，有的事务是已经提交的，有的事务是正常操作的，有的是已经操作完形成版本链后面才来的新事务。</p> 
+<p><img src="https://images2.imgbox.com/2e/2e/f0YiHgnr_o.png" alt="在这里插入图片描述"><br> 我们的事务只要select快照都就会生成一个快照，里面会存着一些字段，我们重要关注m_ids，up_limit_id， low_limit_id，creator_trx_id这四个字段。只要<strong>creator_trx_id（创建该ReadView的事务ID） == DB_TRX_ID（版本链中事务的ID）</strong>，意思就是我在遍历这个版本链的时候发现版本链中事务的ID和我自己ReadView的事务ID是一样的，这说明我现在正在查看的记录就是我自己增加修改删除更新，<strong>我自己做修改的我自己应该看到</strong>！还有up_limit_id是我这个事务到来时我所看到活跃事务ID中最小的ID，如果遍历版本链发现历史记录对应的事务ID比我看到的所有活跃事务ID中最小的ID还要小，<strong>DB_TRX_ID &lt; up_limit_id</strong>，我来了我看到的正在活跃事务列表m_ids中最小事务ID是up_limit_id，而现在版本链中更改记录的事务ID比我所看到的正在运行事务的事务ID还要小，说明 这个DB_TRX_ID对应的事务早就结束了早就提交了！因为它如果还在运行它也要被我看到，所以<strong>一个早就已经提交早就结束的事务，别人已经结束我这个事务才来的，所以我应该看到</strong>！ 换句话只要版本链中记录的事务ID比我看到正在和我以前跑的事务列表中事务ID最小值还要小，说明早就结结束了，我和你这个事务是串行执行的没有交叉，一定是你先跑完我才跑的，所以在这种条件判断下，我一定能看到！</p> 
+<p>下面再看最右侧快照后的事务。有可能我自己已经来了，当我们来了之后形成的Read View，这里有个细节，<strong>Read View是一个对象，new出来后值初始化之后，值就不变了 (这是一次的情况)</strong>，相当于就是给它照了一个相。可能当我刚形成完Read View就有新的事务来了，新的事务来的比我晚，而我所看的是low_limit_id是系统已经分配的最大事务ID值+1，也就是还没有分配的事务ID值，如果<strong>DB_TRX_ID （历史版本中记录的事务ID） &gt;= low_limit_id（系统未分配的事务ID）</strong>，也就是说这个记录所对应的事务ID比我自己所形成的Read view中我所看到的目前事务ID值还要大，那就证明<strong>当我在形成快照Read View的时候，这个事务还没有它还没有跑起来，如果跑起来了就会被我看到。说明它比我晚到，说明是形成Read View快照之后才提交的事务，所以不应该看到</strong>！</p> 
+<p>还有当我们在形成快照的时候，还有一些和我并发一块跑的事务。我们的核心就是想根据事务ID判断谁先谁后，根据先来后来判断能不能看到。<strong>先来的不应该看到后来的数据修改，后来应该看到先来的数据修改。</strong> 就比如你是学弟你可以看到你学长找工作的情况，但你是学长你就看到你学弟找工作的情况。那正在和我并发运行的事务它们对数据进行的修改我应不应该看到呢？m_ids 是一张列表，用来维护Read View生成时刻，系统正活跃的事务ID。我们已经把和我一块并发跑的事务ID放到这个m_ids集合里了，这里就有个问题这里<strong>看到的事务ID一定是连续的吗？</strong> 我们要记住记住一句话，<strong>事务到来一定有先有后，但事务不一定同时结束！</strong> 事务有常事务和短事务，晚到的可能也早走。早来可能也晚走等。<br> 比如：我我们有11、12、13、14、15号事务，在快照前12、14提交了，那么快照到的：m_ids就是11、13、15，即：我们快照到的事务ID可以不连续！<br> <strong>如果版本链中的记录的DB_TRX_ID<font color="red">不在</font>m_ids列表中，说明这个事务在我形成Read View时已经提交！可以看到.</strong><br> <strong>如果<font color="red">在</font>，说明该事务和我们的事务一样都是活跃事务，没有commit。不应该看到</strong></p> 
+<p>所以我们能看到的事务有两种场景，一、版本链中记录的事务ID要小于我所看到的最小事务ID，说明你早就提交了。二、只要和我同时并发运行的事务ID，它如果不在我的m_ids中，就说明在我形成Read View的时候，它已经提交了，所以我就能看到。</p> 
+<p>还有两种是看不到的，一、版本链中记录的事务ID比我所看到的最大事务ID还要大。二、版本链中记录的事务ID在我m_ids里，说明和我在并发运行，此时就不应该看到。</p> 
+<p>所以我们就可以使用Read View来进行来判断那些事务能看到那些事务看不到。</p> 
+<p>对应源码策略：</p> 
+<p><img src="https://images2.imgbox.com/ae/95/PHF47idV_o.png" alt="在这里插入图片描述"></p> 
+<p>如果查到不应该看到当前版本，接下来就是遍历下一个版本，直到符合条件，即可以看到。上面的readview 是当你进行select的时候，会自动形成。</p> 
+<p><strong>read view是事务可见性的一个类，不是事务创建出来，就会有read view，而是当这个事务(已经存在)，首次进行快照读的时候，mysql形成read view！</strong> 换句话说事务的建立和给这个事务形成read view是有一个时间窗口的，不一定立马有，只有当快照读的时候才有。</p> 
+<p>接下来read view具体的流程。<br> 假设当前有条记录：</p> 
+<table><thead><tr><th>name</th><th>age</th><th>DB_TRX_ID(创建该记录的事务ID)</th><th>DB_ROW_ID(隐式主键)</th><th>DB_ROLL_PTR(回滚指针)</th></tr></thead><tbody><tr><td>张三</td><td>28</td><td>null</td><td>1</td><td>null</td></tr></tbody></table> 
+<p>事务操作：</p> 
+<table><thead><tr><th>事务1 [id=1]</th><th>事务2 [id=2]</th><th>事务3 [id=3]</th><th>事务4 [id=4]</th></tr></thead><tbody><tr><td>事务开始</td><td>事务开始</td><td>事务开始</td><td>事务开始</td></tr><tr><td>…</td><td>…</td><td>…</td><td>修改且已提交</td></tr><tr><td>进行中</td><td>快照读</td><td>进行中</td><td></td></tr><tr><td>…</td><td>…</td><td>…</td><td></td></tr></tbody></table> 
+<ul><li> <p>事务4：修改name(张三) 变成name(李四)</p> </li><li> <p>当 事务2 对某行数据执行了 快照读 ，数据库为该行数据生成一个 Read View 读视图，然后初始化对应字段</p> </li></ul> 
+<blockquote> 
+ <p>事务2的 Read View<br> m_ids; // 1,3<br> up_limit_id; // 1<br> low_limit_id; // 4 + 1 = 5，原因：ReadView生成时刻，系统尚未分配的下一个事务ID<br> creator_trx_id // 2</p> 
+</blockquote> 
+<p>此时版本链是：</p> 
+<p><img src="https://images2.imgbox.com/bb/e2/JJ6BimI9_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>只有事务4修改过该行记录，并在事务2执行快照读前，就提交了事务</li></ul> 
+<p><img src="https://images2.imgbox.com/e1/f8/g9Wv0Ayq_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>我们的事务2在快照读该行记录的时候，就会拿版本链中的该行记录的 DB_TRX_ID 去跟up_limit_id,low_limit_id和活跃事务ID列表(trx_list) 进行比较，判 断当前事务2能看到该记录的版本。</li></ul> 
+<blockquote> 
+ <p><strong>事务2的 Read View</strong><br> m_ids; // 1,3<br> up_limit_id; // 1<br> low_limit_id; // 4 + 1 = 5，原因：ReadView生成时刻，系统尚未分配的下一个事务ID<br> creator_trx_id // 2<br> <strong>事务4提交的记录对应的事务ID</strong><br> DB_TRX_ID=4<br> <strong>比较步骤</strong><br> DB_TRX_ID（4）&lt; up_limit_id（1） ? 不小于，说明这个事务就不是我来前就提交的，下一步<br> DB_TRX_ID（4）&gt;= low_limit_id(5) ? 不大于，说明这是事务也不是我形成Read view之后才来的事务， 下一步<br> m_ids.contains(DB_TRX_ID) ? 不包含，说明，事务4不在当前的活跃事务中。<br> <strong>结论</strong><br> 故，事务4的更改，应该看到。<br> 所以事务2能读到的最新数据记录是事务4所提交的版本，而事务4提交的版本也是全局角度上最新的版本</p> 
+</blockquote> 
+<h3><a id="25_RR__RC_299"></a>2.5 RR 与 RC的本质区别</h3> 
+<p>下面先看<strong>当前读和快照读在RR级别下的区别</strong></p> 
+<p>以加共享锁方式进行读取，对应的就是当前读。</p> 
+<pre><code class="prism language-powershell"><span class="token function">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> user lock in share mode 
+</code></pre> 
+<p>快照读，读的历史版本，所以读写可以并发。</p> 
+<pre><code class="prism language-powershell"><span class="token function">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> user<span class="token punctuation">;</span>
+</code></pre> 
+<p>下面测试一下看看，设置RR模式下测试</p> 
+<pre><code class="prism language-powershell"><span class="token function">set</span> global transaction isolation level REPEATABLE READ<span class="token punctuation">;</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/bd/12/W1OsT3HR_o.png" alt="在这里插入图片描述"></p> 
+<p>依旧用之前的表</p> 
+<pre><code class="prism language-powershell">create table <span class="token keyword">if</span> not exists user<span class="token punctuation">(</span>
+     id int primary key<span class="token punctuation">,</span>
+     age int not null<span class="token punctuation">,</span>
+     name varchar<span class="token punctuation">(</span>16<span class="token punctuation">)</span> not null
+     <span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>插入一条记录，用来测试</p> 
+<pre><code class="prism language-powershell">insert into user <span class="token punctuation">(</span>id<span class="token punctuation">,</span> age<span class="token punctuation">,</span> name<span class="token punctuation">)</span> values <span class="token punctuation">(</span>1<span class="token punctuation">,</span> 15<span class="token punctuation">,</span><span class="token string">'黄蓉'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>测试用例1-表1：</p> 
+<p>事务A和事务B并发运行，都进行快照读，快照读读的是历史版本可是当前没有历史版本，没有就读的是最新数据，不影响。但是事务A更新age=18，然后commit。因为改了数据所以一定会形成版本链。因为事务B是快照读并且是RR级别所以只能读到历史版本。没有读到age=18，当我把查的过程强制改成当前读，所以我应该会读到age=18。</p> 
+<table><thead><tr><th>事务A操作</th><th>事务A描述</th><th>事务B描述</th><th>事务B操作</th></tr></thead><tbody><tr><td>begin</td><td>开启事务</td><td>开启事务</td><td>begin</td></tr><tr><td>select * from user</td><td>快照读(无影响)查询</td><td>快照读查询</td><td>select * from user</td></tr><tr><td>update user setage=18 where id=1;</td><td>更新age=18</td><td>-</td><td>-</td></tr><tr><td>commit</td><td>提交事务</td><td>-</td><td>-</td></tr><tr><td></td><td></td><td>select 快照读 ,没有读到age=18</td><td>select * from user</td></tr><tr><td></td><td></td><td>select lock in share mode当前读 , 读到age=18</td><td>select * from userlock in share mode</td></tr></tbody></table> 
+<p>根据之前说的RR级别，你改了我看不到。<br> <img src="https://images2.imgbox.com/c4/1c/ItmholvW_o.png" alt="在这里插入图片描述"><br> 即使commit提交了，我也看不到<br> <img src="https://images2.imgbox.com/2d/7a/U4wPZy1A_o.png" alt="在这里插入图片描述"></p> 
+<p>可是我们今天就想读，之前都是select快照读，今天改成select当前读，读到的不就是最新记录了</p> 
+<p><img src="https://images2.imgbox.com/cf/8d/FqveIL7D_o.png" alt="在这里插入图片描述"><br> 其实如果在隔离性这里想读到最新数据也是可以的。不过正常情况下select读到的就是历史版本。</p> 
+<p>那到底想说什么呢，我们把下面实验也做一下，再说。</p> 
+<p>测试用例2-表2：<br> 还是启动事务A和事务B，先让事务A把更新做了然后提交，让事务B在事务A提交之后，然后事务B在查。</p> 
+<table><thead><tr><th>事务A操作</th><th>事务A描述</th><th>事务B描述</th><th>事务B操作</th></tr></thead><tbody><tr><td>begin</td><td>开启事务</td><td>开启事务</td><td>begin</td></tr><tr><td>select * from user</td><td>快照读，查到age=18</td><td>-</td><td>-</td></tr><tr><td>update user setage=28 where id=1;</td><td>更新age=28</td><td>-</td><td>-</td></tr><tr><td>commit</td><td>提交事务</td><td>-</td><td>-</td></tr><tr><td></td><td></td><td>select 快照读 age=28</td><td>select * from user</td></tr><tr><td></td><td></td><td>select lock in sharemode当前读 age=28</td><td>select * from userlock in share mode</td></tr></tbody></table> 
+<p>启动事务A和事务B，事务A在跑的时候事务B没有做select。直到事务A提交了。</p> 
+<p><img src="https://images2.imgbox.com/3f/25/xwia2aPa_o.png" alt="在这里插入图片描述"></p> 
+<p>当事务A提交结束之后，事务Bselect看到了最新的修改。</p> 
+<p><img src="https://images2.imgbox.com/1d/53/p5lPTlXO_o.png" alt="在这里插入图片描述"><br> 说好的不是可重复读呢？说好的隔离性呢？ 修改了就看到了。<br> 但你凭什么说你看到了？人家的隔离级叫可重复读，<strong>可重复读只需要保证第一次读和最后一次和中间读的数据只要是一样就好了</strong>。你怎么知道你现在读的数据就是最新的或者是最老的，你确定不了 ，所以只要保证前后数据读的是一样的不就好了吗。RR级别是遵守的。换句话说上面的两个例子，事务A操作没编号，事务B仅仅是在事务Aupdate之前少做了一个select。那为什么会出现这样大的差别，两个事务同时跑，为什么上面就看不到更新，下面能看到呢？</p> 
+<p>上面看不到更新的原因是，<strong>事务B在和事务A同时运行时，事务B在select快照读的时候，mysql就已经给事务B形成一个Read View，形成Read View之后，进行快照读，读的时事务B快照的对象填的值任务事务A是和它一块运行的，事务A就在事务B的m_ids列表中，所以事务B就看不到事务A提交的修改了。</strong></p> 
+<p>下面看到的原因时，<strong>事务B和事务A同时起来，但是事务B并没有在事务A运行的时候进行快照读，并没有形成Read View 对象，所以事务B并没有记录系统中任何并发事务的情况，当事务A把数据更新了提交了已经结束了，事务B才select快照读才形成Read View，形成Read View的时候事务B看和自己同时并发运行的事务时，事务A已经不存在了，那么此时事务B看到m_ids列表中最小值都比事务A ID大，说明事务A在事务B来之前就已经提交了，所以事务B此时就能看到事务A的修改。</strong></p> 
+<p>换句话说， RR级别下<font color="red"><strong>Read View形成的时机不同，会影响事务的可见性！</strong></font> 可见性看的数据更新还是数据更老这个其实不重要，在RR级别下保证读到的内容是一致的这才重要。</p> 
+<p>结论：</p> 
+<ul><li>事务中快照读的结果是非常依赖该事务首次出现快照读的地方，即某个事务中首次出现快照读，决定该事务后续快照读结果的能力</li><li>delete同样如此</li></ul> 
+<p><strong>RR 与 RC的本质区别</strong></p> 
+<ul><li>正是Read View生成时机的不同，从而造成RC,RR级别下快照读的结果的不同</li><li>在<strong>RR级别下的某个事务的对某条记录的第一次快照读会创建一个快照及Read View, 将当前系统活跃的其他事务记录起来</strong></li><li><strong>此后在调用快照读的时候，还是使用的是同一个Read View</strong>，所以只要当前事务在其他事务提交更新之前使用过快照读，那么之后的快照读使用的都是同一个Read View，<strong>既然是同一个Read View意味着Read View不变，Read View里面看到的并发事务ID情况也是不变的，也就意味着RR级别下可见性不变了。所以对之后的修改不可见；</strong></li><li><strong>即RR级别下，快照读生成Read View时，Read View会记录此时所有其他活动事务的快照，这些事务的修改对于当前事务都是不可见的。因为跟我是同时并发的，只有不在m_ids列表我才认为我能看到，也就是早于Read View创建的事务所做的修改均是可见</strong></li></ul> 
+<p>一句话RR级别就只有一个Read View，而且不更新。在首次调用快照读时形成。因为Read View不变，所以可见性不变，所以随便怎么玩，看历史版本时对于我当前RR级别你对数据做任何修改，改完提交，我都看不到。</p> 
+<ul><li>而在<strong>RC级别</strong>下的，<strong>事务中，每次快照读都会新生成一个快照和Read View</strong>, 也就是每一次在RC级别下快照读的时候，mysql都要给我们重新形成Read View，因为每次都是新的，这就是我们在RC级别下的事务中可以看到别的事务提交的更新的原因。</li></ul> 
+<p>因为每一次select快照读都要形成Read View，而时间是一直往后走的，只要我一直向后不断select，那么每次形成的Read View在时间上总是比较新的，你一个事务只要被提交了注定要被释放掉放在历史的版本链中，所以我的Read View在不断时间线往后移的时候，我总是能看到你的提交的。这就是我们在RC级别下的事务中可以看到别的事务提交的更新的原因。</p> 
+<p>可能别的事务在这个时候是我和并发运行的，当它commit提交之后，然后我这个事务可能没有结束可能会不断select不断形成新的Read View，可能上一次Read View我在和你并发，下一次Read View你这个事务就提交了，我当然就可以看到你的提交了</p> 
+<ul><li><strong>总之在RC隔离级别下，是每个快照读都会生成并获取最新的Read View；而在RR隔离级别下，则是同一个事务中的第一个快照读才会创建Read View, 之后的快照读获取的都是同一个Read View。所以RR级别下它的可见性就不变了，所以就读不到别的事务的修改了。</strong></li><li><strong>正是RC每次快照读，都会形成Read View，所以，每次读都有可能读到别的事务的修改，所以，每次读都有可能读到不同的东西，所以，RC才会有不可重复读问题。而RR级别它用的同一个Read View，它看到版本链该看多少就看多少，不会变了，所以在重复select不会出现数据变化，这就是可重复读</strong></li></ul> 
+<p>所以RC和RR就是一层窗户纸的关系，无非就是每次select快照读要不要重新形成Read View，不形成就是RR，一直都在更新就是RC。</p> 
+<p>所以现在就可以理解为什么两个不同的事务，为什么可以进行读写并发好像不加锁去访问数据同一个数据呢。那是因为有历史版本的存在，写（增删改）是当前读，读的都是当前数据。select是快照读，读的是历史版本。MySQL底层用MVCC维护多版本，所以我们两个访问的根本就是不同版本的数据，那就不需要加锁。所以读写就可以直接并发。</p> 
+<p>还有为什么并发事务，一个事务更新其他事务看不到，同理也是因为MVCC多版本的支持，因为读到的是不同的版本。老版本历史版本不变，数据不是放在版本链中，所以你当前做的任何更新，我读历史版本，你更新最新的，我怎么能看到你的结果，所以表现出一种隔离性。</p> 
+<p>为什么在RR和RC级别下能或者不能看到别人对应的提交呢。取决于要不要重新给事务形成新的Read View。</p> 
+<p>如果在一个事务内部如果操作成功了提交好说，失败了回滚，凭什么回滚，不就是因为相反操作被记录下来历史版本链中有数据，所以可以尽可能的做事务回滚。所谓回滚做两件事情，第一事务内部对应的结构体Read View对象释放，第二将事务曾经修改过的数据恢复成最开始。</p> 
+<p>读未提交 都是当前读也不要Read View，写完我就能读。RC和RR 已经搞定了。串行化更不用说了，也都是当前读只不过要加锁。</p> 
+<h2><a id="3_416"></a>3.读-读</h2> 
+<p>不讨论</p> 
+<h2><a id="4_418"></a>4.写-写</h2> 
+<p>现阶段，直接理解成都是当前读，当前不做深究</p> 
+<p><strong>推荐阅读</strong><br> <a href="https://blog.csdn.net/SnailMann/article/details/94724197">【MySQL笔记】正确的理解MySQL的MVCC及实现原理</a><br> <a href="https://www.cnblogs.com/f-ck-need-u/p/9010872.html" rel="nofollow">详细分析MySQL事务日志(redo log和undo log)</a><br> <a href="https://blog.csdn.net/chenghan_yang/article/details/97630626">【MySQL】InnoDB 如何避免脏读和不可重复读</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/40a74ec0238b477b0d6252c27d9156dc/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">第三次作业</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/22bed31a80657e834cf21b037b474db8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【Unity3D渲染】粒子系统的概念及其使用示例</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

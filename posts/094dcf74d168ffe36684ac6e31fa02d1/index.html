@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>09--keepalived高可用集群 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/094dcf74d168ffe36684ac6e31fa02d1/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="09--keepalived高可用集群">
+  <meta property="og:description" content="前言：高可用集群配置是大型网站的一个基础，网站可用性的基础保障之一，这里将对应的概念知识和实操步骤进行整理与收集。
+1、基础概念详解 1.1、高可用集群 高可用集群（High Availability Cluster，简称HA Cluster），是指以减少服务中断时间为目的的服务器集群技术。它通过保护用户的业务程序对外不间断提供的服务，把因软件、硬件、人为造成的故障对业务的影响降低到最小。
+1.2、高可用集群的衡量标准 1.3、自动切换/故障转移（FailOver） 自动切换阶段某一主机如果确认对方故障，则正常主机除继续进行原来的任务，还将依据各种容错备援模式接管预先设定的备援作业程序，并进行后续的程序及服务。 通俗地说，即当A无法为客户服务时，系统能够自动地切换，使B能够及时地顶上继续为客户提供服务，且客户感觉不到这个为他提供服务的对象已经更换。 通过上面判断节点故障后，将高可用集群资源（如VIP、httpd等）从该不具备法定票数的集群节点转移到故障转移域（Failover Domain，可以接收故障资源转移的节点）。
+1.4、自动侦测 自动侦测阶段由主机上的软件通过冗余侦测线，经由复杂的监听程序，逻辑判断，来相互侦测对方运行的情况。 常用的方法是：集群各节点间通过心跳信息判断节点是否出现故障。
+1.5、脑裂 在高可用（HA）系统中，当联系两个节点的“心跳线”断开时，本来为一整体、动作协调的HA系统，就分裂成为两个独立的个体。由于相互失去了联系，都以为是对方出了故障。两个节点上的HA软件像两个灵魂夺舍一样，争抢“共享资源”、争起“应用服务”，就会发生严重后果——或者共享资源被瓜分、两边“服务”都起不来了；或者两边“服务”都起来了，但同时读写“共享存储”，导致数据损坏（常见如数据库轮询着的联机日志出错）。
+产生原因：
+因心跳线坏了（包括断了，老化）。 因网卡及相关驱动坏了，ip配置及冲突问题（网卡直连）。 因心跳线间连接的设备故障（网卡及交换机）。 因仲裁的机器出问题（采用仲裁的方案）。 高可用服务器上开启了 iptables防火墙阻挡了心跳消息传输。 高可用服务器上心跳网卡地址等信息配置不正确，导致发送心跳失败。 其他服务配置不当等原因，如心跳方式不同，心跳广插冲突、软件Bug等。
+解决方案：
+1）添加冗余的心跳线：例如：双心跳线（心跳线也HA），尽量减少“脑裂”发生几率；
+2）启用磁盘锁：正在服务一方锁住共享磁盘，“脑裂”发生时，让对方完全“抢不走”共享磁盘资源。但使用锁磁盘也会有一个不小的问题，如果占用共享盘的一方不主动“解锁”，另一方就永远得不到共享磁盘。现实中假如服务节点突然死机或崩溃，就不可能执行解锁命令。后备节点也就接管不了共享资源和应用服务（会导致昂贵的高可用架构不能发挥作用）。于是有人在HA中设计了“智能”锁。即：正在服务的一方只在发现心跳线全部断开（察觉不到对端）时才启用磁盘锁。平时就不上锁了。
+3）设置仲裁机制：例如设置参考IP（如网关IP或某一个服务器），当心跳线完全断开时，2个节点都各自ping一下参考IP，不通则表明断点就出在本端。不仅“心跳”、还兼对外“服务”的本端网络链路断了，即使启动（或继续）应用服务也没有用了，那就主动放弃竞争，让能够ping通参考IP的一端去起服务。更保险一些，ping不通参考IP的一方干脆就自我重启，以彻底释放有可能还占用着的那些共享资源。
+4）脑裂的监控报警：直接对高可用服务的业务进行业务监控，出现问题人为介入
+1.6、其他的高可用架构 heartbeat、pacemaker、 piranha（web页面）操作部署都非常相似
+1.7、keepalived keepalived是集群管理中保证集群高可用的一个服务软件，用来防止单点故障。
+keepalived是以VRRP协议为实现基础的，VRRP全称Virtual Router Redundancy Protocol，即虚拟路由冗余协议。
+将N台提供相同功能的服务器组成一个服务器组，这个组里面有一个master和多个backup，master上面有一个对外提供服务的vip（该服务器所在局域网内其他机器的默认路由为该vip），master会发组播（以224.0.0.0地址作为通信地址的一种方式），当backup收不到vrrp包时就认为master宕掉了，这时就需要根据VRRP的优先级来选举一个backup当master（可以理解为三体里面的摇篮系统，反向触发）
+keepalived主要有三个模块：分别是core、check和vrrp。 core模块为keepalived的核心，负责主进程的启动、维护以及全局配置文件的加载和解析。 check负责健康检查，包括常见的各种检查方式。 vrrp模块是来实现VRRP协议的。
+2、web高可用示例 2.1、基础环境 IP用途192.168.189.148server1192.168.189.149server2192.168.189.150vip（虚拟ip） 2.2、server1部署 server1初始网络环境(网卡名和IP记一下)
+keepalive配置
+[root@localhost ~]# yum install -y keepalived [root@localhost ~]# vim /etc/keepalived/keepalived.conf [root@localhost ~]# cat /etc/keepalived/keepalived.conf ! Configuration File for keepalived global_defs { router_id 1 #设备高可用组内的id，组内唯一 } #vrrp_script chk_nginx { #健康检查 # script &#34;">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-22T19:42:03+08:00">
+    <meta property="article:modified_time" content="2024-06-22T19:42:03+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">09--keepalived高可用集群</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><span style="color:#fe2c24;">前言：高可用集群配置是大型网站的一个基础，网站可用性的基础保障之一，这里将对应的概念知识和实操步骤进行整理与收集。</span></p> 
+<h2>1、基础概念详解</h2> 
+<h3>1.1、高可用集群</h3> 
+<p>高可用集群（High Availability Cluster，简称HA Cluster），是指以减少服务中断时间为目的的服务器集群技术。它通过保护用户的业务程序对外不间断提供的服务，把因软件、硬件、人为造成的故障对业务的影响降低到最小。</p> 
+<h3>1.2、高可用集群的衡量标准</h3> 
+<p class="img-center"><img alt="" height="201" src="https://images2.imgbox.com/bf/6f/paIoICW3_o.png" width="517"></p> 
+<h3>1.3、自动切换/故障转移（FailOver）</h3> 
+<p>自动切换阶段某一主机如果确认对方故障，则正常主机除继续进行原来的任务，还将依据各种容错备援模式接管预先设定的备援作业程序，并进行后续的程序及服务。 通俗地说，即<span style="color:#fe2c24;">当A无法为客户服务时，系统能够自动地切换，使B能够及时地顶上继续为客户提供服务，且客户感觉不到这个为他提供服务的对象已经更换</span>。 通过上面判断节点故障后，将高可用集群资源（如VIP、httpd等）从该不具备法定票数的集群节点转移到故障转移域（Failover Domain，可以接收故障资源转移的节点）。</p> 
+<h3>1.4、自动侦测</h3> 
+<p>自动侦测阶段由主机上的软件通过冗余侦测线，经由复杂的监听程序，逻辑判断，来相互侦测对方运行的情况。 常用的方法是：集群各节点间通过心跳信息判断节点是否出现故障。</p> 
+<h3>1.5、脑裂</h3> 
+<p>在高可用（HA）系统中，当联系两个节点的<span style="color:#fe2c24;">“心跳线”断开</span>时，本来为一整体、动作协调的HA系统，就<span style="color:#fe2c24;">分裂成为两个独立的个体</span>。由于<span style="color:#fe2c24;">相互失去了联系</span>，都<span style="color:#fe2c24;">以为是对方出了故障</span>。两个节点上的HA软件像<span style="color:#fe2c24;">两个灵魂夺舍</span>一样，<span style="color:#fe2c24;">争抢“共享资源”</span>、争起“应用服务”，就会发生严重后果——或者共享资源被瓜分、两边“服务”都起不来了；或者两边“服务”都起来了，但同时读写“共享存储”，导致数据损坏（常见如数据库轮询着的联机日志出错）。</p> 
+<p><span style="color:#0d0016;"><strong>产生原因：</strong></span></p> 
+<p>因心跳线坏了（包括断了，老化）。 因网卡及相关驱动坏了，ip配置及冲突问题（网卡直连）。 因心跳线间连接的设备故障（网卡及交换机）。 因仲裁的机器出问题（采用仲裁的方案）。 高可用服务器上开启了 iptables防火墙阻挡了心跳消息传输。 高可用服务器上心跳网卡地址等信息配置不正确，导致发送心跳失败。 其他服务配置不当等原因，如心跳方式不同，心跳广插冲突、软件Bug等。</p> 
+<p><span style="color:#0d0016;"><strong>解决方案：</strong></span></p> 
+<p>1）添加冗余的心跳线：例如：双心跳线（心跳线也HA），尽量减少“脑裂”发生几率；</p> 
+<p>2）启用磁盘锁：正在服务一方锁住共享磁盘，“脑裂”发生时，让对方完全“抢不走”共享磁盘资源。但使用锁磁盘也会有一个不小的问题，如果占用共享盘的一方不主动“解锁”，另一方就永远得不到共享磁盘。现实中假如服务节点突然死机或崩溃，就不可能执行解锁命令。后备节点也就接管不了共享资源和应用服务（<span style="color:#fe2c24;">会导致昂贵的高可用架构不能发挥作用</span>）。于是有人在HA中设计了“智能”锁。即：正在服务的一方只在发现心跳线全部断开（察觉不到对端）时才启用磁盘锁。平时就不上锁了。</p> 
+<p>3）设置仲裁机制：例如设置参考IP（如网关IP或某一个服务器），当心跳线完全断开时，2个节点都各自ping一下参考IP，不通则表明断点就出在本端。不仅“心跳”、还兼对外“服务”的本端网络链路断了，即使启动（或继续）应用服务也没有用了，那就主动放弃竞争，让能够ping通参考IP的一端去起服务。更保险一些，<span style="color:#fe2c24;">ping不通参考IP的一方干脆就自我重启</span>，以彻底释放有可能还占用着的那些共享资源。</p> 
+<p>4）脑裂的监控报警：直接对高可用服务的业务进行业务监控，出现问题人为介入</p> 
+<h3>1.6、其他的高可用架构</h3> 
+<p>heartbeat、pacemaker、 piranha（web页面）操作部署都非常相似</p> 
+<h3>1.7、keepalived</h3> 
+<p>keepalived是集群管理中保证集群高可用的一个服务软件，用来防止单点故障。</p> 
+<p>keepalived是以VRRP协议为实现基础的，VRRP全称Virtual Router Redundancy Protocol，即虚拟路由冗余协议。</p> 
+<p>将N台提供相同功能的服务器组成一个服务器组，这个组里面有一个master和多个backup，master上面有一个对外提供服务的vip（该服务器所在局域网内其他机器的默认路由为该vip），master会发组播（以224.0.0.0地址作为通信地址的一种方式），当backup收不到vrrp包时就认为master宕掉了，这时就需要根据VRRP的优先级来选举一个backup当master（<span style="color:#fe2c24;">可以理解为三体里面的摇篮系统，反向触发</span>）</p> 
+<p>keepalived主要有三个模块：分别是core、check和vrrp。 core模块为keepalived的核心，负责主进程的启动、维护以及全局配置文件的加载和解析。 check负责健康检查，包括常见的各种检查方式。 vrrp模块是来实现VRRP协议的。</p> 
+<h2>2、web高可用示例</h2> 
+<h3>2.1、基础环境</h3> 
+<table border="1" cellpadding="1" cellspacing="1" style="width:500px;"><thead><tr><th style="text-align:center;">IP</th><th style="text-align:center;">用途</th></tr></thead><tbody><tr><td style="text-align:center;">192.168.189.148</td><td style="text-align:center;">server1</td></tr><tr><td style="text-align:center;">192.168.189.149</td><td style="text-align:center;">server2</td></tr><tr><td style="text-align:center;">192.168.189.150</td><td style="text-align:center;">vip（虚拟ip）</td></tr></tbody></table> 
+<h3>2.2、server1部署</h3> 
+<p>server1初始网络环境(网卡名和IP记一下)</p> 
+<p><img alt="" height="312" src="https://images2.imgbox.com/1a/4c/YtPYkZYl_o.png" width="939"></p> 
+<p> keepalive配置</p> 
+<pre><code class="language-bash">[root@localhost ~]# yum install -y keepalived
+[root@localhost ~]# vim /etc/keepalived/keepalived.conf 
+
+[root@localhost ~]# cat /etc/keepalived/keepalived.conf
+! Configuration File for keepalived
+global_defs {
+ router_id 1                            #设备高可用组内的id，组内唯一
+ }
+
+#vrrp_script chk_nginx {                #健康检查
+# script "/etc/keepalived/ck_ng.sh"     #检查脚本
+# interval 2                            #检查频率.秒
+# weight -5                             #权重减5，就是下面的优先级减5
+# fall 3                                #失败三次
+# }
+
+vrrp_instance VI_1 {               	#VI_1实例名。两台路由器相同。和下面的55作用相同
+    state MASTER                        #主或者从状态
+    interface ens33                     #监控网卡
+    mcast_src_ip 192.168.189.148        #心跳源Ip
+    virtual_router_id 55                #虚拟路由编号，主备要一致
+    priority 100                        #优先级
+    advert_int 1                        #心跳间隔
+
+    authentication {                    #秘钥认证(1-8位)
+        auth_type PASS
+        auth_pass 123456
+    }
+
+    virtual_ipaddress {                 #VIP
+    192.168.189.150/24
+        }
+
+#  track_script {                       #引用脚本
+#       chk_nginx
+#    }
+
+}
+
+
+[root@localhost ~]# systemctl start keepalived.service
+[root@localhost ~]# systemctl enable keepalived.service
+Created symlink from /etc/systemd/system/multi-user.target.wants/keepalived.service to /usr/lib/systemd/system/keepalived.service.
+</code></pre> 
+<p> web环境搭建</p> 
+<pre><code class="language-bash">[root@localhost ~]# yum install -y nginx
+[root@localhost ~]# systemctl start nginx
+[root@localhost ~]# systemctl enable nginx
+Created symlink from /etc/systemd/system/multi-user.target.wants/nginx.service to /usr/lib/systemd/system/nginx.service.
+[root@localhost ~]# echo "&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;web1&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;" &gt; /usr/share/nginx/html/index.html 
+[root@localhost ~]# curl 127.0.0.1
+&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;web1&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;
+[root@localhost ~]# systemctl start keepalived
+</code></pre> 
+<h3>2.3、server2部署</h3> 
+<p>其他部分与1相同，不同部分如下</p> 
+<p><img alt="" height="670" src="https://images2.imgbox.com/5d/0e/MKRShPHs_o.png" width="885"></p> 
+<p> 代码如下</p> 
+<pre><code class="language-bash">[root@localhost ~]# vim /etc/keepalived/keepalived.conf 
+[root@localhost ~]# cat /etc/keepalived/keepalived.conf 
+! Configuration File for keepalived
+global_defs {
+ router_id 2                            #设备高可用组内的id，组内唯一
+ }
+
+#vrrp_script chk_nginx {                #健康检查
+# script "/etc/keepalived/ck_ng.sh"     #检查脚本
+# interval 2                            #检查频率.秒
+# weight -5                             #权重减5，就是下面的优先级减5
+# fall 3                                #失败三次
+# }
+
+vrrp_instance VI_1 {               	#VI_1实例名。两台路由器相同。和下面的55作用相同
+    state BACKUP                        #主或者从状态
+    interface ens33                     #监控网卡
+    mcast_src_ip 192.168.189.149        #心跳源Ip
+    virtual_router_id 55                #虚拟路由编号，主备要一致
+    priority 99                        #优先级
+    advert_int 1                        #心跳间隔
+
+    authentication {                    #秘钥认证(1-8位)
+        auth_type PASS
+        auth_pass 123456
+    }
+
+    virtual_ipaddress {                 #VIP
+    192.168.189.150/24
+        }
+
+#  track_script {                       #引用脚本
+#       chk_nginx
+#    }
+
+}
+
+[root@localhost ~]# echo "+++++++++++++++web2+++++++++++++" &gt; /usr/share/nginx/html/index.html 
+[root@localhost ~]# curl 127.0.0.1
++++++++++++++++web2+++++++++++++
+
+
+</code></pre> 
+<h3>2.4、模拟测试</h3> 
+<p>server1正常</p> 
+<p><img alt="" height="300" src="https://images2.imgbox.com/5a/36/UVvMxC7b_o.png" width="1106"></p> 
+<p> server1网络中断</p> 
+<p><img alt="" height="796" src="https://images2.imgbox.com/34/72/BdMZVTIb_o.png" width="1200"></p> 
+<p>刷新页面</p> 
+<p><img alt="" height="314" src="https://images2.imgbox.com/fd/92/s8gjCiBr_o.png" width="1094"></p> 
+<p>高可用完成</p> 
+<h3>2.5、进阶（服务监测）</h3> 
+<p>恢复之前的实验。启动两台主机的keepalived和nginx。确保页面访问正常。 关闭master的nginx服务 。systemctl stop nginx 继续访问VIP，高可用集群并未生效，<span style="color:#fe2c24;">keepalived监控的是接口IP状态，无法监控nginx服务状态</span>，这里<span style="color:#fe2c24;">需要将服务与高可用结合</span>起来部署，我们需要保证的是服务的高可用状态。</p> 
+<p>操作如下</p> 
+<h4>2.5.1、server1操作</h4> 
+<pre><code class="language-bash">[root@localhost ~]# vi /etc/keepalived/ck_ng.sh
+[root@localhost ~]# cat /etc/keepalived/ck_ng.sh
+#!/bin/bash
+#检查nginx进程是否存在
+counter=$(ps -C nginx --no-heading|wc -l)
+if [ "${counter}" = "0" ]; then
+#尝试启动一次nginx，停止5秒后再次检测
+    service nginx start
+    sleep 5
+    counter=$(ps -C nginx --no-heading|wc -l)
+    if [ "${counter}" = "0" ]; then
+#如果启动没成功，就杀掉keepalive触发主备切换
+        service keepalived stop
+    fi
+fi
+[root@localhost ~]# chmod +x /etc/keepalived/ck_ng.sh
+</code></pre> 
+<p>开启状态检查脚本的调用</p> 
+<p><img alt="" height="692" src="https://images2.imgbox.com/b3/35/0SihTWaS_o.png" width="969"></p> 
+<p> 重启keepalived</p> 
+<h4>2.5.2、server2操作</h4> 
+<p>此处与server1完全相同</p> 
+<h4 style="background-color:transparent;">2.5.3、模拟测试</h4> 
+<p>正常访问</p> 
+<p><img alt="" height="289" src="https://images2.imgbox.com/e3/2d/Hfwo1fZv_o.png" width="1116"></p> 
+<p>正常关闭nginx，此时keepalived会调用脚本，脚本检测到nginx关闭后重新开启nginx</p> 
+<p><img alt="" height="367" src="https://images2.imgbox.com/82/3c/TIppazlE_o.png" width="934"></p> 
+<p>网页访问未切换服务器</p> 
+<p><img alt="" height="375" src="https://images2.imgbox.com/0f/85/iKonrqHg_o.png" width="1010"></p> 
+<p>模拟nginx损坏无法重启（server1操作）</p> 
+<pre><code class="language-bash">[root@localhost ~]# rm -rf /etc/nginx/*
+[root@localhost ~]# systemctl stop nginx</code></pre> 
+<p>刷新网页，已切换到server2提供服务</p> 
+<p><img alt="" height="284" src="https://images2.imgbox.com/e4/d7/SKc1MkeO_o.png" width="1062"></p> 
+<h2>3、LVS高可用示例</h2> 
+<p>web服务器在工作环境中有很多，这个架构是对lvs进行高可用保障</p> 
+<h3>3.1、基础环境</h3> 
+<table border="1" cellpadding="1" cellspacing="1" style="width:500px;"><thead><tr><th style="text-align:center;">IP</th><th style="text-align:center;">模拟角色</th></tr></thead><tbody><tr><td style="text-align:center;">192.168.189.145</td><td style="text-align:center;">虚拟ip</td></tr><tr><td style="text-align:center;">192.168.189.148</td><td style="text-align:center;">负载均衡（master）</td></tr><tr><td style="text-align:center;">192.168.189.149</td><td style="text-align:center;">负载均衡（backup）</td></tr><tr><td style="text-align:center;">192.168.189.150</td><td style="text-align:center;">web1</td></tr><tr><td style="text-align:center;">192.168.189.151</td><td style="text-align:center;">web2</td></tr></tbody></table> 
+<p><img alt="" height="992" src="https://images2.imgbox.com/be/64/bZNKG4U5_o.png" width="1200"></p> 
+<h3 style="background-color:transparent;">3.2、负载均衡（master）安装部署</h3> 
+<pre><code class="language-bash">[root@localhost ~]# yum install -y keepalived ipvsadm
+    #    keepalived内自带lvs配置，所以后续只需配置keepalived
+
+[root@localhost ~]# vim /etc/keepalived/keepalived.conf 
+[root@localhost ~]# cat /etc/keepalived/keepalived.conf 
+! Configuration File for keepalived
+global_defs {						
+	router_id Director1    			#设备高可用组内的id，组内唯一
+	}
+	
+vrrp_instance VI_1 {				
+	state MASTER				#另外一台机器是BACKUP	
+	interface ens33				#心跳网卡	
+	virtual_router_id 51			#虚拟路由编号，主备要一致
+	priority 150				#优先级	
+	advert_int 1				#检查间隔，单位秒	
+	authentication {
+		auth_type PASS
+		auth_pass 12345
+		}
+	virtual_ipaddress {
+		192.168.189.145/24       dev      ens33   	#VIP和工作网卡
+		}
+	}
+	
+virtual_server 192.168.189.145 80 {		#LVS 配置，VIP
+	delay_loop 3				#lvs服务论询的时间间隔，#每隔3秒检查一次rs状态
+	lb_algo rr				#LVS 调度算法
+	lb_kind DR	 			#LVS 集群模式 直接路由
+	protocol TCP				#rs的协议对应上方的端口号
+	real_server 192.168.189.150 80 {
+		weight 1
+		TCP_CHECK {
+			connect_timeout 3       #健康检查方式,连接超时时间，单位秒
+			}
+		}
+	real_server 192.168.189.151 80 {
+		weight 1
+		TCP_CHECK {
+			connect_timeout 3
+			}
+		}
+}
+
+
+
+[root@localhost ~]# systemctl enable keepalived
+Created symlink from /etc/systemd/system/multi-user.target.wants/keepalived.service to /usr/lib/systemd/system/keepalived.service.
+[root@localhost ~]# systemctl start keepalived
+[root@localhost ~]# reboot</code></pre> 
+<h3>3.3、负载均衡（backup）安装部署</h3> 
+<pre><code class="language-bash">[root@localhost ~]# yum install -y keepalived ipvsadm
+
+[root@localhost ~]# scp root@192.168.189.148:/etc/keepalived/keepalived.conf /etc/keepalived/keepalived.conf 
+The authenticity of host '192.168.189.148 (192.168.189.148)' can't be established.
+ECDSA key fingerprint is SHA256:gxTKMF8msXccCg6zmpT9TjLZflsDFX3+2fYAVD/xzSs.
+ECDSA key fingerprint is MD5:1a:0b:3a:44:36:31:f6:64:d0:2b:5a:74:58:86:86:78.
+Are you sure you want to continue connecting (yes/no)? yes
+Warning: Permanently added '192.168.189.148' (ECDSA) to the list of known hosts.
+root@192.168.189.148's password: 
+keepalived.conf                                                      100% 1034     1.6MB/s   00:00    
+    #    修改一些配置
+[root@localhost ~]# vim /etc/keepalived/keepalived.conf 
+[root@localhost ~]# cat /etc/keepalived/keepalived.conf 
+! Configuration File for keepalived
+global_defs {						
+	router_id Director2    			#设备高可用组内的id，组内唯一
+	}
+	
+vrrp_instance VI_1 {				
+	state BACKUP				#另外一台机器是BACKUP	
+	interface ens33				#心跳网卡	
+	virtual_router_id 51			#虚拟路由编号，主备要一致
+	priority 140				#优先级	
+	advert_int 1				#检查间隔，单位秒	
+	authentication {
+		auth_type PASS
+		auth_pass 12345
+		}
+	virtual_ipaddress {
+		192.168.189.145/24       dev      ens33   	#VIP和工作网卡
+		}
+	}
+	
+virtual_server 192.168.189.145 80 {		#LVS 配置，VIP
+	delay_loop 3				#lvs服务论询的时间间隔，#每隔3秒检查一次rs状态
+	lb_algo rr				#LVS 调度算法
+	lb_kind DR	 			#LVS 集群模式 直接路由
+	protocol TCP				#rs的协议对应上方的端口号
+	real_server 192.168.189.150 80 {
+		weight 1
+		TCP_CHECK {
+			connect_timeout 3       #健康检查方式,连接超时时间，单位秒
+			}
+		}
+	real_server 192.168.189.151 80 {
+		weight 1
+		TCP_CHECK {
+			connect_timeout 3
+			}
+		}
+}
+
+
+
+[root@localhost ~]# systemctl enable keepalived
+Created symlink from /etc/systemd/system/multi-user.target.wants/keepalived.service to /usr/lib/systemd/system/keepalived.service.
+[root@localhost ~]# systemctl start keepalived
+[root@localhost ~]# reboot</code></pre> 
+<h3>3.4、检查配置</h3> 
+<p class="img-center"><img alt="" height="824" src="https://images2.imgbox.com/73/a8/qoNer3aA_o.png" width="939"></p> 
+<p class="img-center"><img alt="" height="639" src="https://images2.imgbox.com/a1/20/VuAhjYgu_o.png" width="887"></p> 
+<h3>3.5、web服务器配置</h3> 
+<p>web1与web2配置相同如下所示，此处大部分属于负载均衡与本章无关，详细解释可以参考<a class="link-info" href="http://t.csdnimg.cn/6lsS5" rel="nofollow" title="上一篇文章">上一篇文章</a></p> 
+<pre><code class="language-bash">[root@localhost ~]# yum install -y httpd
+[root@localhost ~]# systemctl start httpd
+[root@localhost ~]# systemctl enable httpd
+Created symlink from /etc/systemd/system/multi-user.target.wants/httpd.service to /usr/lib/systemd/system/httpd.service.
+[root@localhost ~]# echo "&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;&gt;web1&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;&lt;" &gt;  /var/www/html/index.html
+
+    #    配置虚拟地址
+[root@localhost ~]# cp /etc/sysconfig/network-scripts/{ifcfg-lo,ifcfg-lo:0}
+[root@localhost ~]# vim /etc/sysconfig/network-scripts/ifcfg-lo:0
+[root@localhost ~]# cat /etc/sysconfig/network-scripts/ifcfg-lo:0
+DEVICE=lo:0
+IPADDR=192.168.189.145
+NETMASK=255.255.255.255
+ONBOOT=yes
+
+    #    配置路由
+[root@localhost ~]# vim /etc/rc.local 
+[root@localhost ~]# cat /etc/rc.local 
+#!/bin/bash
+# THIS FILE IS ADDED FOR COMPATIBILITY PURPOSES
+#
+# It is highly advisable to create own systemd services or udev rules
+# to run scripts during boot instead of using this file.
+#
+# In contrast to previous versions due to parallel execution during boot
+# this script will NOT be run after all other services.
+#
+# Please note that you must run 'chmod +x /etc/rc.d/rc.local' to ensure
+# that this script will be executed during boot.
+
+touch /var/lock/subsys/local
+/sbin/route add -host 192.168.189.145 dev lo:0
+
+
+    #    arp忽略配置，此处详解可查看上一篇文章
+[root@localhost ~]# vim /etc/rc.local 
+[root@localhost ~]# cat /etc/rc.local 
+#!/bin/bash
+# THIS FILE IS ADDED FOR COMPATIBILITY PURPOSES
+#
+# It is highly advisable to create own systemd services or udev rules
+# to run scripts during boot instead of using this file.
+#
+# In contrast to previous versions due to parallel execution during boot
+# this script will NOT be run after all other services.
+#
+# Please note that you must run 'chmod +x /etc/rc.d/rc.local' to ensure
+# that this script will be executed during boot.
+
+touch /var/lock/subsys/local
+/sbin/route add -host 192.168.189.145 dev lo:0
+[root@localhost ~]# vim /etc/sysctl.conf 
+[root@localhost ~]# cat /etc/sysctl.conf 
+# sysctl settings are defined through files in
+# /usr/lib/sysctl.d/, /run/sysctl.d/, and /etc/sysctl.d/.
+#
+# Vendors settings live in /usr/lib/sysctl.d/.
+# To override a whole file, create a new file with the same in
+# /etc/sysctl.d/ and put new settings there. To override
+# only specific settings, add a file with a lexically later
+# name in /etc/sysctl.d/ and put new settings there.
+#
+# For more information, see sysctl.conf(5) and sysctl.d(5).
+
+
+net.ipv4.conf.all.arp_ignore = 1
+net.ipv4.conf.all.arp_announce = 2
+net.ipv4.conf.default.arp_ignore = 1
+net.ipv4.conf.default.arp_announce = 2
+net.ipv4.conf.lo.arp_ignore = 1
+net.ipv4.conf.lo.arp_announce = 2
+
+
+[root@localhost ~]# reboot
+
+</code></pre> 
+<p> 3.6、检查webserver配置</p> 
+<p class="img-center"><img alt="" height="440" src="https://images2.imgbox.com/5b/73/LhxzPJlG_o.png" width="954"></p> 
+<p class="img-center"><img alt="" height="462" src="https://images2.imgbox.com/c3/96/sdcwsDCD_o.png" width="939"></p> 
+<h3>3.6、模拟测试</h3> 
+<p>负载均衡正常（建议使用隐私模式测试）</p> 
+<p class="img-center"><img alt="" height="221" src="https://images2.imgbox.com/f1/21/6nF6Z4GL_o.png" width="682"></p> 
+<p> </p> 
+<p class="img-center"><img alt="" height="215" src="https://images2.imgbox.com/3c/27/n1nxDFyw_o.png" width="721"></p> 
+<p>关闭lvs上的keepalived访问网站仍然正常，观察负载均衡（backup）的IP与上文的不同</p> 
+<pre><code class="language-bash">[root@localhost ~]# systemctl stop keepalived.service</code></pre> 
+<p class="img-center"><img alt="" height="226" src="https://images2.imgbox.com/ef/14/QixX8NjU_o.png" width="682"></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="270" src="https://images2.imgbox.com/8c/ad/WFYr2k0V_o.png" width="797"></p> 
+<p class="img-center"><img alt="" height="476" src="https://images2.imgbox.com/8b/8a/w6I1TVgI_o.png" width="941"></p> 
+<p> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/90d4aa84a7c97379efa4715d1554f40e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【数据结构】顺序表实操——通讯录项目</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ef3a21ab92280d08e393880077706a4e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【云原生】更改Kubernetes为ipvs代理模式</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

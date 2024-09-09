@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink RocksDB状态后端优化总结 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/0097de95b8ecf722eb14541fca815b96/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Flink RocksDB状态后端优化总结">
+  <meta property="og:description" content="截至当前，Flink 作业的状态后端仍然只有 Memory、FileSystem 和 RocksDB 三种可选，且 RocksDB 是状态数据量较大（GB 到 TB 级别）时的唯一选择。RocksDB 的性能发挥非常仰赖调优，如果全部采用默认配置，读写性能有可能会很差。
+但是，RocksDB 的配置也是极为复杂的，可调整的参数多达百个，没有放之四海而皆准的优化方案。如果仅考虑 Flink 状态存储这一方面，我们仍然可以总结出一些相对普适的优化思路。本文先介绍一些基础知识，再列举方法。
+Note：本文的内容是基于我们在线上运行的 Flink 1.9 版本实践得出的。在1.10版本及以后，由于 TaskManager 内存模型重构，RocksDB 内存默认成为了堆外托管内存的一部分，可以免去一些手动调整的麻烦。如果性能仍然不佳，需要干预，则必须将 state.backend.rocksdb.memory.managed 参数设为 false 来禁用 RocksDB 内存托管。
+Stae R/W on RocksDB RocksDB 作为 Flink 状态后端时的读写逻辑与一般情况略有不同，如下图所示。
+Flink 作业中的每一个注册的状态都对应一个列族（column family），即包含自己独立的 memtable 和 sstable 集合。写操作会先将数据写入活动 memtable，写满之后则会转换为不可变 memtable，并 flush 到磁盘中形成 sstable。读操作则会依次在活动 memtable、不可变 memtable、block cache 和 sstable 中寻找目标数据。另外，sstable 也需要通过 compaction 策略进行合并，最终形成分层的 LSM Tree 存储结构，老生常谈了。
+特别地，由于 Flink 在每个检查点周期都会将 RocksDB 的数据快照持久化到文件系统，所以自然也就不需要再写预写日志（WAL）了，可以安全地关闭WAL与fsync。
+之前笔者已经详细讲解过 RocksDB compaction 策略，并且提到了读放大、写放大和空间放大的概念，对 RocksDB 的调优本质上就是在这三个因子之间取得平衡。而在 Flink 作业这种注重实时性的场合，则要重点考虑读放大和写放大。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-03-20T20:50:15+08:00">
+    <meta property="article:modified_time" content="2024-03-20T20:50:15+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink RocksDB状态后端优化总结</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>截至当前，Flink 作业的状态后端仍然只有 Memory、FileSystem 和 RocksDB 三种可选，且 RocksDB 是状态数据量较大（GB 到 TB 级别）时的唯一选择。RocksDB 的性能发挥非常仰赖调优，如果全部采用默认配置，读写性能有可能会很差。</p> 
+<p>但是，RocksDB 的配置也是极为复杂的，可调整的参数多达百个，没有放之四海而皆准的优化方案。如果仅考虑 Flink 状态存储这一方面，我们仍然可以总结出一些相对普适的优化思路。本文先介绍一些基础知识，再列举方法。</p> 
+<p><strong>Note：</strong>本文的内容是基于我们在线上运行的 Flink 1.9 版本实践得出的。在1.10版本及以后，由于 TaskManager 内存模型重构，RocksDB 内存默认成为了堆外托管内存的一部分，可以免去一些手动调整的麻烦。如果性能仍然不佳，需要干预，则必须将 state.backend.rocksdb.memory.managed 参数设为 false 来禁用 RocksDB 内存托管。</p> 
+<p></p> 
+<h4>Stae R/W on RocksDB</h4> 
+<p></p> 
+<p>RocksDB 作为 Flink 状态后端时的读写逻辑与一般情况略有不同，如下图所示。</p> 
+<p></p> 
+<p class="img-center"><img alt="img" height="298" src="https://images2.imgbox.com/1f/1a/A5P41QO5_o.jpg" width="640"></p> 
+<p></p> 
+<p>Flink 作业中的每一个注册的状态都对应一个列族（column family），即包含自己独立的 memtable 和 sstable 集合。写操作会先将数据写入活动 memtable，写满之后则会转换为不可变 memtable，并 flush 到磁盘中形成 sstable。读操作则会依次在活动 memtable、不可变 memtable、block cache 和 sstable 中寻找目标数据。另外，sstable 也需要通过 compaction 策略进行合并，最终形成分层的 LSM Tree 存储结构，老生常谈了。</p> 
+<p></p> 
+<p>特别地，由于 Flink 在每个检查点周期都会将 RocksDB 的数据快照持久化到文件系统，所以自然也就不需要再写预写日志（WAL）了，可以安全地关闭WAL与fsync。</p> 
+<p>之前笔者已经详细讲解过 RocksDB compaction 策略，并且提到了读放大、写放大和空间放大的概念，对 RocksDB 的调优本质上就是在这三个因子之间取得平衡。而在 Flink 作业这种注重实时性的场合，则要重点考虑读放大和写放大。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="img" height="294" src="https://images2.imgbox.com/43/5f/n5NJ32JK_o.jpg" width="640"></p> 
+<p></p> 
+<h4>Tuning MemTable</h4> 
+<p></p> 
+<p></p> 
+<p>memtable 作为 LSM Tree 体系里的读写缓存，对写性能有较大的影响。以下是一些值得注意的参数。为方便对比，下文都会将 RocksDB 的原始参数名与 Flink 配置中的参数名一并列出，用竖线分割。</p> 
+<ul><li> <p><strong>write_buffer_size | state.backend.rocksdb.writebuffer.size</strong> 单个 memtable 的大小，默认是64MB。当 memtable 大小达到此阈值时，就会被标记为不可变。一般来讲，适当增大这个参数可以减小写放大带来的影响，但同时会增大 flush 后 L0、L1 层的压力，所以还需要配合修改 compaction 参数，后面再提。</p> </li><li> <p><strong>max_write_buffer_number | state.backend.rocksdb.writebuffer.count</strong> memtable 的最大数量（包含活跃的和不可变），默认是2。当全部 memtable 都写满但是 flush 速度较慢时，就会造成写停顿，所以如果内存充足或者使用的是机械硬盘，建议适当调大这个参数，如4。</p> </li><li> <p><strong>min_write_buffer_number_to_merge | state.backend.rocksdb.writebuffer.number-to-merge</strong> 在 flush 发生之前被合并的 memtable 最小数量，默认是1。举个例子，如果此参数设为2，那么当有至少两个不可变 memtable 时，才有可能触发 flush（亦即如果只有一个不可变 memtable，就会等待）。调大这个值的好处是可以使更多的更改在 flush 前就被合并，降低写放大，但同时又可能增加读放大，因为读取数据时要检查的 memtable 变多了。经测试，该参数设为2或3相对较好。</p> </li></ul> 
+<h4>Tuning Block/Block Cache</h4> 
+<p>block 是 sstable 的基本存储单位。block cache 则扮演读缓存的角色，采用 LRU 算法存储最近使用的 block，对读性能有较大的影响。</p> 
+<p></p> 
+<ul><li> <p><strong>block_size | state.backend.rocksdb.block.blocksize</strong> block 的大小，默认值为4KB。在生产环境中总是会适当调大一些，一般32KB比较合适，对于机械硬盘可以再增大到128~256KB，充分利用其顺序读取能力。但是需要注意，如果 block 大小增大而 block cache 大小不变，那么缓存的 block 数量会减少，无形中会增加读放大。</p> </li><li> <p><strong>block_cache_size | state.backend.rocksdb.block.cache-size</strong> block cache 的大小，默认为8MB。由上文所述的读写流程可知，较大的 block cache 可以有效避免热数据的读请求落到 sstable 上，所以若内存余量充足，建议设置到128MB甚至256MB，读性能会有非常明显的提升。</p> </li></ul> 
+<p></p> 
+<h4>Tuning Compaction</h4> 
+<p>compaction 在所有基于 LSM Tree 的存储引擎中都是开销最大的操作，弄不好的话会非常容易阻塞读写。建议看官先读读前面那篇关于 RocksDB compaction 策略的文章，获取一些背景知识，这里不再赘述。</p> 
+<p></p> 
+<ul><li> <p><strong>compaction_style | state.backend.rocksdb.compaction.style</strong> compaction 算法，使用默认的 LEVEL（即 leveled compaction）即可，下面的参数也是基于此。</p> </li><li> <p><strong>target_file_size_base | state.backend.rocksdb.compaction.level.target-file-size-base</strong>L1层单个 sstable 文件的大小阈值，默认值为64MB。每向上提升一级，阈值会乘以因子 target_file_size_multiplier（但默认为1，即每级sstable最大都是相同的）。显然，增大此值可以降低 compaction 的频率，减少写放大，但是也会造成旧数据无法及时清理，从而增加读放大。此参数不太容易调整，一般不建议设为256MB以上。</p> </li><li> <p><strong>max_bytes_for_level_base | state.backend.rocksdb.compaction.level.max-size-level-base</strong> L1层的数据总大小阈值，默认值为256MB。每向上提升一级，阈值会乘以因子 max_bytes_for_level_multiplier（默认值为10）。由于上层的大小阈值都是以它为基础推算出来的，所以要小心调整。建议设为 target_file_size_base 的倍数，且不能太小，例如5~10倍。</p> </li><li> <p><strong>level_compaction_dynamic_level_bytes | state.backend.rocksdb.compaction.level.use-dynamic-size</strong> 这个参数之前讲过。当开启之后，上述阈值的乘法因子会变成除法因子，能够动态调整每层的数据量阈值，使得较多的数据可以落在最高一层，能够减少空间放大，整个 LSM Tree 的结构也会更稳定。对于机械硬盘的环境，强烈建议开启。</p> </li></ul> 
+<p></p> 
+<h4>Generic Parameters</h4> 
+<p></p> 
+<ul><li> <p><strong>max_open_files | state.backend.rocksdb.files.open</strong> 顾名思义，是 RocksDB 实例能够打开的最大文件数，默认为-1，表示不限制。由于sstable的索引和布隆过滤器默认都会驻留内存，并占用文件描述符，所以如果此值太小，索引和布隆过滤器无法正常加载，就会严重拖累读取性能。</p> </li><li> <p><strong>max_background_compactions/max_background_flushes | state.backend.rocksdb.thread.num</strong> 后台负责 flush 和 compaction 的最大并发线程数，默认为1。注意 Flink 将这两个参数合二为一处理（对应 DBOptions.setIncreaseParallelism() 方法），鉴于 flush 和 compaction 都是相对重的操作，如果 CPU 余量比较充足，建议调大，在我们的实践中一般设为4。</p> </li></ul> 
+<p></p> 
+<p>除了上述设置参数的方法之外，用户还可以通过实现 ConfigurableRocksDBOptionsFactory 接口，创建 DBOptions 和 ColumnFamilyOptions 实例来传入自定义参数，更加灵活一些。看官可参考 Flink 预先定义好的几个 RocksDB 参数集（位于 PredefinedOptions 枚举中）获取更多信息。</p> 
+<p></p> 
+<h2>RocksDB使用场景和特性</h2> 
+<p></p> 
+<p class="img-center"><a href="https://www.jianshu.com/u/aa9cae571502" rel="nofollow"><img alt="img" height="601" src="https://images2.imgbox.com/aa/14/NYJY7aad_o.jpg" width="601"></a></p> 
+<p></p> 
+<p>  存储和访问数百PB的数据是一个非常大的挑战，开源的RocksDB就是FaceBook开放的一种嵌入式、持久化存储、KV型且非常适用于fast storage的存储引擎。   传统的数据访问都是RPC，但是这样的话访问速度会很慢，不适用于面向用户的实时访问的场景。随着fast storage的流行，越来越多的应用可以通过在flash中管理数据并快速直接的访问数据。这些应用就需要使用到一种嵌入式的database。   使用嵌入式的database的原因有很多。当数据请求频繁访问内存或者fast storage时，网路延时会增加响应时间，比如：访问数据中心网络耗时可能就耗费50ms，跟访问数据的耗时一样多，甚至更多。这意味着，通过RPC访问数据有可能是本地直接访问耗时的两倍。另外，机器的core数越来越多，storage-IOPS的访问频率也达到了每秒百万次，传统数据库的锁竞争和context 切换会成为提高storage-IOPS的瓶颈。所以需要一种容易扩展和针对未来硬件趋势可以定制化的database，RocksDB就是一种选择。   RocksDB是基于Google的开源key value存储库LevelDB，主要满足以下目标：</p> 
+<h4>1、适用于多cpu场景</h4> 
+<p>  商业服务器一般会有很多cpu核，要开发一个随着CPU 核数吞吐量也随之增大的数据库是很困难的，更别提是线性的递增关系。但是，RocksDB是可以高效地运行在多核服务器上。一个优点是RocksDB提供的语义比传统的DBMS更简单。例如：RocksDB支持MVCC，但是仅限于只读的transaction。另一个优点是数据库在逻辑上分片为read-only path和read-write path。这两种方法可以降低锁竞争，而降低锁竞争是支持高并发负载的前提条件。</p> 
+<h4>2、高校利用storage(更高的IOPS、高效的压缩、更少的写磨损)</h4> 
+<p>  现在的存储设备都可以支持到每秒10w的随机读，如果有10块存储卡的话就可以支持每秒100w的随机读。RocksDB可以在这种快速存储上高效运行且不会成为性能瓶颈。   和实时更新的B-tree相比，RocksDB有更好的压缩和更小的写放大。RocksDB由于压缩更优，所以占用更少的storage；由于更小的写放大，flash 设备可以更持久。</p> 
+<h4>3、弹性架构，支持扩展</h4> 
+<p>  RocksDB支持扩展。比如，我们可以新增一个merge operator，这样就可以使用write-only来替代read-modify-write。然而，read和Write是会增加存储的读写IOPS。在写频繁的负载下，这种措施可以降低IOPS。</p> 
+<h4>4、支持IO-bound、in-memory、write-once</h4> 
+<p>  IO-bound workload是指数据库大小远大于内存且频繁地访问storage。in-memory workload是指数据库数据都在内存中且仍然使用storage来持久化存储DB。write-once workload是指大部分的key都只会写入一次或者insert且没有更新操作。现在RocksDB很好支持IO-bound，要想更好地支持in-memory，需要做一些工作。支持write-once的话，还有很多遗留问题待解决。</p> 
+<p>  RocksDB不是一个分布式的DB，而是一个高效、高性能、单点的数据库引擎。RocksDB是一个持久化存储keys和values的c++ library。keys 和values可以是任意的字节流，且按照keys有序存储。后台的compaction会消除重复的和已删除的key。RocksDB的data以log-structured merge tree的形式存储。RocksDB支持原子的批量写入操作以及前向和后向遍历。   RocksDB采用“可插拔式”的架构，所以很容易替换其中的组件，允许用户很容易在不同的负载和硬件设备上进行调优。</p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="img" height="418" src="https://images2.imgbox.com/e4/71/pE6FHG0K_o.png" width="598"></p> 
+<p>1441593_10151976018697200_1580274673_n.png</p> 
+<p>  比如，用户可以添加不同的压缩模块(snappy, zlib, bzip, etc)，且使用不同模块时不用修改源码。这可用于在不同负载下通过配置使用不同的压缩算法。同理，用户可以在compaction时加载个性化的compaction filter来处理keys，例如，可以实现DB的key的"expire-time"功能。RocksDB有可插拔式的API，所以应用可以设计个性化的数据结构来cache DB的写数据，典型应用就是prefix-hash，其中一部分key使用hash存储，剩下的key存储在B-tree。storage file的实现也可以定制开发，所以用户可以实现自己的storage file格式。   RocksDB支持两种compaction style（level style和universal style）。这两种style可做读放大、写放大、空间放大之间做tradeoff。compaction也支持多线程，所以打的DB可以支持高性能的compaction。   RocksDB也提供在线的增量备份接口，也支持bloom filters，这可以在range-scan时降低IOPS。   RocksDB可以充分挖掘使用flash的IOPS，在随机读、随机写和bulk load时性能优于LevelDB。在随机写和bulk load时，性能优于LevelDB 10倍，在随机读时性能优于LevelDB 30%。   LevelDB是单线程执行compaction，在特定的server workload下表现堪忧，但是RocksDB在IO-bound workload下性能明显优于LevelDB。在测试中发现，LevelDB发生频繁的write-stall，这严重影响了DB的99%延迟，另外也发现，把文件mmap到OS cache会引入读性能瓶颈。测试表明，应用不能充分使用flash的高性能，这是因为数据的带宽瓶颈引起了LevelDB的写放大。通过提高写速率和降低写放大，可以避免很多问题，同时提高RocksDB性能。 RocksDB的典型场景（低延时访问）: 1、需要存储用户的查阅历史记录和网站用户的应用 2、需要快速访问数据的垃圾检测应用 3、需要实时scan数据集的图搜索query 4、需要实时请求Hadoop的应用 5、支持大量写和删除操作的消息队列</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3ac75bcdc12b7c54efa4839bf809724e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">AI学习笔记之七：探秘无监督学习的原理、常用算法及实现解析</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b3c0a99c74b408cdad6d5f39e15f21b3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【C/C&#43;&#43;】详解 assert() 断言（什么是assert? assert有什么作用？）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

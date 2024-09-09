@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>详细剖析MySQL临键锁 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/606cb97baacb500e0c644e84dabc78aa/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="详细剖析MySQL临键锁">
+  <meta property="og:description" content="💗推荐阅读文章💗
+🌸JavaSE系列🌸👉1️⃣《JavaSE系列教程》🌺MySQL系列🌺👉2️⃣《MySQL系列教程》🍀JavaWeb系列🍀👉3️⃣《JavaWeb系列教程》🌻SSM框架系列🌻👉4️⃣《SSM框架系列教程》 🎉本博客知识点收录于🎉👉🚀《MySQL系列教程》🚀—&gt;✈️03【锁、事务原理、MVCC】✈️
+文章目录 2.4 临键锁2.4.1 临键锁的区间测试2.4.2 临键锁-普通列1）间隙锁2）记录锁 2.4.3 临键锁-普通索引1）非临界值2）临界值3）范围值 2.4.4 临键锁-主键和唯一索引1）非临界值2）临界值3）范围值 2.4.5 临键锁总结 2.4 临键锁 2.4.1 临键锁的区间测试 临键锁（Next-Key Lock）：临键锁是查询时InnoDB根据查询的条件而锁定的一个范围，这个范围中包含有间隙锁和记录锁；临键锁=间隙锁&#43;记录锁。
+其设计的目的是为了解决Phantom Problem(幻读)；主要是阻塞insert，但由于临键锁中包含有记录锁，因此临键锁所锁定的范围内如果包含有记录，那么也会给这些记录添加记录锁，从而造成阻塞除insert之外的操作；
+Tips：临键锁的主要目的，也是为了避免幻读(Phantom Read)。如果把事务的隔离级别降级为RC，临键锁则也会失效。
+临键锁锁住的区间为：记录&#43;区间（左开右闭）
+左开右闭：不锁住左边，锁右边
+测试表：
+drop table if exists t2; CREATE TABLE `t2` ( `id` int(11) NOT NULL AUTO_INCREMENT, `num` int(11) , PRIMARY KEY (`id`) USING BTREE ) ENGINE = InnoDB ; INSERT INTO `t2`(`id`, `num`) VALUES (5, 5); INSERT INTO `t2`(`id`, `num`) VALUES (10, 10); INSERT INTO `t2`(`id`, `num`) VALUES (15, 15); INSERT INTO `t2`(`id`, `num`) VALUES (20, 20); -- 创建普通索引 create index idx_num on t2(num); -- 创建唯一索引 create unique index idx_num on t2(num); -- 删除索引 drop index idx_num on t2; 区间示意图： Tips：间隙锁只会阻塞insert，记录锁会阻塞任意的锁（单要注意排他锁和共享锁的关系）；">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-04-16T19:17:10+08:00">
+    <meta property="article:modified_time" content="2024-04-16T19:17:10+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">详细剖析MySQL临键锁</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night-eighties">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <p>💗推荐阅读文章💗<br> <br></p> 
+ <ul><li>🌸<strong>JavaSE系列</strong>🌸👉1️⃣<a href="https://coder1024.blog.csdn.net/article/details/119572236" rel="nofollow">《JavaSE系列教程》</a></li><li>🌺<strong>MySQL系列</strong>🌺👉2️⃣<a href="https://coder1024.blog.csdn.net/article/details/126493426" rel="nofollow">《MySQL系列教程》</a></li><li>🍀<strong>JavaWeb系列</strong>🍀👉3️⃣<a href="https://coder1024.blog.csdn.net/article/details/128447828" rel="nofollow">《JavaWeb系列教程》</a></li><li>🌻<strong>SSM框架系列</strong>🌻👉4️⃣<a href="https://coder1024.blog.csdn.net/article/details/128103219" rel="nofollow">《SSM框架系列教程》</a></li></ul> 
+</blockquote> 
+<blockquote> 
+ <p>🎉本博客知识点收录于🎉👉🚀<a href="https://coder1024.blog.csdn.net/article/details/119572236" rel="nofollow">《MySQL系列教程》</a>🚀—&gt;✈️<a href="https://blog.csdn.net/Bb15070047748/article/details/131410295">03【锁、事务原理、MVCC】</a>✈️</p> 
+</blockquote> 
+<p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#24__11" rel="nofollow">2.4 临键锁</a></li><li><ul><li><a href="#241__12" rel="nofollow">2.4.1 临键锁的区间测试</a></li><li><a href="#242__81" rel="nofollow">2.4.2 临键锁-普通列</a></li><li><ul><li><a href="#1_100" rel="nofollow">1）间隙锁</a></li><li><a href="#2_118" rel="nofollow">2）记录锁</a></li></ul> 
+    </li><li><a href="#243__136" rel="nofollow">2.4.3 临键锁-普通索引</a></li><li><ul><li><a href="#1_160" rel="nofollow">1）非临界值</a></li><li><a href="#2_218" rel="nofollow">2）临界值</a></li><li><a href="#3_266" rel="nofollow">3）范围值</a></li></ul> 
+    </li><li><a href="#244__309" rel="nofollow">2.4.4 临键锁-主键和唯一索引</a></li><li><ul><li><a href="#1_324" rel="nofollow">1）非临界值</a></li><li><a href="#2_361" rel="nofollow">2）临界值</a></li><li><a href="#3_395" rel="nofollow">3）范围值</a></li></ul> 
+    </li><li><a href="#245__438" rel="nofollow">2.4.5 临键锁总结</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="24__11"></a>2.4 临键锁</h3> 
+<h4><a id="241__12"></a>2.4.1 临键锁的区间测试</h4> 
+<p>临键锁（Next-Key Lock）：临键锁是查询时InnoDB根据查询的条件而锁定的一个范围，这个范围中包含有间隙锁和记录锁；<strong>临键锁=间隙锁+记录锁</strong>。<br> 其设计的目的是为了解决Phantom Problem(幻读)；主要是阻塞insert，但由于临键锁中包含有记录锁，因此临键锁所锁定的范围内如果包含有记录，那么也会给这些记录添加记录锁，从而造成阻塞除insert之外的操作；<br> Tips：<strong>临键锁的主要目的，也是为了避免幻读(Phantom Read)。如果把事务的隔离级别降级为RC，临键锁则也会失效。</strong><br> 临键锁锁住的区间为：<strong>记录+区间（左开右闭）</strong><br> <strong>左开右闭：不锁住左边，锁右边</strong><br> 测试表：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">drop</span> <span class="token keyword">table</span> <span class="token keyword">if</span> <span class="token keyword">exists</span> t2<span class="token punctuation">;</span>
+
+<span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span>  <span class="token punctuation">(</span>
+  <span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span> <span class="token keyword">int</span><span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">)</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token keyword">AUTO_INCREMENT</span><span class="token punctuation">,</span>
+  <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span> <span class="token keyword">int</span><span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">)</span> <span class="token punctuation">,</span>
+  <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">USING</span> <span class="token keyword">BTREE</span>
+<span class="token punctuation">)</span> <span class="token keyword">ENGINE</span> <span class="token operator">=</span> <span class="token keyword">InnoDB</span> <span class="token punctuation">;</span>
+
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span><span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span><span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span><span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">15</span><span class="token punctuation">,</span> <span class="token number">15</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span><span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">,</span> <span class="token number">20</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">-- 创建普通索引</span>
+<span class="token keyword">create</span> <span class="token keyword">index</span> idx_num <span class="token keyword">on</span> t2<span class="token punctuation">(</span>num<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">-- 创建唯一索引</span>
+<span class="token keyword">create</span> <span class="token keyword">unique</span> <span class="token keyword">index</span> idx_num <span class="token keyword">on</span> t2<span class="token punctuation">(</span>num<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">-- 删除索引</span>
+<span class="token keyword">drop</span> <span class="token keyword">index</span> idx_num <span class="token keyword">on</span> t2<span class="token punctuation">;</span>
+</code></pre> 
+<ul><li>区间示意图：</li></ul> 
+<p><img src="https://images2.imgbox.com/ff/25/wfUO4DWB_o.png" alt=""><br> Tips：间隙锁只会阻塞insert，记录锁会阻塞任意的锁（单要注意排他锁和共享锁的关系）；<br> 【测试案例-01-间隙锁】<br> 临键锁的触发不仅把条件区间（11-16）的数据行锁住了，还把临键的数据行统统锁住了；锁住的区间为：(10,15]、(15,20]<br> <strong>锁住的id范围：10（不含）~20（含）</strong></p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>select * from t2 where id&gt;11 and id&lt;16 for update;</td><td></td></tr><tr><td></td><td>insert into t2 values(10,0); – 不阻塞</td></tr><tr><td></td><td>insert into t2 values(11,0); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(15,0); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(16,0); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(18,10); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(20,0); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(21,0); – 不阻塞</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<p>【案例测试-02-记录锁】<br> 临键锁是间隙锁+记录锁的；上述案例中测试了临键锁中的间隙锁，这次我们来测试一下临键锁中的记录锁；</p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>select * from t2 where id&gt;11 and id&lt;16 for update;</td><td></td></tr><tr><td></td><td>select * from t2 where id=12 for update; – 间隙锁,不阻塞</td></tr><tr><td></td><td>select * from t2 where id=15 for update; – 记录锁,阻塞</td></tr><tr><td></td><td>select * from t2 where id=17 for update; – 间隙锁,不阻塞</td></tr><tr><td></td><td>select * from t2 where id=20 for update; – 记录锁,阻塞</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<h4><a id="242__81"></a>2.4.2 临键锁-普通列</h4> 
+<p>我们刚刚测试的是以主键索引进行测试，如果采用不同的列（普通列、普通索引、唯一索引/主键索引等），则临键锁中的间隙锁和记录锁住的内容大不相同；<br> 如果查询的是普通列，那么触发的临键锁为：<strong>表级别的间隙锁+表级别的记录锁</strong></p> 
+<ul><li>测试表：</li></ul> 
+<pre><code class="prism language-sql"><span class="token keyword">drop</span> <span class="token keyword">table</span> <span class="token keyword">if</span> <span class="token keyword">exists</span> t2<span class="token punctuation">;</span>
+
+<span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span>  <span class="token punctuation">(</span>
+  <span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span> <span class="token keyword">int</span><span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">)</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token keyword">AUTO_INCREMENT</span><span class="token punctuation">,</span>
+  <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span> <span class="token keyword">int</span><span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">)</span> <span class="token punctuation">,</span>
+  <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">USING</span> <span class="token keyword">BTREE</span>
+<span class="token punctuation">)</span> <span class="token keyword">ENGINE</span> <span class="token operator">=</span> <span class="token keyword">InnoDB</span> <span class="token punctuation">;</span>
+
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span><span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span><span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span><span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">15</span><span class="token punctuation">,</span> <span class="token number">15</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span><span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">,</span> <span class="token number">20</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h5><a id="1_100"></a>1）间隙锁</h5> 
+<p>【案例测试-01-表级别间隙锁】</p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>select * from t2 where num=11 for update;</td><td></td></tr><tr><td></td><td>insert into t2 values(null,3); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(null,5); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(null,8); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(null,10); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(null,18); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(null,21); – 阻塞</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<p><strong>Tips：innoDB查询如果没有使用到索引默认触发表级临键锁，把所有的间隙都锁住了</strong></p> 
+<h5><a id="2_118"></a>2）记录锁</h5> 
+<p>以普通列查询除了会触发表级别的临键锁外，同时还会触发表级别的记录锁；<br> 【案例测试-02-表级别记录锁】</p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>select * from t2 where num=11 for update;</td><td></td></tr><tr><td></td><td>select * from t2 where id=3 for update; – 间隙锁,不阻塞</td></tr><tr><td></td><td>select * from t2 where id=5 for update; – 记录锁,阻塞</td></tr><tr><td></td><td>select * from t2 where id=8 for update; – 间隙锁,不阻塞</td></tr><tr><td></td><td>select * from t2 where id=15 for update; – 记录锁,阻塞</td></tr><tr><td></td><td>select * from t2 where id=18 for update; – 间隙锁,不阻塞</td></tr><tr><td></td><td>select * from t2 where id=20 for update; – 记录锁,阻塞</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<h4><a id="243__136"></a>2.4.3 临键锁-普通索引</h4> 
+<p>如果查询的列为普通索引列，要看被查询的记录是否在临界值，以及是否是范围查询，才能判断临建锁的范围；</p> 
+<ul><li>被查询的记录是否在临界值情况： 
+  <ul><li>非临界值：那么间隙锁为当前记录所在的区间，记录锁则不会生效（记录锁不存在）；</li><li>临界值：那么间隙锁为相邻的两个区间，记录锁退化成行锁（即只会锁住被查询的那条记录）；</li></ul> </li><li>范围查询情况：间隙锁为范围所涉及到的所有区间，记录锁也会升级为范围锁涉及到的区间</li></ul> 
+<pre><code class="prism language-sql"><span class="token keyword">drop</span> <span class="token keyword">table</span> <span class="token keyword">if</span> <span class="token keyword">exists</span> t2<span class="token punctuation">;</span>
+
+<span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span>  <span class="token punctuation">(</span>
+  <span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span> <span class="token keyword">int</span><span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">)</span> <span class="token operator">NOT</span> <span class="token boolean">NULL</span> <span class="token keyword">AUTO_INCREMENT</span><span class="token punctuation">,</span>
+  <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span> <span class="token keyword">int</span><span class="token punctuation">(</span><span class="token number">11</span><span class="token punctuation">)</span> <span class="token punctuation">,</span>
+  <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">USING</span> <span class="token keyword">BTREE</span>
+<span class="token punctuation">)</span> <span class="token keyword">ENGINE</span> <span class="token operator">=</span> <span class="token keyword">InnoDB</span> <span class="token punctuation">;</span>
+
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span><span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span><span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span><span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">15</span><span class="token punctuation">,</span> <span class="token number">15</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>t2<span class="token punctuation">`</span></span><span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>id<span class="token punctuation">`</span></span><span class="token punctuation">,</span> <span class="token identifier"><span class="token punctuation">`</span>num<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token keyword">VALUES</span> <span class="token punctuation">(</span><span class="token number">20</span><span class="token punctuation">,</span> <span class="token number">20</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">-- 创建普通索引</span>
+<span class="token keyword">create</span> <span class="token keyword">index</span> idx_num <span class="token keyword">on</span> t2<span class="token punctuation">(</span>num<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h5><a id="1_160"></a>1）非临界值</h5> 
+<p>当使用普通索引列查询，查询的记录不处于临界值时，<strong>那么间隙锁为被查询记录所在的区间</strong>，记录锁则不会生效；<br> 【测试案例-01-间隙锁】</p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>– 触发间隙锁，锁住(15,20]区间</td><td></td></tr><tr><td>select * from t2 where num=17 for update;</td><td></td></tr><tr><td></td><td>insert into t2 values(null,15); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(null,18); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(null,20); – 不阻塞</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<p>num=17这条记录不是会锁定(15,20]区间吗？为什么15被阻塞了，20反而没被阻塞呢？<br> 这里需要牵扯到另一个问题了，在InnoDB中，<strong>相同的普通索引的叶子节点是以主键的顺序进行排列的</strong>，我们来模拟一下刚刚插入的数据在B+Tree上的变化：<br> <img src="https://images2.imgbox.com/bd/15/qJBUiXLd_o.png" alt=""><br> 只考虑叶子节点的变化，可以看到在上图在演变的过程中产生了分裂情况（假设每个叶子节点都只存储两个元素），如果普通索引的重复值太多势必会造成大量的分裂情况，减低插入效率，因此索引列不宜选择重复率太大的列；<br> 再看下图数据库表中实际存储的列的样子我们就会明白为什么num=20不阻塞，num=15阻塞了</p> 
+<ul><li>num索引列排列情况：</li></ul> 
+<p><img src="https://images2.imgbox.com/f9/99/C8MFKwJQ_o.png" alt=""><br> 查询示意图：<br> <img src="https://images2.imgbox.com/4e/01/oESgoSiB_o.png" alt=""><br> 【测试案例-02-间隙锁】<br> 当我们把id列的影响也计算进来时，数据就符合我们正常分析的情况了：</p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>– 触发间隙锁，锁住(15,20]区间</td><td></td></tr><tr><td>select * from t2 where num=17 for update;</td><td></td></tr><tr><td></td><td>insert into t2 values(14,15); – 不阻塞</td></tr><tr><td></td><td>insert into t2 values(18,18); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(19,20); – 阻塞</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;<img src="https://images2.imgbox.com/b8/04/rV8p5Flf_o.png" alt=""></td></tr></tbody></table> 
+<p>【测试案例-03-记录锁】<br> 当使用普通索引列查询，查询的记录不处于临界值时，那么间隙锁为被查询记录所在的区间，<strong>记录锁则不会生效</strong></p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>– 没有num=17的这条记录，记录锁不会存在</td><td></td></tr><tr><td>select * from t2 where num=17 for update;</td><td></td></tr><tr><td></td><td>select * from t2 where num=15 for update; – 不阻塞</td></tr><tr><td></td><td>select * from t2 where num=16 for update; – 不阻塞</td></tr><tr><td></td><td>select * from t2 where num=17 for update; – 不阻塞</td></tr><tr><td></td><td>select * from t2 where num=20 for update; – 不阻塞</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<h5><a id="2_218"></a>2）临界值</h5> 
+<p>【测试案例-01-间隙锁】<br> 当使用普通索引列来查询，并且查询的记录处于临界值时，<strong>那么间隙锁为相邻的两个区间</strong>，记录锁退化成行锁；<br> 下面案例将会锁住(10,15]、(15,20]两个区间</p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>– 触发的间隙锁的区间为(10,15]、(15,20]</td><td></td></tr><tr><td>select * from t2 where num=15 for update;</td><td></td></tr><tr><td></td><td>insert into t2 values(null,8); – 不阻塞</td></tr><tr><td></td><td>insert into t2 values(null,10); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(null,11); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(null,15); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(null,18); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(null,20); – 不阻塞</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<p>发现实际插入的数据跟我们分析的情况不一致，这个时候我们依然也要观察B+Tree的实现：</p> 
+<ul><li>索引底层构建过程：</li></ul> 
+<p><img src="https://images2.imgbox.com/26/65/o4wpWGzE_o.png" alt=""></p> 
+<ul><li>临键锁区间：</li></ul> 
+<p><img src="https://images2.imgbox.com/09/3f/eMyqdYw8_o.png" alt=""><br> <strong>15处于(10,15]和(15,20]两个临键区间，因此在两个区间内的数据行都被锁住了</strong><br> 【测试案例-02-记录锁】<br> 当使用普通索引列来查询，并且查询的记录处于临界值时，那么间隙锁为相邻的两个区间，<strong>记录锁退化成行锁</strong>；</p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>– 记录锁只锁住num=15这行记录</td><td></td></tr><tr><td>select * from t2 where num=15 for update;</td><td></td></tr><tr><td></td><td>select * from t2 where num=10 for update; – 不阻塞</td></tr><tr><td></td><td>select * from t2 where num=12 for update; – 不阻塞</td></tr><tr><td></td><td>select * from t2 where num=15 for update; – 阻塞</td></tr><tr><td></td><td>select * from t2 where num=18 for update; – 不阻塞</td></tr><tr><td></td><td>select * from t2 where num=20 for update; – 不阻塞</td></tr><tr><td></td><td>select * from t2 where num=22 for update; – 不阻塞</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<h5><a id="3_266"></a>3）范围值</h5> 
+<p>【测试案例-01-间隙锁】<br> 当使用普通索引进行条件范围查询时，<strong>那么间隙锁查询范围所涉及到的区间</strong>，记录锁也会升级为查询范围涉及到的区间；</p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>– 间隙锁为(10,20]区间</td><td></td></tr><tr><td>select * from t2 where num&gt;11 and num &lt;16 for update;</td><td></td></tr><tr><td></td><td>insert into t2 values(9,10); – 不阻塞</td></tr><tr><td></td><td>insert into t2 values(11,10); – 阻塞（参考B+Tree的构建）</td></tr><tr><td></td><td>insert into t2 values(11,11); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(12,12); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(15,15); – 阻塞（被记录锁阻塞）</td></tr><tr><td></td><td>insert into t2 values(18,18); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(19,20); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(21,20); – 不阻塞（参考B+Tree的构建）</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<ul><li>分析底层B+Tree构建情况：</li></ul> 
+<p><img src="https://images2.imgbox.com/6e/b8/DWZXRGwj_o.png" alt=""><br> 【测试案例-02-记录锁】<br> 当使用普通索引进行条件范围查询时，那么间隙锁查询范围所涉及到的区间，<strong>记录锁也会升级为查询范围涉及到的区间；</strong></p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>– 记录锁的区间为(10,20]区间</td><td></td></tr><tr><td>select * from t2 where num&gt;11 and num &lt;16 for update;</td><td></td></tr><tr><td></td><td>select * from t2 where num=10 for update; – 不阻塞（左开右闭）</td></tr><tr><td></td><td>select * from t2 where num=12 for update; – 不阻塞（属于间隙）</td></tr><tr><td></td><td>select * from t2 where num=15 for update; – 阻塞（触发记录锁）</td></tr><tr><td></td><td>select * from t2 where num=16 for update; – 不阻塞（属于间隙）</td></tr><tr><td></td><td>select * from t2 where num=18 for update; – 不阻塞（属于间隙）</td></tr><tr><td></td><td>select * from t2 where num=20 for update; – 阻塞（左开右闭，触发记录锁）</td></tr><tr><td></td><td>select * from t2 where num=21 for update; – 不阻塞（即是间隙，也不在区间）</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<h4><a id="244__309"></a>2.4.4 临键锁-主键和唯一索引</h4> 
+<p>如果查询的是唯一索引或主键索引，也要看被查询的记录是否在临界值；是否是范围查询等</p> 
+<ul><li>被查询的记录是否在临界值情况： 
+  <ul><li>不在临界值：<strong>间隙锁为当前被查询的记录所在的区间，记录锁会消失；</strong></li><li>在临界值：<strong>间隙锁会消失，记录锁退化成行锁</strong></li></ul> </li><li>范围查询情况：间隙锁为范围查询所涉及到的所有区间，记录锁也会升级为范围所涉及到的区间（和普通索引的效果一致）；</li></ul> 
+<p>创建唯一索引：</p> 
+<pre><code class="prism language-sql"><span class="token comment">-- 删除索引</span>
+<span class="token keyword">drop</span> <span class="token keyword">index</span> idx_num <span class="token keyword">on</span> t2<span class="token punctuation">;</span>
+<span class="token comment">-- 创建唯一索引</span>
+<span class="token keyword">create</span> <span class="token keyword">unique</span> <span class="token keyword">index</span> idx_num <span class="token keyword">on</span> t2<span class="token punctuation">(</span>num<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h5><a id="1_324"></a>1）非临界值</h5> 
+<p>唯一索引在查询非临界值的记录时和普通索引的特点一样，即==<strong>间隙锁为当前记录所在的区间，记录锁不生效；</strong>==<br> 【测试案例-01-间隙锁】</p> 
+<table><thead><tr><th>session-01</th><th>session-02</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>– 间隙锁锁住的区间为(15,20]</td><td></td></tr><tr><td>select * from t2 where num=17 for update;</td><td></td></tr><tr><td></td><td>insert into t2 values(null,11); – 不阻塞</td></tr><tr><td></td><td>insert into t2 values(null,15); – 不阻塞</td></tr><tr><td></td><td>insert into t2 values(null,16); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(null,18); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(null,20); – 不阻塞</td></tr><tr><td></td><td>insert into t2 values(null,21); – 不阻塞</td></tr></tbody></table> 
+<ul><li>分析num列索引的B+Tree底层构建情况：</li></ul> 
+<p><img src="https://images2.imgbox.com/1a/56/eYBY0QPS_o.png" alt=""><br> Tips：唯一索引冲突时MySQL会立即响应，不会触发临键锁<br> 【测试案例-02-记录锁】<br> 唯一索引在查询非临界值的记录时，记录锁不生效；</p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>– 没有num=17的这条记录，记录锁不会存在</td><td></td></tr><tr><td>select * from t2 where num=17 for update;</td><td></td></tr><tr><td></td><td>select * from t2 where num=15 for update; – 不阻塞</td></tr><tr><td></td><td>select * from t2 where num=16 for update; – 不阻塞</td></tr><tr><td></td><td>select * from t2 where num=17 for update; – 不阻塞</td></tr><tr><td></td><td>select * from t2 where num=20 for update; – 不阻塞</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<h5><a id="2_361"></a>2）临界值</h5> 
+<p>在使用唯一索引查询临界值时，间隙锁会消失，记录锁会退化成行锁；<br> 【测试案例-01-间隙锁】</p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>select * from t2 where num=15 for update;</td><td></td></tr><tr><td></td><td>insert into t2 values(null,4); – 不阻塞</td></tr><tr><td></td><td>insert into t2 values(null,8); – 不阻塞</td></tr><tr><td></td><td>insert into t2 values(null,11); – 不阻塞</td></tr><tr><td></td><td>insert into t2 values(null,15); – 阻塞(阻塞的原因是记录锁，而不是间隙锁)</td></tr><tr><td></td><td>insert into t2 values(null,28); – 不阻塞</td></tr><tr><td>rollback;</td><td>insert into t2 values(null,20); – 不阻塞</td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<p>【测试案例-02-记录锁】</p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>– 记录锁只锁住num=15这行记录</td><td></td></tr><tr><td>select * from t2 where num=15 for update;</td><td></td></tr><tr><td></td><td>select * from t2 where num=10 for update; – 不阻塞</td></tr><tr><td></td><td>select * from t2 where num=12 for update; – 不阻塞</td></tr><tr><td></td><td>select * from t2 where num=15 for update; – 阻塞</td></tr><tr><td></td><td>select * from t2 where num=18 for update; – 不阻塞</td></tr><tr><td></td><td>select * from t2 where num=20 for update; – 不阻塞</td></tr><tr><td></td><td>select * from t2 where num=22 for update; – 不阻塞</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<h5><a id="3_395"></a>3）范围值</h5> 
+<p>【测试案例-01-间隙锁】<br> 当使用普通索引进行条件范围查询时，<strong>那么间隙锁查询范围所涉及到的区间</strong>，记录锁也会升级为查询范围涉及到的区间；</p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>– 间隙锁为(10,20]区间</td><td></td></tr><tr><td>select * from t2 where num&gt;11 and num &lt;16 for update;</td><td></td></tr><tr><td></td><td>insert into t2 values(9,10); – 不阻塞</td></tr><tr><td></td><td>insert into t2 values(11,10); – 阻塞（参考B+Tree的构建）</td></tr><tr><td></td><td>insert into t2 values(11,11); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(12,12); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(15,15); – 阻塞（被记录锁阻塞）</td></tr><tr><td></td><td>insert into t2 values(18,18); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(19,20); – 阻塞</td></tr><tr><td></td><td>insert into t2 values(21,20); – 不阻塞（参考B+Tree的构建）</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<ul><li>分析底层B+Tree构建情况：</li></ul> 
+<p><img src="https://images2.imgbox.com/47/18/wR2JskCG_o.png" alt=""><br> 【测试案例-02-记录锁】<br> 当使用普通索引进行条件范围查询时，那么间隙锁查询范围所涉及到的区间，<strong>记录锁也会升级为查询范围涉及到的区间；</strong></p> 
+<table><thead><tr><th>session1</th><th>session2</th></tr></thead><tbody><tr><td>begin;</td><td></td></tr><tr><td></td><td>begin;</td></tr><tr><td>– 记录锁的区间为(10,20]区间</td><td></td></tr><tr><td>select * from t2 where num&gt;11 and num &lt;16 for update;</td><td></td></tr><tr><td></td><td>select * from t2 where num=10 for update; – 不阻塞（左开右闭）</td></tr><tr><td></td><td>select * from t2 where num=12 for update; – 不阻塞（属于间隙）</td></tr><tr><td></td><td>select * from t2 where num=15 for update; – 阻塞（触发记录锁）</td></tr><tr><td></td><td>select * from t2 where num=16 for update; – 不阻塞（属于间隙）</td></tr><tr><td></td><td>select * from t2 where num=18 for update; – 不阻塞（属于间隙）</td></tr><tr><td></td><td>select * from t2 where num=20 for update; – 阻塞（左开右闭，触发记录锁）</td></tr><tr><td></td><td>select * from t2 where num=21 for update; – 不阻塞（即是间隙，也不在区间）</td></tr><tr><td>rollback;</td><td></td></tr><tr><td></td><td>rollback;</td></tr></tbody></table> 
+<h4><a id="245__438"></a>2.4.5 临键锁总结</h4> 
+<p>临键锁是InnoDB在查询数据时锁定的一个范围，这个范围包含有间隙锁和记录锁；根据查询的条件不同、列的类型不同（是否是索引等）触发的临键锁范围也不同；</p> 
+<ul><li>普通列：临键锁中的间隙锁和记录锁均为表级别；</li><li>普通索引列： 
+  <ul><li>非临界值：间隙锁为被查询的记录所在的区间，记录锁不生效</li><li>临界值：间隙锁为被查询记录所在的相邻两个区间，记录锁退化为行锁</li><li>范围值：间隙锁和记录锁均为查询条件所涉及到的区间</li></ul> </li><li>唯一索引或主键索引列： 
+  <ul><li>非临界值：间隙锁为被查询的记录所在的区间，记录锁不生效</li><li>临界值：间隙锁失效，记录锁退化为行锁</li><li>范围值：间隙锁和记录锁均为查询条件所涉及到的区间</li></ul> </li></ul> 
+<p>Tips：<strong>临键锁的主要目的，也是为了避免幻读(Phantom Read)。如果把事务的隔离级别降级为RC，临键锁则也会失效。</strong></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6722266c84bc0c54cd0b3cc898f80731/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【Python】一文详细介绍 OrderedDict 对象</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8e531dde32f95749fefeaaa6df01d776/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【SpringBoot】项目—TLIAS智能学习辅助系统</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

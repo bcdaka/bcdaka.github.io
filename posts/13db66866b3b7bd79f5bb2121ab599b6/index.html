@@ -1,0 +1,302 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>go-kratos 学习笔记(7) 服务发现服务间通信grpc调用 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/13db66866b3b7bd79f5bb2121ab599b6/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="go-kratos 学习笔记(7) 服务发现服务间通信grpc调用">
+  <meta property="og:description" content="服务发现 Registry 接口分为两个，Registrar 为实例注册和反注册，Discovery 为服务实例列表获取
+创建一个 Discoverer 服务间的通信使用的grpc，放到data层，实现的是从uses服务调用orders服务
+app/users/internal/data.go 加入 NewDiscovery和 NewOrderServiceClient，需要把新加的2个方法加入到 ProviderSet
+需要把新生成的orderClient注入到Data里面 orderClient orders.OrderClient
+package data import ( &#34;context&#34; &#34;github.com/go-kratos/kratos/contrib/registry/nacos/v2&#34; &#34;github.com/go-kratos/kratos/v2/log&#34; &#34;github.com/go-kratos/kratos/v2/middleware/recovery&#34; &#34;github.com/go-kratos/kratos/v2/registry&#34; &#34;github.com/go-kratos/kratos/v2/transport/grpc&#34; &#34;github.com/google/wire&#34; &#34;github.com/nacos-group/nacos-sdk-go/clients&#34; &#34;github.com/nacos-group/nacos-sdk-go/common/constant&#34; &#34;github.com/nacos-group/nacos-sdk-go/vo&#34; &#34;gorm.io/driver/mysql&#34; &#34;gorm.io/gorm&#34; &#34;time&#34; &#34;xgs_kratos/gen/config/users&#34; &#34;xgs_kratos/gen/orders&#34; ) // ProviderSet is data providers. var ProviderSet = wire.NewSet(NewData, NewDiscovery, CreateRegister, NewOrderServiceClient, NewUserRepo) // Data . type Data struct { // TODO wrapped database client db *gorm.DB log *log.Helper orderClient orders.OrderClient } // NewData .">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-25T14:24:56+08:00">
+    <meta property="article:modified_time" content="2024-07-25T14:24:56+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">go-kratos 学习笔记(7) 服务发现服务间通信grpc调用</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h5>服务发现</h5> 
+<p>Registry 接口分为两个，Registrar 为实例注册和反注册，Discovery 为服务实例列表获取</p> 
+<p></p> 
+<h5>创建一个 Discoverer</h5> 
+<p>        服务间的通信使用的grpc，放到data层，实现的是从uses服务调用orders服务</p> 
+<p></p> 
+<p>app/users/internal/data.go 加入 NewDiscovery和 NewOrderServiceClient，需要把新加的2个方法加入到 ProviderSet</p> 
+<p>需要把新生成的orderClient注入到Data里面 orderClient orders.OrderClient</p> 
+<pre><code>package data
+
+import (
+	"context"
+	"github.com/go-kratos/kratos/contrib/registry/nacos/v2"
+	"github.com/go-kratos/kratos/v2/log"
+	"github.com/go-kratos/kratos/v2/middleware/recovery"
+	"github.com/go-kratos/kratos/v2/registry"
+	"github.com/go-kratos/kratos/v2/transport/grpc"
+	"github.com/google/wire"
+	"github.com/nacos-group/nacos-sdk-go/clients"
+	"github.com/nacos-group/nacos-sdk-go/common/constant"
+	"github.com/nacos-group/nacos-sdk-go/vo"
+	"gorm.io/driver/mysql"
+	"gorm.io/gorm"
+	"time"
+	"xgs_kratos/gen/config/users"
+	"xgs_kratos/gen/orders"
+)
+
+// ProviderSet is data providers.
+var ProviderSet = wire.NewSet(NewData, NewDiscovery, CreateRegister, NewOrderServiceClient, NewUserRepo)
+
+// Data .
+type Data struct {
+	// TODO wrapped database client
+	db          *gorm.DB
+	log         *log.Helper
+	orderClient orders.OrderClient
+}
+
+// NewData .
+
+func NewData(c *conf.Data, logger log.Logger, client orders.OrderClient) (*Data, func(), error) {
+	cleanup := func() {
+		log.NewHelper(logger).Info("closing the data resources")
+	}
+	db, err := gorm.Open(mysql.Open(c.Database.Source), &amp;gorm.Config{})
+	if err != nil {
+		log.Fatalf("failed to connect database: %v", err)
+		panic(err)
+	}
+	return &amp;Data{
+		db:          db,
+		log:         log.NewHelper(logger),
+		orderClient: client,
+	}, cleanup, nil
+}
+
+// NewDiscovery 服务发现
+func NewDiscovery(conf *conf.Data) registry.Discovery {
+	sc := []constant.ServerConfig{
+		{
+			IpAddr: conf.Nacos.Addr,
+			Port:   conf.Nacos.Port,
+		},
+	}
+	cc := constant.ClientConfig{
+		NamespaceId: conf.Nacos.NamespaceId,
+		TimeoutMs:   5000,
+	}
+
+	client, err := clients.NewNamingClient(
+		vo.NacosClientParam{
+			ClientConfig:  &amp;cc,
+			ServerConfigs: sc,
+		},
+	)
+
+	if err != nil {
+		panic(err)
+	}
+
+	r := nacos.New(client)
+	return r
+}
+
+// NewOrderServiceClient orders 服务客户端
+func NewOrderServiceClient(r registry.Discovery) orders.OrderClient {
+	conn, err := grpc.DialInsecure(
+		context.Background(),
+		grpc.WithEndpoint("discovery:///orders-xgs.grpc"),
+		grpc.WithDiscovery(r),
+		grpc.WithTimeout(time.Second*2),
+		grpc.WithMiddleware(
+			recovery.Recovery(),
+		),
+	)
+	if err != nil {
+		panic(err)
+	}
+	c := orders.NewOrderClient(conn)
+	return c
+}
+</code></pre> 
+<p>在users下执行 wire</p> 
+<p>以ListUser方法为例子进行调用</p> 
+<p>app/users/internal/user.go</p> 
+<pre><code>package data
+
+import (
+	"context"
+	"fmt"
+	"github.com/go-kratos/kratos/v2/log"
+	"xgs_kratos/app/users/internal/biz"
+	"xgs_kratos/app/users/internal/data/dal"
+	"xgs_kratos/gen/orders"
+	"xgs_kratos/gen/users"
+)
+
+//data 层处理数据的存储和读取
+
+type userRepo struct {
+	data *Data
+	log  *log.Helper
+}
+
+// NewUserRepo . r registry.Discovery,
+func NewUserRepo(data *Data, logger log.Logger) biz.UserRepo {
+	return &amp;userRepo{
+		data: data,
+		log:  log.NewHelper(logger),
+	}
+}
+
+// CreateUser 创建用户
+func (r *userRepo) CreateUser(ctx context.Context, req *users.CreateUserRequest) (*users.CreateUserReply, error) {
+	user := dal.UserMo{
+		Age:   req.Age,
+		Name:  req.Name,
+		Email: req.Email,
+	}
+	result := r.data.db.Create(&amp;user)
+	if result.Error != nil {
+		return nil, result.Error
+	}
+	return &amp;users.CreateUserReply{
+		Id: user.Id,
+	}, nil
+}
+
+func (r *userRepo) ListUser(ctx context.Context, req *users.ListUserRequest) ([]*users.UserData, error) {
+	//获取order服务的client
+	client := r.data.orderClient
+	order, err := client.CreateOrder(ctx, &amp;orders.CreateOrderRequest{
+		OrderNo: 1,
+	})
+
+	if err != nil {
+		return nil, err
+	}
+	fmt.Println(order)
+	var results []dal.UserMo
+	res := r.data.db.Find(&amp;results)
+	if res.Error != nil {
+		return nil, res.Error
+	}
+
+	var userDatas []*users.UserData
+	for _, result := range results {
+		userDatas = append(userDatas, &amp;users.UserData{
+			Id:    result.Id,
+			Name:  result.Name,
+			Age:   result.Age,
+			Email: result.Email,
+		})
+	}
+	return userDatas, nil
+}
+</code></pre> 
+<p></p> 
+<p>从新生成一下代码  buf  generate</p> 
+<p></p> 
+<p><strong>如果服务是分开部署的，需要拿到对方的存根 proto 执行 kratos proto client xxx.proto生成client</strong></p> 
+<p>分别启动users和orders 服务是都是注册成功的，由于注册的是http和grpc所有后面拼接的有http和grpc，调用的时候需要拼接上</p> 
+<p><img alt="" height="415" src="https://images2.imgbox.com/bb/40/lWPEJAqi_o.png" width="1200"></p> 
+<p></p> 
+<p>postman请求看效果</p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/ed/3e/LerG6Oel_o.png" width="1200"></p> 
+<pre>看日志输出 users</pre> 
+<p><img alt="" height="896" src="https://images2.imgbox.com/cf/b8/lTM0GHVw_o.png" width="1200"></p> 
+<p>再看orders服务的日志输出</p> 
+<p><img alt="" height="696" src="https://images2.imgbox.com/6d/d1/KwoLeOq8_o.png" width="1200"></p> 
+<p></p> 
+<p><strong> 项目的代码  <strong><a href="https://gitee.com/gebilaoxie/xgs_kratos.git" rel="nofollow" title="码云 https://gitee.com/gebilaoxie/xgs_kratos.git">码云 https://gitee.com/gebilaoxie/xgs_kratos.git</a></strong></strong></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/db5e38f96e2e422ab1052bd499db2186/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">安装nfs和rpcbind设置linux服务器共享磁盘</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b39e298228556e680430008a4334bafe/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【QT】事件分发器 &amp; 事件过滤器</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

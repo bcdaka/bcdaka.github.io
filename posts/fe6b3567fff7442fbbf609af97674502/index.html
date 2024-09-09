@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>MySQL Online DDL原理解读 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/fe6b3567fff7442fbbf609af97674502/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="MySQL Online DDL原理解读">
+  <meta property="og:description" content="码到三十五 ： 个人主页 MySQL原生Online DDL是MySQL数据库提供的一项功能，它允许在不中断数据库服务的情况下执行数据定义语言（DDL）操作。
+目录 一、背景与意义二、工作机制1. 准备阶段2. 执行DDL操作3. 完成与清理 三、实现原理与优化四、使用场景与优势五、使用约束与注意事项六、锁在Online DDL中的作用ALGORITHM和LOCK选项ALGORITHM选项LOCK选项 如何使用这些选项注意事项 一、背景与意义 在传统的数据库系统中，执行DDL操作时通常需要锁定表，以防止数据不一致。然而，这种锁定会导致表在DDL操作期间不可用，从而影响数据库的可用性。MySQL原生Online DDL解决了这个问题，它允许DDL操作在表仍然可用时执行，大大提高了数据库的可用性，特别是对于需要24/7高可用性的应用来说，这是一个重要的特性。
+二、工作机制 MySQL原生Online DDL的工作机制涉及多个步骤和内部原理：
+1. 准备阶段 检查与评估：在执行DDL操作之前，MySQL会进行一系列的检查和评估工作。这包括验证DDL操作的语法正确性、检查用户权限以及评估所需资源等。选择执行策略：根据DDL操作的类型和表的结构，MySQL会选择一个合适的执行策略。这通常涉及决定是使用COPY算法、INPLACE算法还是INSTANT算法。 2. 执行DDL操作 COPY算法：
+创建临时表：首先，MySQL会创建一个与原始表结构相似的新临时表。数据拷贝：接着，原始表中的数据会被逐行拷贝到新的临时表中。这个过程可能需要一些时间，具体取决于表的大小和系统的性能。重命名与替换：数据拷贝完成后，临时表会被重命名为原始表的名字，从而替换掉原始表。在这个过程中，原始表会被加上写锁，以阻止对数据进行修改，确保数据的一致性。 INPLACE算法：
+直接修改：与COPY算法不同，INPLACE算法直接在原始表上进行修改，无需创建临时表和拷贝数据。记录DML操作：在DDL操作执行期间，如果有DML操作（如INSERT、UPDATE、DELETE）尝试修改表，这些操作会被记录下来。应用DML更改：DDL操作完成后，之前记录的DML更改会被应用到表上，确保数据的完整性和一致性。 INSTANT算法：
+元数据修改：对于某些简单的DDL操作（如修改表的默认字符集），INSTANT算法可以直接修改数据字典中的元数据，而无需对表数据进行任何更改。无锁操作：由于只修改元数据，因此这种算法可以在不锁定表的情况下完成，实现了真正的“瞬间”完成DDL操作。 3. 完成与清理 释放资源：DDL操作完成后，系统会释放所有在操作过程中分配的资源，如临时表、内存等。更新统计信息：MySQL会更新与表相关的统计信息，以便优化器能够更好地制定查询计划。通知与日志记录：操作完成后，系统会生成相应的日志记录，以便在必要时进行恢复或审计。同时，也可能通过某种机制（如触发器）通知应用程序DDL操作的完成。 MySQL原生Online DDL通过不同的算法和策略来实现在线修改数据库结构的目标，从而提高了数据库的可用性和灵活性。这些工作原理确保了即使在执行DDL操作时，数据库仍然能够处理正常的DML操作，减少了停机时间和维护成本。
+三、实现原理与优化 在线DDL的核心实现原理涉及几个关键环节，同时也有一些关键的优化策略：
+构建临时表：为了不影响原表的正常读写，系统会创建一个具备新结构的临时表。这一步骤为后续的DDL操作提供了基础。
+数据迁移与实时同步：旧表中的数据会被高效地迁移到临时表中，同时确保数据的实时同步。这种迁移策略旨在保障DDL过程中数据的完整性和一致性，避免数据丢失或损坏。
+变更追踪与重播：利用日志机制，系统会追踪DDL执行期间旧表上的数据变更，并将这些变更实时重播到临时表中。这一优化确保了数据在DDL操作完成后的准确性。
+无缝切换：当DDL操作完成且数据完全同步后，数据库引擎会在合适的时机将临时表提升为新表，从而实现无缝切换。此后，所有的读写操作都将基于新表进行。
+四、使用场景与优势 MySQL原生Online DDL适用于多种场景，如添加或删除列、修改数据类型、添加或删除索引等。这些操作都可以在不中断服务的情况下完成，大大提高了数据库的灵活性和可用性。此外，由于Online DDL减少了停机时间，因此也降低了维护成本和数据丢失的风险。
+五、使用约束与注意事项 尽管MySQL 5.7的在线DDL带来了诸多便利，但在实际使用中仍需注意以下几点：
+操作支持范围：并非所有类型的DDL操作都支持在线执行。某些特定操作可能仍需要锁定整张表，因此在执行前需确认操作类型。
+资源占用：DDL操作期间可能会显著增加系统资源的消耗，特别是在数据迁移和同步阶段。因此，在高负载环境下应谨慎规划并执行此类操作。
+测试与验证：为确保数据的完整性和业务的连续性，执行在线DDL之前应进行充分的测试和验证。这包括但不限于数据的备份、恢复以及一致性检查等步骤。
+六、锁在Online DDL中的作用 在Online DDL过程中，锁主要用于确保数据的一致性。不同类型的锁对表的可访问性有不同的影响：
+共享锁（S锁）：允许多个事务读取同一资源，但不允许写入。在Online DDL中，这可能用于允许读取操作继续进行，同时阻止写入操作。排他锁（X锁）：阻止其他事务读取或写入资源。在DDL操作中，如果需要修改表的结构或数据，则可能需要使用排他锁。 ALGORITHM和LOCK选项 在MySQL中，你可以通过ALGORITHM和LOCK关键字来控制DDL操作的行为。
+ALGORITHM选项 INPLACE：这个选项指示MySQL直接在原表上进行修改，而不是创建一个新表。这通常可以减少锁的使用和时间，从而提高并发性。但是，并非所有的DDL操作都支持INPLACE算法。COPY：这个选项告诉MySQL创建一个新表，将原表的数据复制到新表中，然后在新表上执行DDL操作。完成后，新表会替换原表。这个过程中，原表通常会被锁定，以防止数据不一致。COPY算法通常需要更多的时间和资源。DEFAULT：如果不指定ALGORITHM选项，MySQL将选择默认的行为。这通常是尝试使用INPLACE算法，如果不可能，则回退到COPY算法。 LOCK选项 NONE：这个选项指示MySQL在执行DDL操作时不要对表加锁（如果可能的话）。但是，如果DDL操作需要保证数据的一致性，MySQL可能会忽略这个选项并加锁。SHARED：允许读取操作继续进行，但阻止写入操作。EXCLUSIVE：阻止读取和写入操作。这是最强的锁类型，用于确保DDL操作期间数据的一致性。 如何使用这些选项 当你想要执行一个DDL操作时，你可以通过添加ALGORITHM和LOCK选项来控制操作的行为。例如：
+ALTER TABLE tbl_name ADD COLUMN col_name col_type, ALGORITHM=INPLACE, LOCK=NONE; 这条命令尝试在原地（INPLACE）添加一个新列，并且尽量不使用锁（LOCK=NONE）。但是，需要注意的是，如果MySQL判断无法保证数据的一致性而不使用锁，它可能会忽略这些选项。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-13T23:26:25+08:00">
+    <meta property="article:modified_time" content="2024-06-13T23:26:25+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">MySQL Online DDL原理解读</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <center> 
+ <font color="#c09008" size="4"><strong> 码到三十五 ：</strong></font> 
+ <a href="https://blog.csdn.net/qq_26664043" size="6"><font color="#555fff" size="4"> 个人主页</font></a> 
+</center> 
+<hr> 
+<blockquote> 
+ <p>MySQL原生Online DDL是MySQL数据库提供的一项功能，它允许在不中断数据库服务的情况下执行数据定义语言（DDL）操作。</p> 
+</blockquote> 
+<p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><ul><li><a href="#_11" rel="nofollow">一、背景与意义</a></li><li><a href="#_16" rel="nofollow">二、工作机制</a></li><li><ul><li><a href="#1__20" rel="nofollow">1. 准备阶段</a></li><li><a href="#2_DDL_25" rel="nofollow">2. 执行DDL操作</a></li><li><a href="#3__41" rel="nofollow">3. 完成与清理</a></li></ul> 
+   </li><li><a href="#_51" rel="nofollow">三、实现原理与优化</a></li><li><a href="#_64" rel="nofollow">四、使用场景与优势</a></li><li><a href="#_68" rel="nofollow">五、使用约束与注意事项</a></li><li><a href="#Online_DDL_78" rel="nofollow">六、锁在Online DDL中的作用</a></li><li><ul><li><a href="#ALGORITHMLOCK_85" rel="nofollow">ALGORITHM和LOCK选项</a></li><li><ul><li><a href="#ALGORITHM_89" rel="nofollow">ALGORITHM选项</a></li><li><a href="#LOCK_95" rel="nofollow">LOCK选项</a></li></ul> 
+    </li><li><a href="#_101" rel="nofollow">如何使用这些选项</a></li><li><a href="#_131" rel="nofollow">注意事项</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="_11"></a>一、背景与意义</h3> 
+<p>在传统的数据库系统中，执行DDL操作时通常需要锁定表，以防止数据不一致。然而，这种锁定会导致表在DDL操作期间不可用，从而影响数据库的可用性。MySQL原生Online DDL解决了这个问题，它允许DDL操作在表仍然可用时执行，大大提高了数据库的可用性，特别是对于需要24/7高可用性的应用来说，这是一个重要的特性。</p> 
+<h3><a id="_16"></a>二、工作机制</h3> 
+<p>MySQL原生Online DDL的工作机制涉及多个步骤和内部原理：</p> 
+<h4><a id="1__20"></a>1. 准备阶段</h4> 
+<ul><li><strong>检查与评估</strong>：在执行DDL操作之前，MySQL会进行一系列的检查和评估工作。这包括验证DDL操作的语法正确性、检查用户权限以及评估所需资源等。</li><li><strong>选择执行策略</strong>：根据DDL操作的类型和表的结构，MySQL会选择一个合适的执行策略。这通常涉及决定是使用COPY算法、INPLACE算法还是INSTANT算法。</li></ul> 
+<h4><a id="2_DDL_25"></a>2. 执行DDL操作</h4> 
+<ul><li> <p><strong>COPY算法</strong>：</p> 
+  <ul><li><strong>创建临时表</strong>：首先，MySQL会创建一个与原始表结构相似的新临时表。</li><li><strong>数据拷贝</strong>：接着，原始表中的数据会被逐行拷贝到新的临时表中。这个过程可能需要一些时间，具体取决于表的大小和系统的性能。</li><li><strong>重命名与替换</strong>：数据拷贝完成后，临时表会被重命名为原始表的名字，从而替换掉原始表。在这个过程中，原始表会被加上写锁，以阻止对数据进行修改，确保数据的一致性。</li></ul> </li><li> <p><strong>INPLACE算法</strong>：</p> 
+  <ul><li><strong>直接修改</strong>：与COPY算法不同，INPLACE算法直接在原始表上进行修改，无需创建临时表和拷贝数据。</li><li><strong>记录DML操作</strong>：在DDL操作执行期间，如果有DML操作（如INSERT、UPDATE、DELETE）尝试修改表，这些操作会被记录下来。</li><li><strong>应用DML更改</strong>：DDL操作完成后，之前记录的DML更改会被应用到表上，确保数据的完整性和一致性。</li></ul> </li><li> <p><strong>INSTANT算法</strong>：</p> 
+  <ul><li><strong>元数据修改</strong>：对于某些简单的DDL操作（如修改表的默认字符集），INSTANT算法可以直接修改数据字典中的元数据，而无需对表数据进行任何更改。</li><li><strong>无锁操作</strong>：由于只修改元数据，因此这种算法可以在不锁定表的情况下完成，实现了真正的“瞬间”完成DDL操作。</li></ul> </li></ul> 
+<h4><a id="3__41"></a>3. 完成与清理</h4> 
+<ul><li><strong>释放资源</strong>：DDL操作完成后，系统会释放所有在操作过程中分配的资源，如临时表、内存等。</li><li><strong>更新统计信息</strong>：MySQL会更新与表相关的统计信息，以便优化器能够更好地制定查询计划。</li><li><strong>通知与日志记录</strong>：操作完成后，系统会生成相应的日志记录，以便在必要时进行恢复或审计。同时，也可能通过某种机制（如触发器）通知应用程序DDL操作的完成。</li></ul> 
+<p>MySQL原生Online DDL通过不同的算法和策略来实现在线修改数据库结构的目标，从而提高了数据库的可用性和灵活性。这些工作原理确保了即使在执行DDL操作时，数据库仍然能够处理正常的DML操作，减少了停机时间和维护成本。</p> 
+<p><img src="https://images2.imgbox.com/57/32/KM2J2WlF_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_51"></a>三、实现原理与优化</h3> 
+<p>在线DDL的核心实现原理涉及几个关键环节，同时也有一些关键的优化策略：</p> 
+<ol><li> <p><strong>构建临时表</strong>：为了不影响原表的正常读写，系统会创建一个具备新结构的临时表。这一步骤为后续的DDL操作提供了基础。</p> </li><li> <p><strong>数据迁移与实时同步</strong>：旧表中的数据会被高效地迁移到临时表中，同时确保数据的实时同步。这种迁移策略旨在保障DDL过程中数据的完整性和一致性，避免数据丢失或损坏。</p> </li><li> <p><strong>变更追踪与重播</strong>：利用日志机制，系统会追踪DDL执行期间旧表上的数据变更，并将这些变更实时重播到临时表中。这一优化确保了数据在DDL操作完成后的准确性。</p> </li><li> <p><strong>无缝切换</strong>：当DDL操作完成且数据完全同步后，数据库引擎会在合适的时机将临时表提升为新表，从而实现无缝切换。此后，所有的读写操作都将基于新表进行。</p> </li></ol> 
+<h3><a id="_64"></a>四、使用场景与优势</h3> 
+<p>MySQL原生Online DDL适用于多种场景，如添加或删除列、修改数据类型、添加或删除索引等。这些操作都可以在不中断服务的情况下完成，大大提高了数据库的灵活性和可用性。此外，由于Online DDL减少了停机时间，因此也降低了维护成本和数据丢失的风险。</p> 
+<h3><a id="_68"></a>五、使用约束与注意事项</h3> 
+<p>尽管MySQL 5.7的在线DDL带来了诸多便利，但在实际使用中仍需注意以下几点：</p> 
+<ul><li> <p><strong>操作支持范围</strong>：并非所有类型的DDL操作都支持在线执行。某些特定操作可能仍需要锁定整张表，因此在执行前需确认操作类型。</p> </li><li> <p><strong>资源占用</strong>：DDL操作期间可能会显著增加系统资源的消耗，特别是在数据迁移和同步阶段。因此，在高负载环境下应谨慎规划并执行此类操作。</p> </li><li> <p><strong>测试与验证</strong>：为确保数据的完整性和业务的连续性，执行在线DDL之前应进行充分的测试和验证。这包括但不限于数据的备份、恢复以及一致性检查等步骤。</p> </li></ul> 
+<h3><a id="Online_DDL_78"></a>六、锁在Online DDL中的作用</h3> 
+<p>在Online DDL过程中，锁主要用于确保数据的一致性。不同类型的锁对表的可访问性有不同的影响：</p> 
+<ol><li><strong>共享锁（S锁）</strong>：允许多个事务读取同一资源，但不允许写入。在Online DDL中，这可能用于允许读取操作继续进行，同时阻止写入操作。</li><li><strong>排他锁（X锁）</strong>：阻止其他事务读取或写入资源。在DDL操作中，如果需要修改表的结构或数据，则可能需要使用排他锁。</li></ol> 
+<h4><a id="ALGORITHMLOCK_85"></a>ALGORITHM和LOCK选项</h4> 
+<p>在MySQL中，你可以通过<code>ALGORITHM</code>和<code>LOCK</code>关键字来控制DDL操作的行为。</p> 
+<h5><a id="ALGORITHM_89"></a>ALGORITHM选项</h5> 
+<ul><li><strong>INPLACE</strong>：这个选项指示MySQL直接在原表上进行修改，而不是创建一个新表。这通常可以减少锁的使用和时间，从而提高并发性。但是，并非所有的DDL操作都支持INPLACE算法。</li><li><strong>COPY</strong>：这个选项告诉MySQL创建一个新表，将原表的数据复制到新表中，然后在新表上执行DDL操作。完成后，新表会替换原表。这个过程中，原表通常会被锁定，以防止数据不一致。COPY算法通常需要更多的时间和资源。</li><li><strong>DEFAULT</strong>：如果不指定ALGORITHM选项，MySQL将选择默认的行为。这通常是尝试使用INPLACE算法，如果不可能，则回退到COPY算法。</li></ul> 
+<h5><a id="LOCK_95"></a>LOCK选项</h5> 
+<ul><li><strong>NONE</strong>：这个选项指示MySQL在执行DDL操作时不要对表加锁（如果可能的话）。但是，如果DDL操作需要保证数据的一致性，MySQL可能会忽略这个选项并加锁。</li><li><strong>SHARED</strong>：允许读取操作继续进行，但阻止写入操作。</li><li><strong>EXCLUSIVE</strong>：阻止读取和写入操作。这是最强的锁类型，用于确保DDL操作期间数据的一致性。</li></ul> 
+<h4><a id="_101"></a>如何使用这些选项</h4> 
+<p>当你想要执行一个DDL操作时，你可以通过添加<code>ALGORITHM</code>和<code>LOCK</code>选项来控制操作的行为。例如：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">ALTER</span> <span class="token keyword">TABLE</span> tbl_name <span class="token keyword">ADD</span> <span class="token keyword">COLUMN</span> col_name col_type<span class="token punctuation">,</span> <span class="token keyword">ALGORITHM</span><span class="token operator">=</span>INPLACE<span class="token punctuation">,</span> <span class="token keyword">LOCK</span><span class="token operator">=</span>NONE<span class="token punctuation">;</span>
+</code></pre> 
+<p>这条命令尝试在原地（INPLACE）添加一个新列，并且尽量不使用锁（LOCK=NONE）。但是，需要注意的是，如果MySQL判断无法保证数据的一致性而不使用锁，它可能会忽略这些选项。</p> 
+<p>可以通过如下的SQL语句查看是否有事务和锁等信息。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> information_schema<span class="token punctuation">.</span>innodb_locks<span class="token punctuation">;</span>
+</code></pre> 
+<pre><code class="prism language-sql"><span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> information_schema<span class="token punctuation">.</span>innodb_trx<span class="token punctuation">;</span>
+</code></pre> 
+<pre><code class="prism language-sql"><span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> information_schema<span class="token punctuation">.</span>innodb_lock_waits<span class="token punctuation">;</span>
+</code></pre> 
+<pre><code class="prism language-sql"><span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> information_schema<span class="token punctuation">.</span>processlist<span class="token punctuation">;</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/40/70/X4Zt3K7X_o.jpg" alt="在这里插入图片描述"></p> 
+<h4><a id="_131"></a>注意事项</h4> 
+<ul><li> <p>不是所有的DDL操作都支持所有的ALGORITHM和LOCK组合。在执行DDL操作之前，最好查阅MySQL的官方文档以了解具体的支持情况。<br> <img src="https://images2.imgbox.com/57/95/37zDHd8R_o.jpg" alt="在这里插入图片描述"></p> </li><li> <p>即使指定了LOCK=NONE，MySQL也可能在必要时自动加锁以确保数据的一致性。因此，这些选项应被视为指导性的，而不是强制性的。</p> </li></ul> 
+<p><strong>更多online DDL原理,请移步</strong> : <a href="https://blog.csdn.net/qq_26664043/article/details/132067933">MySQL Online DDL详解:从历史演进到原理及使用<br> </a></p> 
+<hr> 
+<center> 
+ <font color="#c65a6c" size="4"> 关注以下公众号获取更多深度内容，纯干货 ! </font> 
+</center> 
+<p><img src="https://images2.imgbox.com/e2/9b/2my6DLax_o.gif" alt=""></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/1b8597067e074423fe96932b568487b0/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">粒子群优化（Particle Swarm Optimization, PSO）算法 定义&#43;特性&#43;原理&#43;公式&#43;Python示例代码（带注释）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/50cea2c708c650cbca786a730b941cc8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">百度网盘限速解决办法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

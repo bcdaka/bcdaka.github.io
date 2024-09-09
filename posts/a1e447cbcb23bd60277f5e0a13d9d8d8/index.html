@@ -1,0 +1,691 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Apache ShardingSphere Proxy5.5.0实现MySQL分库分表与读写分离 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/a1e447cbcb23bd60277f5e0a13d9d8d8/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Apache ShardingSphere Proxy5.5.0实现MySQL分库分表与读写分离">
+  <meta property="og:description" content="1. 前提准备 1.1 主机IP:192.168.186.77 version: &#39;3.8&#39; services: mysql-master: image: mysql:latest container_name: mysql-master environment: MYSQL_ROOT_PASSWORD: 123456 MYSQL_USER: master MYSQL_PASSWORD: 123456 MYSQL_DATABASE: db1 ports: - &#34;3306:3306&#34; volumes: - mysql-master-data:/var/lib/mysql command: --server-id=1 --log-bin=mysql-bin --binlog-format=ROW cap_add: - SYS_NICE security_opt: - seccomp:unconfined mysql-slave: image: mysql:latest container_name: mysql-slave environment: MYSQL_ROOT_PASSWORD: 123456 MYSQL_USER: slave MYSQL_PASSWORD: 123456 MYSQL_DATABASE: db1 ports: - &#34;3307:3306&#34; volumes: - mysql-slave-data:/var/lib/mysql command: --server-id=2 --log-bin=mysql-bin --binlog-format=ROW --relay-log=relay-bin --relay-log-index=relay-bin.index depends_on: - mysql-master cap_add: - SYS_NICE security_opt: - seccomp:unconfined volumes: mysql-master-data: mysql-slave-data: 注：3306端口扮演master数据库角色，3307端口扮演salve数据库角色。 1.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-25T16:10:53+08:00">
+    <meta property="article:modified_time" content="2024-07-25T16:10:53+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Apache ShardingSphere Proxy5.5.0实现MySQL分库分表与读写分离</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3 style="background-color:transparent;">1. 前提准备</h3> 
+<h4 style="background-color:transparent;">1.1 主机IP:192.168.186.77        </h4> 
+<pre><code class="hljs">version: '3.8'
+
+services:
+  mysql-master:
+    image: mysql:latest
+    container_name: mysql-master
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_USER: master
+      MYSQL_PASSWORD: 123456
+      MYSQL_DATABASE: db1  
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-master-data:/var/lib/mysql
+    command: --server-id=1 --log-bin=mysql-bin --binlog-format=ROW
+    cap_add:
+      - SYS_NICE
+    security_opt:
+      - seccomp:unconfined
+
+  mysql-slave:
+    image: mysql:latest
+    container_name: mysql-slave
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_USER: slave
+      MYSQL_PASSWORD: 123456
+      MYSQL_DATABASE: db1
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql-slave-data:/var/lib/mysql
+    command: --server-id=2 --log-bin=mysql-bin --binlog-format=ROW --relay-log=relay-bin --relay-log-index=relay-bin.index
+    depends_on:
+      - mysql-master
+    cap_add:
+      - SYS_NICE
+    security_opt:
+      - seccomp:unconfined
+
+volumes:
+  mysql-master-data:
+  mysql-slave-data:
+</code></pre> 
+<p>注：3306端口扮演master数据库角色，3307端口扮演salve数据库角色。 </p> 
+<h4>1.2 主机IP:192.168.186.216</h4> 
+<pre><code class="hljs">version: '3.8'
+
+services:
+  mysql-master:
+    image: mysql:latest
+    container_name: mysql-master
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_USER: master
+      MYSQL_PASSWORD: 123456
+      MYSQL_DATABASE: db2  
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-master-data:/var/lib/mysql
+    command: --server-id=3 --log-bin=mysql-bin --binlog-format=ROW
+    cap_add:
+      - SYS_NICE
+    security_opt:
+      - seccomp:unconfined
+
+  mysql-slave:
+    image: mysql:latest
+    container_name: mysql-slave
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_USER: slave
+      MYSQL_PASSWORD: 123456
+      MYSQL_DATABASE: db2  
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql-slave-data:/var/lib/mysql
+    command: --server-id=4 --log-bin=mysql-bin --binlog-format=ROW --relay-log=relay-bin --relay-log-index=relay-bin.index
+    depends_on:
+      - mysql-master
+    cap_add:
+      - SYS_NICE
+    security_opt:
+      - seccomp:unconfined
+
+volumes:
+  mysql-master-data:
+  mysql-slave-data:
+</code></pre> 
+<h4 style="background-color:transparent;"> 1.3 主机IP:192.168.186.216</h4> 
+<pre><code class="hljs">version: '3.8'
+
+services:
+  mysql-master:
+    image: mysql:latest
+    container_name: mysql-master
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_USER: master
+      MYSQL_PASSWORD: 123456
+      MYSQL_DATABASE: db3  
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql-master-data:/var/lib/mysql
+    command: --server-id=5 --log-bin=mysql-bin --binlog-format=ROW
+    cap_add:
+      - SYS_NICE
+    security_opt:
+      - seccomp:unconfined
+
+  mysql-slave:
+    image: mysql:latest
+    container_name: mysql-slave
+    environment:
+      MYSQL_ROOT_PASSWORD: 123456
+      MYSQL_USER: slave
+      MYSQL_PASSWORD: 123456
+      MYSQL_DATABASE: db3 
+    ports:
+      - "3307:3306"
+    volumes:
+      - mysql-slave-data:/var/lib/mysql
+    command: --server-id=6 --log-bin=mysql-bin --binlog-format=ROW --relay-log=relay-bin --relay-log-index=relay-bin.index
+    depends_on:
+      - mysql-master
+    cap_add:
+      - SYS_NICE
+    security_opt:
+      - seccomp:unconfined
+
+volumes:
+  mysql-master-data:
+  mysql-slave-data:
+</code></pre> 
+<p><strong>注：</strong>每个 MySQL 实例必须有一个唯一的<strong> <code>server-id</code></strong>。这是必要的，因为在主从复制设置中，主服务器和从服务器需要能够互相识别，并避免循环复制和冲突。       </p> 
+<h4 style="background-color:transparent;">1.4 简单主从搭建过程</h4> 
+<h5>1.4.1 连接主服务器</h5> 
+<p><img alt="" height="846" src="https://images2.imgbox.com/84/94/Glwk1JG6_o.png" width="1001"></p> 
+<h5>1.4.2 连接从服务器 </h5> 
+<p><img alt="" height="846" src="https://images2.imgbox.com/50/3b/23HrVmNS_o.png" width="1001"></p> 
+<h5>1.4.3 配置主服务器</h5> 
+<pre><code class="hljs"># 创建一个具有复制权限的用户
+CREATE USER 'master_slave'@'%' IDENTIFIED BY '123456' REQUIRE SSL;
+GRANT REPLICATION SLAVE ON *.* TO 'master_slave'@'%';
+FLUSH PRIVILEGES;
+SHOW MASTER STATUS;</code></pre> 
+<p><img alt="" height="1080" src="https://images2.imgbox.com/d6/dd/LSoqDkra_o.png" width="1200"></p> 
+<h5>1.4.4 配置从服务器</h5> 
+<pre><code class="hljs">CHANGE MASTER TO
+    MASTER_HOST ='192.168.186.216', # 主服务器的 IP 地址
+    MASTER_USER ='master_slave', # 主服务器上配置的复制用户
+    MASTER_PASSWORD ='123456', # 复制用户的密码
+    MASTER_LOG_FILE ='mysql-bin.000003', # 主服务器的日志文件名
+    MASTER_LOG_POS =920, # 日志文件的位置
+    MASTER_SSL=1;
+START SLAVE;
+SHOW SLAVE STATUS;</code></pre> 
+<p><img alt="" height="1080" src="https://images2.imgbox.com/b1/2f/zzkbEE4H_o.png" width="1200"></p> 
+<p>        其余两台使用同样的方式进行配置。 </p> 
+<h3 style="background-color:transparent;">2. 安装 Apache ShardingSphere Proxy</h3> 
+<h4>2.1 安装合适的JDK版本</h4> 
+<pre><code class="hljs">sudo apt install openjdk-8-jdk -y</code></pre> 
+<h4 style="background-color:transparent;">2.2 验证JDK版本</h4> 
+<pre><code class="hljs">java -version</code></pre> 
+<blockquote> 
+ <p>liber@liber-VMware-Virtual-Platform:/home/sp$ <strong>java -version</strong><br> openjdk version "1.8.0_412"<br> OpenJDK Runtime Environment (build 1.8.0_412-8u412-ga-1~24.04.2-b08)<br> OpenJDK 64-Bit Server VM (build 25.412-b08, mixed mode)</p> 
+</blockquote> 
+<h4 style="background-color:transparent;">2.3 使用wget下载Apache ShardingSphere Proxy</h4> 
+<pre><code class="hljs">sudo wget https://dlcdn.apache.org/shardingsphere/5.5.0/apache-shardingsphere-5.5.0-shardingsphere-proxy-bin.tar.gz
+</code></pre> 
+<p><img alt="" height="290" src="https://images2.imgbox.com/23/9f/9uH4Pcan_o.png" width="1200"></p> 
+<h4 style="background-color:transparent;">2.4 解压Apache ShardingSphere Proxy文件</h4> 
+<pre><code class="hljs"> sudo tar -zxvf apache-shardingsphere-5.5.0-shardingsphere-proxy-bin.tar.gz</code></pre> 
+<h4>2.5 进入Apache ShardingSphere Proxy解压后的目录 </h4> 
+<pre><code class="hljs">cd apache-shardingsphere-5.5.0-shardingsphere-proxy-bin
+</code></pre> 
+<h4>2.5 查看MySQL的版本 </h4> 
+<p>        找台主服务器或者从服务器输入查看数据库的版本。</p> 
+<pre><code class="hljs">SELECT VERSION();</code></pre> 
+<p><img alt="" height="804" src="https://images2.imgbox.com/dd/ad/dSDtXOm5_o.png" width="1166"></p> 
+<h4 style="background-color:transparent;">2.6 下载并安装MySQL Connector/J 8.0.27</h4> 
+<pre><code class="hljs">sudo wget https://downloads.mysql.com/archives/get/p/3/file/mysql-connector-java-8.0.27.tar.gz
+</code></pre> 
+<p><img alt="" height="315" src="https://images2.imgbox.com/86/c5/muHJrvRP_o.png" width="1200"> </p> 
+<h4>2.7 解压MySQL文件</h4> 
+<pre><code class="hljs">sudo tar -zxvf mysql-connector-java-8.0.27.tar.gz
+</code></pre> 
+<h4>2.8 进入解压后的MySQL目录</h4> 
+<pre><code class="hljs">cd mysql-connector-java-8.0.27</code></pre> 
+<h4 style="background-color:transparent;"> 2.9 将 JAR 文件放置到合适的位置</h4> 
+<p> 需要将JAR文件复制到Apache ShardingSphere-Proxy解压目录的<strong><code>lib</code> </strong>目录中，因为我在Apache ShardingSphere-Proxy的解压目录中下载的MySQL压缩包，解压后只需要将JAR文件移动到上一级的lib目录即可。</p> 
+<pre><code class="hljs">sudo mv mysql-connector-java-8.0.27.jar  ../lib</code></pre> 
+<h4 style="background-color:transparent;">  2.10 global.yaml</h4> 
+<pre><code class="hljs"># 回退上一级目录
+cd ..
+
+# 进入conf目录
+cd conf
+
+# 编辑global.yaml文件
+sudo nano global.yaml</code></pre> 
+<p>      global.yaml 内容如下：</p> 
+<pre><code class="hljs"># 释放注解
+authority:
+  users:
+    - user: root@%
+      password: 123456
+    - user: sharding
+      password: 123456
+  privilege:
+    type: ALL_PERMITTED
+sqlParser:
+  sqlStatementCache:
+    initialCapacity: 2000
+    maximumSize: 65535
+  parseTreeCache:
+    initialCapacity: 128
+    maximumSize: 1024
+props:
+  proxy-default-port: 3308 #修改端口，因为被占用了3307所以我修改了3308
+  sql-show: true</code></pre> 
+<h4 style="background-color:transparent;">2.11 创建物理表</h4> 
+<pre><code class="hljs">use db1; # 每个主服务器都需要创建，只需要把db1，改db2，db3即可。
+
+CREATE TABLE t_order_0
+(
+    order_id   INT PRIMARY KEY,
+    user_id    INT,
+    order_date DATE,
+    status     VARCHAR(15)
+);
+
+CREATE TABLE t_order_1
+(
+    order_id   INT PRIMARY KEY,
+    user_id    INT,
+    order_date DATE,
+    status     VARCHAR(15)
+);</code></pre> 
+<p>注： 每个主服务器的数据库都需要建立结构相同的物理表，只是库不一样db1，db2，db3。</p> 
+<h4 style="background-color:transparent;">2.12 database-sharding.yaml</h4> 
+<pre><code class="hljs">sudo nano database-sharding.yaml</code></pre> 
+<h5>2.1.1 配置数据库源</h5> 
+<pre><code class="hljs">dataSources:
+  # 主库配置
+  ds_77_master:
+    url: jdbc:mysql://192.168.186.77:3306/db1?serverTimezone=UTC&amp;useSSL=false&amp;allowPublicKeyRetrieval=true
+    username: root  # 数据库用户名
+    password: 123456  # 数据库密码
+    connectionTimeoutMilliseconds: 30000  # 连接超时时间，单位毫秒
+    idleTimeoutMilliseconds: 60000  # 空闲连接超时时间，单位毫秒
+    maxLifetimeMilliseconds: 1800000  # 连接最大生命周期，单位毫秒
+    maxPoolSize: 50  # 连接池最大连接数
+    minPoolSize: 1  # 连接池最小连接数
+
+  # 从库配置
+  ds_77_slave:
+    url: jdbc:mysql://192.168.186.77:3307/db1?serverTimezone=UTC&amp;useSSL=false&amp;allowPublicKeyRetrieval=true
+    username: slave  # 数据库用户名
+    password: 123456  # 数据库密码
+    connectionTimeoutMilliseconds: 30000  # 连接超时时间，单位毫秒
+    idleTimeoutMilliseconds: 60000  # 空闲连接超时时间，单位毫秒
+    maxLifetimeMilliseconds: 1800000  # 连接最大生命周期，单位毫秒
+    maxPoolSize: 50  # 连接池最大连接数
+    minPoolSize: 1  # 连接池最小连接数
+
+  ds_216_master:
+    url: jdbc:mysql://192.168.186.216:3306/db2?serverTimezone=UTC&amp;useSSL=false&amp;allowPublicKeyRetrieval=true
+    username: root
+    password: 123456
+    connectionTimeoutMilliseconds: 30000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 50
+    minPoolSize: 1
+
+  ds_216_slave:
+    url: jdbc:mysql://192.168.186.216:3307/db2?serverTimezone=UTC&amp;useSSL=false&amp;allowPublicKeyRetrieval=true
+    username: slave
+    password: 123456
+    connectionTimeoutMilliseconds: 30000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 50
+    minPoolSize: 1
+
+  ds_18_master:
+    url: jdbc:mysql://192.168.186.18:3306/db3?serverTimezone=UTC&amp;useSSL=false&amp;allowPublicKeyRetrieval=true
+    username: root
+    password: 123456
+    connectionTimeoutMilliseconds: 30000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 50
+    minPoolSize: 1
+
+  ds_18_slave:
+    url: jdbc:mysql://192.168.186.18:3307/db3?serverTimezone=UTC&amp;useSSL=false&amp;allowPublicKeyRetrieval=true
+    username: slave
+    password: 123456
+    connectionTimeoutMilliseconds: 30000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 50
+    minPoolSize: 1
+
+# 设置逻辑数据库名称
+databaseName: my_database
+</code></pre> 
+<h5 style="background-color:transparent;">2.1.2 读写分离规则</h5> 
+<pre><code class="hljs">rules:
+  - !READWRITE_SPLITTING
+    # 定义用于读写分离的数据源配置
+    dataSources:
+      # 第一组读写分离规则，命名为 "readwrite_77"
+      readwrite_77:
+        writeDataSourceName: ds_77_master  # 指定写操作的数据源为 ds_77_master（主库）
+        readDataSourceNames:
+          - ds_77_slave  # 指定读操作的数据源列表，这里只包括 ds_77_slave（从库）
+        transactionalReadQueryStrategy: PRIMARY  # 事务中的读查询策略设为 PRIMARY，即事务中所有读操作都将指向主库
+        loadBalancerName: random  # 使用随机策略从可用的从库中选择
+
+      readwrite_216:
+        writeDataSourceName: ds_216_master  
+        readDataSourceNames:
+          - ds_216_slave  
+        transactionalReadQueryStrategy: PRIMARY 
+        loadBalancerName: random  
+
+      readwrite_18:
+        writeDataSourceName: ds_18_master  # 主库
+        readDataSourceNames:
+          - ds_18_slave  
+        transactionalReadQueryStrategy: PRIMARY  
+        loadBalancerName: random  
+
+    # 定义负载均衡器的配置
+    loadBalancers:
+      random:
+        type: RANDOM  # 指定负载均衡器的类型为 RANDOM，随机选择读库
+</code></pre> 
+<h5 style="background-color:transparent;">2.1.3 分库分表规则</h5> 
+<pre><code class="hljs">- !SHARDING
+  # 分片表的配置
+  tables:
+    t_order:
+      # 定义分片表t_order在各个数据源的具体分布
+      actualDataNodes: readwrite_77.t_order_${0..1}, readwrite_216.t_order_${0..1}, readwrite_18.t_order_${0..1}
+      # 表的分片策略配置
+      tableStrategy:
+        standard:
+          shardingColumn: order_id  # 使用订单ID作为分片键
+          shardingAlgorithmName: t_order_inline  # 分片算法名称，指向后面定义的内联算法
+      # 主键生成策略，用于插入操作时自动生成主键
+      keyGenerateStrategy:
+        column: order_id  # 主键列
+        keyGeneratorName: snowflake  # 使用雪花算法生成主键
+
+  # 默认数据库分片策略
+  defaultDatabaseStrategy:
+    standard:
+      shardingColumn: user_id  # 使用用户ID作为分片键
+      shardingAlgorithmName: database_inline  # 数据库分片使用的算法名称，指向后面定义的内联算法
+
+  # 默认的表分片策略，此处未定义分片策略
+  defaultTableStrategy:
+    none:
+
+  # 绑定表组，确保相互关联的表在同一数据库分片中
+  bindingTables:
+    - t_order  # 把t_order表标记为绑定表
+
+  # 定义使用的分片算法
+  shardingAlgorithms:
+    # 定义数据库分片的内联算法
+    database_inline:
+      type: INLINE
+      props:
+        algorithm-expression: "readwrite_${(user_id % 3 == 0) ? '77' : ((user_id % 3 == 1) ? '216' : '18')}"
+        # 根据用户ID的值进行模3运算来决定数据分配到哪个数据源
+
+    # 定义表分片的内联算法
+    t_order_inline:
+      type: INLINE
+      props:
+        algorithm-expression: "t_order_${order_id % 2}"
+        # 根据订单ID的值进行模2运算来决定数据存储在哪个分表
+
+  # 主键生成器配置，指定使用雪花算法生成主键
+  keyGenerators:
+    snowflake:
+      type: SNOWFLAKE
+      props:
+        worker-id: 123  # 设置雪花算法的工作节点ID
+</code></pre> 
+<h5>2.1.4 完整配置信息 </h5> 
+<pre><code class="hljs">dataSources:
+  ds_77_master:
+    url: jdbc:mysql://192.168.186.77:3306/db1?serverTimezone=UTC&amp;useSSL=false&amp;allowPublicKeyRetrieval=true
+    username: root
+    password: 123456
+    connectionTimeoutMilliseconds: 30000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 50
+    minPoolSize: 1
+  ds_77_slave:
+    url: jdbc:mysql://192.168.186.77:3307/db1?serverTimezone=UTC&amp;useSSL=false&amp;allowPublicKeyRetrieval=true
+    username: slave
+    password: 123456
+    connectionTimeoutMilliseconds: 30000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 50
+    minPoolSize: 1
+  ds_216_master:
+    url: jdbc:mysql://192.168.186.216:3306/db2?serverTimezone=UTC&amp;useSSL=false&amp;allowPublicKeyRetrieval=true
+    username: root
+    password: 123456
+    connectionTimeoutMilliseconds: 30000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 50
+    minPoolSize: 1
+  ds_216_slave:
+    url: jdbc:mysql://192.168.186.216:3307/db2?serverTimezone=UTC&amp;useSSL=false&amp;allowPublicKeyRetrieval=true
+    username: slave
+    password: 123456
+    connectionTimeoutMilliseconds: 30000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 50
+    minPoolSize: 1
+  ds_18_master:
+    url: jdbc:mysql://192.168.186.18:3306/db3?serverTimezone=UTC&amp;useSSL=false&amp;allowPublicKeyRetrieval=true
+    username: root
+    password: 123456
+    connectionTimeoutMilliseconds: 30000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 50
+    minPoolSize: 1
+  ds_18_slave:
+    url: jdbc:mysql://192.168.186.18:3307/db3?serverTimezone=UTC&amp;useSSL=false&amp;allowPublicKeyRetrieval=true
+    username: slave
+    password: 123456
+    connectionTimeoutMilliseconds: 30000
+    idleTimeoutMilliseconds: 60000
+    maxLifetimeMilliseconds: 1800000
+    maxPoolSize: 50
+    minPoolSize: 1
+databaseName: my_database
+rules:
+  - !READWRITE_SPLITTING
+    dataSources:
+      readwrite_77:
+        writeDataSourceName: ds_77_master
+        readDataSourceNames:
+          - ds_77_slave
+        transactionalReadQueryStrategy: PRIMARY
+        loadBalancerName: random
+      readwrite_216:
+        writeDataSourceName: ds_216_master
+        readDataSourceNames:
+          - ds_216_slave
+        transactionalReadQueryStrategy: PRIMARY
+        loadBalancerName: random
+      readwrite_18:
+        writeDataSourceName: ds_18_master
+        readDataSourceNames:
+          - ds_18_slave
+        transactionalReadQueryStrategy: PRIMARY
+        loadBalancerName: random
+    loadBalancers:
+      random:
+        type: RANDOM
+  - !SHARDING
+    tables:
+      t_order:
+        actualDataNodes: readwrite_77.t_order_${0..1}, readwrite_216.t_order_${0..1}, readwrite_18.t_order_${0..1}
+        tableStrategy:
+          standard:
+            shardingColumn: order_id
+            shardingAlgorithmName: t_order_inline
+        keyGenerateStrategy:
+          column: order_id
+          keyGeneratorName: snowflake
+    defaultDatabaseStrategy:
+      standard:
+        shardingColumn: user_id
+        shardingAlgorithmName: database_inline
+    defaultTableStrategy:
+      none:
+    bindingTables:
+      - t_order
+    shardingAlgorithms:
+      database_inline:
+        type: INLINE
+        props:
+          algorithm-expression: "readwrite_${(user_id % 3 == 0) ? '77' : ((user_id % 3 == 1) ? '216' : '18')}"
+      t_order_inline:
+        type: INLINE
+        props:
+          algorithm-expression: "t_order_${order_id % 2}"
+    keyGenerators:
+      snowflake:
+        type: SNOWFLAKE
+        props:
+          worker-id: 123
+</code></pre> 
+<p>注：分片规则根据 user_id 的值对3取模，决定将数据分片到哪个数据库， 根据 order_id 的值对2取模，决定将数据分片到哪个表。</p> 
+<h5>2.1.5 参考教程文献</h5> 
+<p> <a href="https://shardingsphere.apache.org/document/current/cn/features/sharding/" rel="nofollow" title="数据分片 :: ShardingSphere">数据分片 :: ShardingSphere</a></p> 
+<p> <a href="https://shardingsphere.apache.org/document/current/cn/features/readwrite-splitting/" rel="nofollow" title="读写分离 :: ShardingSphere">读写分离 :: ShardingSphere</a></p> 
+<p><a href="https://shardingsphere.apache.org/document/current/cn/user-manual/shardingsphere-jdbc/yaml-config/rules/mix/" rel="nofollow" title=" 混合规则 :: ShardingSphere"> 混合规则 :: ShardingSphere</a></p> 
+<h4>2.13 启动程序</h4> 
+<pre><code class="hljs"># 回退上一级
+cd ..
+# 进入bin目录
+cd bin
+# 启动程序
+sudo ./start.sh</code></pre> 
+<blockquote> 
+ <p>liber@liber-VMware-Virtual-Platform:/home/sp/apache-shardingsphere-5.5.0-shardingsphere-proxy-bin/conf$ <strong>cd ..</strong><br> liber@liber-VMware-Virtual-Platform:/home/sp/apache-shardingsphere-5.5.0-shardingsphere-proxy-bin$ <strong>cd bin</strong><br> liber@liber-VMware-Virtual-Platform:/home/sp/apache-shardingsphere-5.5.0-shardingsphere-proxy-bin/bin$ <strong>sudo ./start.sh</strong><br> /usr/bin/java<br> we find java version: java8, full_version=1.8.0_412, full_path=/usr/bin/java<br> The classpath is /home/sp/apache-shardingsphere-5.5.0-shardingsphere-proxy-bin/conf:/home/sp/apache-shardingsphere-5.5.0-shardingsphere-proxy-bin/conf:.:/home/sp/apache-shardingsphere-5.5.0-shardingsphere-proxy-bin/lib/*:/home/sp/apache-shardingsphere-5.5.0-shardingsphere-proxy-bin/ext-lib/*<br> main class org.apache.shardingsphere.proxy.Bootstrap -1 /home/sp/apache-shardingsphere-5.5.0-shardingsphere-proxy-bin/conf 0.0.0.0 false<br> Starting the ShardingSphere-Proxy ... PID: 128452<br> Please check the STDOUT file: <span style="color:#fe2c24;">/home/sp/apache-shardingsphere-5.5.0-shardingsphere-proxy-bin/logs/stdout.log #日志路径可以通过cat进行查看</span><br> liber@liber-VMware-Virtual-Platform:/home/sp/apache-shardingsphere-5.5.0-shardingsphere-proxy-bin/bin$ </p> 
+</blockquote> 
+<h4> 2.15 查看日志</h4> 
+<pre><code class="hljs">cat /home/sp/apache-shardingsphere-5.5.0-shardingsphere-proxy-bin/logs/stdout.log</code></pre> 
+<blockquote> 
+ <pre>#显示该信息代表成功
+[INFO ] 2024-07-25 15:39:09.724 [main] o.a.s.d.p.c.l.PipelineContextManagerLifecycleListener - mode type is not Cluster, mode type='Standalone', ignore
+[INFO ] 2024-07-25 15:39:09.933 [main] o.a.s.p.v.ShardingSphereProxyVersion - Database type is `MySQL`, version is `8.0.27`, database name is `my_database`
+[INFO ] 2024-07-25 15:39:09.966 [main] o.a.s.p.frontend.ssl.ProxySSLContext - Proxy frontend SSL/TLS is not enabled.
+[INFO ] 2024-07-25 15:39:12.683 [main] o.a.s.p.frontend.ShardingSphereProxy - ShardingSphere-Proxy Standalone mode started successfully
+</pre> 
+</blockquote> 
+<h4>2.16 测试连接 </h4> 
+<p><img alt="" height="846" src="https://images2.imgbox.com/19/30/q79EWJpk_o.png" width="1001"></p> 
+<h4>2.17 分库分表验证 </h4> 
+<p>        在ShardingSphere-Proxy连接的客户端进行操作，因为t_order是ShardingSphere-Proxy创建的逻辑表，所以实际上通过第三方连接工具是看不到存在的实体表，比如我使用的是IDEA自带的MySQL的连接管理工具。</p> 
+<pre><code class="hljs">use my_database;
+
+INSERT INTO t_order (order_id, user_id, order_date, status) VALUES (1, 10, '2023-07-01', 'NEW');
+INSERT INTO t_order (order_id, user_id, order_date, status) VALUES (2, 20, '2023-07-02', 'SHIPPED');
+INSERT INTO t_order (order_id, user_id, order_date, status) VALUES (3, 30, '2023-07-03', 'DELIVERED');
+INSERT INTO t_order (order_id, user_id, order_date, status) VALUES (14, 40, '2023-07-04', 'RETURNED');
+</code></pre> 
+<blockquote> 
+ <p>运行日志：</p> 
+ <pre>[INFO ] 2024-07-25 15:43:21.874 [ShardingSphere-Command-1] ShardingSphere-SQL - Logic SQL: /* ApplicationName=IntelliJ IDEA 2024.1 */ INSERT INTO t_order (order_id, user_id, order_date, status) VALUES (1, 10, '2023-07-01', 'NEW')
+[INFO ] 2024-07-25 15:43:21.874 [ShardingSphere-Command-1] ShardingSphere-SQL - Actual SQL: <span style="color:#fe2c24;">ds_216_master </span>::: /* ApplicationName=IntelliJ IDEA 2024.1 */ INSERT INTO t_order_1 (<span style="color:#fe2c24;">order_id</span>,<span style="color:#fe2c24;"> user_id</span>, order_date, status) VALUES (<span style="color:#fe2c24;">1</span>, <span style="color:#fe2c24;">10</span>, '2023-07-01', 'NEW')
+解释：<span style="color:#fe2c24;">分片规则根据 user_id 的值对3取模，决定将数据分片到哪个数据库， 根据 order_id 的值对2取模，决定将数据分片到哪个表。</span><span style="color:#4da8ee;">数据库取模顺序：77=&gt;0,216=&gt;1,18=&gt;2</span>
+<span style="color:#fe2c24;">user_id: 10%3=1，order_id: 1%2=1，所以分片到第2个数据库ds_216_master，t_order_1表。 </span>
+
+[INFO ] 2024-07-25 15:43:21.976 [ShardingSphere-Command-1] ShardingSphere-SQL - Logic SQL: /* ApplicationName=IntelliJ IDEA 2024.1 */ INSERT INTO t_order (order_id, user_id, order_date, status) VALUES (2, 20, '2023-07-02', 'SHIPPED')
+[INFO ] 2024-07-25 15:43:21.976 [ShardingSphere-Command-1] ShardingSphere-SQL - Actual SQL: <span style="color:#fe2c24;">ds_18_master</span> ::: /* ApplicationName=IntelliJ IDEA 2024.1 */ INSERT INTO t_order_0 (<span style="color:#fe2c24;">order_id</span>, <span style="color:#fe2c24;">user_id</span>, order_date, status) VALUES (<span style="color:#fe2c24;">2</span>, <span style="color:#fe2c24;">20</span>, '2023-07-02', 'SHIPPED')
+解释：<span style="color:#fe2c24;">分片规则根据 user_id 的值对3取模，决定将数据分片到哪个数据库， 根据 order_id 的值对2取模，决定将数据分片到哪个表。</span><span style="color:#4da8ee;">数据库取模顺序：77=&gt;0,216=&gt;1,18=&gt;2</span>
+<span style="color:#fe2c24;">user_id: 20%3=2，order_id: 2%2=0，所以分片到第3个数据库ds_18_master，t_order_0表。</span>
+[INFO ] 2024-07-25 15:43:22.108 [ShardingSphere-Command-1] ShardingSphere-SQL - Logic SQL: /* ApplicationName=IntelliJ IDEA 2024.1 */ INSERT INTO t_order (order_id, user_id, order_date, status) VALUES (3, 30, '2023-07-03', 'DELIVERED')
+[INFO ] 2024-07-25 15:43:22.108 [ShardingSphere-Command-1] ShardingSphere-SQL - Actual SQL: <span style="color:#fe2c24;">ds_77_master</span> ::: /* ApplicationName=IntelliJ IDEA 2024.1 */ INSERT INTO t_order_1 (<span style="color:#fe2c24;">order_id</span>, <span style="color:#fe2c24;">user_id</span>, order_date, status) VALUES (<span style="color:#fe2c24;">3</span>, <span style="color:#fe2c24;">30</span>, '2023-07-03', 'DELIVERED')
+解释：<span style="color:#fe2c24;">分片规则根据 user_id 的值对3取模，决定将数据分片到哪个数据库， 根据 order_id 的值对2取模，决定将数据分片到哪个表。</span><span style="color:#4da8ee;">数据库取模顺序：77=&gt;0,216=&gt;1,18=&gt;2</span>
+<span style="color:#fe2c24;">user_id: 30%3=0，order_id: 3%2=1，所以分片到第1个数据库ds_77_master，t_order_1表。
+</span>
+[INFO ] 2024-07-25 15:43:22.248 [ShardingSphere-Command-1] ShardingSphere-SQL - Logic SQL: /* ApplicationName=IntelliJ IDEA 2024.1 */ INSERT INTO t_order (order_id, user_id, order_date, status) VALUES (14, 40, '2023-07-04', 'RETURNED')
+[INFO ] 2024-07-25 15:43:22.248 [ShardingSphere-Command-1] ShardingSphere-SQL - Actual SQL: <span style="color:#fe2c24;">ds_216_master</span> ::: /* ApplicationName=IntelliJ IDEA 2024.1 */ INSERT INTO t_order_0 (<span style="color:#fe2c24;">order_id</span>, <span style="color:#fe2c24;">user_id</span>, order_date, status) VALUES (<span style="color:#fe2c24;">14</span>, <span style="color:#fe2c24;">40</span>, '2023-07-04', 'RETURNED')
+解释：<span style="color:#fe2c24;">分片规则根据 user_id 的值对3取模，决定将数据分片到哪个数据库， 根据 order_id 的值对2取模，决定将数据分片到哪个表。</span><span style="color:#4da8ee;">数据库取模顺序：77=&gt;0,216=&gt;1,18=&gt;2</span>
+<span style="color:#fe2c24;">user_id: 40%3=1，order_id: 14%2=0，所以分片到第2个数据库ds_216_master，t_order_0表。</span>
+</pre> 
+</blockquote> 
+<h4>2.18 读写分离验证 </h4> 
+<pre><code class="hljs">select *from t_order;</code></pre> 
+<blockquote> 
+ <pre>运行日志：
+[INFO ] 2024-07-25 15:57:22.968 [ShardingSphere-Command-2] ShardingSphere-SQL - Logic SQL: /* ApplicationName=IntelliJ IDEA 2024.1 */ select *from t_order
+[INFO ] 2024-07-25 15:57:22.969 [ShardingSphere-Command-2] ShardingSphere-SQL - Actual SQL: <span style="color:#fe2c24;">ds_77_slave </span>::: /* ApplicationName=IntelliJ IDEA 2024.1 */ select *from t_order_0 UNION ALL /* ApplicationName=IntelliJ IDEA 2024.1 */ select *from t_order_1
+[INFO ] 2024-07-25 15:57:22.969 [ShardingSphere-Command-2] ShardingSphere-SQL - Actual SQL: <span style="color:#fe2c24;">ds_216_slave </span>::: /* ApplicationName=IntelliJ IDEA 2024.1 */ select *from t_order_0 UNION ALL /* ApplicationName=IntelliJ IDEA 2024.1 */ select *from t_order_1
+[INFO ] 2024-07-25 15:57:22.973 [ShardingSphere-Command-2] ShardingSphere-SQL - Actual SQL: <span style="color:#fe2c24;">ds_18_slave</span> ::: /* ApplicationName=IntelliJ IDEA 2024.1 */ select *from t_order_0 UNION ALL /* ApplicationName=IntelliJ IDEA 2024.1 */ select *from t_order_1</pre> 
+</blockquote> 
+<p><img alt="" height="1080" src="https://images2.imgbox.com/33/57/wm1iZ6Us_o.png" width="1200"> </p> 
+<h3 style="background-color:transparent;">3. 总结 </h3> 
+<p>        Ubtun24.04 TLS，JDK8，shardingsphere proxy/5.5.0，MySQL Connector/J 8.0.27，仅供学习交流使用。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/06914f5e60fd5c0bec12c5bcd3b4fa65/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">[240725] X-CMD 发布 v0.4.2：引入 hua 模块，在终端中阅读古文诗词 | MySQL 发布 9.0 | Docker 引擎爆出 AuthZ 插件绕过漏洞</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f9b7c30cde1bed26697ff83e6305dbf9/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">前后端分离的开发模式&#43;YAPI接口文档</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

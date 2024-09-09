@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Hadoop 2.0：主流开源云架构（三） - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/feaae1cf7846b74355efc38fe0542727/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Hadoop 2.0：主流开源云架构（三）">
+  <meta property="og:description" content="目录 四、Hadoop 2.0体系架构（一）Hadoop 2.0公共组件Common（二）分布式文件系统HDFS（三）分布式操作系统Yarn（四）Hadoop 2.0安全机制简介 四、Hadoop 2.0体系架构 （一）Hadoop 2.0公共组件Common 1、Common定位
+Common的定位是其他模块的公共组件，定义了程序员取得集群服务的编程接口，为其他模块提供公用API。降低Hadoop设计的复杂性，减少了其他模块之间的耦合性，增强了Hadoop的健壮性。
+2、Common功能
+提供公用API和程序员编程接口本地Hadoop库（Native Hadoop Library）超级用户superuser服务级别认证HTTP认证 （二）分布式文件系统HDFS 1、HDFS定位
+为提高扩展性，HDFS采用了master/slave架构来构建分布式存储集群，这种架构很容易向集群中任意添加或删除slave。
+2、HDFS体系架构
+（1）HDFS架构
+HDFS采用master/slave体系来构建分布式存储服务，提高了HDFS的可扩展性又简化了架构设计。HDFS里将文件分块存储，优化存储颗粒度。namenode统一管理所有slave机器datanode存储空间，datanode以块为单位存储实际的数据。真正的文件I/O操作时客户端直接和datanode交互。
+NameNode是主控制服务器，负责维护文件系统的命名空间（Namespace），协调客户端对文件的访问，记录命名空间内的任何改动或命名空间本身的属性改动。DataNode负责它们所在的物理节点上的存储管理，HDFS开放文件系统的命名空间。NameNode执行文件系统的命名空间操作，决定数据块到DataNode的映射。
+客户端要访问一个文件。首先，客户端从NameNode获得组成文件的数据块的位置列表；其次，客户端直接从DataNode上读取文件数据。
+NameNode使用事务日志（EditLog）记录HDFS元数据的变化，使用映象文件（FsImage）存储文件系统的命名空间。事务日志和映象文件都存储在NameNode的本地文件系统中。将新的元数据刷新到本地磁盘的新的映象文件中，这样可以截去旧的事务日志，这个过程称为检查点（Checkpoint）。HDFS还有Secondary NameNode节点，它辅助NameNode处理映象文件和事务日志。NameNode更新映象文件并清理事务日志，使得事务日志的大小始终控制在可配置的限度下。
+（2）HDFS典型拓扑
+① 一般拓扑：只有单个NameNode节点，使用SecondaryNameNode或BackupNode节点实时获取NameNode元数据信息，备份元数据。
+② 商用拓扑：有两个NameNode节点，并使用ZooKeeper实现NameNode节点间的热切换。
+ZooKeeper集群：至少三个ZooKeeper实体，用来选举ActiveNamenode。JourNalNode集群：至少三个，用于与两NameNode交换数据，也可使用NFS。HTTPFS：提供Web端读写HDFS功能。 从架构上看HDFS存在单点故障，无论是一般拓扑还是商用拓扑，新增的实体几乎都是增强NameNode可靠性的组件，当然这里的ZooKeeper集群还可以用于Hbase。
+3、HDFS内部特性
+（1）冗余备份
+HDFS将每个文件存储成一系列数据块（Block），默认块大小为64MB（可配置）。为了容错，文件的所有数据块都会有副本（副本数量即复制因子，可配置）。HDFS的文件都是一次性写入的，并且严格限制为任何时候都只有一个写用户。
+（2）副本存放
+HDFS集群一般运行在多个机架上，不同机架上机器的通信需要通过交换机。HDFS采用机架感知（Rack-aware）的策略来改进数据的可靠性、可用性和网络带宽的利用率。机架的错误远比节点的错误少，这个策略可以防止整个机架失效时数据丢失，提高数据的可靠性和可用性，又能保证性能。
+（3）副本选择
+HDFS会尽量使用离程序最近的副本来满足用户请求，这样可以减少总带宽消耗和读延时。HDFS的架构支持数据均衡策略。
+（4）心跳检测
+NameNode周期性地从集群中的每个DataNode接受心跳包和块报告，收到心跳包说明该DataNode工作正常。NameNode会标记最近没有心跳的DataNode为宕机，不会发给它们任何新的I/O请求。NameNode会不断检测这些需要复制的数据块，并在需要的时候重新复制。
+（5）数据完整性检测
+多种原因可能造成从DataNode获取的数据块有损坏。HDFS客户端软件实现了对HDFS文件内容的校验和检查（Checksum）。DataNode获得的数据块对应的校验和隐藏文件中的不同，客户端就会判定数据块有损坏，将从其他DataNode获取该数据块的副本。
+（6）元数据磁盘失效
+映象文件和事务日志是HDFS的核心数据结构。NameNode可以配置为支持维护映象文件和事务日志的多个副本。任何对映象文件或事务日志的修改，都将同步到它们的副本上。当NameNode重新启动时，总是选择最新的一致的映象文件和事务日志。
+（7）简单一致性模型、流式数据访问
+HDFS的应用程序一般对文件实行一次写、多次读的访问模式。文件一旦创建、写入和关闭之后就不需要再更改了。这样就简化了数据一致性问题，高吞吐量的数据访问才成为可能；运行在HDFS上的应用主要以流式读为主，做批量处理；更注重数据访问的高吞吐量。
+（8）客户端缓存
+客户端创建文件的请求不是立即到达NameNode，HDFS客户端先把数据缓存到本地的一个临时文件，程序的写操作透明地重定向到这个临时文件。当这个临时文件累积的数据超过一个块的大小（64MB）时，客户端才会联系NameNode。如果NameNode在文件关闭之前死机，那么文件将会丢失。如果不采用客户端缓存，网络速度和拥塞都会对输出产生很大的影响。
+（9）流水线复制
+当客户端准备写数据到HDFS的文件中时，数据一开始会写入本地临时文件。DataNode从前一个节点接收数据的同时，即时把数据传给后面的节点，这就是流水线复制。
+（10）架构特征
+硬件错误是常态而不是异常。HDFS被设计为运行在普通硬件上，所以硬件故障是很正常的。错误检测并快速自动恢复是HDFS的最核心设计目标。
+（11）超大规模数据集
+一般企业级的文件大小可能都在TB级甚至PB级，HDFS支持大文件存储，而且提供整体上高的数据传输带宽。一个单一的HDFS实例应该能支撑数以千万计的文件，并且能在一个集群里扩展到数百个节点。
+4、HDFS对外功能
+（1）NameNode高可靠性
+（2）HDFS快照
+（3）HDFS快照
+（4）HDFS安全性
+（5）HDFS配额功能
+（6）HDFS C语言接口
+（7）HDFS Short-Circuit功能
+（8）WebHdfs
+（三）分布式操作系统Yarn 1、定位
+分布式操作系统的基本功能：管理计算机资源，提供用户接口。Yarn一方面管理整个集群的计算资源（CPU、内存等），另一方面提供用户程序访问系统资源的API。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-12T17:17:01+08:00">
+    <meta property="article:modified_time" content="2024-06-12T17:17:01+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Hadoop 2.0：主流开源云架构（三）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><ul><li><a href="#Hadoop_20_3" rel="nofollow">四、Hadoop 2.0体系架构</a></li><li><ul><li><a href="#Hadoop_20Common_4" rel="nofollow">（一）Hadoop 2.0公共组件Common</a></li><li><a href="#HDFS_17" rel="nofollow">（二）分布式文件系统HDFS</a></li><li><a href="#Yarn_115" rel="nofollow">（三）分布式操作系统Yarn</a></li><li><a href="#Hadoop_20_235" rel="nofollow">（四）Hadoop 2.0安全机制简介</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<hr> 
+<h3><a id="Hadoop_20_3"></a>四、Hadoop 2.0体系架构</h3> 
+<h4><a id="Hadoop_20Common_4"></a>（一）Hadoop 2.0公共组件Common</h4> 
+<p><strong>1、Common定位</strong></p> 
+<p>  Common的定位是其他模块的公共组件，定义了程序员取得集群服务的编程接口，为其他模块提供公用API。降低Hadoop设计的复杂性，减少了其他模块之间的耦合性，增强了Hadoop的健壮性。</p> 
+<p><strong>2、Common功能</strong></p> 
+<ul><li>提供公用API和程序员编程接口</li><li>本地Hadoop库（Native Hadoop Library）</li><li>超级用户superuser</li><li>服务级别认证</li><li>HTTP认证</li></ul> 
+<h4><a id="HDFS_17"></a>（二）分布式文件系统HDFS</h4> 
+<p><strong>1、HDFS定位</strong></p> 
+<p><img src="https://images2.imgbox.com/11/4d/5ehafgx6_o.png" alt="在这里插入图片描述" width="550"><br>   为提高扩展性，HDFS采用了master/slave架构来构建分布式存储集群，这种架构很容易向集群中任意添加或删除slave。</p> 
+<p><strong>2、HDFS体系架构</strong></p> 
+<p><strong>（1）HDFS架构</strong></p> 
+<p>  HDFS采用master/slave体系来构建分布式存储服务，提高了HDFS的可扩展性又简化了架构设计。HDFS里将文件分块存储，优化存储颗粒度。namenode统一管理所有slave机器datanode存储空间，datanode以块为单位存储实际的数据。真正的文件I/O操作时客户端直接和datanode交互。</p> 
+<p>  NameNode是主控制服务器，负责维护文件系统的命名空间（Namespace），协调客户端对文件的访问，记录命名空间内的任何改动或命名空间本身的属性改动。DataNode负责它们所在的物理节点上的存储管理，HDFS开放文件系统的命名空间。NameNode执行文件系统的命名空间操作，决定数据块到DataNode的映射。</p> 
+<p><img src="https://images2.imgbox.com/6f/fb/U59EkQ49_o.png" alt="在这里插入图片描述" width="600"><br>   客户端要访问一个文件。首先，客户端从NameNode获得组成文件的数据块的位置列表；其次，客户端直接从DataNode上读取文件数据。</p> 
+<p>  NameNode使用事务日志（EditLog）记录HDFS元数据的变化，使用映象文件（FsImage）存储文件系统的命名空间。事务日志和映象文件都存储在NameNode的本地文件系统中。将新的元数据刷新到本地磁盘的新的映象文件中，这样可以截去旧的事务日志，这个过程称为检查点（Checkpoint）。HDFS还有Secondary NameNode节点，它辅助NameNode处理映象文件和事务日志。NameNode更新映象文件并清理事务日志，使得事务日志的大小始终控制在可配置的限度下。</p> 
+<p><strong>（2）HDFS典型拓扑</strong></p> 
+<p><strong>① 一般拓扑</strong>：只有单个NameNode节点，使用SecondaryNameNode或BackupNode节点实时获取NameNode元数据信息，备份元数据。</p> 
+<p><img src="https://images2.imgbox.com/96/f3/nYBQVGJj_o.png" alt="在这里插入图片描述" width="500"><br> <strong>② 商用拓扑</strong>：有两个NameNode节点，并使用ZooKeeper实现NameNode节点间的热切换。</p> 
+<p><img src="https://images2.imgbox.com/14/27/oXR4bPQ2_o.png" alt="在这里插入图片描述" width="500"></p> 
+<ul><li>ZooKeeper集群：至少三个ZooKeeper实体，用来选举ActiveNamenode。</li><li>JourNalNode集群：至少三个，用于与两NameNode交换数据，也可使用NFS。</li><li>HTTPFS：提供Web端读写HDFS功能。</li></ul> 
+<p>  从架构上看HDFS存在单点故障，无论是一般拓扑还是商用拓扑，新增的实体几乎都是增强NameNode可靠性的组件，当然这里的ZooKeeper集群还可以用于Hbase。</p> 
+<p><strong>3、HDFS内部特性</strong></p> 
+<p>（1）<strong>冗余备份</strong></p> 
+<p>  HDFS将每个文件存储成一系列数据块（Block），默认块大小为64MB（可配置）。为了容错，文件的所有数据块都会有副本（副本数量即复制因子，可配置）。HDFS的文件都是一次性写入的，并且严格限制为任何时候都只有一个写用户。</p> 
+<p><strong>（2）副本存放</strong></p> 
+<p>  HDFS集群一般运行在多个机架上，不同机架上机器的通信需要通过交换机。HDFS采用机架感知（Rack-aware）的策略来改进数据的可靠性、可用性和网络带宽的利用率。机架的错误远比节点的错误少，这个策略可以防止整个机架失效时数据丢失，提高数据的可靠性和可用性，又能保证性能。</p> 
+<p><img src="https://images2.imgbox.com/b5/c2/2csjCcna_o.png" alt="在这里插入图片描述" width="600"><br> <strong>（3）副本选择</strong></p> 
+<p>  HDFS会尽量使用离程序最近的副本来满足用户请求，这样可以减少总带宽消耗和读延时。HDFS的架构支持数据均衡策略。</p> 
+<p><strong>（4）心跳检测</strong></p> 
+<p>  NameNode周期性地从集群中的每个DataNode接受心跳包和块报告，收到心跳包说明该DataNode工作正常。NameNode会标记最近没有心跳的DataNode为宕机，不会发给它们任何新的I/O请求。NameNode会不断检测这些需要复制的数据块，并在需要的时候重新复制。</p> 
+<p><strong>（5）数据完整性检测</strong></p> 
+<p>  多种原因可能造成从DataNode获取的数据块有损坏。HDFS客户端软件实现了对HDFS文件内容的校验和检查（Checksum）。DataNode获得的数据块对应的校验和隐藏文件中的不同，客户端就会判定数据块有损坏，将从其他DataNode获取该数据块的副本。</p> 
+<p><strong>（6）元数据磁盘失效</strong></p> 
+<p>  映象文件和事务日志是HDFS的核心数据结构。NameNode可以配置为支持维护映象文件和事务日志的多个副本。任何对映象文件或事务日志的修改，都将同步到它们的副本上。当NameNode重新启动时，总是选择最新的一致的映象文件和事务日志。</p> 
+<p><strong>（7）简单一致性模型、流式数据访问</strong></p> 
+<p>  HDFS的应用程序一般对文件实行一次写、多次读的访问模式。文件一旦创建、写入和关闭之后就不需要再更改了。这样就简化了数据一致性问题，高吞吐量的数据访问才成为可能；运行在HDFS上的应用主要以流式读为主，做批量处理；更注重数据访问的高吞吐量。</p> 
+<p><strong>（8）客户端缓存</strong></p> 
+<p>  客户端创建文件的请求不是立即到达NameNode，HDFS客户端先把数据缓存到本地的一个临时文件，程序的写操作透明地重定向到这个临时文件。当这个临时文件累积的数据超过一个块的大小（64MB）时，客户端才会联系NameNode。如果NameNode在文件关闭之前死机，那么文件将会丢失。如果不采用客户端缓存，网络速度和拥塞都会对输出产生很大的影响。</p> 
+<p><strong>（9）流水线复制</strong></p> 
+<p>  当客户端准备写数据到HDFS的文件中时，数据一开始会写入本地临时文件。DataNode从前一个节点接收数据的同时，即时把数据传给后面的节点，这就是流水线复制。</p> 
+<p><strong>（10）架构特征</strong></p> 
+<p>  硬件错误是常态而不是异常。HDFS被设计为运行在普通硬件上，所以硬件故障是很正常的。错误检测并快速自动恢复是HDFS的最核心设计目标。</p> 
+<p><strong>（11）超大规模数据集</strong></p> 
+<p>  一般企业级的文件大小可能都在TB级甚至PB级，HDFS支持大文件存储，而且提供整体上高的数据传输带宽。一个单一的HDFS实例应该能支撑数以千万计的文件，并且能在一个集群里扩展到数百个节点。</p> 
+<p><strong>4、HDFS对外功能</strong></p> 
+<p><strong>（1）NameNode高可靠性</strong></p> 
+<p><strong>（2）HDFS快照</strong></p> 
+<p><strong>（3）HDFS快照</strong></p> 
+<p><strong>（4）HDFS安全性</strong></p> 
+<p><strong>（5）HDFS配额功能</strong></p> 
+<p><strong>（6）HDFS C语言接口</strong></p> 
+<p><strong>（7）HDFS Short-Circuit功能</strong></p> 
+<p><strong>（8）WebHdfs</strong></p> 
+<h4><a id="Yarn_115"></a>（三）分布式操作系统Yarn</h4> 
+<p><strong>1、定位</strong></p> 
+<p>  分布式操作系统的基本功能：管理计算机资源，提供用户接口。Yarn一方面管理整个集群的计算资源（CPU、内存等），另一方面提供用户程序访问系统资源的API。</p> 
+<p><strong>2、体系架构</strong></p> 
+<p><strong>（1）Yarn架构</strong></p> 
+<p>  Yarn的主要思想是将MRv1版JobTracker的两大功能——资源管理和任务调度，拆分成两个独立的进程：</p> 
+<p><img src="https://images2.imgbox.com/d2/15/jwGTYLHN_o.png" alt="在这里插入图片描述" width="500"><br>   Yarn依旧是master/slave结构，主进程ResourceManager是整个集群资源仲裁中心，从进程NodeManager管理本机资源，ResourceManager和从属节点的进程NodeManager组成了Hadoop 2.0的分布式数据计算框架。</p> 
+<p><img src="https://images2.imgbox.com/35/48/rXjxavG8_o.png" alt="在这里插入图片描述" width="550"><br> <strong>（2）Yarn执行过程</strong></p> 
+<p>  Yarn在执行时包含以下独立实体：</p> 
+<p>① Client：客户端，负责向集群提交作业。<br> ② ResourceManager：集群主进程，仲裁中心，负责集群资源管理和任务调度。<br> ③ Scheduler：资源仲裁模块。<br> ④ ApplicationManager：选定，启动和监管ApplicationMaster。<br> ⑤ NodeManager：集群从进程，管理监视Containers，执行具体任务。<br> ⑥ Container：本机资源集合体，如某Container为4个CPU，8GB内存。<br> ⑦ ApplicationMaster：任务执行和监管中心。</p> 
+<p><img src="https://images2.imgbox.com/a8/66/Ln65hinr_o.png" alt="在这里插入图片描述" width="700"><br> <img src="https://images2.imgbox.com/39/00/Rzi02ub5_o.png" alt="在这里插入图片描述" width="500"><br>   若任务执行失败，如果是ApplicationMaster失败，ApplicationManager会重新选择一个Container再次执行此任务对应的ApplicationMaster；如果是计算节点失败，ApplicationMaster首先向Scheduler申请资源，接着根据申请到的资源重新分配失败节点上的任务。</p> 
+<p>  从Yarn架构和Yarn任务执行过程能看出Yarn具有巨大优势：Scheduler是纯粹的资源仲裁中心；ApplicationManager只监管ApplicationMaster；ApplicationMaster负责任务整体执行。</p> 
+<p>  Yarn的设计大大减轻了ResourceManager的资源消耗，并且ApplicationMaster可分布于集群中任意一台机器，设计上更加优美。</p> 
+<p><strong>（3）Yarn典型拓扑</strong></p> 
+<p>  除了ResourceManager和NodeManager两个实体外，Yarn还包括WebAppProxyServer和JobHistoryServer两个实体。</p> 
+<p><img src="https://images2.imgbox.com/bd/00/LzainHD4_o.png" alt="在这里插入图片描述" width="600"><br> <strong>① JobHistoryServer：管理已完成的Yarn任务。</strong></p> 
+<p>  历史任务的日志和执行时的各种统计信息统一由JobTracker管理，Yarn将管理历史任务的功能抽象成一独立实体JobHistoryServer。</p> 
+<p><strong>② WebAppProxyServer：任务执行时的Web页面代理。</strong></p> 
+<p>  通过使用代理，不仅进一步降低了ResourceManager的压力，还能降低Yarn受到的Web攻击。负责监管具体MapReduce任务执行全过程，将从Container那里收集过的任务执行信息汇总并显示到一个Web界面上。</p> 
+<p><strong>3、编程模板</strong></p> 
+<p>  ApplicationMaster 是一个可变更的部分，只要实现不同的ApplicationMaster，就可以实现不同的编程模式。</p> 
+<p><img src="https://images2.imgbox.com/60/3a/X4O9BOBv_o.png" alt="在这里插入图片描述" width="600"><br> <strong>（1）示例模板</strong></p> 
+<p>  Yarn的示例编程为“distributedshell”，该程序可以将给定的shell命令分布到机器执行。</p> 
+<p><strong>（2）MapReduce模板</strong></p> 
+<p>  Map把任务分解成为多个任务，Reduce把分解后多任务处理的结果汇总起来，得到最终结果。</p> 
+<p><img src="https://images2.imgbox.com/5c/23/5aJSwKUH_o.png" alt="在这里插入图片描述" width="600"><br>   一个MapReduce操作分为两个阶段：映射阶段和化简阶段。</p> 
+<p>  在映射阶段，MapReduce框架将用户输入的数据分割为M个片断，对应M个Map任务。在化简阶段，每一个Reduce操作的输入是一个&lt;K2,list(V2)&gt;片断，Reduce操作调用用户定义的Reduce函数，生成用户需要的键值对&lt;K3,V3&gt;进行输出。</p> 
+<p><strong>4、调度策略</strong></p> 
+<p>  ResourceManager的Scheduler模块支持插拔，通过配置文件，用户可以个性化指定其调度策略。</p> 
+<p><img src="https://images2.imgbox.com/e4/31/imUMCSwy_o.png" alt="在这里插入图片描述" width="400"><br> <strong>（1）容量调度算法CapacityScheduler</strong></p> 
+<p><strong>概述：</strong></p> 
+<p>  CapacityScheduler是一种多用户多任务调度策略，它以队列为单位划分任务，以Container为单位分配资源，它也是Hadoop 2.0默认的调度策略，为多个用户共享集群资源提供安全可靠的保障。<br>   通过共建集群的方式，不但可以提高资源利用率，还能在必要时刻使用更多的集群资源，同时，组织机构间共建集群也大大降低了运维成本。容量调度策略通过队列来划分资源，队列间关系类似于一棵多叉树，队列间一层层继承，根队列称为root队列，Yarn初次启动时默认启动队列为root.default队列。</p> 
+<p>容量调度算法<strong>特性</strong>：</p> 
+<p>① 多级队列：容量调度策略以队列来划分集群资源，不同机构可以在集群里新建不同队列。<br> ② 容量确定性：规定某队列占用集群资源的上下限，能够确保即使其他队列用到其最高峰时，也能预留充足资源留给此队列。<br> ③ 安全性：每个队列都有相应的访问控制列表ACL文件。<br> ④ 弹性：通过设置队列额外资源使用量，能够让此队列使用超出规定的资源量。<br> ⑤ 多用户：通过设置不同队列拥有资源的比例，避免某用户或某进程独占集群资源，实现多用户多任务调度。<br> ⑥ 易操作性：主要包括实时配置和实时更改队列状态。</p> 
+<p><strong>实时配置</strong>：管理员能够以安全的方式，在不停止集群的情况下，实时更新队列配置。</p> 
+<p>① 实时更改队列状态：管理员可以在不停止集群的情况下，将队列从运行状态切换成停止状态。Yarn可以管理用户权限和作业提交。<br> ② 基于资源调度：Yarn支持资源密集型作业，作业在分配Container时其Container所包含的资源量是一定的，但Yarn允许此Container在执行时占用更多的资源，目前只支持内存。</p> 
+<p><strong>管理接口</strong>：</p> 
+<p>① Web接口：<code>yarn-site.xml</code>指定使用容量调度策略。<code>capacity-scheduler.xml</code>配置全局多级队列和队列的ACL文件。<code>mapred-site.xml</code>配置客户端提交MapReduce任务时使用的队列。<code>Hadoop-policy.xml</code>配置全局ACL文件。<br> ② Shell命令接口：<code>$HADOOP_YARN_HOME/bin/yarn rmadmin –refreshQueues</code>，管理员可以通过此命令在不停止集群的情况下，使多级队列的配置立即生效。</p> 
+<p><strong>（2）公平调度策略FairScheduler</strong></p> 
+<p><strong>概述</strong>：</p> 
+<p>  FairScheduler是一种允许多个Yarn任务公平使用集群资源的可插拔式调度策略。</p> 
+<p><img src="https://images2.imgbox.com/87/8b/qdBRCdar_o.png" alt="在这里插入图片描述" width="500"><br>   从宏观上看，集群资源公平地为每一个任务所拥有，它不仅可以让短作业在合理的时间内完成，也避免了长作业长期得不到执行的尴尬局面。</p> 
+<p><strong>多级队列</strong>包括以下几个方面的内容。</p> 
+<p>① 默认队列：公平调度策略也通过队列来组织和管理任务，并且也支持多级队列，其队列之间为多叉树结构。<br> ② 队列间权重配置：设置某队列资源权重，权重越大，获得资源的比例越大。<br> ③ 队列内多调度策略：队列内部的调度策略是可配置的，默认为FairSharePolicy策略。<br> ④ 队列下限：为每个队列设置资源下限值，大大提高集群资源利用率。<br> ⑤ 支持多用户：通过多级队列可以将不同的用户分配到不同的队列里。<br> ⑥ 访问控制列表ACL：管理员可以设置队列的ACL文件，严格控制用户访问。</p> 
+<p><strong>接口</strong>：</p> 
+<p>① <code>yarn-site.xml</code>：设定属性<code>yarn.resourcemanager.scheduler.classYarn</code>启动公平调度策略，设置属性<code>yarn.scheduler.fair.allocation.file</code>来指定多级队列文件位置。<br> ② <code>fair-scheduler.xml</code>：配置多级队列的文件，此文件名与位置是通过Yarn配置文件yarn-site.xml里<code>yarn.scheduler.fair.allocation.file</code>属性指定。</p> 
+<h4><a id="Hadoop_20_235"></a>（四）Hadoop 2.0安全机制简介</h4> 
+<p>  早期Hadoop版本假定HDFS和MapReduce运行在安全的环境中，它基本上没有安全措施。集群内部，任何用户提交的MR任务都可以任意访问HDFS数据；集群外部，我们甚至可以启动一个非法slave连接到master，从而冒充集群slave骗取集群数据。随着Hadoop应用越来越广泛，它的安全机制也在不断完善。</p> 
+<p><strong>1、Hadoop安全机制背景</strong></p> 
+<p><img src="https://images2.imgbox.com/c1/d4/Qw5oxY86_o.png" alt="在这里插入图片描述" width="500"><br> <img src="https://images2.imgbox.com/8d/a3/ATmnp9Iy_o.png" alt="在这里插入图片描述" width="500"><br> <strong>2、Hadoop安全机制架构思想</strong></p> 
+<p>  Kerberos鉴定登录用户（服务）是否是其声称的用户（服务），Hadoop决定这个用户到底拥有多少权限。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/50aacc4126a74fad4a1b5877d3d657b7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title"># RocketMQ 实战：模拟电商网站场景综合案例（六）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e077d2649d61dae0eb9193d1ada8259b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Python Web 前后端分离 后台管理系统 Django&#43;vue（完整代码）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

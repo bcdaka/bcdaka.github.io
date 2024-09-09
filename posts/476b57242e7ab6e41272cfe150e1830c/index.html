@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink cdc3.0动态变更表结构——源码解析 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/476b57242e7ab6e41272cfe150e1830c/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Flink cdc3.0动态变更表结构——源码解析">
+  <meta property="og:description" content="文章目录 前言源码解析1. 接收schema变更事件2. 发起schema变更请求3. schema变更请求具体处理4. 广播刷新事件并阻塞5. 处理FlushEvent6. 修改sink端schema 结尾 前言 上一篇Flink cdc3.0同步实例 介绍了最新的一些功能和问题，本篇来看下新功能之一的动态变更表结构的具体实现。
+在 Flink 中，应用程序由流数据流组成，这些数据流是由用户定义的Operators进行转换。
+Flink CDC 3.0 框架中流动的数据类型被称为Event，代表外部系统产生的变更事件。每个事件都标有发生更改的表 ID 。事件分为SchemaChangeEvent和DataChangeEvent，分别代表表结构和数据的变化。处理schema变更的Operators对应图中的SchemaOperator。
+（以下代码使用Flink Release 3.0.0）
+源码解析 1. 接收schema变更事件 我们以添加字段触发的AddColumnEvent为例，它实现了SchemaChangeEvent。 SchemaOperator 当接收到有AddColumnEvent 事件时，会在processElement 中调用handleSchemaChangeEvent处理。
+2. 发起schema变更请求 说明下这里的response实际是直接返回的new SchemaChangeResponse(true)， 由于构造的shouldSendFlushEvent 直接传入true， 所以后续也会进入if条件。我们接着requestSchemaChange 方法看
+由于知道response是直接创建的已知结果，因此responseFuture.get() 也不会阻塞。我们接着来看toCoordinator.sendRequestToCoordinator(getOperatorID(), new SerializedValue&lt;&gt;(request));的实现
+3. schema变更请求具体处理 通过几层的调用，上述变更请求会走到 SchemaRegistry 的handleCoordinationRequest(CoordinationRequest request)，我们的请求是SchemaChangeRequest，所以会调用requestHandler.handleSchemaChangeRequest(schemaChangeRequest);
+这里可以看到response 是直接创建的SchemaChangeResponse(true)。 接着schemaManager.applySchemaChange(request.getSchemaChangeEvent());注册新的schema。
+另外还有个重点，在startToWaitForReleaseRequest方法中会重置responseFuture， 原本的response通过return返回了。而PendingSchemaChange中的response重置，主要就是为了等schema变更完成设计。（主线程会再次发起请求调用responseFuture.get() ，忽略这里会不理解后面为什么会阻塞）
+4. 广播刷新事件并阻塞 回到第二部分，因为response是一个明确对象没有阻塞，返回后会直接广播FlushEvent 和 schemaChangeEvent（再次发起schemaChangeEvent不是很理解）。之后requestReleaseUpstream 请求调用responseFuture.get()会阻塞，因为response在第三步已经重置为new CompletableFuture&lt;&gt;()， 利用的1.8的特性。这也是收到变更事件后要保证sink端变更才能发放数据。
+5. 处理FlushEvent FlushEvent 由什么Operator处理，在官方架构图中其实没有指出，但是图标可以看出是通过sink端完成，我们可以找到DataSinkWriterOperator类，有对FlushEvent的处理。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-02-06T17:42:25+08:00">
+    <meta property="article:modified_time" content="2024-02-06T17:42:25+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink cdc3.0动态变更表结构——源码解析</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">前言</a></li><li><a href="#_8" rel="nofollow">源码解析</a></li><li><ul><li><a href="#1_schema_9" rel="nofollow">1. 接收schema变更事件</a></li><li><a href="#2_schema_12" rel="nofollow">2. 发起schema变更请求</a></li><li><a href="#3_schema_17" rel="nofollow">3. schema变更请求具体处理</a></li><li><a href="#4__26" rel="nofollow">4. 广播刷新事件并阻塞</a></li><li><a href="#5_FlushEvent_29" rel="nofollow">5. 处理FlushEvent</a></li><li><a href="#6_sinkschema_36" rel="nofollow">6. 修改sink端schema</a></li></ul> 
+  </li><li><a href="#_41" rel="nofollow">结尾</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>前言</h2> 
+<p>上一篇<a href="https://blog.csdn.net/yyoc97/article/details/135104812">Flink cdc3.0同步实例</a> 介绍了最新的一些功能和问题，本篇来看下新功能之一的动态变更表结构的具体实现。<br> 在 Flink 中，应用程序由流数据流组成，这些数据流是由用户定义的Operators进行转换。<br> <img src="https://images2.imgbox.com/19/ee/achvKG4K_o.png" alt="在这里插入图片描述"><br> Flink CDC 3.0 框架中流动的数据类型被称为Event，代表外部系统产生的变更事件。每个事件都标有发生更改的表 ID 。事件分为<code>SchemaChangeEvent</code>和<code>DataChangeEvent</code>，分别代表表结构和数据的变化。处理schema变更的Operators对应图中的<code>SchemaOperator</code>。<br> <img src="https://images2.imgbox.com/d7/05/2HprA7uW_o.png" alt="在这里插入图片描述"><br> （以下代码使用Flink Release 3.0.0）</p> 
+<h2><a id="_8"></a>源码解析</h2> 
+<h3><a id="1_schema_9"></a>1. 接收schema变更事件</h3> 
+<p>我们以添加字段触发的<code>AddColumnEvent</code>为例，它实现了<code>SchemaChangeEvent</code>。 <code>SchemaOperator</code> 当接收到有<code>AddColumnEvent</code> 事件时，会在<code>processElement </code>中调用<code>handleSchemaChangeEvent</code>处理。<br> <img src="https://images2.imgbox.com/b3/0a/jxeWXtzE_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="2_schema_12"></a>2. 发起schema变更请求</h3> 
+<p>说明下这里的response实际是直接返回的<code>new SchemaChangeResponse(true)</code>， 由于构造的<code>shouldSendFlushEvent</code> 直接传入true， 所以后续也会进入if条件。我们接着<code>requestSchemaChange</code> 方法看<br> <img src="https://images2.imgbox.com/d3/72/xUftK796_o.png" alt="在这里插入图片描述"><br> 由于知道response是直接创建的已知结果，因此<code>responseFuture.get()</code> 也不会阻塞。我们接着来看<code>toCoordinator.sendRequestToCoordinator(getOperatorID(), new SerializedValue&lt;&gt;(request));</code>的实现<br> <img src="https://images2.imgbox.com/44/4e/u74AEyhy_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="3_schema_17"></a>3. schema变更请求具体处理</h3> 
+<p>通过几层的调用，上述变更请求会走到 <code>SchemaRegistry</code> 的<code>handleCoordinationRequest(CoordinationRequest request)</code>，我们的请求是<code>SchemaChangeRequest</code>，所以会调用<code>requestHandler.handleSchemaChangeRequest(schemaChangeRequest);</code><br> <img src="https://images2.imgbox.com/92/cf/1BB7kwZc_o.png" alt="在这里插入图片描述"><br> 这里可以看到response 是直接创建的<code>SchemaChangeResponse(true)</code>。 接着<code>schemaManager.applySchemaChange(request.getSchemaChangeEvent());</code>注册新的schema。</p> 
+<p><img src="https://images2.imgbox.com/22/f6/PT7G1NVa_o.png" alt="在这里插入图片描述"><br> 另外还有个重点，在<code>startToWaitForReleaseRequest</code>方法中会重置responseFuture， 原本的response通过return返回了。而PendingSchemaChange中的response重置，主要就是为了等schema变更完成设计。<strong>（主线程会再次发起请求调用responseFuture.get() ，忽略这里会不理解后面为什么会阻塞）</strong><br> <img src="https://images2.imgbox.com/7b/42/9Fk0642S_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="4__26"></a>4. 广播刷新事件并阻塞</h3> 
+<p>回到第二部分，因为response是一个明确对象没有阻塞，返回后会直接广播<code>FlushEvent</code> 和 <code>schemaChangeEvent</code>（再次发起<code>schemaChangeEvent</code>不是很理解）。之后<code>requestReleaseUpstream</code> 请求调用<code>responseFuture.get()</code>会阻塞，因为response在第三步已经重置为<code>new CompletableFuture&lt;&gt;()</code>， 利用的1.8的特性。这也是收到变更事件后要保证sink端变更才能发放数据。<br> <img src="https://images2.imgbox.com/56/50/CgMMqYVg_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="5_FlushEvent_29"></a>5. 处理FlushEvent</h3> 
+<p><code>FlushEvent</code> 由什么Operator处理，在官方架构图中其实没有指出，但是图标可以看出是通过sink端完成，我们可以找到<code>DataSinkWriterOperator</code>类，有对<code>FlushEvent</code>的处理。<br> <img src="https://images2.imgbox.com/b8/c6/LAkGZSLF_o.png" alt="在这里插入图片描述"><br> 实际调用<code>SchemaRegistry::handleEventFromOperator</code>方法，重点在<code>requestHandler.flushSuccess(flushSuccessEvent.getTableId(), flushSuccessEvent.getSubtask());</code><br> <img src="https://images2.imgbox.com/01/72/KIeUXNhL_o.png" alt="在这里插入图片描述"><br> 其中<code>applySchemaChange</code> 就是在具体的sink端变更，下面会展开。 当变更完成后会执行<code>waitFlushSuccess.getResponseFuture().complete(wrap(new ReleaseUpstreamResponse()));</code>，实际就通知第4部分的response这里处理完了，可以正常放开数据流。<br> <img src="https://images2.imgbox.com/fb/a4/YwUBfUhl_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="6_sinkschema_36"></a>6. 修改sink端schema</h3> 
+<p>每个sink端有自定义的<code>metadataApplier</code>，<br> <img src="https://images2.imgbox.com/42/53/Hak1nXab_o.png" alt="在这里插入图片描述"><br> 我们以<code>DorisMetadataApplier</code>为例，<code>applyAddColumnEvent</code> 会构造<code>addFieldSchema</code>，然后在<code>schemaChangeManager</code> 中转换为对应的sql执行。<br> <img src="https://images2.imgbox.com/82/67/sqvDMLPO_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_41"></a>结尾</h2> 
+<p><s>以上就是这两天对源码跟进的记录，后续思考使用local环境Debug中间过程。</s><br> <a href="https://blog.csdn.net/yyoc97/article/details/136058801">flink cdc debug动态表结构变更</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/51e55d9ffd075ca5dee80b70e8d746f3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">vue中webpack配置compression-webpack-plugin打包压缩和优化，terser-webpack-plugin在构建过程中对 JavaScript 代码进行压缩和优化</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/85515c35a3f21fc2a4ec52ec0c39e9c0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">学生信息|基于Springboot的学生信息管理系统设计与实现(源码&#43;数据库&#43;文档)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

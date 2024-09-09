@@ -1,0 +1,752 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>AIGC：使用生成对抗网络GAN实现MINST手写数字图像生成 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/16e8b276a24a2146188f44dd7db7c0d9/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="AIGC：使用生成对抗网络GAN实现MINST手写数字图像生成">
+  <meta property="og:description" content="1 生成对抗网络 生成对抗网络（Generative Adversarial Networks, GAN）是一种非常经典的生成式模型，它受到双人零和博弈的启发，让两个神经网络在相互博弈中进行学习，开创了生成式模型的新范式。从 2017 年以后，GAN相关的论文呈现井喷式增长。GAN 的应用十分广泛，它的应用包括图像合成、图像编辑、风格迁移、图像超分辨率以及图像转换，数据增强等。
+1.1 背景 具有开创性工作的生成对抗网络原文由Goodfellow在2014年发表，当时深度学习领域最好的成果有很大一部分都是判别式模型（比如AlexNet），它们使用反向传播和dropout方法，让模型能够拥有一个良好的梯度结构，从而更迅速地收敛到一个较好的状态。而此时的生成式模型相比之下效果却并不是很好。
+论文地址：https://arxiv.org/pdf/1406.2661.pdf
+生成式模型的任务是：给你一组原始数据 ，请你生成一组新数据 ，使得这两组数据看起来“尽可能的相似”。而这个任务本质上就是让新数据的概率密度 尽可能地接近原始数据的概率密度 ，也就是说我们要学习 这个函数。传统的生成式模型会将 建模出来，并通过梯度下降优化模型中的参数，最终达到逼近的目的。从理论上来这个方法似乎挺好，但是真实情况下的概率分布往往是难以逼近的，在当时也并没有今天这么多的优化技术，所以实际上这个方法效果一般。
+因此，本文作者提供了一种新的思路：我们不去直接逼近 ，而是添加一个判别器来判断生成出来的数据“像不像”原始数据，并且轮流训练这个判别器和生成器。假如这两个model最终都能收敛，那么收敛到的位置一定是生成效果“最像”，而判别效果“最准”的位置，我们直接取此时的生成器作为最终答案即可。原文中举了一个例子：生成器就好比一个造假币的团伙，判别器就好比警察，现在我们来看他们互相博弈的过程：
+第一次，假币团伙没有经验，造了很多7块钱一张的假币，拿出去一花就被警察抓了。第二次，假币团伙学聪明了，造了很多看起来很正常的假币；警察一开始没有发现，但是在拿到了一张假币样本之后开始研究，发现了假币的一个缺陷（比如没有让盲人摸的手感线），于是向民众推广这种辨别假币的方法，最终假币团伙的假币就花不出去了。第三次，假币团伙修复了上面的缺陷，造了很多新假币；警察又开始寻找新的缺陷并推广……久而久之，假币团伙造的假币会越来越接近真币，而警察辨别假币的水平也会越来越高。就像生物学上的协同进化一样，这两个团体会在互相博弈中共同进步。 1.2 工作原理 GAN网络能够在不使用标注数据的情况下来进行生成任务的学习。GAN网络由一个生成器和一个判别器组成。生成器从潜在空间随机取样作为输入，其输出结果需要尽量模仿训练集中的真实样本。判别器的输入则为真实样本或生成器的输出，其目的是将生成器的输出从真实样本中尽可能分别出来。生成器和判别器相互对抗、不断学习，最终目的使得判别器无法判断生成器的输出结果是否真实。
+1.2.1 GAN网络组成 GAN网络由生成器和判别器组成：
+生成器。生成器学习如何生成看似合理的数据。对判别器来说，这些生成的实例会变成负面训练样本。判别器。判别器学习如何通过真实数据的学习来辨别出生成器生成的假数据。判别器将惩罚生成器生成的“不可理（假）”的数据结果。 1.2.2 判别器如何工作 判别器在生成对抗网络中，简单来说是一个分类器。该分类器尝试从生成器生成的假数据中识别真实数据。它可以使用任何适用于数据分类的网络架构。判别器在训练中使用误差反向传播机制来计算损失和更新权重参数。
+判别器的训练数据有两处来源，
+真实数据。真实数据实例，比如人的照片。在训练中，判别器把这些实例用作正面样本。虚假数据。生成器生成的实例。在训练中，判别器把这些实例用作负面样本。 上图中两个Sample的框就是这两种输入到判别器的样本。注意，在判别器训练时，生成器不会训练，即在生成器为判别器生成示例数据时，生成器的权重保持恒定。
+在训练判别器时，判别器连接到两个损失函数。在训练时，判别器忽略生成器的损失而只使用判别器损失。在训练过程中，
+判别器对真实数据和来自生成器生成的假数据进行分类。判别器的损失函数将惩罚由判别器产生的误判，比如把真实实例判定成假，或者把假的实例判定为真。判别器通过对来自于判别器网损失函数计算的损失进行反向传播。如上图。 1.2.3 生成器如何工作 生成对抗网络里的生成器，通过接受来自于判别器的反馈来学习如何创建假数据。生成器学习如何让（欺骗）判别器把它的输出归类为真实数据。
+相对于判别器的训练，生成器的训练要求生成器与判别器有更加紧密的集成。生成器训练包含：
+随机输入。神经网络需要某种形式的输入。通常，为了达到某种目的而输入数据，比如一个输入的实例用来进行分类任务或者预测。但当希望输出一整个全新的数据实例，用什么样输入数据呢？
+最常见基础形式里，GAN使用随机噪音作为它的输入。然后，生成器将把随机噪音转换成有意义的输出。通过引入噪音，可以从不同分布形式的不同空间采样，让GAN生成一个宽域的数据
+实验结果表明，不同噪音的分布不会产生太大影响。因此，可以选择相对较易的采样来源，比如，均匀分布。方便起见，噪音采样空间的维度一般小于输出空间的维度。注意，有些GAN变种不使用随机输入来形成输出。
+生成器网络，负责把随机输入转换成数据实例。
+判别器网络，负责把上一步生成的数据归类，判别器输出。
+生成器的损失函数，负责惩罚企图蒙骗判别器失败的情况（即生成器生成的假数据，被识别器成功识破）。
+1.3 训练 1.3.1 GAN训练的整个步骤 当训练开始，生成器生成一个些很明显的假数据，判别器能快速地学习如何识别出是不是假数据， 随着训练稳步推进，生成器更接近于能生成蒙骗判别器的输出数据。 最终，如果生成器训练得当，在识别真实和虚假方面，判别器变得差强人意，而且将开始把假数据分类为真实数据，识别的准确率降低。 1.3.2 使用判别器训练生成器 要训练神经网络，通过修改网络的权重来减少误差或者输出的损失。在GAN里却不同，生成器不直接连接到损失函数来试图影响损失，而是把生成的数据输出到判别器，而判别器会制造影响误差损失的输出。当生成器生成的数据被判别器成功识别成仿冒时，生成器损失函数会惩罚生成器。
+另外，反向传播里也包含网络的额外处理。反向传播通过计算对输出的影响——更改后的权重在多大程度上影响输，来调整每个权重以使其在正确的方向上。但，生成器权重的影响取决于直接输出到判别器的权重的影响。因此，反向传播始于输出且穿过判别器回流到生成器。
+在生成器训练时，不希望判别器更改，就像尝试击中一个移动目标，会让一个本身就麻烦的问题变得更加困难。所以，在训练生成器时使用如下流程，
+随机噪音采样作为输入。生成器从采样的随机噪音采样里生成输出。让判断器判断上述输出是“真”或“假”，以此作为生成器的输出。从判别器的分类输出计算误差损失。穿过判别器和生成器的反向传播，从而获得梯度。使用梯度来更新生成器的权重。 这个流程是生成器训练的一个迭代。
+1.3.3 交替训练 生成器和判别器有不同的训练流程，那么如何才能作为一个整体来训练GAN呢？GAN的训练有交替阶段，
+判别器训练一个或者多个迭代。生成器训练一个或者多个迭代。不断重复1和2步来训练生成器和判别器。 在判别器训练的阶段，保持生成器不变。因为判别器训练会尝试从仿冒数据里分辨出真实数据，判别器必须学习如何识别生成器的缺陷。这就是经过完整训练的生成器和只能生成随机输出的未训练生成器的不同之处。
+类似地，在生成器训练的阶段，保持判别器不变。否则，生成器像尝试击中移动目标一样，可能永远无法收敛。
+这种往复训练使得GAN能够处理另外一些棘手的数据生成问题。开始于相对较简单的分类任务问题，从而获得一个解决生成难题的立足点。相反地，如果不能训练一个分类器来识别真实数据和生成数据的区别，甚至无法识别与随机初始化输出的区别，那么GAN的训练根本无法开始。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2023-11-09T17:16:31+08:00">
+    <meta property="article:modified_time" content="2023-11-09T17:16:31+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">AIGC：使用生成对抗网络GAN实现MINST手写数字图像生成</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>1 生成对抗网络</h2> 
+<p>生成对抗网络（Generative Adversarial Networks, GAN）是一种非常经典的生成式模型，它受到双人零和博弈的启发，让两个神经网络在相互博弈中进行学习，开创了生成式模型的新范式。从  2017 年以后，GAN相关的论文呈现井喷式增长。GAN 的应用十分广泛，它的应用包括图像合成、图像编辑、风格迁移、图像超分辨率以及图像转换，数据增强等。</p> 
+<h3>1.1 背景</h3> 
+<p>具有开创性工作的生成对抗网络原文由Goodfellow在2014年发表，当时深度学习领域最好的成果有很大一部分都是判别式模型（比如AlexNet），它们使用反向传播和dropout方法，让模型能够拥有一个良好的梯度结构，从而更迅速地收敛到一个较好的状态。而此时的生成式模型相比之下效果却并不是很好。</p> 
+<p>论文地址：<a class="link-info" href="https://arxiv.org/pdf/1406.2661.pdf" rel="nofollow" title="https://arxiv.org/pdf/1406.2661.pdf">https://arxiv.org/pdf/1406.2661.pdf</a></p> 
+<p><strong>生成式模型的任务是：</strong>给你一组原始数据 ，请你生成一组新数据 ，使得这两组数据看起来“尽可能的相似”。而这个任务本质上就是让新数据的概率密度 尽可能地接近原始数据的概率密度 ，也就是说我们要学习 这个函数。传统的生成式模型会将 建模出来，并通过梯度下降优化模型中的参数，最终达到逼近的目的。从理论上来这个方法似乎挺好，但是真实情况下的概率分布往往是难以逼近的，在当时也并没有今天这么多的优化技术，所以实际上这个方法效果一般。</p> 
+<p>因此，本文作者提供了一种新的思路：<strong>我们不去直接逼近 ，而是添加一个判别器来判断生成出来的数据“像不像”原始数据，并且轮流训练这个判别器和生成器。</strong>假如这两个model最终都能收敛，那么收敛到的位置一定是生成效果“最像”，而判别效果“最准”的位置，我们直接取此时的生成器作为最终答案即可。原文中举了一个例子：生成器就好比一个造假币的团伙，判别器就好比警察，现在我们来看他们互相博弈的过程：</p> 
+<blockquote> 
+ <ol><li>第一次，假币团伙没有经验，造了很多7块钱一张的假币，拿出去一花就被警察抓了。</li><li>第二次，假币团伙学聪明了，造了很多看起来很正常的假币；警察一开始没有发现，但是在拿到了一张假币样本之后开始研究，发现了假币的一个缺陷（比如没有让盲人摸的手感线），于是向民众推广这种辨别假币的方法，最终假币团伙的假币就花不出去了。</li><li>第三次，假币团伙修复了上面的缺陷，造了很多新假币；警察又开始寻找新的缺陷并推广……</li><li>久而久之，假币团伙造的假币会越来越接近真币，而警察辨别假币的水平也会越来越高。就像生物学上的协同进化一样，这两个团体会在互相博弈中共同进步。</li></ol> 
+</blockquote> 
+<h3>1.2 工作原理</h3> 
+<p>GAN网络能够在不使用标注数据的情况下来进行生成任务的学习。GAN网络由一个生成器和一个判别器组成。生成器从潜在空间随机取样作为输入，其输出结果需要尽量模仿训练集中的真实样本。判别器的输入则为真实样本或生成器的输出，其目的是将生成器的输出从真实样本中尽可能分别出来。生成器和判别器相互对抗、不断学习，最终目的使得判别器无法判断生成器的输出结果是否真实。</p> 
+<h4 style="background-color:transparent;">1.2.1 GAN网络组成</h4> 
+<p><img alt="" height="539" src="https://images2.imgbox.com/be/7a/BNMydZ5D_o.png" width="1073"></p> 
+<p>GAN网络由生成器和判别器组成：</p> 
+<ul><li>生成器。生成器学习如何生成看似合理的数据。对判别器来说，这些生成的实例会变成负面训练样本。</li><li>判别器。判别器学习如何通过真实数据的学习来辨别出生成器生成的假数据。判别器将惩罚生成器生成的“不可理（假）”的数据结果。</li></ul> 
+<h4 style="background-color:transparent;"><strong>1.2.2 判别器如何工作</strong></h4> 
+<p>判别器在生成对抗网络中，简单来说是一个分类器。该分类器尝试从生成器生成的假数据中识别真实数据。它可以使用任何适用于数据分类的网络架构。判别器在训练中使用误差反向传播机制来计算损失和更新权重参数。</p> 
+<p><img alt="" height="536" src="https://images2.imgbox.com/b4/dd/2Tph5UB7_o.png" width="1200"></p> 
+<p>判别器的训练数据有两处来源，</p> 
+<ul><li>真实数据。真实数据实例，比如人的照片。在训练中，判别器把这些实例用作正面样本。</li><li>虚假数据。生成器生成的实例。在训练中，判别器把这些实例用作负面样本。</li></ul> 
+<p>上图中两个Sample的框就是这两种输入到判别器的样本。注意，在判别器训练时，生成器不会训练，即在生成器为判别器生成示例数据时，生成器的权重保持恒定。</p> 
+<p>在训练判别器时，判别器连接到两个损失函数。在训练时，判别器忽略生成器的损失而只使用判别器损失。在训练过程中，</p> 
+<ul><li>判别器对真实数据和来自生成器生成的假数据进行分类。</li><li>判别器的损失函数将惩罚由判别器产生的误判，比如把真实实例判定成假，或者把假的实例判定为真。</li><li>判别器通过对来自于判别器网损失函数计算的损失进行反向传播。如上图。</li></ul> 
+<h4>1.2.3 生成器如何工作</h4> 
+<p>生成对抗网络里的生成器，通过接受来自于判别器的反馈来学习如何创建假数据。生成器学习如何让（欺骗）判别器把它的输出归类为真实数据。</p> 
+<p><img alt="" height="525" src="https://images2.imgbox.com/53/91/IzHwWoxc_o.png" width="1200"></p> 
+<p>相对于判别器的训练，生成器的训练要求生成器与判别器有更加紧密的集成。生成器训练包含：</p> 
+<ul><li> <p>随机输入。神经网络需要某种形式的输入。通常，为了达到某种目的而输入数据，比如一个输入的实例用来进行分类任务或者预测。但当希望输出一整个全新的数据实例，用什么样输入数据呢？</p> </li><li> <p>最常见基础形式里，GAN使用随机噪音作为它的输入。然后，生成器将把随机噪音转换成有意义的输出。通过引入噪音，可以从不同分布形式的不同空间采样，让GAN生成一个宽域的数据</p> </li><li> <p>实验结果表明，不同噪音的分布不会产生太大影响。因此，可以选择相对较易的采样来源，比如，均匀分布。方便起见，噪音采样空间的维度一般小于输出空间的维度。注意，有些GAN变种不使用随机输入来形成输出。</p> </li><li> <p>生成器网络，负责把随机输入转换成数据实例。</p> </li><li> <p>判别器网络，负责把上一步生成的数据归类，判别器输出。</p> </li><li> <p>生成器的损失函数，负责惩罚企图蒙骗判别器失败的情况（即生成器生成的假数据，被识别器成功识破）。</p> </li></ul> 
+<h3>1.3 训练</h3> 
+<h4 style="background-color:transparent;"><strong> 1.3.1 GAN训练的整个步骤</strong></h4> 
+<ul><li>当训练开始，生成器生成一个些很明显的假数据，判别器能快速地学习如何识别出是不是假数据，</li></ul> 
+<p><img alt="" height="218" src="https://images2.imgbox.com/fb/82/xKZlaeHP_o.png" width="1200"></p> 
+<ul><li>随着训练稳步推进，生成器更接近于能生成蒙骗判别器的输出数据。</li></ul> 
+<p><img alt="" height="140" src="https://images2.imgbox.com/f3/a6/iWpTPCPE_o.png" width="1200"></p> 
+<ul><li>最终，如果生成器训练得当，在识别真实和虚假方面，判别器变得差强人意，而且将开始把假数据分类为真实数据，识别的准确率降低。</li></ul> 
+<p><img alt="" height="144" src="https://images2.imgbox.com/43/d7/JVSESqyf_o.png" width="1200"></p> 
+<h4>1.3.2 使用判别器训练生成器</h4> 
+<p>要训练神经网络，通过修改网络的权重来减少误差或者输出的损失。在GAN里却不同，生成器不直接连接到损失函数来试图影响损失，而是把生成的数据输出到判别器，而判别器会制造影响误差损失的输出。当生成器生成的数据被判别器成功识别成仿冒时，生成器损失函数会惩罚生成器。</p> 
+<p>另外，反向传播里也包含网络的额外处理。反向传播通过计算对输出的影响——更改后的权重在多大程度上影响输，来调整每个权重以使其在正确的方向上。但，生成器权重的影响取决于直接输出到判别器的权重的影响。因此，反向传播始于输出且穿过判别器回流到生成器。</p> 
+<p>在生成器训练时，不希望判别器更改，就像尝试击中一个移动目标，会让一个本身就麻烦的问题变得更加困难。所以，在训练生成器时使用如下流程，</p> 
+<ul><li>随机噪音采样作为输入。</li><li>生成器从采样的随机噪音采样里生成输出。</li><li>让判断器判断上述输出是“真”或“假”，以此作为生成器的输出。</li><li>从判别器的分类输出计算误差损失。</li><li>穿过判别器和生成器的反向传播，从而获得梯度。</li><li>使用梯度来更新生成器的权重。</li></ul> 
+<p>这个流程是生成器训练的一个迭代。</p> 
+<h4>1.3.3 交替训练</h4> 
+<p>生成器和判别器有不同的训练流程，那么如何才能作为一个整体来训练GAN呢？GAN的训练有交替阶段，</p> 
+<ul><li>判别器训练一个或者多个迭代。</li><li>生成器训练一个或者多个迭代。</li><li>不断重复1和2步来训练生成器和判别器。</li></ul> 
+<p>在判别器训练的阶段，保持生成器不变。因为判别器训练会尝试从仿冒数据里分辨出真实数据，判别器必须学习如何识别生成器的缺陷。这就是经过完整训练的生成器和只能生成随机输出的未训练生成器的不同之处。</p> 
+<p>类似地，在生成器训练的阶段，保持判别器不变。否则，生成器像尝试击中移动目标一样，可能永远无法收敛。</p> 
+<p>这种往复训练使得GAN能够处理另外一些棘手的数据生成问题。开始于相对较简单的分类任务问题，从而获得一个解决生成难题的立足点。相反地，如果不能训练一个分类器来识别真实数据和生成数据的区别，甚至无法识别与随机初始化输出的区别，那么GAN的训练根本无法开始。</p> 
+<h4>1.3.4 收敛</h4> 
+<p>随着训练进行，生成器不断改善，相对地，由于不能再轻易地识别出真实数据和假冒数据的，判别器的表现越来越差。当生成器完美地成功生成时，判别器的正确率只有50%。基本上和抛一枚硬币来预测正反一样的概率一样。</p> 
+<p>这种进度展现了作为整体GAN的一个问题，判别器的反馈随着时间的推移越来越不具有意义。过了这个节点之后，即判别器完全给出了随机反馈，如果继续训练GAN，那么生成器将使用判别器给出的无效反馈进行训练，那么生成器的质量可能会崩塌。</p> 
+<p>对于GAN来说，收敛往往是一个闪现的点，而不是牢固的、稳态的。</p> 
+<h2>2 基于pytorch实现MINIST手写数字图像识别</h2> 
+<pre><code class="hljs"># -*- coding: utf-8 -*-
+import torch
+import matplotlib.pyplot as plt
+from torchvision import datasets, transforms
+from torch import nn, optim
+from torch.nn import functional as F
+from tqdm import tqdm
+import os
+
+os.chdir(os.path.dirname(__file__))
+
+
+class Generator(nn.Module):
+    def __init__(self, latent_size, hidden_size, output_size):
+        super(Generator, self).__init__()
+        self.linear = nn.Linear(latent_size, hidden_size)
+        self.out = nn.Linear(hidden_size, output_size)
+
+    def forward(self, x):
+        x = F.relu(self.linear(x))
+
+        x = torch.sigmoid(self.out(x))
+        return x
+
+
+class Discriminator(nn.Module):
+    def __init__(self, input_size, hidden_size):
+        super(Discriminator, self).__init__()
+        self.linear = nn.Linear(input_size, hidden_size)
+        self.out = nn.Linear(hidden_size,1)
+
+    def forward(self, x):
+        x = F.relu(self.linear(x))
+        x = torch.sigmoid(self.out(x))
+        return x
+
+
+loss_BCE = torch.nn.BCELoss(reduction='sum')
+
+
+# 压缩后的特征维度
+latent_size = 16
+
+# encoder和decoder中间层的维度
+hidden_size = 128
+
+# 原始图片和生成图片的维度
+input_size = output_size = 28*28
+
+
+epochs = 100
+batch_size = 32
+learning_rate = 1e-5
+device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+modelname = ['gan-G.pth', 'gan-D.pth']
+model_g = Generator(latent_size, hidden_size, output_size).to(device)
+model_d = Discriminator(input_size, hidden_size).to(device)
+
+optim_g = torch.optim.Adam(model_g.parameters(), lr=learning_rate)
+optim_d = torch.optim.Adam(model_d.parameters(), lr=learning_rate)
+
+try:
+    model_g.load_state_dict(torch.load(modelname[0]))
+    model_d.load_state_dict(torch.load(modelname[1]))
+    print('[INFO] Load Model complete')
+except:
+    pass
+
+
+train_loader = torch.utils.data.DataLoader(
+    datasets.MNIST('./data', train=True, download=True,
+                   transform=transforms.ToTensor()),
+    batch_size=batch_size, shuffle=True)
+test_loader = torch.utils.data.DataLoader(
+    datasets.MNIST('./data', train=False, transform=transforms.ToTensor()),
+    batch_size=batch_size, shuffle=False)
+
+
+for epoch in range(epochs):
+    Gen_loss = 0
+    Dis_loss = 0
+    for imgs, lbls in tqdm(train_loader, desc=f'[train]epoch:{epoch}'):
+        bs = imgs.shape[0]
+        T_imgs = imgs.view(bs, input_size).to(device)
+        T_lbl = torch.ones(bs, 1).to(device)
+        F_lbl = torch.zeros(bs, 1).to(device)
+
+        sample = torch.randn(bs, latent_size).to(device)
+        F_imgs = model_g(sample)
+        F_Dis = model_d(F_imgs)
+
+        loss_g = loss_BCE(F_Dis, T_lbl)
+        loss_g.backward()
+        optim_g.step()
+        optim_g.zero_grad()
+
+        # 训练判别器, 使用判别器分别判断真实图像和伪造图像
+        T_Dis = model_d(T_imgs)
+        F_Dis = model_d(F_imgs.detach())
+
+        loss_d_T = loss_BCE(T_Dis, T_lbl)
+        loss_d_F = loss_BCE(F_Dis, F_lbl)
+        loss_d = loss_d_T + loss_d_F
+        loss_d.backward()
+        optim_d.step()
+        optim_d.zero_grad()
+
+        Gen_loss += loss_g.item()
+        Dis_loss += loss_d.item()
+    print(f'epoch:{epoch}|Train G Loss:', Gen_loss/len(train_loader.dataset),
+          ' Train D Loss:', Dis_loss/len(train_loader.dataset))
+
+    model_g.eval()
+    model_d.eval()
+    Gen_score = 0
+    Dis_score = 0
+    for imgs, lbls in tqdm(test_loader, desc=f'[eval]epoch:{epoch}'):
+        bs = imgs.shape[0]
+        T_imgs = imgs.view(bs, input_size).to(device)
+        sample = torch.randn(bs, latent_size).to(device)
+
+        F_imgs = model_g(sample)
+
+        F_Dis = model_d(F_imgs)
+        T_Dis = model_d(T_imgs)
+
+        Gen_score += int(sum(F_Dis &gt;= 0.5))
+        Dis_score += int(sum(T_Dis &gt;= 0.5)) + int(sum(F_Dis &lt; 0.5))
+
+    print(f'epoch:{epoch}|Test G Score:', Gen_score/len(test_loader.dataset),
+          ' Test D Score:', Dis_score/len(test_loader.dataset)/2)
+
+    model_g.train()
+    model_d.train()
+
+    model_g.eval()
+    noise = torch.randn(1, latent_size).to(device)
+    gen_imgs = model_g(noise)
+    gen_imgs = gen_imgs[0].view(28, 28)
+    plt.matshow(gen_imgs.cpu().detach().numpy())
+    plt.show()
+    model_g.train()
+
+    torch.save(model_g.state_dict(), modelname[0])
+    torch.save(model_d.state_dict(), modelname[1])
+
+sample = torch.randn(1, latent_size).to(device)
+gen_imgs = model_g(sample)
+gen_imgs = gen_imgs[0].view(28, 28)
+plt.matshow(gen_imgs.cpu().detach().numpy())
+plt.show()
+
+dataset = datasets.MNIST('./data', train=False, transform=transforms.ToTensor())
+index = 0
+raw = dataset[index][0].view(28, 28)
+plt.matshow(raw.cpu().detach().numpy())
+plt.show()
+raw = raw.view(1, 28*28)
+result = model_d(raw.to(device))
+print('该图为真概率为：', result.cpu().detach().numpy())</code></pre> 
+<p>运行结果展示：</p> 
+<pre><code class="hljs">epoch:0|Train G Loss: 0.6875885964711507  Train D Loss: 0.900547916316986
+[eval]epoch:0: 100%|██████████| 313/313 [00:01&lt;00:00, 156.80it/s]
+epoch:0|Test G Score: 0.508  Test D Score: 0.746
+[train]epoch:1: 100%|██████████| 1875/1875 [00:16&lt;00:00, 115.81it/s]
+[eval]epoch:1:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:1|Train G Loss: 0.6893692766507467  Train D Loss: 0.7974184644699097
+[eval]epoch:1: 100%|██████████| 313/313 [00:01&lt;00:00, 207.98it/s]
+epoch:1|Test G Score: 0.5464  Test D Score: 0.72665
+[train]epoch:2: 100%|██████████| 1875/1875 [00:12&lt;00:00, 146.62it/s]
+epoch:2|Train G Loss: 0.673165140692393  Train D Loss: 0.8305254749298095
+[eval]epoch:2: 100%|██████████| 313/313 [00:01&lt;00:00, 209.88it/s]
+epoch:2|Test G Score: 0.6044  Test D Score: 0.6975
+[train]epoch:3: 100%|██████████| 1875/1875 [00:13&lt;00:00, 142.41it/s]
+[eval]epoch:3:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:3|Train G Loss: 0.655821964041392  Train D Loss: 0.8957085851987203
+[eval]epoch:3: 100%|██████████| 313/313 [00:01&lt;00:00, 217.87it/s]
+epoch:3|Test G Score: 0.6314  Test D Score: 0.6843
+[train]epoch:4: 100%|██████████| 1875/1875 [00:12&lt;00:00, 144.54it/s]
+epoch:4|Train G Loss: 0.6303421321868896  Train D Loss: 0.9860619965871175
+[eval]epoch:4: 100%|██████████| 313/313 [00:01&lt;00:00, 208.05it/s]
+epoch:4|Test G Score: 0.8278  Test D Score: 0.5861
+[train]epoch:5: 100%|██████████| 1875/1875 [00:13&lt;00:00, 142.51it/s]
+[eval]epoch:5:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:5|Train G Loss: 0.618980922015508  Train D Loss: 1.0005566129366557
+[eval]epoch:5: 100%|██████████| 313/313 [00:01&lt;00:00, 207.35it/s]
+epoch:5|Test G Score: 0.8836  Test D Score: 0.5582
+[train]epoch:6: 100%|██████████| 1875/1875 [00:13&lt;00:00, 139.91it/s]
+[eval]epoch:6:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:6|Train G Loss: 0.6256029644330343  Train D Loss: 0.9548635380109152
+[eval]epoch:6: 100%|██████████| 313/313 [00:01&lt;00:00, 178.27it/s]
+epoch:6|Test G Score: 0.8472  Test D Score: 0.57635
+[train]epoch:7: 100%|██████████| 1875/1875 [00:13&lt;00:00, 138.69it/s]
+epoch:7|Train G Loss: 0.6368107126871745  Train D Loss: 0.8985964351971945
+[eval]epoch:7: 100%|██████████| 313/313 [00:01&lt;00:00, 219.13it/s]
+epoch:7|Test G Score: 0.8338  Test D Score: 0.58305
+[train]epoch:8: 100%|██████████| 1875/1875 [00:13&lt;00:00, 136.85it/s]
+[eval]epoch:8:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:8|Train G Loss: 0.6433719543457032  Train D Loss: 0.8640010238965352
+[eval]epoch:8: 100%|██████████| 313/313 [00:01&lt;00:00, 217.03it/s]
+epoch:8|Test G Score: 0.8508  Test D Score: 0.5745
+[train]epoch:9: 100%|██████████| 1875/1875 [00:13&lt;00:00, 140.35it/s]
+epoch:9|Train G Loss: 0.6413426885286967  Train D Loss: 0.856661129951477
+[eval]epoch:9: 100%|██████████| 313/313 [00:01&lt;00:00, 205.91it/s]
+epoch:9|Test G Score: 0.87  Test D Score: 0.56465
+[train]epoch:10: 100%|██████████| 1875/1875 [00:13&lt;00:00, 138.44it/s]
+epoch:10|Train G Loss: 0.625159033648173  Train D Loss: 0.8793583973566691
+[eval]epoch:10: 100%|██████████| 313/313 [00:01&lt;00:00, 176.33it/s]
+epoch:10|Test G Score: 0.8248  Test D Score: 0.58655
+[train]epoch:11: 100%|██████████| 1875/1875 [00:14&lt;00:00, 125.72it/s]
+[eval]epoch:11:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:11|Train G Loss: 0.5767637458483378  Train D Loss: 0.9703869668960571
+[eval]epoch:11: 100%|██████████| 313/313 [00:01&lt;00:00, 196.50it/s]
+epoch:11|Test G Score: 0.8887  Test D Score: 0.55255
+[train]epoch:12: 100%|██████████| 1875/1875 [00:13&lt;00:00, 141.20it/s]
+[eval]epoch:12:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:12|Train G Loss: 0.5046857475757599  Train D Loss: 1.102966185728709
+[eval]epoch:12: 100%|██████████| 313/313 [00:01&lt;00:00, 209.23it/s]
+epoch:12|Test G Score: 0.9681  Test D Score: 0.51215
+[train]epoch:13: 100%|██████████| 1875/1875 [00:13&lt;00:00, 134.44it/s]
+[eval]epoch:13:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:13|Train G Loss: 0.45238159114519755  Train D Loss: 1.178836212793986
+[eval]epoch:13: 100%|██████████| 313/313 [00:01&lt;00:00, 193.06it/s]
+epoch:13|Test G Score: 0.9991  Test D Score: 0.4988
+[train]epoch:14: 100%|██████████| 1875/1875 [00:13&lt;00:00, 139.44it/s]
+epoch:14|Train G Loss: 0.4352366681098938  Train D Loss: 1.2040739413579304
+[eval]epoch:14: 100%|██████████| 313/313 [00:01&lt;00:00, 225.10it/s]
+epoch:14|Test G Score: 1.0  Test D Score: 0.49955
+[train]epoch:15: 100%|██████████| 1875/1875 [00:13&lt;00:00, 134.89it/s]
+[eval]epoch:15:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:15|Train G Loss: 0.4290158264954885  Train D Loss: 1.2207831408818564
+[eval]epoch:15: 100%|██████████| 313/313 [00:01&lt;00:00, 208.76it/s]
+epoch:15|Test G Score: 1.0  Test D Score: 0.5
+[train]epoch:16: 100%|██████████| 1875/1875 [00:13&lt;00:00, 140.68it/s]
+[eval]epoch:16:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:16|Train G Loss: 0.4312060431321462  Train D Loss: 1.2376526662190754
+[eval]epoch:16: 100%|██████████| 313/313 [00:01&lt;00:00, 216.49it/s]
+epoch:16|Test G Score: 1.0  Test D Score: 0.5
+[train]epoch:17: 100%|██████████| 1875/1875 [00:13&lt;00:00, 144.16it/s]
+[eval]epoch:17:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:17|Train G Loss: 0.44652245319684347  Train D Loss: 1.2268573774973552
+[eval]epoch:17: 100%|██████████| 313/313 [00:01&lt;00:00, 219.70it/s]
+epoch:17|Test G Score: 1.0  Test D Score: 0.5
+[train]epoch:18: 100%|██████████| 1875/1875 [00:13&lt;00:00, 141.00it/s]
+[eval]epoch:18:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:18|Train G Loss: 0.4680913890361786  Train D Loss: 1.2032010343551636
+[eval]epoch:18: 100%|██████████| 313/313 [00:01&lt;00:00, 217.91it/s]
+epoch:18|Test G Score: 0.9995  Test D Score: 0.50025
+[train]epoch:19: 100%|██████████| 1875/1875 [00:12&lt;00:00, 145.06it/s]
+[eval]epoch:19:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:19|Train G Loss: 0.48391503705978395  Train D Loss: 1.1880424275080363
+[eval]epoch:19: 100%|██████████| 313/313 [00:01&lt;00:00, 216.23it/s]
+epoch:19|Test G Score: 0.9842  Test D Score: 0.5079
+[train]epoch:20: 100%|██████████| 1875/1875 [00:13&lt;00:00, 138.07it/s]
+epoch:20|Train G Loss: 0.4985790911992391  Train D Loss: 1.166650744565328
+[eval]epoch:20: 100%|██████████| 313/313 [00:01&lt;00:00, 192.51it/s]
+epoch:20|Test G Score: 0.9533  Test D Score: 0.5232
+[train]epoch:21: 100%|██████████| 1875/1875 [00:13&lt;00:00, 138.84it/s]
+[eval]epoch:21:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:21|Train G Loss: 0.5132446504592896  Train D Loss: 1.1380250610987346
+[eval]epoch:21: 100%|██████████| 313/313 [00:01&lt;00:00, 222.60it/s]
+epoch:21|Test G Score: 0.9594  Test D Score: 0.5202
+[train]epoch:22: 100%|██████████| 1875/1875 [00:13&lt;00:00, 143.06it/s]
+epoch:22|Train G Loss: 0.5296086418151855  Train D Loss: 1.093998572953542
+[eval]epoch:22: 100%|██████████| 313/313 [00:01&lt;00:00, 217.07it/s]
+epoch:22|Test G Score: 0.9168  Test D Score: 0.54155
+[train]epoch:23: 100%|██████████| 1875/1875 [00:12&lt;00:00, 145.31it/s]
+epoch:23|Train G Loss: 0.5381884034315745  Train D Loss: 1.0698080471038818
+[eval]epoch:23: 100%|██████████| 313/313 [00:01&lt;00:00, 219.64it/s]
+epoch:23|Test G Score: 0.9184  Test D Score: 0.5407
+[train]epoch:24: 100%|██████████| 1875/1875 [00:12&lt;00:00, 144.79it/s]
+epoch:24|Train G Loss: 0.547061498785019  Train D Loss: 1.0511650788942972
+[eval]epoch:24: 100%|██████████| 313/313 [00:01&lt;00:00, 216.98it/s]
+epoch:24|Test G Score: 0.8944  Test D Score: 0.55275
+[train]epoch:25: 100%|██████████| 1875/1875 [00:12&lt;00:00, 145.18it/s]
+epoch:25|Train G Loss: 0.5475555786927541  Train D Loss: 1.0530290616671245
+[eval]epoch:25: 100%|██████████| 313/313 [00:01&lt;00:00, 207.76it/s]
+epoch:25|Test G Score: 0.851  Test D Score: 0.57445
+[train]epoch:26: 100%|██████████| 1875/1875 [00:13&lt;00:00, 144.00it/s]
+epoch:26|Train G Loss: 0.5512707938035329  Train D Loss: 1.050317045243581
+[eval]epoch:26: 100%|██████████| 313/313 [00:01&lt;00:00, 204.34it/s]
+epoch:26|Test G Score: 0.8336  Test D Score: 0.58315
+[train]epoch:27: 100%|██████████| 1875/1875 [00:12&lt;00:00, 145.68it/s]
+[eval]epoch:27:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:27|Train G Loss: 0.5531968828996022  Train D Loss: 1.0482187390327453
+[eval]epoch:27: 100%|██████████| 313/313 [00:01&lt;00:00, 219.78it/s]
+epoch:27|Test G Score: 0.8356  Test D Score: 0.58215
+[train]epoch:28: 100%|██████████| 1875/1875 [00:13&lt;00:00, 135.91it/s]
+[eval]epoch:28:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:28|Train G Loss: 0.5603058772563935  Train D Loss: 1.0356980097770692
+[eval]epoch:28: 100%|██████████| 313/313 [00:01&lt;00:00, 211.54it/s]
+epoch:28|Test G Score: 0.8282  Test D Score: 0.5859
+[train]epoch:29: 100%|██████████| 1875/1875 [00:13&lt;00:00, 138.85it/s]
+epoch:29|Train G Loss: 0.5646376594384511  Train D Loss: 1.0272360989570617
+[eval]epoch:29: 100%|██████████| 313/313 [00:01&lt;00:00, 191.37it/s]
+epoch:29|Test G Score: 0.812  Test D Score: 0.5939
+[train]epoch:30: 100%|██████████| 1875/1875 [00:13&lt;00:00, 143.24it/s]
+epoch:30|Train G Loss: 0.5680709630171458  Train D Loss: 1.0258071581522623
+[eval]epoch:30: 100%|██████████| 313/313 [00:01&lt;00:00, 171.36it/s]
+epoch:30|Test G Score: 0.777  Test D Score: 0.61125
+[train]epoch:31: 100%|██████████| 1875/1875 [00:13&lt;00:00, 137.87it/s]
+epoch:31|Train G Loss: 0.570367333316803  Train D Loss: 1.0270372252464295
+[eval]epoch:31: 100%|██████████| 313/313 [00:01&lt;00:00, 208.48it/s]
+epoch:31|Test G Score: 0.788  Test D Score: 0.60585
+[train]epoch:32: 100%|██████████| 1875/1875 [00:14&lt;00:00, 125.15it/s]
+epoch:32|Train G Loss: 0.5689761372566223  Train D Loss: 1.032519684569041
+[eval]epoch:32: 100%|██████████| 313/313 [00:01&lt;00:00, 201.65it/s]
+epoch:32|Test G Score: 0.7886  Test D Score: 0.6054
+[train]epoch:33: 100%|██████████| 1875/1875 [00:14&lt;00:00, 128.05it/s]
+[eval]epoch:33:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:33|Train G Loss: 0.5693015421549479  Train D Loss: 1.035339980093638
+[eval]epoch:33: 100%|██████████| 313/313 [00:01&lt;00:00, 158.88it/s]
+epoch:33|Test G Score: 0.7879  Test D Score: 0.6057
+[train]epoch:34: 100%|██████████| 1875/1875 [00:14&lt;00:00, 133.27it/s]
+[eval]epoch:34:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:34|Train G Loss: 0.5668578405539195  Train D Loss: 1.0422602198282878
+[eval]epoch:34: 100%|██████████| 313/313 [00:01&lt;00:00, 207.55it/s]
+epoch:34|Test G Score: 0.7765  Test D Score: 0.61145
+[train]epoch:35: 100%|██████████| 1875/1875 [00:14&lt;00:00, 129.03it/s]
+epoch:35|Train G Loss: 0.5670834843476613  Train D Loss: 1.0474675672849019
+[eval]epoch:35: 100%|██████████| 313/313 [00:01&lt;00:00, 215.83it/s]
+epoch:35|Test G Score: 0.7736  Test D Score: 0.6128
+[train]epoch:36: 100%|██████████| 1875/1875 [00:14&lt;00:00, 128.17it/s]
+epoch:36|Train G Loss: 0.5658628444035848  Train D Loss: 1.0513075345993041
+[eval]epoch:36: 100%|██████████| 313/313 [00:01&lt;00:00, 162.43it/s]
+epoch:36|Test G Score: 0.7579  Test D Score: 0.62045
+[train]epoch:37: 100%|██████████| 1875/1875 [00:14&lt;00:00, 128.96it/s]
+[eval]epoch:37:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:37|Train G Loss: 0.5655051300366719  Train D Loss: 1.0581976316452026
+[eval]epoch:37: 100%|██████████| 313/313 [00:01&lt;00:00, 208.46it/s]
+epoch:37|Test G Score: 0.7771  Test D Score: 0.61075
+[train]epoch:38: 100%|██████████| 1875/1875 [00:14&lt;00:00, 130.93it/s]
+epoch:38|Train G Loss: 0.5654594079812367  Train D Loss: 1.0538349712053934
+[eval]epoch:38: 100%|██████████| 313/313 [00:01&lt;00:00, 185.77it/s]
+epoch:38|Test G Score: 0.7541  Test D Score: 0.62205
+[train]epoch:39: 100%|██████████| 1875/1875 [00:14&lt;00:00, 125.45it/s]
+[eval]epoch:39:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:39|Train G Loss: 0.5672246192773183  Train D Loss: 1.0494285337766012
+[eval]epoch:39: 100%|██████████| 313/313 [00:01&lt;00:00, 171.04it/s]
+epoch:39|Test G Score: 0.7769  Test D Score: 0.6107
+[train]epoch:40: 100%|██████████| 1875/1875 [00:15&lt;00:00, 117.92it/s]
+[eval]epoch:40:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:40|Train G Loss: 0.5721065460681916  Train D Loss: 1.0330856778462727
+[eval]epoch:40: 100%|██████████| 313/313 [00:01&lt;00:00, 187.56it/s]
+epoch:40|Test G Score: 0.7586  Test D Score: 0.6199
+[train]epoch:41: 100%|██████████| 1875/1875 [00:15&lt;00:00, 122.10it/s]
+epoch:41|Train G Loss: 0.5743793784300486  Train D Loss: 1.0288026348431905
+[eval]epoch:41: 100%|██████████| 313/313 [00:01&lt;00:00, 206.37it/s]
+epoch:41|Test G Score: 0.7728  Test D Score: 0.6129
+[train]epoch:42: 100%|██████████| 1875/1875 [00:13&lt;00:00, 139.09it/s]
+epoch:42|Train G Loss: 0.5785000865777333  Train D Loss: 1.021603403186798
+[eval]epoch:42: 100%|██████████| 313/313 [00:01&lt;00:00, 221.09it/s]
+epoch:42|Test G Score: 0.7526  Test D Score: 0.6229
+[train]epoch:43: 100%|██████████| 1875/1875 [00:12&lt;00:00, 144.34it/s]
+epoch:43|Train G Loss: 0.5783152904351553  Train D Loss: 1.0219791579882305
+[eval]epoch:43: 100%|██████████| 313/313 [00:01&lt;00:00, 221.55it/s]
+epoch:43|Test G Score: 0.7678  Test D Score: 0.6158
+[train]epoch:44: 100%|██████████| 1875/1875 [00:13&lt;00:00, 142.33it/s]
+[eval]epoch:44:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:44|Train G Loss: 0.5834402229150136  Train D Loss: 1.0131274561564128
+[eval]epoch:44: 100%|██████████| 313/313 [00:01&lt;00:00, 209.97it/s]
+epoch:44|Test G Score: 0.7212  Test D Score: 0.63855
+[train]epoch:45: 100%|██████████| 1875/1875 [00:13&lt;00:00, 135.03it/s]
+epoch:45|Train G Loss: 0.5835320703665415  Train D Loss: 1.0110607721964517
+[eval]epoch:45: 100%|██████████| 313/313 [00:01&lt;00:00, 210.29it/s]
+epoch:45|Test G Score: 0.776  Test D Score: 0.61135
+[train]epoch:46: 100%|██████████| 1875/1875 [00:13&lt;00:00, 142.94it/s]
+[eval]epoch:46:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:46|Train G Loss: 0.5882964856624603  Train D Loss: 0.9964836405118307
+[eval]epoch:46: 100%|██████████| 313/313 [00:01&lt;00:00, 221.34it/s]
+epoch:46|Test G Score: 0.7191  Test D Score: 0.64005
+[train]epoch:47: 100%|██████████| 1875/1875 [00:13&lt;00:00, 143.21it/s]
+[eval]epoch:47:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:47|Train G Loss: 0.590389885600408  Train D Loss: 0.9914610226949055
+[eval]epoch:47: 100%|██████████| 313/313 [00:01&lt;00:00, 208.52it/s]
+epoch:47|Test G Score: 0.7548  Test D Score: 0.62225
+[train]epoch:48: 100%|██████████| 1875/1875 [00:14&lt;00:00, 125.00it/s]
+[eval]epoch:48:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:48|Train G Loss: 0.594319108804067  Train D Loss: 0.9779991204897562
+[eval]epoch:48: 100%|██████████| 313/313 [00:01&lt;00:00, 193.07it/s]
+epoch:48|Test G Score: 0.7086  Test D Score: 0.64535
+[train]epoch:49: 100%|██████████| 1875/1875 [00:14&lt;00:00, 127.71it/s]
+[eval]epoch:49:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:49|Train G Loss: 0.5970552474975586  Train D Loss: 0.9745462191263835
+[eval]epoch:49: 100%|██████████| 313/313 [00:01&lt;00:00, 202.03it/s]
+epoch:49|Test G Score: 0.7224  Test D Score: 0.6382
+[train]epoch:50: 100%|██████████| 1875/1875 [00:13&lt;00:00, 134.68it/s]
+epoch:50|Train G Loss: 0.5979735075155894  Train D Loss: 0.9683707204818726
+[eval]epoch:50: 100%|██████████| 313/313 [00:01&lt;00:00, 213.01it/s]
+epoch:50|Test G Score: 0.7138  Test D Score: 0.6426
+[train]epoch:51: 100%|██████████| 1875/1875 [00:14&lt;00:00, 132.22it/s]
+[eval]epoch:51:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:51|Train G Loss: 0.6023209547519683  Train D Loss: 0.9649083198229472
+[eval]epoch:51: 100%|██████████| 313/313 [00:01&lt;00:00, 184.66it/s]
+epoch:51|Test G Score: 0.7182  Test D Score: 0.64045
+[train]epoch:52: 100%|██████████| 1875/1875 [00:13&lt;00:00, 135.84it/s]
+epoch:52|Train G Loss: 0.6021316982587178  Train D Loss: 0.9624602799415588
+[eval]epoch:52: 100%|██████████| 313/313 [00:01&lt;00:00, 201.77it/s]
+epoch:52|Test G Score: 0.6623  Test D Score: 0.6681
+[train]epoch:53: 100%|██████████| 1875/1875 [00:14&lt;00:00, 130.29it/s]
+[eval]epoch:53:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:53|Train G Loss: 0.6053468057314555  Train D Loss: 0.9644535427729288
+[eval]epoch:53: 100%|██████████| 313/313 [00:01&lt;00:00, 211.69it/s]
+epoch:53|Test G Score: 0.6811  Test D Score: 0.65875
+[train]epoch:54: 100%|██████████| 1875/1875 [00:13&lt;00:00, 134.95it/s]
+epoch:54|Train G Loss: 0.6043922148386638  Train D Loss: 0.96494202003479
+[eval]epoch:54: 100%|██████████| 313/313 [00:01&lt;00:00, 204.23it/s]
+epoch:54|Test G Score: 0.7005  Test D Score: 0.64905
+[train]epoch:55: 100%|██████████| 1875/1875 [00:14&lt;00:00, 128.87it/s]
+[eval]epoch:55:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:55|Train G Loss: 0.6066651909510294  Train D Loss: 0.9640112183570861
+[eval]epoch:55: 100%|██████████| 313/313 [00:01&lt;00:00, 178.45it/s]
+epoch:55|Test G Score: 0.6892  Test D Score: 0.65445
+[train]epoch:56: 100%|██████████| 1875/1875 [00:15&lt;00:00, 124.12it/s]
+epoch:56|Train G Loss: 0.6085456945737203  Train D Loss: 0.9618674217542013
+[eval]epoch:56: 100%|██████████| 313/313 [00:01&lt;00:00, 206.16it/s]
+epoch:56|Test G Score: 0.6819  Test D Score: 0.65785
+[train]epoch:57: 100%|██████████| 1875/1875 [00:14&lt;00:00, 126.93it/s]
+[eval]epoch:57:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:57|Train G Loss: 0.6037535588264465  Train D Loss: 0.9710461963017781
+[eval]epoch:57: 100%|██████████| 313/313 [00:01&lt;00:00, 190.59it/s]
+epoch:57|Test G Score: 0.6865  Test D Score: 0.65595
+[train]epoch:58: 100%|██████████| 1875/1875 [00:14&lt;00:00, 126.89it/s]
+[eval]epoch:58:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:58|Train G Loss: 0.6051236891269683  Train D Loss: 0.9722556677818298
+[eval]epoch:58: 100%|██████████| 313/313 [00:01&lt;00:00, 190.42it/s]
+epoch:58|Test G Score: 0.676  Test D Score: 0.66145
+[train]epoch:59: 100%|██████████| 1875/1875 [00:14&lt;00:00, 132.28it/s]
+[eval]epoch:59:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:59|Train G Loss: 0.6038665617624919  Train D Loss: 0.9729498882293701
+[eval]epoch:59: 100%|██████████| 313/313 [00:01&lt;00:00, 206.56it/s]
+epoch:59|Test G Score: 0.7044  Test D Score: 0.64705
+[train]epoch:60: 100%|██████████| 1875/1875 [00:15&lt;00:00, 120.76it/s]
+epoch:60|Train G Loss: 0.6056656357765198  Train D Loss: 0.9696332246780396
+[eval]epoch:60: 100%|██████████| 313/313 [00:01&lt;00:00, 181.07it/s]
+epoch:60|Test G Score: 0.7004  Test D Score: 0.6487
+[train]epoch:61: 100%|██████████| 1875/1875 [00:14&lt;00:00, 132.07it/s]
+[eval]epoch:61:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:61|Train G Loss: 0.6064142129898071  Train D Loss: 0.9691213243484497
+[eval]epoch:61: 100%|██████████| 313/313 [00:01&lt;00:00, 210.15it/s]
+epoch:61|Test G Score: 0.7098  Test D Score: 0.64445
+[train]epoch:62: 100%|██████████| 1875/1875 [00:14&lt;00:00, 133.92it/s]
+[eval]epoch:62:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:62|Train G Loss: 0.6020772522131602  Train D Loss: 0.9768669911066691
+[eval]epoch:62: 100%|██████████| 313/313 [00:01&lt;00:00, 209.06it/s]
+epoch:62|Test G Score: 0.6712  Test D Score: 0.66365
+[train]epoch:63: 100%|██████████| 1875/1875 [00:15&lt;00:00, 123.73it/s]
+epoch:63|Train G Loss: 0.6038358168443044  Train D Loss: 0.9754874487559001
+[eval]epoch:63: 100%|██████████| 313/313 [00:01&lt;00:00, 204.81it/s]
+epoch:63|Test G Score: 0.683  Test D Score: 0.65755
+[train]epoch:64: 100%|██████████| 1875/1875 [00:15&lt;00:00, 122.37it/s]
+epoch:64|Train G Loss: 0.6046170507748921  Train D Loss: 0.9736968674023946
+[eval]epoch:64: 100%|██████████| 313/313 [00:01&lt;00:00, 208.06it/s]
+epoch:64|Test G Score: 0.6898  Test D Score: 0.6542
+[train]epoch:65: 100%|██████████| 1875/1875 [00:14&lt;00:00, 128.07it/s]
+epoch:65|Train G Loss: 0.6027337124824524  Train D Loss: 0.9787304972330729
+[eval]epoch:65: 100%|██████████| 313/313 [00:01&lt;00:00, 194.54it/s]
+epoch:65|Test G Score: 0.707  Test D Score: 0.6454
+[train]epoch:66: 100%|██████████| 1875/1875 [00:13&lt;00:00, 138.57it/s]
+epoch:66|Train G Loss: 0.601389243777593  Train D Loss: 0.9830222620328267
+[eval]epoch:66: 100%|██████████| 313/313 [00:01&lt;00:00, 184.05it/s]
+epoch:66|Test G Score: 0.6984  Test D Score: 0.6497
+[train]epoch:67: 100%|██████████| 1875/1875 [00:13&lt;00:00, 135.19it/s]
+epoch:67|Train G Loss: 0.6001422825495402  Train D Loss: 0.9867032630284627
+[eval]epoch:67: 100%|██████████| 313/313 [00:01&lt;00:00, 220.74it/s]
+epoch:67|Test G Score: 0.7095  Test D Score: 0.64385
+[train]epoch:68: 100%|██████████| 1875/1875 [00:13&lt;00:00, 142.23it/s]
+[eval]epoch:68:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:68|Train G Loss: 0.6018287893931071  Train D Loss: 0.985523048210144
+[eval]epoch:68: 100%|██████████| 313/313 [00:01&lt;00:00, 223.06it/s]
+epoch:68|Test G Score: 0.71  Test D Score: 0.6431
+[train]epoch:69: 100%|██████████| 1875/1875 [00:13&lt;00:00, 144.19it/s]
+[eval]epoch:69:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:69|Train G Loss: 0.5990714596430461  Train D Loss: 0.9925410816510518
+[eval]epoch:69: 100%|██████████| 313/313 [00:01&lt;00:00, 220.08it/s]
+epoch:69|Test G Score: 0.7185  Test D Score: 0.63905
+[train]epoch:70: 100%|██████████| 1875/1875 [00:12&lt;00:00, 144.33it/s]
+epoch:70|Train G Loss: 0.5974074437777201  Train D Loss: 0.9976363753318787
+[eval]epoch:70: 100%|██████████| 313/313 [00:01&lt;00:00, 216.39it/s]
+epoch:70|Test G Score: 0.6939  Test D Score: 0.65165
+[train]epoch:71: 100%|██████████| 1875/1875 [00:13&lt;00:00, 142.39it/s]
+epoch:71|Train G Loss: 0.5952021143277486  Train D Loss: 1.00476540184021
+[eval]epoch:71: 100%|██████████| 313/313 [00:01&lt;00:00, 210.13it/s]
+epoch:71|Test G Score: 0.7088  Test D Score: 0.64405
+[train]epoch:72: 100%|██████████| 1875/1875 [00:13&lt;00:00, 142.71it/s]
+[eval]epoch:72:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:72|Train G Loss: 0.5942630872408549  Train D Loss: 1.0061080835024516
+[eval]epoch:72: 100%|██████████| 313/313 [00:01&lt;00:00, 224.19it/s]
+epoch:72|Test G Score: 0.6923  Test D Score: 0.65205
+[train]epoch:73: 100%|██████████| 1875/1875 [00:13&lt;00:00, 142.84it/s]
+[eval]epoch:73:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:73|Train G Loss: 0.5953716031074524  Train D Loss: 1.0063148941040039
+[eval]epoch:73: 100%|██████████| 313/313 [00:01&lt;00:00, 219.23it/s]
+epoch:73|Test G Score: 0.7076  Test D Score: 0.6441
+[train]epoch:74: 100%|██████████| 1875/1875 [00:12&lt;00:00, 144.75it/s]
+[eval]epoch:74:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:74|Train G Loss: 0.5940316377321879  Train D Loss: 1.0076266440709432
+[eval]epoch:74: 100%|██████████| 313/313 [00:01&lt;00:00, 221.06it/s]
+epoch:74|Test G Score: 0.7006  Test D Score: 0.6474
+[train]epoch:75: 100%|██████████| 1875/1875 [00:13&lt;00:00, 143.64it/s]
+epoch:75|Train G Loss: 0.5935685668627421  Train D Loss: 1.0103028052012126
+[eval]epoch:75: 100%|██████████| 313/313 [00:01&lt;00:00, 219.64it/s]
+epoch:75|Test G Score: 0.7092  Test D Score: 0.6431
+[train]epoch:76: 100%|██████████| 1875/1875 [00:13&lt;00:00, 137.31it/s]
+epoch:76|Train G Loss: 0.5929852469126383  Train D Loss: 1.01107987130483
+[eval]epoch:76: 100%|██████████| 313/313 [00:01&lt;00:00, 220.90it/s]
+epoch:76|Test G Score: 0.701  Test D Score: 0.6474
+[train]epoch:77: 100%|██████████| 1875/1875 [00:13&lt;00:00, 143.02it/s]
+[eval]epoch:77:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:77|Train G Loss: 0.592886395740509  Train D Loss: 1.011134458955129
+[eval]epoch:77: 100%|██████████| 313/313 [00:01&lt;00:00, 219.19it/s]
+epoch:77|Test G Score: 0.6894  Test D Score: 0.6533
+[train]epoch:78: 100%|██████████| 1875/1875 [00:13&lt;00:00, 142.70it/s]
+[eval]epoch:78:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:78|Train G Loss: 0.5935037167231242  Train D Loss: 1.0090930287996929
+[eval]epoch:78: 100%|██████████| 313/313 [00:01&lt;00:00, 220.58it/s]
+epoch:78|Test G Score: 0.689  Test D Score: 0.6536
+[train]epoch:79: 100%|██████████| 1875/1875 [00:13&lt;00:00, 138.54it/s]
+epoch:79|Train G Loss: 0.5961865306695302  Train D Loss: 1.0014720521291096
+[eval]epoch:79: 100%|██████████| 313/313 [00:01&lt;00:00, 194.10it/s]
+epoch:79|Test G Score: 0.6801  Test D Score: 0.65815
+[train]epoch:80: 100%|██████████| 1875/1875 [00:14&lt;00:00, 131.92it/s]
+epoch:80|Train G Loss: 0.5974672158241272  Train D Loss: 1.0004722514470419
+[eval]epoch:80: 100%|██████████| 313/313 [00:01&lt;00:00, 195.83it/s]
+epoch:80|Test G Score: 0.6665  Test D Score: 0.6654
+[train]epoch:81: 100%|██████████| 1875/1875 [00:13&lt;00:00, 137.00it/s]
+[eval]epoch:81:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:81|Train G Loss: 0.5967240933577219  Train D Loss: 0.9962765798886617
+[eval]epoch:81: 100%|██████████| 313/313 [00:01&lt;00:00, 218.17it/s]
+epoch:81|Test G Score: 0.6757  Test D Score: 0.66115
+[train]epoch:82: 100%|██████████| 1875/1875 [00:12&lt;00:00, 144.36it/s]
+[eval]epoch:82:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:82|Train G Loss: 0.6012879039287568  Train D Loss: 0.9886766562779744
+[eval]epoch:82: 100%|██████████| 313/313 [00:01&lt;00:00, 219.59it/s]
+epoch:82|Test G Score: 0.7122  Test D Score: 0.64295
+[train]epoch:83: 100%|██████████| 1875/1875 [00:13&lt;00:00, 143.35it/s]
+[eval]epoch:83:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:83|Train G Loss: 0.6017070343971253  Train D Loss: 0.9845438721021016
+[eval]epoch:83: 100%|██████████| 313/313 [00:01&lt;00:00, 221.00it/s]
+epoch:83|Test G Score: 0.7056  Test D Score: 0.64625
+[train]epoch:84: 100%|██████████| 1875/1875 [00:13&lt;00:00, 141.74it/s]
+epoch:84|Train G Loss: 0.6046234590848287  Train D Loss: 0.9782138200759888
+[eval]epoch:84: 100%|██████████| 313/313 [00:01&lt;00:00, 215.53it/s]
+epoch:84|Test G Score: 0.6848  Test D Score: 0.65615
+[train]epoch:85: 100%|██████████| 1875/1875 [00:13&lt;00:00, 144.12it/s]
+epoch:85|Train G Loss: 0.6056904099464416  Train D Loss: 0.9750500425338745
+[eval]epoch:85: 100%|██████████| 313/313 [00:01&lt;00:00, 208.30it/s]
+epoch:85|Test G Score: 0.695  Test D Score: 0.6512
+[train]epoch:86: 100%|██████████| 1875/1875 [00:13&lt;00:00, 144.12it/s]
+epoch:86|Train G Loss: 0.6056853388945261  Train D Loss: 0.9744437066078186
+[eval]epoch:86: 100%|██████████| 313/313 [00:01&lt;00:00, 218.78it/s]
+epoch:86|Test G Score: 0.6631  Test D Score: 0.6673
+[train]epoch:87: 100%|██████████| 1875/1875 [00:13&lt;00:00, 142.24it/s]
+epoch:87|Train G Loss: 0.6060712915102641  Train D Loss: 0.974925676759084
+[eval]epoch:87: 100%|██████████| 313/313 [00:01&lt;00:00, 208.39it/s]
+epoch:87|Test G Score: 0.7048  Test D Score: 0.6469
+[train]epoch:88: 100%|██████████| 1875/1875 [00:13&lt;00:00, 140.91it/s]
+epoch:88|Train G Loss: 0.6069549886067709  Train D Loss: 0.9742900141716003
+[eval]epoch:88: 100%|██████████| 313/313 [00:01&lt;00:00, 216.85it/s]
+epoch:88|Test G Score: 0.6769  Test D Score: 0.6605
+[train]epoch:89: 100%|██████████| 1875/1875 [00:12&lt;00:00, 145.08it/s]
+[eval]epoch:89:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:89|Train G Loss: 0.6073180778344472  Train D Loss: 0.9727328990936279
+[eval]epoch:89: 100%|██████████| 313/313 [00:01&lt;00:00, 217.77it/s]
+epoch:89|Test G Score: 0.6886  Test D Score: 0.65475
+[train]epoch:90: 100%|██████████| 1875/1875 [00:14&lt;00:00, 132.71it/s]
+epoch:90|Train G Loss: 0.608623680416743  Train D Loss: 0.969793729686737
+[eval]epoch:90: 100%|██████████| 313/313 [00:01&lt;00:00, 203.90it/s]
+epoch:90|Test G Score: 0.6534  Test D Score: 0.672
+[train]epoch:91: 100%|██████████| 1875/1875 [00:13&lt;00:00, 135.12it/s]
+[eval]epoch:91:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:91|Train G Loss: 0.6114623177687327  Train D Loss: 0.9638599496205648
+[eval]epoch:91: 100%|██████████| 313/313 [00:01&lt;00:00, 223.67it/s]
+epoch:91|Test G Score: 0.674  Test D Score: 0.66135
+[train]epoch:92: 100%|██████████| 1875/1875 [00:14&lt;00:00, 132.12it/s]
+[eval]epoch:92:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:92|Train G Loss: 0.610090655485789  Train D Loss: 0.967642946879069
+[eval]epoch:92: 100%|██████████| 313/313 [00:01&lt;00:00, 211.04it/s]
+epoch:92|Test G Score: 0.6511  Test D Score: 0.67365
+[train]epoch:93: 100%|██████████| 1875/1875 [00:13&lt;00:00, 140.41it/s]
+[eval]epoch:93:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:93|Train G Loss: 0.6112490410804748  Train D Loss: 0.9639183290481568
+[eval]epoch:93: 100%|██████████| 313/313 [00:01&lt;00:00, 209.29it/s]
+epoch:93|Test G Score: 0.6783  Test D Score: 0.65955
+[train]epoch:94: 100%|██████████| 1875/1875 [00:13&lt;00:00, 137.81it/s]
+[eval]epoch:94:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:94|Train G Loss: 0.611319488286972  Train D Loss: 0.9641610447565715
+[eval]epoch:94: 100%|██████████| 313/313 [00:01&lt;00:00, 213.48it/s]
+epoch:94|Test G Score: 0.6501  Test D Score: 0.6738
+[train]epoch:95: 100%|██████████| 1875/1875 [00:13&lt;00:00, 141.90it/s]
+[eval]epoch:95:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:95|Train G Loss: 0.6123758721828461  Train D Loss: 0.9626293495814006
+[eval]epoch:95: 100%|██████████| 313/313 [00:01&lt;00:00, 216.70it/s]
+epoch:95|Test G Score: 0.6813  Test D Score: 0.6582
+[train]epoch:96: 100%|██████████| 1875/1875 [00:13&lt;00:00, 138.14it/s]
+[eval]epoch:96:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:96|Train G Loss: 0.6152368485768636  Train D Loss: 0.9562486302693685
+[eval]epoch:96: 100%|██████████| 313/313 [00:01&lt;00:00, 214.50it/s]
+epoch:96|Test G Score: 0.6816  Test D Score: 0.65805
+[train]epoch:97: 100%|██████████| 1875/1875 [00:13&lt;00:00, 143.21it/s]
+[eval]epoch:97:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:97|Train G Loss: 0.6154786991437277  Train D Loss: 0.9537186385154724
+[eval]epoch:97: 100%|██████████| 313/313 [00:01&lt;00:00, 208.64it/s]
+epoch:97|Test G Score: 0.665  Test D Score: 0.66625
+[train]epoch:98: 100%|██████████| 1875/1875 [00:13&lt;00:00, 143.94it/s]
+[eval]epoch:98:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:98|Train G Loss: 0.6172778903802236  Train D Loss: 0.9502429571151734
+[eval]epoch:98: 100%|██████████| 313/313 [00:01&lt;00:00, 220.16it/s]
+epoch:98|Test G Score: 0.6544  Test D Score: 0.67145
+[train]epoch:99: 100%|██████████| 1875/1875 [00:13&lt;00:00, 143.74it/s]
+[eval]epoch:99:   0%|          | 0/313 [00:00&lt;?, ?it/s]epoch:99|Train G Loss: 0.6185870854536692  Train D Loss: 0.9473249974250794
+[eval]epoch:99: 100%|██████████| 313/313 [00:01&lt;00:00, 220.78it/s]
+epoch:99|Test G Score: 0.6617  Test D Score: 0.66815
+该图为真概率为： [[0.903977]]</code></pre> 
+<p>第一个图是刚开始训练时的生成数据，第二个图是训练到50个epochs生成的数据，第三个图是训练到100epochs生成的数据。</p> 
+<p><img alt="" height="195" src="https://images2.imgbox.com/45/3d/J89IV3J7_o.png" width="212"><img alt="" height="195" src="https://images2.imgbox.com/4a/57/SEQLrbju_o.png" width="217"><img alt="" height="196" src="https://images2.imgbox.com/04/00/AJ9f0sZ4_o.png" width="218"></p> 
+<h2>3 总结</h2> 
+<p>生成模型是深度学习领域难度较大且较为重要的一类模型。生成对抗网络能够在半监督或者无监督的应用场景下进行生成任务的学习。目前而言，生成对抗网络在计算机视觉、自然语言处理等领域取得了令人惊叹的成果。生成对抗模型是近年来复杂数据分布上无监督学习最具前景的方法之一。</p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b4030fec846131bef8256d9b068051cb/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">微信小程序使用webview后点击左上角返回按钮一次性返回小程序</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a55d1d7f049aab3759559d76c3615052/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">mac 安装 selenium &#43; chrome driver</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

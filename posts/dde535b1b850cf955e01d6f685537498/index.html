@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>[自动驾驶技术]-5 Tesla自动驾驶方案之算法（AI Day 2021） - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/dde535b1b850cf955e01d6f685537498/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="[自动驾驶技术]-5 Tesla自动驾驶方案之算法（AI Day 2021）">
+  <meta property="og:description" content="有朋友问我，如何有效学习一个新技术。笔者这么多年的经验是：1）了解国内外产业应用和标准法规现状，先建立宏观知识图谱及技术系统框架；2）根据系统框架逐块进行深入研究（横向、纵向），穿插行业内主流厂商对应模块技术方案；3）系统研究行业内TOP厂商完整解决方案；4）针对你选择的重点方向进阶研究。因此笔者建立的自动驾驶专题介绍也会按照这个思路搭建技术体系（发布内容顺序不一定能严格遵守该路线，但会力求不断更新最终能按照该思路完成自动驾驶专栏搭建）。
+本文及之后几篇系列文章，旨在针对自动驾驶行业领军企业特斯拉的技术方案进行深入解读和分析（资料来源：特斯拉官网，AI Day 2021，AI Day 2022，Inventor Day 2023）。特斯拉自动驾驶技术的核心是三个点：算法、数据和硬件，以下笔者将分别介绍AI Day 2021，AI Day 2022，Inventor Day 2023三次分享的内容，然后综合梳理出目前特斯拉自动驾驶解决方案。本文主要介绍特斯拉AI Day 2021的算法部分内容。
+1 感知算法系统框架 1）系统框架 （摄像头raw data 1280*960，12bit (HDR) @36Hz）
+特斯拉的感知算法系统，取名为HydraNet（九头蛇），九头非常形象的表示了感知系统整个算法模型是一个多头任务学习神经网络架构，旨在处理自动驾驶汽车所需的多种感知任务；颈部形象的展示出整个感知模型共享特征提取部分，从而提高计算效率和感知精度。
+从上图可以看到，整个算法模型的输入是来自8个摄像头提供的raw data，通过神经网络将图像实时处理转换成4D向量空间（包括自动驾驶所需一切物体的3D表示，再加上时间维度），包括线、边、道路、交通标志、行人、车辆的位置、方向、速度、角速度等。提取到的特征序列进入到特定任务头进行处理，例如使用一阶YOLO进行目标检测等，针对性完成更多任务处理。
+2）模型优点 HydraNet使用共同的共享骨干网络Backbone，再分支到多个任务头进行具体的子任务处理，具有非常明显的优势：
+特征共享：在测试时，可以通过共享前向传递推理，提高车载系统的效率。任务解耦：各任务独立进行，互不影响，因此更新某个数据集或更改某个任务头的架构时，无需重新验证所有任务。瓶颈处理：可以将Multi-scale features特征缓存到磁盘，只需对缓存的特征进行微调即可。 3）各组成模块 3.1）Rectify校准 考虑到不同位置安装的摄像头的抖动等问题，需要对每个输入的视觉数据进行校准，就是Rectify模块的任务，将所有图片转换为虚拟通用摄像头。
+3.2）Backbone主干 RegNet Rectify校准之后的下一层是算法模型的backbone特征提取主干，使用RegNet（残差神经网络）在延迟和精度之间进行了很好的折衷，可以提供不同尺寸不同精度的特征输出。（算法底部提供高精度空间信息W*H=160*120，低通道数C=64，可以看到更多图像细节；顶部提供低精度空间信息W*H=20*15，高通道数C=512，可以看到图像的大部分而且具备更多上下文语义）
+RegNet由一系列重复的网络块组成，通过一组参数（如宽度、深度、分组卷积等）来灵活调整网络规模，使得网络能够适应不同的计算资源和任务需求；在设计RegNet过程中，重点关注网络的宽度（通道数）和深度（层数）的平衡，确保在不同层次上都有足够的表达能力。
+工作原理：
+网络块（Simple Block）：每个网络块由标准的卷积层、批量归一化层和ReLU激活函数组成；使用分组卷积来提高计算效率，同时保持模型性能。阶段（Stage）：RegNet由多个阶段组成，每个阶段由若干个相同的网络块组成；不同阶段之间通过调整宽度（通道数）和分组数来改变计算复杂度和表达能力。 可调参数：
+w_0（起始宽度）：第一个阶段的通道数。w_a（宽度增量）：每个阶段的宽度增加量。w_m（宽度乘数）：每个阶段的宽度乘数，用于调整每个阶段的通道数。d（深度）：每个阶段的网络块数。g（组数）：每个卷积层的分组数，用于分组卷积。 BiFPN BiFPN，全称是Bi-directional Feature Pyramid Network（双向特征金字塔网络），是谷歌在EfficientDet论文中提出的一种高效的特征融合模块，旨在高效地融合来自不同尺度的特征，增强多尺度目标检测的性能，同时保持较低的计算复杂度。
+BIFPN通过引入双向特征融合路径，结合加权特征融合策略，能够更有效地融合不同尺度的特征信息，增强特征的表达能力，提高了多尺度目标检测的性能。其主要思想包括：
+双向特征融合：在传统的自顶向下路径之外，增加自底向上的路径，使得信息在不同尺度之间可以双向传递，从而更好地融合多尺度特征。加权特征融合：使用可学习的权重对不同尺度的特征进行加权融合，从而自动学习特征融合的最佳方式。 BIFPN的结构如下
+输入特征层：来自主干网络（如EfficientNet、ResNet等）的多尺度特征层，通常包括不同分辨率的特征图。双向路径：自顶向下路径：从高分辨率特征层开始，通过上采样和逐层融合，将高层次的语义信息传递到低分辨率特征层。自底向上路径：从低分辨率特征层开始，通过下采样和逐层融合，将底层的空间细节信息传递到高分辨率特征层。加权特征融合：在每个特征融合节点，采用加权求和的方式，将来自不同尺度的特征进行融合。具体地，每个输入特征都乘以一个可学习的权重，然后进行加权求和，再经过归一化（如Softmax），以确保不同特征贡献的合理性。融合结果输出：最终输出多尺度融合后的特征图，供后续的目标检测头（如分类和回归）使用。 3.3）数据融合BEV&#43;Transformer 8个摄像头提供的图像数据特征融合带来了2个问题：
+结合时间对多个图像数据处理和预测过程中，调整占用跟踪器及其超参数非常复杂，我们希望避免通过手写C&#43;&#43;来进行调参，更希望在神经网络中完成，实现端到端的优化。融合的2D图像空间并不理想，希望直接在高维3D向量空间中进行处理。
+如何将2D图像空间转换为向量空间，将8张图像信息输入神经网络，融合后输出得到向量空间，并通过解码得到各个任务头的输出？如何标注数据，对于基于向量的特定数据集，需要在向量空间中进行标注？
+针对第一个问题，我们使用Transformer（Multi-head Attention）来解决。
+Transformer是一种用于处理序列数据的神经网络架构，由Vaswani等人在2017年提出，最初用于机器翻译任务，通过引入自注意力机制（self-attention）和多头注意力机制（multi-head attention）来捕捉序列中元素之间的关系，不依赖于传统的递归神经网络（RNN）结构，从而提高了并行计算能力和长距离依赖建模能力。
+Transformer的架构 Transformer架构主要包括两个部分：编码器（Encoder）和解码器（Decoder），每个部分都由若干个相同的层堆叠而成。
+编码器（Encoder）：由多个编码器层（Encoder Layer）组成，每个编码器层包括多头自注意力子层和前馈神经网络子层。多头自注意力子层中自注意力机制通过计算序列中每个元素对其他所有元素的注意力权重来捕捉序列中的全局依赖关系；多头注意力机制将输入分成多个部分，每部分独立计算注意力，然后将结果拼接起来，并通过线性变换得到最终的输出。前馈神经网络子层中每个位置的输出都通过一个相同的前馈神经网络，通常由两个线性变换和一个ReLU激活函数组成；每个子层之后都使用残差连接（Residual Connection）和层归一化（Layer Normalization）。解码器（Decoder）：也由多个解码器层（Decoder Layer）组成，每个解码器层包括以下三个子层：掩码多头自注意力子层（类似于编码器中的多头自注意力子层，但通过掩码机制确保每个位置只能关注当前位置及之前的位置，从而保留自回归性质），多头注意力子层（通过注意力机制将解码器的输出与编码器的输出进行结合，使解码器能够关注编码器中的信息），前馈神经网络子层（与编码器中的前馈神经网络子层相同，每个子层之后都使用残差连接和层归一化）。 多头注意力机制（Multi-Head Attention） 多头注意力机制是Transformer中的核心组件，通过并行计算多个不同的自注意力来增强模型的表现力。其主要步骤如下：">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-23T17:12:39+08:00">
+    <meta property="article:modified_time" content="2024-05-23T17:12:39+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">[自动驾驶技术]-5 Tesla自动驾驶方案之算法（AI Day 2021）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p style="margin-left:.0001pt;text-align:justify;"><span style="color:#956fe7;">有朋友问我，如何有效学习一个新技术。笔者这么多年的经验是：1）了解国内外产业应用和标准法规现状，先建立宏观知识图谱及技术系统框架；2）根据系统框架逐块进行深入研究（横向、纵向），穿插行业内主流厂商对应模块技术方案；3）系统研究行业内TOP厂商完整解决方案；4）针对你选择的重点方向进阶研究。因此笔者建立的自动驾驶专题介绍也会按照这个思路搭建技术体系（发布内容顺序不一定能严格遵守该路线，但会力求不断更新最终能按照该思路完成自动驾驶专栏搭建）。</span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">本文及之后几篇系列文章，旨在针对自动驾驶行业领军企业特斯拉的技术方案进行深入解读和分析（资料来源：特斯拉官网，AI Day 2021，AI Day 2022，Inventor Day 2023）。特斯拉自动驾驶技术的核心是三个点：算法、数据和硬件，以下笔者将分别介绍AI Day 2021，AI Day 2022，Inventor Day 2023三次分享的内容，然后综合梳理出目前特斯拉自动驾驶解决方案。本文主要介绍特斯拉AI Day 2021的算法部分内容。</p> 
+<h2 style="margin-left:.0001pt;text-align:justify;">1 感知算法系统框架</h2> 
+<h3 style="margin-left:.0001pt;text-align:justify;">1）系统框架</h3> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="577" src="https://images2.imgbox.com/0e/33/dHGLJfBR_o.png" width="1104">（摄像头raw data 1280*960，12bit (HDR) @36Hz）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">特斯拉的感知算法系统，取名为HydraNet（九头蛇），九头非常形象的表示了感知系统整个算法模型是一个多头任务学习神经网络架构，旨在处理自动驾驶汽车所需的多种感知任务；颈部形象的展示出整个感知模型共享特征提取部分，从而提高计算效率和感知精度。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">从上图可以看到，整个算法模型的输入是来自8个摄像头提供的raw data，通过神经网络将图像实时处理转换成4D向量空间（包括自动驾驶所需一切物体的3D表示，再加上时间维度），包括线、边、道路、交通标志、行人、车辆的位置、方向、速度、角速度等。提取到的特征序列进入到特定任务头进行处理，例如使用一阶YOLO进行目标检测等，针对性完成更多任务处理。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h3 style="text-align:justify;">2）模型优点</h3> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="739" src="https://images2.imgbox.com/0f/54/moD9HC58_o.png" width="1108">HydraNet使用共同的共享骨干网络Backbone，再分支到多个任务头进行具体的子任务处理，具有非常明显的优势：</p> 
+<ul><li style="margin-left:.0001pt;text-align:justify;">特征共享：在测试时，可以通过共享前向传递推理，提高车载系统的效率。</li><li style="margin-left:.0001pt;text-align:justify;">任务解耦：各任务独立进行，互不影响，因此更新某个数据集或更改某个任务头的架构时，无需重新验证所有任务。</li><li style="margin-left:.0001pt;text-align:justify;">瓶颈处理：可以将Multi-scale features特征缓存到磁盘，只需对缓存的特征进行微调即可。</li></ul> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h3 style="text-align:justify;">3）各组成模块</h3> 
+<h4 style="margin-left:.0001pt;text-align:justify;">3.1）Rectify校准</h4> 
+<p style="margin-left:.0001pt;text-align:justify;">考虑到不同位置安装的摄像头的抖动等问题，需要对每个输入的视觉数据进行校准，就是Rectify模块的任务，将所有图片转换为虚拟通用摄像头。</p> 
+<p><img alt="" height="594" src="https://images2.imgbox.com/05/e9/mMjuM9Gr_o.png" width="1107"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="660" src="https://images2.imgbox.com/c9/05/JqgOTA0T_o.png" width="1105"></p> 
+<h4 style="margin-left:.0001pt;text-align:justify;">3.2）Backbone主干</h4> 
+<h5 style="margin-left:.0001pt;text-align:justify;">RegNet</h5> 
+<p style="margin-left:.0001pt;text-align:justify;">Rectify校准之后的下一层是算法模型的backbone特征提取主干，使用RegNet（残差神经网络）在延迟和精度之间进行了很好的折衷，可以提供不同尺寸不同精度的特征输出。（算法底部提供高精度空间信息W*H=160*120，低通道数C=64，可以看到更多图像细节；顶部提供低精度空间信息W*H=20*15，高通道数C=512，可以看到图像的大部分而且具备更多上下文语义）</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="850" src="https://images2.imgbox.com/0e/81/52XNnPpn_o.png" width="1108">RegNet由一系列重复的网络块组成，通过一组参数（如宽度、深度、分组卷积等）来灵活调整网络规模，使得网络能够适应不同的计算资源和任务需求；在设计RegNet过程中，重点关注网络的宽度（通道数）和深度（层数）的平衡，确保在不同层次上都有足够的表达能力。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">工作原理：</p> 
+<ul><li style="margin-left:.0001pt;text-align:justify;">网络块（Simple Block）：每个网络块由标准的卷积层、批量归一化层和ReLU激活函数组成；</li><li style="margin-left:.0001pt;text-align:justify;">使用分组卷积来提高计算效率，同时保持模型性能。</li><li style="margin-left:.0001pt;text-align:justify;">阶段（Stage）：RegNet由多个阶段组成，每个阶段由若干个相同的网络块组成；不同阶段之间通过调整宽度（通道数）和分组数来改变计算复杂度和表达能力。</li></ul> 
+<p style="margin-left:.0001pt;text-align:justify;">可调参数：</p> 
+<ul><li style="margin-left:.0001pt;text-align:justify;">w_0（起始宽度）：第一个阶段的通道数。</li><li style="margin-left:.0001pt;text-align:justify;">w_a（宽度增量）：每个阶段的宽度增加量。</li><li style="margin-left:.0001pt;text-align:justify;">w_m（宽度乘数）：每个阶段的宽度乘数，用于调整每个阶段的通道数。</li><li style="margin-left:.0001pt;text-align:justify;">d（深度）：每个阶段的网络块数。</li><li style="margin-left:.0001pt;text-align:justify;">g（组数）：每个卷积层的分组数，用于分组卷积。</li></ul> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h5 style="margin-left:.0001pt;text-align:justify;">BiFPN</h5> 
+<p style="margin-left:.0001pt;text-align:justify;">BiFPN，全称是Bi-directional Feature Pyramid Network（双向特征金字塔网络），是谷歌在EfficientDet论文中提出的一种高效的特征融合模块，旨在高效地融合来自不同尺度的特征，增强多尺度目标检测的性能，同时保持较低的计算复杂度。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="714" src="https://images2.imgbox.com/af/97/2rm5XIBP_o.png" width="1105">BIFPN通过引入双向特征融合路径，结合加权特征融合策略，能够更有效地融合不同尺度的特征信息，增强特征的表达能力，提高了多尺度目标检测的性能。其主要思想包括：</p> 
+<ul><li style="margin-left:.0001pt;text-align:justify;">双向特征融合：在传统的自顶向下路径之外，增加自底向上的路径，使得信息在不同尺度之间可以双向传递，从而更好地融合多尺度特征。</li><li style="margin-left:.0001pt;text-align:justify;">加权特征融合：使用可学习的权重对不同尺度的特征进行加权融合，从而自动学习特征融合的最佳方式。</li></ul> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">BIFPN的结构如下</p> 
+<ul><li style="margin-left:.0001pt;text-align:justify;">输入特征层：来自主干网络（如EfficientNet、ResNet等）的多尺度特征层，通常包括不同分辨率的特征图。</li><li style="margin-left:.0001pt;text-align:justify;">双向路径：自顶向下路径：从高分辨率特征层开始，通过上采样和逐层融合，将高层次的语义信息传递到低分辨率特征层。自底向上路径：从低分辨率特征层开始，通过下采样和逐层融合，将底层的空间细节信息传递到高分辨率特征层。</li><li style="margin-left:.0001pt;text-align:justify;">加权特征融合：在每个特征融合节点，采用加权求和的方式，将来自不同尺度的特征进行融合。具体地，每个输入特征都乘以一个可学习的权重，然后进行加权求和，再经过归一化（如Softmax），以确保不同特征贡献的合理性。</li><li style="margin-left:.0001pt;text-align:justify;">融合结果输出：最终输出多尺度融合后的特征图，供后续的目标检测头（如分类和回归）使用。</li></ul> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h4 style="margin-left:.0001pt;text-align:justify;">3.3）数据融合BEV+Transformer</h4> 
+<p style="margin-left:.0001pt;text-align:justify;">8个摄像头提供的图像数据特征融合带来了2个问题：</p> 
+<p style="margin-left:.0001pt;text-align:justify;">结合时间对多个图像数据处理和预测过程中，调整占用跟踪器及其超参数非常复杂，我们希望避免通过手写C++来进行调参，更希望在神经网络中完成，实现端到端的优化。融合的2D图像空间并不理想，希望直接在高维3D向量空间中进行处理。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">如何将2D图像空间转换为向量空间，将8张图像信息输入神经网络，融合后输出得到向量空间，并通过解码得到各个任务头的输出？如何标注数据，对于基于向量的特定数据集，需要在向量空间中进行标注？</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="633" src="https://images2.imgbox.com/7d/70/EhEQJWDO_o.png" width="1106"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="657" src="https://images2.imgbox.com/c5/d6/d131NLNy_o.png" width="1106"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">针对第一个问题，我们使用Transformer（Multi-head Attention）来解决。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">Transformer是一种用于处理序列数据的神经网络架构，由Vaswani等人在2017年提出，最初用于机器翻译任务，通过引入自注意力机制（self-attention）和多头注意力机制（multi-head attention）来捕捉序列中元素之间的关系，不依赖于传统的递归神经网络（RNN）结构，从而提高了并行计算能力和长距离依赖建模能力。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h5 style="margin-left:.0001pt;text-align:justify;">Transformer的架构</h5> 
+<p style="margin-left:.0001pt;text-align:justify;">Transformer架构主要包括两个部分：编码器（Encoder）和解码器（Decoder），每个部分都由若干个相同的层堆叠而成。</p> 
+<ul><li style="margin-left:.0001pt;text-align:justify;">编码器（Encoder）：由多个编码器层（Encoder Layer）组成，每个编码器层包括多头自注意力子层和前馈神经网络子层。多头自注意力子层中自注意力机制通过计算序列中每个元素对其他所有元素的注意力权重来捕捉序列中的全局依赖关系；多头注意力机制将输入分成多个部分，每部分独立计算注意力，然后将结果拼接起来，并通过线性变换得到最终的输出。前馈神经网络子层中每个位置的输出都通过一个相同的前馈神经网络，通常由两个线性变换和一个ReLU激活函数组成；每个子层之后都使用残差连接（Residual Connection）和层归一化（Layer Normalization）。</li><li style="margin-left:.0001pt;text-align:justify;">解码器（Decoder）：也由多个解码器层（Decoder Layer）组成，每个解码器层包括以下三个子层：掩码多头自注意力子层（类似于编码器中的多头自注意力子层，但通过掩码机制确保每个位置只能关注当前位置及之前的位置，从而保留自回归性质），多头注意力子层（通过注意力机制将解码器的输出与编码器的输出进行结合，使解码器能够关注编码器中的信息），前馈神经网络子层（与编码器中的前馈神经网络子层相同，每个子层之后都使用残差连接和层归一化）。</li></ul> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h5 style="margin-left:.0001pt;text-align:justify;">多头注意力机制（Multi-Head Attention）</h5> 
+<p style="margin-left:.0001pt;text-align:justify;">多头注意力机制是Transformer中的核心组件，通过并行计算多个不同的自注意力来增强模型的表现力。其主要步骤如下：</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<ul><li style="margin-left:.0001pt;text-align:justify;">线性变换：将输入的每个序列元素通过三个不同的线性变换，得到查询（Query）、键（Key）和值（Value）向量。</li><li style="margin-left:.0001pt;text-align:justify;">注意力计算：计算查询与所有键的点积，然后通过softmax函数得到注意力权重，使用这些权重对值向量进行加权求和，得到注意力输出。</li><li style="margin-left:.0001pt;text-align:justify;">多头计算：重复上述过程多个头次（通常是8或16），每个头都有独立的查询、键和值向量。将所有头的输出拼接起来，通过另一个线性变换得到最终的多头注意力输出。</li></ul> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h5 style="margin-left:.0001pt;text-align:justify;">自注意力机制（Self-Attention）</h5> 
+<p style="margin-left:.0001pt;text-align:justify;">自注意力机制允许序列中的每个位置与其他所有位置进行交互，从而捕捉长距离依赖关系。其具体步骤如下：</p> 
+<ul><li style="margin-left:.0001pt;text-align:justify;">计算查询、键和值：对于输入序列中的每个元素，通过线性变换得到查询、键和值向量。</li><li style="margin-left:.0001pt;text-align:justify;">点积注意力：计算查询向量与所有键向量的点积，得到注意力分数，通过softmax函数将分数转换为注意力权重。</li><li style="margin-left:.0001pt;text-align:justify;">加权求和：使用注意力权重对值向量进行加权求和，得到注意力输出。</li></ul> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="631" src="https://images2.imgbox.com/cd/fc/GK55vBTt_o.png" width="1106"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h4 style="margin-left:.0001pt;text-align:justify;">3.4）Video Neural Net</h4> 
+<p style="margin-left:.0001pt;text-align:justify;">基于融合数据后获得得3D向量空间，需要增加记忆信息获得更加准确得环境感知能力。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="906" src="https://images2.imgbox.com/78/4e/erwCe7rJ_o.png" width="1105">Feature queue基于之前获取了多尺度特征后，随着时间推移，缓存一些特征值；Feature queue同时需要获取汽车动力学数据，例如速度，加速度，了解汽车如何行驶。Video component负责融合这些临时数据，然后进入到多头任务中进行解码。</p> 
+<h5 style="margin-left:.0001pt;text-align:justify;">Feature Queue</h5> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="696" src="https://images2.imgbox.com/cb/37/sjS5Msv6_o.png" width="1104"><img alt="" height="696" src="https://images2.imgbox.com/e8/0a/puHfZTEG_o.png" width="1104">Feature queue需要每隔27ms推送time-based queue，这样即使有些目标被大车遮挡，依然可以通过历史记忆数据知道大车后面得东西；需要每隔1米推送space-based queue，这样当预测到一条转弯的道路，可以通过记忆数据识别到交通标志等信息。</p> 
+<h5 style="margin-left:.0001pt;text-align:justify;">Spatial RNN Video Module</h5> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="899" src="https://images2.imgbox.com/f6/74/OmIfUw3u_o.png" width="922">Video module使用了spatial RNN (LSTM)。长短期记忆网络（Long Short-Term Memory，LSTM）是一种特殊类型的循环神经网络，通常用于处理和预测时间序列数据，如文本、语音、视频等，比标准的RNN在处理长序列数据时更有效，因为它能够捕获和记忆长期依赖关系。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">LSTM网络由一系列的“门”单元组成，这些门单元可以选择性地让信息通过网络。主要的门单元包括遗忘门、输入门和输出门，它们的作用如下：</p> 
+<ul><li style="margin-left:.0001pt;text-align:justify;">遗忘门（Forget Gate）： 控制前一时刻的记忆是否保留到当前时刻，决定了要从细胞状态中丢弃哪些信息。遗忘门的输出由当前输入和前一时刻的隐藏状态共同决定。</li><li style="margin-left:.0001pt;text-align:justify;">输入门（Input Gate）： 控制新的信息如何加入到细胞状态中，确定了要更新的内容，并将其加入到细胞状态中。输入门的输出由当前输入和前一时刻的隐藏状态共同决定。</li><li style="margin-left:.0001pt;text-align:justify;">细胞状态（Cell State）： 细胞状态是LSTM网络的核心部分，负责传递长期依赖关系。细胞状态通过遗忘门和输入门进行更新，以及通过输出门传递给下一时刻的隐藏状态。</li><li style="margin-left:.0001pt;text-align:justify;">输出门（Output Gate）： 决定当前时刻的隐藏状态如何影响输出，通过将细胞状态与当前输入和前一时刻的隐藏状态相结合，来生成当前时刻的输出。</li></ul> 
+<h2 style="margin-left:.0001pt;text-align:justify;">2 规划控制系统算法</h2> 
+<p style="margin-left:.0001pt;text-align:justify;">（特斯拉关于规控的介绍内容非常少）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">系统的目标：safety安全，comfort舒适，efficiency高效</p> 
+<p style="margin-left:.0001pt;text-align:justify;">关键难题：action space is very non-convex， high dimensional，自动驾驶中可以操作的动作空间，例如方向盘角度、加速度、刹车力度，具备非凸性（一个空间是非凸的，意味着在该空间中，任意两点之间的连线不一定完全位于该空间内，即空间中可能存在“凹陷”或“洞”，导致标准的优化算法如梯度下降，可能会陷入局部最优解，而无法找到全局最优解），高维性（指的是维度即自由度非常高的空间，搜索和优化问题更加复杂。维度的增加导致搜索空间呈指数级增长，使得算法的计算成本和所需的数据量大幅上升）。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="470" src="https://images2.imgbox.com/02/67/L5Y422jo_o.png" width="1106"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">特斯拉的解决方案如下：需要进行搜索来规划车辆的行驶路径，考虑到车辆本身以及周围环境的情况，通过设置上下文走廊，并优化平滑路径，可以实现更高效的行驶规划，在非常短的时间内进行成千上万次搜索，支持10秒的规划。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="161" src="https://images2.imgbox.com/bb/fd/UYJGDD0F_o.png" width="1108"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">不同地区的驾驶环境可能复杂多变，需要适应不同的场景和驾驶习惯，需要考虑其它智能体进行综合规划，另外使用基于学习的方法，如神经网络，获得更好更光滑的运动轨迹，可以更有效地解决复杂的行驶规划问题。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">举例：通过训练神经网络，可以解决简单的停车问题，而无需使用导航启发式方法。神经网络能够吸收场景的全局上下文，并产生一个有效的值函数，引导车辆朝着全局最小值前进，而不是陷入局部最小值。使用蒙特卡罗树搜索（MCTS）的方法进行研究，神经网络能够在一次尝试中就取得进展，直接朝着目标前进，大大减少了搜索节点数量。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="582" src="https://images2.imgbox.com/c6/b1/PTcVGLq4_o.png" width="1104"></p> 
+<h2 style="margin-left:.0001pt;text-align:justify;">3 感知规控整体架构</h2> 
+<p style="margin-left:.0001pt;text-align:justify;">感知系统将8个摄像头稠密的图像数据进行融合转换成向量空间，送入explicit基于规则和NN基于神经网络的规控系统，生成期望的运动轨迹操作汽车方向盘和速度。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><img alt="" height="624" src="https://images2.imgbox.com/e2/62/77kBe3Q1_o.png" width="1105"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0581c1a5c437ef5050de41c19f27f60c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">已有H5站点，如何用webview嵌入H5来快速制作微信小程序以及对微信小程序支付的修改</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/652f9080ec36bda1ae8ed3e787123769/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Kafka 安装教程和基本操作</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

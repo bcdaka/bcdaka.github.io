@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【手写数据库内核组件】0202分段哈希表Partial Hash Table，大并发场景下提升hashTable的吞吐量，可变分段算法快速定位segment位置 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/bf945953decc19c794014103794a310f/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【手写数据库内核组件】0202分段哈希表Partial Hash Table，大并发场景下提升hashTable的吞吐量，可变分段算法快速定位segment位置">
+  <meta property="og:description" content="0202 分段hash表 ​专栏内容：
+postgresql使用入门基础手写数据库toadb并发编程 个人主页：我的主页
+管理社区：开源数据库
+座右铭：天行健，君子以自强不息；地势坤，君子以厚德载物.
+文章目录 0202 分段hash表一、概述 二、分段hash并发操作原理 三、分段算法原理 3.1 固定位的分段算法 3.1 不固定位的分段算法 四、hash表操作 hash bucket序号获取 分段hash的定义 hash 查找 五、总结 结尾 一、概述 上节介绍了hashTable的原理与实现，在数据库中，往往是高并发，高性能的要求，对于hashTable的操作，必须加读写锁来保护一致性。
+当一个任务要插入一条key-value数据时，其它并发都需要等待，吞吐量明显不足。
+本节就来分享一种分段式的hashTable，当hashKey 在不同分段时，可以进行并发的插入和删除操作，这对于高并发来讲，性能就会成倍的提升。
+二、分段hash并发操作原理 在并发操作中，会对共享数据加锁保护，了为提升读取数据的并发性能，一般会在读操作时加读锁，写操作时加写锁。
+其中:
+读读不冲突，可以同时多个任务进行读操作；读写冲突，读时写的任务在等待，写时读的任务会等待；写写冲突，同一把锁上，只能有一个写的任务运行，其它都会等待； 上面锁的冲突规则是对于一把锁来讲，当有多把锁时，各锁之间是相互不干涉的，也就是有几把锁，就可以同时运行几个写任务。
+这就是分段hash的理论基础，每个分段会对应的独立的一把段级别的锁，只负责保护此分段的hashtable操作，这样几个分段就可以同进行分段操作了。
+分段的hashtable中有多个segment；每个segment相当于一个独立的hashtable；每个segment中有一把并发控制的锁segmentLock；在segment内部用锁进行同步处理。 三、分段算法原理 对于分段的hashtable来讲，分段就非常关键，既要简单高效，又需要算法稳定，同时还要尽可能的分散，看起来要求挺高的，下面我们来看如何设计分段算法。
+在hashTable中，散列的主要依据是hashKey，是否继续在hashKey上做文章呢？
+答案是肯定的，将hashKey的高bit位定义位segment的序号，低bit位定义位段内的bucket序号；
+如图所示，对于64bits的hashKey, 可以将高字节定义位segment 序号，低7字节定义为bucket序号；
+这里的划分算法可以是固定位的，也可以是不固定位的。
+3.1 固定位的分段算法 固定划分，也就是segment序号对应的bit数量是固定的，比如一个字节，8bits。
+此时最大可以表示256个segment，也就是不能超过最大值。当配置的segment小于256时，可以采用 取余的算法，将一个节字的数字散列到此区间内； 固定划分，算法相对简单，当划分的segment不能一一对应时，需要一次映射计算。
+3.1 不固定位的分段算法 当segment数量，可以更新数据量进行优化配置时，比如数据量为2GB时，配置16个segment，而数据量为2TB时，有更多的数据会产生冲突，进一步通过增加segment进行分散，可以配置segment为256。
+同时又期望划分后的bits可以直接是segment的下标，那么就要计算不同划分下，需要占用多个少bit。
+算法描述如下：
+segment数量必须是2的幂次，如果配置的不是2的幂次时，取大于此值的2的幂次数；这样保证与bit数量一一对应。计算2的幂次数，也就是 2n ,n的具体值；比如配置为1024个segment，那么它就是210；幂次数n就是segment序号的bit数量，从最高到低位取； 下面来看代码的具体实现。
+向上取2的幂次数
+对于32位HashKey的算法如下：
+HASHKEY getAlignNum(unsigned int num) { HASHKEY mask = num - 1; mask |= mask &gt;&gt; 1; mask |= mask &gt;&gt; 2; mask |= mask &gt;&gt; 4; mask |= mask &gt;&gt; 8; mask |= mask &gt;&gt; 16; return mask&#43;1; } 这是一个很巧妙的算法，通过将该数字二进制中的最高位的1，填充到所有低位的，再加1就变成了最大的2的幂次数。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-11T07:38:24+08:00">
+    <meta property="article:modified_time" content="2024-07-11T07:38:24+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【手写数据库内核组件】0202分段哈希表Partial Hash Table，大并发场景下提升hashTable的吞吐量，可变分段算法快速定位segment位置</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="0202_hash_0"></a>0202 分段hash表</h2> 
+<blockquote> 
+ <p>​<strong>专栏内容</strong>：</p> 
+ <ul><li><a href="https://blog.csdn.net/senllang/category_12346885.html">postgresql使用入门基础</a></li><li><a href="https://senllang.blog.csdn.net/category_12338586.html" rel="nofollow">手写数据库toadb</a></li><li><a href="https://blog.csdn.net/senllang/category_12265530.html">并发编程</a></li></ul> 
+</blockquote> 
+<blockquote> 
+ <p><strong>个人主页</strong>：<a href="https://senllang.blog.csdn.net" rel="nofollow">我的主页</a><br> <strong>管理社区</strong>：<a href="https://bbs.csdn.net/forums/a0a6ea788b3949b6a06ab4811f9eec5d">开源数据库</a><br> <strong>座右铭：天行健，君子以自强不息；地势坤，君子以厚德载物.</strong></p> 
+</blockquote> 
+<p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#0202_hash_0" rel="nofollow">0202 分段hash表</a></li><li><a href="#font_colorA0522D_font_13" rel="nofollow"><font color="#A0522D">一、概述 </font></a></li><li><a href="#font_colorA0522Dhash_font_22" rel="nofollow"><font color="#A0522D">二、分段hash并发操作原理 </font></a></li><li><a href="#font_colorA0522D_font_44" rel="nofollow"><font color="#A0522D">三、分段算法原理 </font></a></li><li><ul><li><a href="#font_color224070_31__font_60" rel="nofollow"><font color="#224070"> 3.1 固定位的分段算法 </font></a></li><li><a href="#font_color224070_31__font_68" rel="nofollow"><font color="#224070"> 3.1 不固定位的分段算法 </font></a></li></ul> 
+  </li><li><a href="#font_colorA0522Dhash_font_160" rel="nofollow"><font color="#A0522D">四、hash表操作 </font></a></li><li><ul><li><a href="#font_color224070_hash_bucket_font_165" rel="nofollow"><font color="#224070"> hash bucket序号获取 </font></a></li><li><a href="#font_color224070_hash_font_181" rel="nofollow"><font color="#224070"> 分段hash的定义 </font></a></li><li><a href="#font_color224070_hash__font_219" rel="nofollow"><font color="#224070"> hash 查找 </font></a></li></ul> 
+  </li><li><a href="#font_colorA0522D_font_232" rel="nofollow"><font color="#A0522D">五、总结 </font></a></li><li><a href="#font_colorA0522D_font_238" rel="nofollow"><font color="#A0522D">结尾 </font></a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="font_colorA0522D_font_13"></a><font color="#A0522D">一、概述 </font></h2> 
+<hr> 
+<p>上节介绍了hashTable的原理与实现，在数据库中，往往是高并发，高性能的要求，对于hashTable的操作，必须加读写锁来保护一致性。</p> 
+<p>当一个任务要插入一条key-value数据时，其它并发都需要等待，吞吐量明显不足。</p> 
+<p>本节就来分享一种分段式的hashTable，当hashKey 在不同分段时，可以进行并发的插入和删除操作，这对于高并发来讲，性能就会成倍的提升。</p> 
+<h2><a id="font_colorA0522Dhash_font_22"></a><font color="#A0522D">二、分段hash并发操作原理 </font></h2> 
+<hr> 
+<p>在并发操作中，会对共享数据加锁保护，了为提升读取数据的并发性能，一般会在读操作时加读锁，写操作时加写锁。<br> 其中:</p> 
+<ul><li>读读不冲突，可以同时多个任务进行读操作；</li><li>读写冲突，读时写的任务在等待，写时读的任务会等待；</li><li>写写冲突，同一把锁上，只能有一个写的任务运行，其它都会等待；</li></ul> 
+<p>上面锁的冲突规则是对于一把锁来讲，当有多把锁时，各锁之间是相互不干涉的，也就是有几把锁，就可以同时运行几个写任务。</p> 
+<p>这就是分段hash的理论基础，每个分段会对应的独立的一把段级别的锁，只负责保护此分段的hashtable操作，这样几个分段就可以同进行分段操作了。</p> 
+<p><img src="https://images2.imgbox.com/1d/24/hocwkYOs_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>分段的hashtable中有多个segment；</li><li>每个segment相当于一个独立的hashtable；</li><li>每个segment中有一把并发控制的锁segmentLock；</li><li>在segment内部用锁进行同步处理。</li></ul> 
+<h2><a id="font_colorA0522D_font_44"></a><font color="#A0522D">三、分段算法原理 </font></h2> 
+<hr> 
+<p>对于分段的hashtable来讲，分段就非常关键，既要简单高效，又需要算法稳定，同时还要尽可能的分散，看起来要求挺高的，下面我们来看如何设计分段算法。</p> 
+<p>在hashTable中，散列的主要依据是hashKey，是否继续在hashKey上做文章呢？</p> 
+<p>答案是肯定的，将hashKey的高bit位定义位segment的序号，低bit位定义位段内的bucket序号；</p> 
+<p><img src="https://images2.imgbox.com/f1/1c/AqLgq1r8_o.png" alt="在这里插入图片描述"></p> 
+<p>如图所示，对于64bits的hashKey, 可以将高字节定义位segment 序号，低7字节定义为bucket序号；</p> 
+<p>这里的划分算法可以是固定位的，也可以是不固定位的。</p> 
+<h3><a id="font_color224070_31__font_60"></a><font color="#224070"> 3.1 固定位的分段算法 </font></h3> 
+<p>固定划分，也就是segment序号对应的bit数量是固定的，比如一个字节，8bits。</p> 
+<ul><li>此时最大可以表示256个segment，也就是不能超过最大值。</li><li>当配置的segment小于256时，可以采用 取余的算法，将一个节字的数字散列到此区间内；</li></ul> 
+<p>固定划分，算法相对简单，当划分的segment不能一一对应时，需要一次映射计算。</p> 
+<h3><a id="font_color224070_31__font_68"></a><font color="#224070"> 3.1 不固定位的分段算法 </font></h3> 
+<p>当segment数量，可以更新数据量进行优化配置时，比如数据量为2GB时，配置16个segment，而数据量为2TB时，有更多的数据会产生冲突，进一步通过增加segment进行分散，可以配置segment为256。</p> 
+<p>同时又期望划分后的bits可以直接是segment的下标，那么就要计算不同划分下，需要占用多个少bit。</p> 
+<p>算法描述如下：</p> 
+<ul><li>segment数量必须是2的幂次，如果配置的不是2的幂次时，取大于此值的2的幂次数；这样保证与bit数量一一对应。</li><li>计算2的幂次数，也就是 2<sup>n</sup> ,<code>n</code>的具体值；比如配置为1024个segment，那么它就是2<sup>10</sup>；</li><li>幂次数<code>n</code>就是segment序号的bit数量，从最高到低位取；</li></ul> 
+<p>下面来看代码的具体实现。</p> 
+<p><strong>向上取2的幂次数</strong></p> 
+<p>对于32位HashKey的算法如下：</p> 
+<pre><code class="prism language-c">HASHKEY <span class="token function">getAlignNum</span><span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">int</span> num<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    HASHKEY mask <span class="token operator">=</span> num <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">;</span>
+
+    mask <span class="token operator">|=</span> mask <span class="token operator">&gt;&gt;</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    mask <span class="token operator">|=</span> mask <span class="token operator">&gt;&gt;</span> <span class="token number">2</span><span class="token punctuation">;</span>
+    mask <span class="token operator">|=</span> mask <span class="token operator">&gt;&gt;</span> <span class="token number">4</span><span class="token punctuation">;</span>
+    mask <span class="token operator">|=</span> mask <span class="token operator">&gt;&gt;</span> <span class="token number">8</span><span class="token punctuation">;</span>
+    mask <span class="token operator">|=</span> mask <span class="token operator">&gt;&gt;</span> <span class="token number">16</span><span class="token punctuation">;</span> 
+
+    <span class="token keyword">return</span> mask<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这是一个很巧妙的算法，通过将该数字二进制中的最高位的1，填充到所有低位的，再加1就变成了最大的2的幂次数。</p> 
+<p>比如输入时<code>9 </code>对应的二进制是 <code>1001</code>,那么计算步骤为：</p> 
+<ul><li>减1； -&gt; 1000</li><li>mask |= mask &gt;&gt; 1; -&gt; 1100</li><li>mask |= mask &gt;&gt; 2; -&gt; 1111</li><li>后面步骤没有变化；</li><li>mask + 1 -&gt; 10000</li></ul> 
+<p>最后得到的是<code>16</code>；</p> 
+<p>整个操作的位置是hashKey的一半，比如hashKey是32位时，只需要16位的移动，如果hashKey为64bits时，需要最高32位的移动；</p> 
+<p><strong>计算bit位数</strong></p> 
+<p>统计key中的最高位1的位置序号。</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">getShiftNum</span><span class="token punctuation">(</span>HASHKEY key<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> shift <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">while</span><span class="token punctuation">(</span>key <span class="token operator">=</span> key <span class="token operator">&gt;&gt;</span> <span class="token number">1</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        shift <span class="token operator">++</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> shift<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>获取segment序号</strong></p> 
+<p>先要计算segment序号对应的掩码。</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">HASH_BITS</span>       <span class="token expression"><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span>HASHKEY<span class="token punctuation">)</span><span class="token operator">*</span><span class="token number">8</span><span class="token punctuation">)</span></span></span>
+HASHKEY partitionMask <span class="token operator">=</span> <span class="token function">getAlignNum</span><span class="token punctuation">(</span>partNum<span class="token punctuation">)</span><span class="token punctuation">;</span>
+HASHKEY partitionShift <span class="token operator">=</span> HASH_BITS <span class="token operator">-</span> <span class="token function">getShiftNum</span><span class="token punctuation">(</span>partitionMask<span class="token punctuation">)</span>
+
+partitionMask <span class="token operator">=</span> <span class="token operator">~</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>HASHKEY<span class="token punctuation">)</span><span class="token number">1</span> <span class="token operator">&lt;&lt;</span> partitionShift<span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<ul><li>先对输入的partNum向上取2的幂次数；</li><li>然后计算对应的二进制位数 partitionShift ；</li><li>计算segment对应bit为1的掩码，比如当segment占8bits时，掩码的十六进制为 <code>0xF000000000000000</code></li></ul> 
+<p>根据掩码可以从HashKey中获取到segment序号。</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">GetPartitionIndex</span><span class="token punctuation">(</span>HASHKEY key<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> partition <span class="token operator">=</span> key <span class="token operator">&amp;</span> partitionMask <span class="token operator">&gt;&gt;</span> partitionShift<span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> partition<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>通过掩码与之后，得到高位为有效数字，低位为0的值，再向右移位得到正常值。</p> 
+<h2><a id="font_colorA0522Dhash_font_160"></a><font color="#A0522D">四、hash表操作 </font></h2> 
+<hr> 
+<p>分段hash表的操作，与普通hash表操作会多出来获取segment序号，以及对segment加锁的步骤，具体对hash buckets的操作是一样的。</p> 
+<h3><a id="font_color224070_hash_bucket_font_165"></a><font color="#224070"> hash bucket序号获取 </font></h3> 
+<p>与segment序号获取一样，先通过掩码与，再根据bucket数量进行散列。</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">GetBucketIndex</span><span class="token punctuation">(</span>HASHKEY key<span class="token punctuation">,</span> PHashTableInfo hashTableInfo<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> bucket <span class="token operator">=</span> key <span class="token operator">&amp;</span> <span class="token punctuation">(</span><span class="token operator">~</span>partitionMask<span class="token punctuation">)</span> <span class="token operator">%</span> hashBucketSize<span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> bucket<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<ul><li>没有单独记录bucket的掩码，将segment的掩码取反就可以得到；</li><li>hashBucketSize是每个segment中buckets数组的大小，取余后得到bucket的序号；</li></ul> 
+<h3><a id="font_color224070_hash_font_181"></a><font color="#224070"> 分段hash的定义 </font></h3> 
+<p>每个segment可以定义位一个结构体，固定数量时，可以直接定义为静态数组；如果数量可变，可以动态申请空间。</p> 
+<p><strong>hash段数据结构定义</strong></p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">HASH_SEGMENT_SIZE</span> <span class="token expression"><span class="token punctuation">(</span><span class="token number">32</span><span class="token punctuation">)</span></span></span>
+<span class="token keyword">typedef</span> <span class="token keyword">struct</span> <span class="token class-name">HashSegment</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// SPINLOCK        segLock;   </span>
+    HashElement    segBuckets<span class="token punctuation">[</span>HASH_SEGMENT_SIZE<span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>HashSegment<span class="token punctuation">;</span>
+</code></pre> 
+<p>这里的锁可以根据自己需要的类型进行定义，这里暂时注释代替，后面并发分享时再分析。</p> 
+<p><strong>分段hash表定义</strong></p> 
+<p>将上面的分散的参数，都可以加到hashTableInfo的数据结构中来。</p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">HASH_SEGMENT_NUM</span> <span class="token expression"><span class="token punctuation">(</span><span class="token number">32</span><span class="token punctuation">)</span></span></span>
+<span class="token keyword">typedef</span> <span class="token keyword">struct</span> <span class="token class-name">HashTableInfo</span> 
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> partitionNum<span class="token punctuation">;</span>
+    HASHKEY partitionMask<span class="token punctuation">;</span>
+    <span class="token keyword">int</span> partitionShift<span class="token punctuation">;</span>
+
+    <span class="token keyword">int</span> bucketShift<span class="token punctuation">;</span>
+    <span class="token keyword">int</span> hashSegmentSize<span class="token punctuation">;</span>
+
+    HashSegment        segmentArray<span class="token punctuation">[</span>HASH_SEGMENT_NUM<span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>HashTableInfo<span class="token punctuation">;</span>
+</code></pre> 
+<p>这里段的数量采用<code>HASH_SEGMENT_NUM</code>来定义，固定大小，每次修改需要重新编译。</p> 
+<h3><a id="font_color224070_hash__font_219"></a><font color="#224070"> hash 查找 </font></h3> 
+<p>相比简单hash表，分段hash表增加了分段的查找与加锁步骤，hash查找的步骤如下：</p> 
+<ol><li>调用hash计算函数，计算hashKey；</li><li>获取分段序号；</li><li>加锁对应的分段；</li><li>获取bucket序号；</li><li>从对应的bucket链中查找；</li><li>如果找到返回；否则返回NULL；</li></ol> 
+<p>其它插入和删除操作，也是多了2，3步骤，其余相同。</p> 
+<h2><a id="font_colorA0522D_font_232"></a><font color="#A0522D">五、总结 </font></h2> 
+<hr> 
+<p>本文分享了分段hash表的实现与原理，在高并发场景下，为了hash操作的一致性，又同时提升hash表的吞吐量，采用分段hash，在没有hash段冲突时，可以同时进行N个并发操作，N即为段的数量。</p> 
+<p>对于分段的原量，分享了段数量可变的分段方法，通过计算段数量的2的幂，来动态确定占用的二进制位的数量，生成对应的段掩码。</p> 
+<h2><a id="font_colorA0522D_font_238"></a><font color="#A0522D">结尾 </font></h2> 
+<hr> 
+<blockquote> 
+ <p><strong>非常感谢大家的支持，在浏览的同时别忘了留下您宝贵的评论，如果觉得值得鼓励，请点赞，收藏，我会更加努力！</strong></p> 
+</blockquote> 
+<p>作者邮箱：study@senllang.onaliyun.com<br> 如有错误或者疏漏欢迎指出，互相学习。</p> 
+<p>注：未经同意，不得转载！</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f90d67ca65b948dbc3d601745894de83/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Django 框架下的media和static静态文件</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/19b8a25de773cc7542d4721ece5f58dc/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Python酷库之旅-第三方库Pandas(016)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

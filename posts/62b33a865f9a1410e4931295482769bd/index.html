@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink⼤状态作业调优实践指南：状态报错与启停慢篇 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/62b33a865f9a1410e4931295482769bd/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Flink⼤状态作业调优实践指南：状态报错与启停慢篇">
+  <meta property="og:description" content="摘要：本文整理自俞航翔、陈婧敏、黄鹏程老师所撰写的大状态作业调优实践指南。由于内容丰富，本文分享终篇状态报错与启停慢篇，主要分为以下四个部分：
+检查点和快照超时的诊断与调优
+作业快速启动和扩缩容方案
+总结
+阿里云企业级存储后端Gemini 特点补充介绍
+前篇：Flink⼤状态作业调优实践指南：Datastream 作业篇
+中篇：Flink⼤状态作业调优实践指南：Flink SQL 作业篇
+Tips：点击「阅读原文」跳转阿里云实时计算 Flink～
+检查点和快照超时的诊断与调优 6.1 运行原理 Flink 的状态管理核心机制依赖于 Chandy-Lamport 算法，以确保数据的一致性和可靠性。在此框架下，检查点和快照的执行过程可以概括为两个主要阶段：
+（1）同步阶段：此阶段的关键在于 Barrier 的对齐和同步资源的维护。Barrier 作为一种特殊的数据记录，在算子之间传递时，其对齐的时间与数据记录的延迟成正相关关系。
+（2）异步阶段：在这一阶段，算子将本地状态信息上传至远程的持久化存储系统。上传时间的长短与状态数据的大小直接相关。
+当 Flink 作业面临反压问题时，同步阶段的执行可能会变得缓慢，从而导致检查点和快照超时。因此，在遇到检查点和快照超时问题，并且监测到作业存在反压时，首先应当参考 Flink 的“运行时性能调优策略”，优先解决反压问题，以提高作业的整体效率和稳定性。
+6.2 问题诊断方法 在解决反压问题后，若检查点与快照仍出现超时现象，首先应分析同步阶段的对齐时间是否过长，随后考虑是否由庞大的状态数据引起。
+■ Checkpoint UI 通过这个UI，用户可以详细分析检查点和快照超时原因，具体操作如下：
+在 “作业探查 - Checkpoints - Checkpoints 历史” 页面，可以在不同级别（作业、算子、单并发）观察 Checkpoint 指标，我们着重观察超时的 Checkpoint 的异常算子或正在进行的 Checkpoint 的算子：
+（1）其 “Sync Duration” 和 “Alignment Duration” 是否较长，如是，则基本判定有瓶颈在同步阶段上，需要优先解决同步阶段问题
+（2）其 “Async Duration” 是否较长，以及其 “Checkpointed Data Size” 是否较大，如是，则可基本判定其瓶颈在异步阶段状态上传上
+■ Checkpoint 指标 用户通过查看监控指标中 lastCheckpointDuration 和 lastCheckpointSize 来粗粒度分析历史 Checkpoint 的耗时和大小。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-07T10:46:55+08:00">
+    <meta property="article:modified_time" content="2024-06-07T10:46:55+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink⼤状态作业调优实践指南：状态报错与启停慢篇</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><strong>摘</strong><strong>要</strong><strong>：</strong>本文整理自俞航翔、陈婧敏、黄鹏程老师所撰写的大状态作业调优实践指南。由于内容丰富，本文分享终篇<strong>状态报错与启停慢篇</strong>，主要分为以下四个部分：</p> 
+<ol><li> <p>检查点和快照超时的诊断与调优</p> </li><li> <p>作业快速启动和扩缩容方案</p> </li><li> <p>总结</p> </li><li> <p>阿里云企业级存储后端Gemini 特点补充介绍</p> </li></ol> 
+<p>前篇：<a href="http://mp.weixin.qq.com/s?__biz=MzU3Mzg4OTMyNQ==&amp;mid=2247510594&amp;idx=1&amp;sn=e6ba237bd6be6774d73409093cb6861d&amp;chksm=fd382400ca4fad1606f6ff14bfc74ac657fdc315822e52974dff04f7455a4e57e6a2d51f4ebb&amp;scene=21#wechat_redirect" rel="nofollow" title="Flink⼤状态作业调优实践指南：Datastream 作业篇">Flink⼤状态作业调优实践指南：Datastream 作业篇</a></p> 
+<p>中篇：<a href="http://mp.weixin.qq.com/s?__biz=MzU3Mzg4OTMyNQ==&amp;mid=2247510611&amp;idx=1&amp;sn=4daac2993326821f7647b53815bed894&amp;chksm=fd382411ca4fad0777b1d9159003b05632aa5c3fa0fe3707468eeea17496741ff171e17168d0&amp;scene=21#wechat_redirect" rel="nofollow" title="Flink⼤状态作业调优实践指南：Flink SQL 作业篇">Flink⼤状态作业调优实践指南：Flink SQL 作业篇</a></p> 
+<p><strong>Tips：</strong>点击<strong>「阅读原文」</strong><strong>跳转阿里云实时计算 Flink～</strong></p> 
+<h3><strong>检查点和快照超时的诊断与调优</strong></h3> 
+<p></p> 
+<h5><strong><strong>6.1 运行原理</strong></strong></h5> 
+<p>Flink 的状态管理核心机制依赖于 Chandy-Lamport 算法，以确保数据的一致性和可靠性。在此框架下，检查点和快照的执行过程可以概括为两个主要阶段：</p> 
+<p>（1）<strong>同步阶段</strong>：此阶段的关键在于 Barrier 的对齐和同步资源的维护。Barrier 作为一种特殊的数据记录，在算子之间传递时，其对齐的时间与数据记录的延迟成正相关关系。</p> 
+<p>（2）<strong>异步阶段</strong>：在这一阶段，算子将本地状态信息上传至远程的持久化存储系统。上传时间的长短与状态数据的大小直接相关。</p> 
+<p>当 Flink 作业面临反压问题时，同步阶段的执行可能会变得缓慢，从而导致检查点和快照超时。因此，在遇到检查点和快照超时问题，并且监测到作业存在反压时，首先应当参考 Flink 的“运行时性能调优策略”，优先解决反压问题，以提高作业的整体效率和稳定性。</p> 
+<h5><strong><strong>6.2 问题诊断方法</strong></strong></h5> 
+<p>在解决反压问题后，若检查点与快照仍出现超时现象，首先应分析同步阶段的对齐时间是否过长，随后考虑是否由庞大的状态数据引起。</p> 
+<h5><strong>■ Checkpoint UI</strong></h5> 
+<p>通过这个UI，用户可以详细分析检查点和快照超时原因，具体操作如下：</p> 
+<p>在 “作业探查 - Checkpoints - Checkpoints 历史” 页面，可以在不同级别（作业、算子、单并发）观察 Checkpoint 指标，我们着重观察超时的 Checkpoint 的异常算子或正在进行的 Checkpoint 的算子：</p> 
+<p>（1）其 “Sync Duration” 和 “Alignment Duration” 是否较长，如是，则基本判定有瓶颈在同步阶段上，需要优先解决同步阶段问题</p> 
+<p>（2）其 “Async Duration” 是否较长，以及其 “Checkpointed Data Size” 是否较大，如是，则可基本判定其瓶颈在异步阶段状态上传上</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="663" src="https://images2.imgbox.com/2c/33/MfLmx0ik_o.jpg" width="1080"></p> 
+<p></p> 
+<h5><strong>■ Checkpoint 指标</strong></h5> 
+<p>用户通过查看监控指标中 lastCheckpointDuration 和 lastCheckpointSize 来粗粒度分析历史 Checkpoint 的耗时和大小。</p> 
+<h5><strong><strong>6.2 调优方法</strong></strong></h5> 
+<p>在进行性能调优之前，首先要确保运行时性能达到预期。如果当前性能水平不足，应优先根据“运行时性能优化指南”进行调整。在满足基本性能要求后，为了进一步提高检查点和快照的效率，可以考虑以下三种策略：</p> 
+<p>（1）<strong>使用 Unaligned Checkpoint 和 Buffer Debloating</strong>：这一方法可以有效解决因等待数据对齐而导致的超时问题，适用于各种规模的作业，这里仅作简要介绍）</p> 
+<p>（2）<strong>增加运行时的并发资源</strong>：通过增加并发资源，可以减少单个并发任务的状态量，从而加速异步快照的处理流程。</p> 
+<p>（3）<strong>使用原生快照</strong>：相比标准快照，原生快照生成速度更快，存储占用更小。</p> 
+<table><tbody><tr><td><strong>使用场景</strong></td><td><strong>方案</strong></td><td><strong>实践方式</strong></td><td><strong>注意事项</strong></td></tr><tr><td style="vertical-align:top;">检查点或快照同步超时</td><td style="vertical-align:top;">使用 Unaligned Checkpoint 和 Buffer Debloating</td><td style="vertical-align:top;">运行参数中配置参数，可参考[8]</td><td style="vertical-align:top;"></td></tr><tr><td style="vertical-align:top;">检查点或快照异步超时</td><td style="vertical-align:top;">增加并发</td><td style="vertical-align:top;">在资源配置或细粒度资源配置中增加并发[7]</td><td style="vertical-align:top;"></td></tr><tr><td style="vertical-align:top;">快照异步超时</td><td style="vertical-align:top;">使用原生快照</td><td style="vertical-align:top;">对运行中的作业，选择 “创建快照” - “原生格式” 即可[9]</td><td style="vertical-align:top;">原生快照无法保证跨大版本兼容</td></tr></tbody></table> 
+<p> Unaligned Checkpoint 和 Buffer Debloating的使用和介绍可以参考以下帖子</p> 
+<p><a href="https://blog.csdn.net/bigdatakenan/article/details/124261147?spm=1001.2014.3001.5502" title="Flink Aligned Checkpoint和Unaligned Checkpoint原理详解-CSDN博客">Flink Aligned Checkpoint和Unaligned Checkpoint原理详解-CSDN博客</a></p> 
+<p><a href="https://blog.csdn.net/bigdatakenan/article/details/124414814?spm=1001.2014.3001.5502" title="一文搞懂 Flink 网络流控与反压机制_flink kafka 反压-CSDN博客">一文搞懂 Flink 网络流控与反压机制_flink kafka 反压-CSDN博客</a></p> 
+<h3><strong>作业快速启动和扩缩容方案</strong></h3> 
+<p></p> 
+<h5><strong><strong>7.1 运行原理</strong></strong></h5> 
+<p>在进行作业恢复时，从检查点或快照中恢复相较于无状态启动，关键在于高效地从远程持久存储中下载状态文件并重建状态引擎。这一步骤需要执行大量的输入输出操作，容易成为恢复过程中的效率瓶颈，可能会造成作业的长时间停滞。</p> 
+<p></p> 
+<h5><strong><strong>7.2 问题诊断方法</strong></strong></h5> 
+<h5>在作业启动或进行扩容操作期间，若发现作业长时间停留在初始化阶段，应首先诊断是否存在初始化瓶颈。以下是推荐的诊断与优化步骤：</h5> 
+<p>（1）<strong>使用诊断工具分析算子状态</strong>：利用“线程转储”、“线程动态分析”和“火焰图”等工具，检查初始化阶段的算子线程栈。重点关注线程栈是否长时间处于等待状态，尤其是在Gemini等状态存储系统上的操作。</p> 
+<p>（2）<strong>识别状态算子的初始化问题</strong>：如果发现某个算子长时间处于初始化状态，且该算子涉及状态处理，那么可以推断问题可能出在状态的下载或重建过程中。</p> 
+<p>一旦确定作业初始化的瓶颈与大状态处理有关，接下来应参考后续章节提供的优化策略进行针对性调整。通过这些方法，可以有效地识别并解决作业初始化过程中的瓶颈问题，从而提高作业的运行效率和稳定性。</p> 
+<h5><strong><strong>7.3 调优方法</strong></strong></h5> 
+<p>为了优化作业启动和扩容效率，我们提供了两种高效策略：</p> 
+<p>（1）<strong>Local Recovery</strong>：本地恢复技术，通过在本地同时存储快照，减少恢复过程中的数据下载需求。在本地磁盘空间充裕的情况下，这是首选方案。</p> 
+<p>（2）<strong>Gemini 智能懒加载和延迟剪裁</strong>：作为平台核心技术Gemini，即使面对大规模状态的作业，也能仅通过下载必要的元数据快速启动，实现对用户数据的即时处理。随后，系统将通过异步下载和智能裁剪技术，有效处理远程检查点文件，显著降低作业中断时间，提升效率超过90%。</p> 
+<p></p> 
+<table><thead><tr><th>方案</th><th>实践方式</th><th>注意事项</th></tr></thead><tbody><tr><td>Local Recovery：本地备份快照加速恢复</td><td>运行参数中配置：state.backend.local-recovery: true [10]</td><td>适用于作业 Failover 或者动态参数更新的场景，手动停止重启无法生效会多占用部分本地磁盘资源</td></tr><tr><td>Gemini 智能懒加载和延迟剪裁：异步状态恢复方案</td><td>运行参数中配置：state.backend.gemini.file.cache.download.type: LazyDownloadOnRestore</td><td>作业刚启动后的一小段时间内，会异步下载状态文件，作业性能逐步恢复，因此一开始性能会稍微低一些</td></tr></tbody></table> 
+<p></p> 
+<h3><strong>总结</strong></h3> 
+<p></p> 
+<p>在上中下篇章中，我们深入探讨了Apache Flink中的状态管理机制，以及当一个作业持有大状态时在阿里云实时计算Flink版中的如何进行问题诊断和优化。Flink的状态管理是一个复杂而关键的领域，涉及到作业的性能、稳定性和资源利用等多个方面。通过对这些机制分析和优化策略的深入理解和正确应用，结合阿里云Flink提供的产品能力，希望用户可以有效地优化Flink作业，应对大规模状态作业带来的挑战，实现更高效、更可靠的实时数据处理。</p> 
+<h3>附录1：阿里云企业级存储后端Gemini 特点补充介绍</h3> 
+<p>GeminiStateBackend是一款面向流计算场景的KV存储引擎，作为实时计算Flink版产品的默认状态存储后端（StateBackend）。其针对流计算场景进行了全新的架构和数据结构设计，Gemini 在大状态作业下也有良好的表现，其具备如下优势特点：</p> 
+<p><strong>性能卓越</strong>：在 Nexmark 测试中，Gemini 所有用例的性能都比 RocksDB 更优，其中约一半用例的性能领先 RocksDB 70%以上。目前在阿里巴巴集团内部的实时计算平台和公有云的实时计算Flink服务中，共计超 50WCU 的有状态作业使用 Gemini 存储引擎，其中也包含了数十 TB ～ 上百 TB 的大状态作业，助力实时计算用户高效完成业务目标。</p> 
+<p><strong>自适应 KV 分离，极大优化大状态下双流/多流 Join 性能</strong>：Stateful Join 算子利用状态存储明细数据，因此是大状态作业的常客。基于大量场景 Join 成功率较低、或者状态数据Value较长的特点，Gemini 推出了 KV 分离的能力从而极大优化这些场景下的性能。在 Nexmark 双流 Join 的测试中，作业吞吐能力可以提升50% ～ 70% 以上，且该功能可以完全自适应调整，不需要用户额外配置调优。</p> 
+<p><strong>轻量级 Snapshot，显著加速大状态作业检查点和快照完成</strong>：Gemini 通过支持更细粒度的 Snapshot，同时解耦检查点与 LSM 的 Compaction 机制，让检查点和快照变得更加稳定快速。此外，Gemini 通过支持 Native Incremental Savepoint，结合实时计算产品提供了原生快照，让其性能趋近检查点，极大提高了快照可用性。</p> 
+<h3>三篇综合参考文献</h3> 
+<p><strong>[1] 深入分析 Flink SQL 工作机制：</strong></p> 
+<p>https://developer.aliyun.com/article/765311</p> 
+<p><strong>[2] 在使用 EvenTimeTemporalJoin 时不会产生 ChangelogNormalize，详见 FLINK-29849：</strong></p> 
+<p>https://issues.apache.org/jira/browse/FLINK-29849</p> 
+<p><strong>[3] Flink SQL Secrets: Mastering the Art of Changelog Event Out-of-Orderness：</strong></p> 
+<p>https://www.ververica.com/blog/flink-sql-secrets-mastering-the-art-of-changelog-event-out-of-orderness</p> 
+<p><strong>[4] 如何消除流查询的不确定性影响：</strong></p> 
+<p>https://nightlies.apache.org/flink/flink-docs-release-1.18/zh/docs/dev/table/concepts/determinism/#33-如何消除流查询的不确定性影响</p> 
+<p><strong>[5] 高性能 FlinkSQL 优化技巧：</strong></p> 
+<p>https://help.aliyun.com/zh/flink/user-guide/optimize-flink-sql?spm=a2c4g.11186623.0.0.2790ff53sQpyuy</p> 
+<p><strong>[6] taskmanager.memory.managed.fraction 配置说明：</strong></p> 
+<p>https://nightlies.apache.org/flink/flink-docs-master/docs/deployment/config/#taskmanager-memory-managed-fraction</p> 
+<p><strong>[7] 作业资源配置方式：</strong></p> 
+<p>https://help.aliyun.com/zh/flink/user-guide/configure-deployment-resources</p> 
+<p><strong>[8] Unaligned Checkpoint 和 Buffer Debloating 使用方式：</strong></p> 
+<p>https://nightlies.apache.org/flink/flink-docs-</p> 
+<p>master/docs/ops/state/checkpointingunderbackpressure</p> 
+<p><strong>[9] 原生快照使用方式：</strong></p> 
+<p>https://nightlies.apache.org/flink/flink-docs-master/docs/ops/state/checkpointingunderbackpressure</p> 
+<p><strong>[10] Local Recovery 配置说明：</strong></p> 
+<p>https://nightlies.apache.org/flink/flink-docs-master/docs/deployment/config/#state-backend-local-recovery</p> 
+<p><strong>[11] 状态相关介绍：</strong></p> 
+<p>https://nightlies.apache.org/flink/flink-docs-release-1.19/docs/dev/datastream/fault-tolerance/state/#operator-state</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/46972cb11b39a8aabc8a945ab394e226/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【02数据库与小模型篇】0到1打造基于文心大模型和飞桨小模型的智能在线编辑器</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f5209d8b9570f2878489fe21e5fe2ef0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【超长好文】Redis在项目中的17种使用场景</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

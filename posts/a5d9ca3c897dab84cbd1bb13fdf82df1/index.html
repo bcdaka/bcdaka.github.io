@@ -1,0 +1,716 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink 从入门到放弃 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/a5d9ca3c897dab84cbd1bb13fdf82df1/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Flink 从入门到放弃">
+  <meta property="og:description" content="0 写在前面 程序员闯荡江湖的一生都在与数据打交道，初入江湖时基于 MySQL 的 CRUD，渐入佳境后利用 Redis 实现查询加速及分布式控制，本质上都是数据处理；无论主动/被动，都在利用数据来达成业务/技术目的。自然而然的，数据处理成为了计算机科学的重要研究方向。
+我们也充分享受了这门学科发展带来的红利，或许你很难想象，在20世纪50年代之前，人们保存与检索数据的方式还是纸质文档 &#43; 字典目录的人工排列；而现今我们能够依据对性能、事务支持、扩展性、一致性、成本等不同层面的需求，在不同数据库间自由选型。
+而在此基础之上，人们又对数据处理能力提出了更高的要求，例如：PB级海量数据、秒级响应速度、Exactly-Once 语义、失败容忍、动态扩缩容等等，此时传统数据库便显得有些捉襟见肘。数据库毕竟更专注于提供存储服务而非计算服务，并且受制于不同的底层实现，其所能提供的计算规模、灵活程度、性能表现等也各不相同（例如 RDBMS 的表关联、事务支持就是 KV 型数据库所无法提供的，KV 型数据库的高性能又是 RDBMS 无法企及的；不同索引数据结构的差异，导致对于点查、范围查支持程度的不同）。当然，目前也存在 OceanBase、Hologres 这类原生高性能实时数据仓库，不在本篇的讨论范围内。
+因此，存储介质无关的大数据计算引擎应运而生，提供大量通用的函数算子、支持超大型数据计算规模、分布式调度能力、高性能底层计算处理引擎、高可用中间状态存储等等等等一系列牛逼的能力，能满足一切你想要的。
+本文便以大数据实时计算领域的事实标准——Flink为例，带你走进计算引擎的世界。
+1 初入江湖：初识 Flink 未见其人先闻其声，来看看对于 Flink 相对官方的介绍：
+Apache Flink 是一个用于流处理和批处理的开源分布式数据处理框架，它提供了高吞吐量、低延迟的数据处理能力，可以处理大规模数据并具有容错性。Flink 最初是由德国柏林工业大学的研究人员开发的，现在是 Apache 软件基金会的顶级项目之一。
+从这段介绍中可以提取出几个关键词：
+Apache（牛逼）流（Streaming）处理/批（Batch）处理分布式高吞吐/低延迟/大规模数据集/容错性···
+1.1 Streaming/Batch 什么是流处理/批处理？全程叫：流数据处理/批数据处理，大数据计算引擎的两大核心分支。
+「批」并不难理解，一批人、一批货、一批任务（你还认识「批」这个字不？），常见的用于描述数量的抽象单位，一切既定规模的实体都可以描述为「一批」。因此，批数据处理就是对于大小已知数据集的处理。
+再说「流」，人流量、车流量、金额流水，都是在描述无边界、数量未知、源源不断的数据流动趋势。因此，流数据处理是对于实时生成、无边界数据集的处理。
+简单来说，流是源源不断流动着数据的管道，批是既定规模的数据集。
+那「流」与「批」两个概念是否相悖呢？
+为流加上“近1小时”、“近3天”的限定词，流有了边界、有了确定的范围，流就成了批；将批无限缩小，将每批数据的取值界限设定为1ms，批的实时性又无限接近于流。显然两者并不相悖，只是出发的视角不同，批可以是有边界的流、流也可以由无数个微型的批构成（Spark 便以此理念实现了流计算）。
+这时有同学就说了：“这不小流吗？这我熟啊，我每天都 List.stream().map().collect()。”
+在了解流的概念后，显然能够知晓这并不是真正意义上的流，只是套用了流式计算的理念——流计算提供了大量函数算子（如 map/filter/flatMap/sum），融合了函数式编程风格，风格类似对管道中元素分步处理。但必须要分清，这并不是真正的流、也不是真正的流计算，因为数据集是既定规模的、有边界的！一定要对流建立正确的认知！
+再说回 Flink，其设计理念就是进行流数据处理，流又有着天然实时性和规模未知的特性，所以 Flink 被称为「大数据实时计算引擎」。现今 Flink 也支持了批计算，因为如上文所言“批就是有边界的流”，做一些简单的转换便可以实现批计算语义，因此 Flink 实际上是「流批一体计算引擎」。
+1.2 分布式 分布式这个命题过于大，这里仅介绍分布式在 Flink 中的体现。实际这部分也是 Flink 运行时架构的核心内容，这里仅作枚举和简述，后续会进行详细介绍。
+Flink 通常以分布式集群的形式运行，提到分布式集群就绕不开高并发/高可用/动态扩展等基本特性，Flink 也提供了这样的基础能力，内置 ZooKeeper 进行分布式环境协调及高可用保障。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-29T15:13:28+08:00">
+    <meta property="article:modified_time" content="2024-06-29T15:13:28+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink 从入门到放弃</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<h2><a id="0__1"></a>0 写在前面</h2> 
+<p>  程序员闯荡江湖的一生都在与<strong>数据</strong>打交道，初入江湖时基于 MySQL 的 CRUD，渐入佳境后利用 Redis 实现查询加速及分布式控制，本质上都是<strong>数据处理</strong>；无论主动/被动，都在利用数据来达成业务/技术目的。自然而然的，<strong>数据处理</strong>成为了计算机科学的重要研究方向。<br>  我们也充分享受了这门学科发展带来的红利，或许你很难想象，在20世纪50年代之前，人们保存与检索数据的方式还是纸质文档 + 字典目录的人工排列；而现今我们能够依据对性能、事务支持、扩展性、一致性、成本等不同层面的需求，在不同数据库间自由选型。<br>  而在此基础之上，人们又对数据处理能力提出了更高的要求，例如：PB级海量数据、秒级响应速度、Exactly-Once 语义、失败容忍、动态扩缩容等等，此时传统数据库便显得有些捉襟见肘。数据库毕竟更专注于提供存储服务而非计算服务，并且受制于不同的底层实现，其所能提供的计算规模、灵活程度、性能表现等也各不相同（例如 RDBMS 的表关联、事务支持就是 KV 型数据库所无法提供的，KV 型数据库的高性能又是 RDBMS 无法企及的；不同索引数据结构的差异，导致对于点查、范围查支持程度的不同）。当然，目前也存在 OceanBase、Hologres 这类原生高性能实时数据仓库，不在本篇的讨论范围内。<br>  因此，存储介质无关的<strong>大数据计算引擎</strong>应运而生，提供大量通用的函数算子、支持超大型数据计算规模、分布式调度能力、高性能底层计算处理引擎、高可用中间状态存储等等等等一系列牛逼的能力，能满足一切你想要的。<br>  本文便以<strong>大数据实时计算领域的事实标准——Flink</strong>为例，带你走进计算引擎的世界。<br>  <img src="https://images2.imgbox.com/60/2c/qXrjkqPm_o.png" alt="图1 Flink小松许"><br> </p> 
+<h2><a id="1__Flink_4"></a>1 初入江湖：初识 Flink</h2> 
+<p>  未见其人先闻其声，来看看对于 Flink 相对官方的介绍：</p> 
+<blockquote> 
+ <p>Apache Flink 是一个用于流处理和批处理的开源分布式数据处理框架，它提供了高吞吐量、低延迟的数据处理能力，可以处理大规模数据并具有容错性。Flink 最初是由德国柏林工业大学的研究人员开发的，现在是 Apache 软件基金会的顶级项目之一。</p> 
+</blockquote> 
+<p>  从这段介绍中可以提取出几个关键词：</p> 
+<ol><li><strong>Apache（牛逼）</strong></li><li><strong>流（Streaming）处理/批（Batch）处理</strong></li><li><strong>分布式</strong></li><li><strong>高吞吐/低延迟/大规模数据集/容错性···</strong><br> </li></ol> 
+<h3><a id="11_StreamingBatch_15"></a>1.1 Streaming/Batch</h3> 
+<p>  什么是<strong>流处理/批处理</strong>？全程叫：<strong>流数据处理/批数据处理</strong>，大数据计算引擎的两大核心分支。<br>  「批」并不难理解，一批人、一批货、一批任务（你还认识「批」这个字不？），常见的用于描述数量的抽象单位，一切既定规模的实体都可以描述为「一批」。因此，批数据处理就是<strong>对于大小已知数据集的处理。</strong><br>  再说「流」，人流量、车流量、金额流水，都是在描述无边界、数量未知、源源不断的数据流动趋势。因此，流数据处理是对于<strong>实时生成、无边界数据集的处理。</strong><br>  简单来说，流是源源不断流动着数据的管道，批是既定规模的数据集。<br>  <img src="https://images2.imgbox.com/d5/ec/W2QxEmvj_o.png" alt="图2 流/批"><br>  那「流」与「批」两个概念是否相悖呢？<br>  为流加上“近1小时”、“近3天”的限定词，流有了边界、有了确定的范围，流就成了批；将批无限缩小，将每批数据的取值界限设定为1ms，批的实时性又无限接近于流。显然两者并不相悖，只是出发的视角不同，批可以是有边界的流、流也可以由无数个微型的批构成（<strong>Spark 便以此理念实现了流计算</strong>）。<br>  这时有同学就说了：“这不小流吗？这我熟啊，我每天都 List.stream().map().collect()。”<br>  在了解流的概念后，显然能够知晓这并不是真正意义上的流，只是套用了流式计算的理念——流计算提供了大量函数算子（如 map/filter/flatMap/sum），融合了函数式编程风格，风格类似对管道中元素分步处理。但必须要分清，这并不是真正的流、也不是真正的流计算，因为数据集是<strong>既定规模的、有边界的</strong>！一定要对流建立正确的认知！<br>  再说回 Flink，其设计理念就是进行流数据处理，流又有着天然实时性和规模未知的特性，所以 Flink 被称为「大数据实时计算引擎」。现今 Flink 也支持了批计算，因为如上文所言“批就是有边界的流”，做一些简单的转换便可以实现批计算语义，因此 Flink 实际上是「流批一体计算引擎」。<br> </p> 
+<h3><a id="12__18"></a>1.2 分布式</h3> 
+<p>  分布式这个命题过于大，这里仅介绍分布式在 Flink 中的体现。<strong>实际这部分也是 Flink 运行时架构的核心内容，这里仅作枚举和简述，后续会进行详细介绍。</strong><br>  Flink 通常以分布式集群的形式运行，提到分布式集群就绕不开<strong>高并发/高可用/动态扩展</strong>等基本特性，Flink 也提供了这样的基础能力，内置 ZooKeeper 进行<strong>分布式环境协调</strong>及<strong>高可用保障</strong>。<br>  Flink 架构包含四大组件：**JobManager 作业管理器、ResourceManager 资源管理器、TaskManager 任务管理器、Dispatcher 分发器。**每个组件都是一个 JVM 进程（Flink 用 Java + Scala 语言开发，运行于 JVM 之上），组件间通讯、Master 节点选举与高可用、动态扩缩容自然离不开分布式协调。<br> </p> 
+<h3><a id="13__21"></a>1.3 高级特性</h3> 
+<p>  Flink 具备「<strong>高吞吐/低延迟/大规模数据集/容错性</strong>」等高级特性，实际每个特性背后的实现都是门学问，这里只作简单的介绍。</p> 
+<ul><li><strong>高吞吐</strong>：Flink 程序通常运行在大型集群之上，再加之能灵活调整 Task/算子并行度、最大化利用集群资源，能够使数据处理能力达到极为夸张的水平。</li><li><strong>低延迟</strong>：采用事件驱动模型，对输入事件进行实时处理；使用本地状态存储，减少网络通讯；异步化数据传输与网络通讯，最小化延迟。</li><li><strong>大规模数据集</strong>：放不下就加内存加内存加内存，加机器加机器加机器。</li><li><strong>容错性</strong>：Checkpoint 机制，定期保存作业执行状态 State 快照，故障发生/任务重启时可以利用 Checkpoint 快速恢复。<br> </li></ul> 
+<h3><a id="14_Why_Flink_29"></a>1.4 Why Flink？</h3> 
+<p>  也许大家还是会对「为什么用 Flink？」有疑问，笔者其实也很难以孤例让大家理解 Flink 的强大。以阿里巴巴 2018 年的公开数据为例：</p> 
+<ul><li>运行总机器数 <strong>3000+</strong></li><li>最大集群机器数 <strong>1500+</strong></li><li>每秒支持实时计算次数 <strong>10 亿+</strong></li></ul> 
+<p>  以笔者亲身体验来说，只要不是过于复杂的逻辑，基本单节点（单 TaskManager，类似 Worker 节点）就能支持千级别 RPS（Request Per Second，可以简单理解为吞吐量）实时计算；通过不断地调优与扩容（加机器加机器加机器），数十万级别 RPS 并不是难事。<br>  所以，还就得是 Flink。<br> </p> 
+<h2><a id="2__Flink_38"></a>2 江湖新秀：初探 Flink</h2> 
+<p>  相信诸位对 Flink 已建立了基本认知，下面笔者会带领各位少侠，亲身感受这门武林绝学的强悍。但在这之前，还需要清楚什么是「数据处理」，才能知道怎么用 Flink 完成数据处理。<br>  通用的数据处理可以抽象为 <strong>E-T-L</strong>三个环节：</p> 
+<ol><li><strong>Extract 抽取</strong>：从不同数据源中获取数据。</li><li><strong>Transform 转换</strong>：按照使用方式或业务逻辑自定义数据转换逻辑，编写脚本/函数。</li><li><strong>Load 装载</strong>：装载到存储介质中，如数据库、消息队列等。</li></ol> 
+<p><br>  Flink 中的数据处理同样可以抽象为三个环节：</p> 
+<ol><li><strong>Source</strong>：数据源读取。</li><li><strong>Transform</strong>：数据转换。</li><li><strong>Sink</strong>：数据输出。<br> <br></li></ol> 
+<p>  不难发现两者概念上高度一致，因此 Flink 也不会跳出基本的数据处理流程与原则。<br>  <br> <img src="https://images2.imgbox.com/9f/a4/aqseB8uS_o.png" alt="图3 Flink API"></p> 
+<p><br>  在使用层面 Flink 提供了多层 API（如图3），3 层 API 自上而下<strong>便利程度逐级降低</strong>、<strong>表达灵活程度逐级提高</strong>:</p> 
+<ol><li><strong>SQL/Table API</strong>：最高层级，通用的结构化查询语言/数据定义语言，类似 DML/DDL。</li><li><strong>DataStream/DataSet API</strong>：核心 API，分别对应流/批（无界/有界）数据集计算，包含大量函数式计算 API，如 map/flatMap/sum/max/min/keyBy/window 等。</li><li><strong>Stateful Stream Processing</strong>：有状态流处理接口，由用户自定义流中事件的处理逻辑，并自行管理状态、时间属性等。过于底层，一般用不到。</li></ol> 
+<p>  得益于其提供的 SQL API，<strong>开发一个 Flink Job 实际就是写一段 SQL</strong>，写 SQL 也成了 Flink Job 开发最常用的方式。与 MySQL 语法基本完全一致，基本能想到的函数它都有，这使得 Flink 的入门门槛极低、使用极其方便，会写 SQL 基本就可以说自己会 Flink 了（当然了不建议这么说，还是谦虚一点）。<br>  让俺们来动手写一写。<br> </p> 
+<h3><a id="21_Flink_SQL_63"></a>2.1 Flink SQL</h3> 
+<p>  本章节主要讨论“如何写出 Flink SQL”，再延伸到“怎么以流式思维写好 SQL”。上文提到 Flink 数据处理可抽象为 Source -&gt; Transform -&gt; Sink 三个环节，后续便以该结构展开讨论。<br> </p> 
+<h4><a id="211_Source___66"></a>2.1.1 Source - 源表连接器</h4> 
+<p>  处理数据第一步要先读取数据，在Flink的世界里，构建与数据源链接的物质叫做「<strong>Connector 连接器</strong>」。<br>  以最常见的 <strong>MySQL CDC（简称 MySQL）源表连接器</strong>为例，使用该连接器可以监听 MySQL 数据变动，类似于监听 binlog。如下代码块是 MySQL Connector 示例：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> mysqlcdc_source <span class="token punctuation">(</span>
+  order_id <span class="token keyword">INT</span><span class="token punctuation">,</span>
+  order_date <span class="token keyword">TIMESTAMP</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+  customer_name STRING<span class="token punctuation">,</span>
+  price <span class="token keyword">DECIMAL</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+  product_id <span class="token keyword">INT</span><span class="token punctuation">,</span>
+  order_status <span class="token keyword">BOOLEAN</span><span class="token punctuation">,</span>
+  <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span><span class="token punctuation">(</span>order_id<span class="token punctuation">)</span> <span class="token operator">NOT</span> ENFORCED
+<span class="token punctuation">)</span> <span class="token keyword">WITH</span> <span class="token punctuation">(</span>
+  <span class="token comment">-- 连接器类型</span>
+  <span class="token string">'connector'</span> <span class="token operator">=</span> <span class="token string">'mysql-cdc'</span><span class="token punctuation">,</span>
+  <span class="token comment">-- 主机名</span>
+  <span class="token string">'hostname'</span> <span class="token operator">=</span> <span class="token string">'&lt;yourHostname&gt;'</span><span class="token punctuation">,</span>
+  <span class="token comment">-- 端口号</span>
+  <span class="token string">'port'</span> <span class="token operator">=</span> <span class="token string">'3306'</span><span class="token punctuation">,</span>
+  <span class="token comment">-- 账号</span>
+  <span class="token string">'username'</span> <span class="token operator">=</span> <span class="token string">'&lt;yourUsername&gt;'</span><span class="token punctuation">,</span>
+  <span class="token comment">-- 密码</span>
+  <span class="token string">'password'</span> <span class="token operator">=</span> <span class="token string">'&lt;yourPassword&gt;'</span><span class="token punctuation">,</span>
+  <span class="token comment">-- 数据库名称</span>
+  <span class="token string">'database-name'</span> <span class="token operator">=</span> <span class="token string">'&lt;yourDatabaseName&gt;'</span><span class="token punctuation">,</span>
+  <span class="token comment">-- 表名</span>
+  <span class="token string">'table-name'</span> <span class="token operator">=</span> <span class="token string">'&lt;yourTableName&gt;'</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>  显然这就是一段 DDL 语句，配置<strong>表字段</strong>以及<strong>元数据</strong>（WITH 参数，除连接地址/账号/密码等信息，还提供如<strong>批量读取条数</strong>、<strong>指定 binlog 消费点位</strong>、<strong>连接超时时长</strong>之类的高级特性可选用），Flink 就能够愉快读取到 MySQL 表的数据变化。简单到令人震惊，只需要一条简单的 DDL 语句，便可以实现数据流的接入，但实现原理显然没有用起来这么简单。<br>  <strong>为什么只配置一句 DDL，就可以将源数据结构无损转换到流数据结构？为什么只靠一句 DDL，就能够实现流式语义的数据读取？</strong><br>  这对应两个极其重要的特性：<strong>流表对偶性（Duality）和持续查询（Continuous Queries）</strong>，这两个特性赋予 Flink 将表转为流的能力，后续会重点介绍。<br>  Flink 内置大量的 Connector，除了提到的 MySQL 还支持 Kafka、Socket、ElasticSearch、Hive 等等等等（见官方文档：<a href="https://nightlies.apache.org/flink/flink-docs-release-1.17/zh/docs/connectors/table/overview/" rel="nofollow">https://nightlies.apache.org/flink/flink-docs-release-1.17/zh/docs/connectors/table/overview/</a>），基本常用的队列/数据库都能找到。实在有邪门的数据源或者定制化需求还可以自定义，自行实现 Flink 提供的连接器模板，但这个区域还是以后再来探索吧。<br> </p> 
+<h4><a id="212_Sink___96"></a>2.1.2 Sink - 结果表连接器</h4> 
+<p>  读取数据后自然要写入数据，这种连接器被称为<strong>结果表连接器</strong>。它也是连接器的一种，使用方式与源表连接器基本无异：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> mysqlcdc_source <span class="token punctuation">(</span>
+  order_id <span class="token keyword">INT</span><span class="token punctuation">,</span>
+  order_date <span class="token keyword">TIMESTAMP</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+  customer_name STRING<span class="token punctuation">,</span>
+  price <span class="token keyword">DECIMAL</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+  product_id <span class="token keyword">INT</span><span class="token punctuation">,</span>
+  order_status <span class="token keyword">BOOLEAN</span><span class="token punctuation">,</span>
+  <span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span><span class="token punctuation">(</span>order_id<span class="token punctuation">)</span> <span class="token operator">NOT</span> ENFORCED
+<span class="token punctuation">)</span> <span class="token keyword">WITH</span> <span class="token punctuation">(</span>
+  <span class="token comment">-- 连接器类型</span>
+  <span class="token string">'connector'</span> <span class="token operator">=</span> <span class="token string">'mysql'</span><span class="token punctuation">,</span>
+  <span class="token comment">-- 主机名</span>
+  <span class="token string">'hostname'</span> <span class="token operator">=</span> <span class="token string">'&lt;yourHostname&gt;'</span><span class="token punctuation">,</span>
+  <span class="token comment">-- 端口号</span>
+  <span class="token string">'port'</span> <span class="token operator">=</span> <span class="token string">'3306'</span><span class="token punctuation">,</span>
+  <span class="token comment">-- 账号</span>
+  <span class="token string">'username'</span> <span class="token operator">=</span> <span class="token string">'&lt;yourUsername&gt;'</span><span class="token punctuation">,</span>
+  <span class="token comment">-- 密码</span>
+  <span class="token string">'password'</span> <span class="token operator">=</span> <span class="token string">'&lt;yourPassword&gt;'</span><span class="token punctuation">,</span>
+  <span class="token comment">-- 数据库名称</span>
+  <span class="token string">'database-name'</span> <span class="token operator">=</span> <span class="token string">'&lt;yourDatabaseName&gt;'</span><span class="token punctuation">,</span>
+  <span class="token comment">-- 表名</span>
+  <span class="token string">'table-name'</span> <span class="token operator">=</span> <span class="token string">'&lt;yourTableName&gt;'</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>  可以说是毫无差别，事实上就是一模一样的 DDL 语句，只不过 WITH 参数内声明了不同的连接器类型、及部分结果表特有的元数据。实现原理也与上一章提到的流表对偶性和持续查询息息相关，这里还是按下不表。<br>  有了结果表连接器，就可以将计算结果写入特定的存储介质中。具备读/写的能力，就只差计算了。<br> </p> 
+<h4><a id="213_Transform___126"></a>2.1.3 Transform - 算子</h4> 
+<p>  Flink 精髓之处就在于大量的内置函数，而每个函数、每步转换都可以称为一个<strong>算子</strong>，对算子做组合就是 <strong>Transform</strong>。<br>  说半天其实就是在写 SQL，老本行了，这也是为啥上文说会 SQL ≈ 会 Flink。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">BEGIN</span> STATEMENT <span class="token keyword">SET</span>
+<span class="token punctuation">;</span>
+
+
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>sink<span class="token punctuation">`</span></span>
+<span class="token keyword">SELECT</span>
+  id <span class="token keyword">AS</span> subscription_id
+  <span class="token punctuation">,</span><span class="token keyword">type</span> <span class="token keyword">AS</span> subscription_type
+  <span class="token punctuation">,</span>age <span class="token keyword">AS</span> user_age
+  <span class="token punctuation">,</span>trim<span class="token punctuation">(</span>sexual<span class="token punctuation">)</span> <span class="token keyword">AS</span> user_sexual
+  <span class="token punctuation">,</span><span class="token keyword">CASE</span>
+  <span class="token keyword">WHEN</span> age <span class="token operator">&lt;</span> <span class="token number">18</span> <span class="token keyword">THEN</span> <span class="token number">1</span>
+  <span class="token keyword">ELSE</span> <span class="token number">0</span>
+  <span class="token keyword">END</span> <span class="token keyword">AS</span> is_minor
+<span class="token keyword">FROM</span> <span class="token identifier"><span class="token punctuation">`</span>source<span class="token punctuation">`</span></span>
+
+
+<span class="token keyword">END</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>  如上代码块，只比普通 SQL 多了写入逻辑开始/结束的声明（该声明在只有一条 INSERT 语句时可以不加，多条 INSERT 时需要用该声明括起来），具体写法和内置函数算子（见官方文档：<a href="https://nightlies.apache.org/flink/flink-docs-master/zh/docs/dev/table/functions/systemfunctions/" rel="nofollow">https://nightlies.apache.org/flink/flink-docs-master/zh/docs/dev/table/functions/systemfunctions/</a>）这里不作赘述。<br>  「算子」篇主要聊聊 Flink 最强大的算子——<strong>时间窗口算子</strong>，这是使得实时计算引擎如此不同的根本所在。<br>  「时间」是 Streaming 的丈量尺度（Streaming 中每个元素，都对应绝对时间坐标轴上一个点），也是实时性的体现基准（实时性强弱计算公式：<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         m 
+        
+       
+         = 
+        
+        
+        
+          T 
+         
+         
+         
+           c 
+          
+         
+           u 
+          
+         
+           r 
+          
+         
+           r 
+          
+         
+        
+       
+         − 
+        
+        
+        
+          T 
+         
+         
+         
+           e 
+          
+         
+           v 
+          
+         
+           e 
+          
+         
+           n 
+          
+         
+           t 
+          
+         
+        
+       
+      
+        m = T_{curr} - T_{event} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal">m</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">T</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">c</span><span class="mord mathnormal mtight">u</span><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">rr</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">T</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">e</span><span class="mord mathnormal mtight" style="margin-right: 0.0359em;">v</span><span class="mord mathnormal mtight">e</span><span class="mord mathnormal mtight">n</span><span class="mord mathnormal mtight">t</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，m 越小实时性越强），是至高神一般的存在。<br>  在 Batch/离线计算中，时间就显得没那么重要——数据源天然被划分好了时间属性（有界数据源，「界」通常就是时间边界，或是可以转换成时间边界），时效性通常不作强要求（通常采取 T 计算 T - 1 数据，有延误可以通过重跑补偿）。<br>  正是由于「时间」在 Flink 中的崇高地位、与人们对计算实时性的强要求不谋而合，致使大家选择了 Flink。所以，是我们选择了时间，而非时间选择了我们。<br>  <strong>所以，Flink 到底为什么需要时间？</strong><br> </p> 
+<h5><a id="2131__150"></a>2.1.3.1 时间</h5> 
+<p>  脱离时间谈实时性没有意义、甚至谈流计算也没有意义——没有人需要从盘古开天辟地起的某个指标，通常需要的是“本月某品类产品的营业额”、“当日某景区的客流量”、“当前小时某工厂制造元件的坏品率”；也没有人2024年看1995年的指标，人们更想感知一瞬间的实时变化趋势。<br>  所以 Flink 通常将「时间」作为计算起止的界限，Streaming 没有边界，必须有人为限定的边界作为计算触发条件，例如上面提到的本月/当日/当前小时。<br>  时间的精准程度直接决定了计算结果的精准程度，试想<strong>元素乱序</strong>（某商品最近一次的成交价格，先产生的元素由于网络异常后到达）、<strong>元素延迟到达</strong>（某商品近一小时内的总成交额，部分元素时间延迟导致被划分到错误的时间窗口，甚至直接丢弃）会对计算会造成多大影响。<br>  因此 Flink 提供了「<strong>处理时间 Processing Time</strong>」和「<strong>事件时间 Event Time</strong>」。<br>  「<strong>处理时间</strong>」是 Flink 所能提供最简单的时间属性，可以简单理解为机器的系统时钟，使用上没有任何心智负担。但同时也带来了最差的保障性——当元素流入的先后顺序并非其原本的生产顺序（如数据源网络异常消息延迟下发，或不同机器节点由于负载情况不同、出现了消费吞吐量差异，发往下游顺序错乱），Flink 完全无法感知。<br>  因此更常用的是「<strong>事件时间</strong>」，通常由使用者自行将时间属性写入元素内，再于Flink中提取对应属性作为元素的时间戳。如此一来，哪怕元素以混乱的时钟顺序进入 Flink，也能用事件时间重新扭转。<br>  但这只解决了<strong>乱序</strong>，还有更致命的<strong>延迟</strong>。这里涉及一个更复杂的概念：<strong>Watermark 数据水位</strong>，专门用于解决延迟问题，后续会重点介绍。<br>  了解了时间在 Flink 中的重要性，Flink 对时间的使用更是得心应手。<br> </p> 
+<h5><a id="2132__153"></a>2.1.3.2 滚动窗口</h5> 
+<p>  上一章提到“没有人需要从盘古开天辟地起的某个指标”，指标通常带有确定的时间界限：天级、小时级、分钟级、秒级，就是在为元素划分好「<strong>时间窗口</strong>」，再计算每个窗口内的指标，而最简单常用的时间窗口就是「<strong>滚动窗口 Tumble</strong>」。<br>  「<strong>滚动窗口</strong>」通常具有固定的大小，且每个窗口不重叠，如图5所示的时间轴就由 [0, 5) 、 [5, 10) 两个滚动窗口组成，它们没有任何重叠部分。<br>  <img src="https://images2.imgbox.com/25/1d/azxqPHcf_o.png" alt="图4 滚动窗口"><br>  指定元素时间对应字段和时间窗口长度，元素就被分组到了所处时间窗口内，此时再计算对应窗口内的数据，如求聚合值、最大最小值等。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">CREATE</span> <span class="token keyword">TEMPORARY</span> <span class="token keyword">TABLE</span> user_clicks<span class="token punctuation">(</span>
+  username <span class="token keyword">varchar</span><span class="token punctuation">,</span>
+  click_url <span class="token keyword">varchar</span><span class="token punctuation">,</span>
+  eventtime <span class="token keyword">varchar</span><span class="token punctuation">,</span>                            
+  ts <span class="token keyword">AS</span> TO_TIMESTAMP<span class="token punctuation">(</span>eventtime<span class="token punctuation">)</span><span class="token punctuation">,</span>
+  WATERMARK <span class="token keyword">FOR</span> ts <span class="token keyword">AS</span> ts <span class="token operator">-</span> <span class="token keyword">INTERVAL</span> <span class="token string">'2'</span> <span class="token keyword">SECOND</span>  <span class="token comment">--为Rowtime定义Watermark。</span>
+<span class="token punctuation">)</span> <span class="token keyword">WITH</span> <span class="token punctuation">(</span>
+  <span class="token string">'connector'</span><span class="token operator">=</span><span class="token string">'sls'</span><span class="token punctuation">,</span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">CREATE</span> <span class="token keyword">TEMPORARY</span> <span class="token keyword">TABLE</span> tumble_output<span class="token punctuation">(</span>
+  window_start <span class="token keyword">TIMESTAMP</span><span class="token punctuation">,</span>
+  window_end <span class="token keyword">TIMESTAMP</span><span class="token punctuation">,</span>
+  username <span class="token keyword">VARCHAR</span><span class="token punctuation">,</span>
+  clicks <span class="token keyword">BIGINT</span>
+<span class="token punctuation">)</span> <span class="token keyword">WITH</span> <span class="token punctuation">(</span>
+  <span class="token string">'connector'</span><span class="token operator">=</span><span class="token string">'datahub'</span>          <span class="token comment">--目前SLS只支持输出VARCHAR类型的DDL，所以使用DataHub存储。</span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> tumble_output
+<span class="token keyword">SELECT</span>
+TUMBLE_START<span class="token punctuation">(</span>ts<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'1'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span> <span class="token keyword">as</span> window_start<span class="token punctuation">,</span>
+TUMBLE_END<span class="token punctuation">(</span>ts<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'1'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span> <span class="token keyword">as</span> window_end<span class="token punctuation">,</span>
+username<span class="token punctuation">,</span>
+<span class="token function">COUNT</span><span class="token punctuation">(</span>click_url<span class="token punctuation">)</span>
+<span class="token keyword">FROM</span> user_clicks
+<span class="token keyword">GROUP</span> <span class="token keyword">BY</span> TUMBLE<span class="token punctuation">(</span>ts<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'1'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span><span class="token punctuation">,</span>username<span class="token punctuation">;</span>
+</code></pre> 
+<p>  如上代码块，<strong>TUMBLE 函数</strong>有两个参数：</p> 
+<ul><li>第一个参数“ts”代表<strong>元素时间戳字段</strong>（时间字段需要在连接器中指定，可用处理时间或事件时间）；</li><li>第二个参数“INTERVAL ‘1’ MINUTE”意为<strong>窗口长度</strong>为1分钟。</li></ul> 
+<p>  再配合 <strong>TUMBLE_START/TUMBLE_END 函数</strong>获取窗口起始/结束时间，便可以得到每个窗口内的计算结果（如图5）。<br>  <img src="https://images2.imgbox.com/b0/22/pqBms1Kw_o.png" alt="图5 滚动窗口计算结果"><br> </p> 
+<h5><a id="2133__193"></a>2.1.3.3 滑动窗口</h5> 
+<p>  「<strong>滑动窗口 Hop</strong>」比滚动窗口更丝滑，其由<strong>长度 + 步长</strong>两个参数组成，长度代表计算窗口的总长度，步长代表每次滑动的步长。<br>  <img src="https://images2.imgbox.com/48/64/3uo5lLdf_o.png" alt="图6 滑动窗口"><br>  如图7所示是长度为 5s、步长为 1s 的滑动窗口，每次滑动步长1s；这意味着每个滑动窗口会与上个窗口有 4s 的重叠，数据的变化会更加平滑（具体原理可以自行搜索）。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">CREATE</span> <span class="token keyword">TEMPORARY</span> <span class="token keyword">TABLE</span> user_clicks <span class="token punctuation">(</span>
+  username <span class="token keyword">VARCHAR</span><span class="token punctuation">,</span>
+  click_url <span class="token keyword">VARCHAR</span><span class="token punctuation">,</span>
+  eventtime <span class="token keyword">VARCHAR</span><span class="token punctuation">,</span>                            
+  ts <span class="token keyword">AS</span> TO_TIMESTAMP<span class="token punctuation">(</span>eventtime<span class="token punctuation">)</span><span class="token punctuation">,</span>
+  WATERMARK <span class="token keyword">FOR</span> ts <span class="token keyword">AS</span> ts <span class="token operator">-</span> <span class="token keyword">INTERVAL</span> <span class="token string">'2'</span> <span class="token keyword">SECOND</span>  <span class="token comment">--为Rowtime定义Watermark。</span>
+<span class="token punctuation">)</span> <span class="token keyword">WITH</span> <span class="token punctuation">(</span>
+  <span class="token string">'connector'</span><span class="token operator">=</span><span class="token string">'sls'</span><span class="token punctuation">,</span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">CREATE</span> <span class="token keyword">TEMPORARY</span> <span class="token keyword">TABLE</span> hop_output <span class="token punctuation">(</span>
+  window_start <span class="token keyword">TIMESTAMP</span><span class="token punctuation">,</span>
+  window_end <span class="token keyword">TIMESTAMP</span><span class="token punctuation">,</span>
+  username <span class="token keyword">VARCHAR</span><span class="token punctuation">,</span>
+  clicks <span class="token keyword">BIGINT</span>
+<span class="token punctuation">)</span> <span class="token keyword">WITH</span> <span class="token punctuation">(</span>
+  <span class="token string">'connector'</span><span class="token operator">=</span><span class="token string">'datahub'</span>           <span class="token comment">--目前SLS只支持输出VARCHAR类型的DDL，所以使用DataHub存储。</span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span>
+    hop_output
+<span class="token keyword">SELECT</span>
+    HOP_START <span class="token punctuation">(</span>ts<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'30'</span> <span class="token keyword">SECOND</span><span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'1'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    HOP_END <span class="token punctuation">(</span>ts<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'30'</span> <span class="token keyword">SECOND</span><span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'1'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    username<span class="token punctuation">,</span>
+    <span class="token function">COUNT</span> <span class="token punctuation">(</span>click_url<span class="token punctuation">)</span>
+<span class="token keyword">FROM</span>
+    user_clicks
+<span class="token keyword">GROUP</span> <span class="token keyword">BY</span>
+    HOP <span class="token punctuation">(</span>ts<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'30'</span> <span class="token keyword">SECOND</span><span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'1'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span><span class="token punctuation">,</span>username<span class="token punctuation">;</span>
+</code></pre> 
+<p>  <strong>HOP 函数</strong>使用方法与滚动窗口基本一致，只是多传入了一个步长。如上代码块代表窗口长度与步长分别为1分钟和30秒，意为每30秒计算一次过去1分钟的数据，与滚动窗口最显著的差异就是有30秒的窗口重合。<br>  <img src="https://images2.imgbox.com/82/9c/gFbhixFZ_o.png" alt="图7 滑动窗口计算结果"><br>  从图7的计算结果可以看出，每30秒触发一次计算，计算过去1分钟内窗口的数据。<br> </p> 
+<h5><a id="2134__231"></a>2.1.3.4 会话窗口</h5> 
+<p>  「<strong>会话窗口 Session</strong>」比较有意思，没有窗口大小、也没有窗口重叠，而是<strong>以会话开启/断开时机作为窗口</strong>。会话窗口会定义一个<strong>时间间隔（Gap）</strong>，如果在该时间间隔内有元素产生，则会一直续期该窗口，反之则关闭窗口、输出结果。<br>  以时间间隔30分钟举个例子：</p> 
+<ul><li>00:00 元素进入，开启会话窗口，此时会话窗口为 <strong>[00:00, 00:30]</strong> ；</li><li>00:15 元素进入，续期窗口，此时会话窗口为 <strong>[00:00, 00:45]</strong> ；</li><li>00:35 元素进入，续期窗口，此时会话窗口为 **[00:00, 01:15] **；</li><li>01:15 会话窗口关闭，输出结果；</li><li>01:35 元素进入，开启新会话窗口，此时会话窗口为 <strong>[01:35, 02:05]</strong> ；</li><li>······</li></ul> 
+<pre><code class="prism language-plsql">CREATE TEMPORARY TABLE user_clicks(
+  username varchar,
+  click_url varchar,
+  eventtime varchar,                            
+  ts AS TO_TIMESTAMP(eventtime),
+  WATERMARK FOR ts AS ts - INTERVAL '2' SECOND  --为Rowtime定义Watermark。
+) WITH (
+  'connector'='sls',
+  ...
+);
+
+CREATE TEMPORARY TABLE session_output(
+  window_start TIMESTAMP,
+  window_end TIMESTAMP,
+  username VARCHAR,
+  clicks BIGINT
+) WITH (
+  'connector'='datahub'           --目前SLS只支持输出VARCHAR类型的DDL，所以使用DataHub存储。
+  ...
+);
+
+INSERT INTO session_output
+SELECT
+SESSION_START(ts, INTERVAL '30' SECOND),
+SESSION_END(ts, INTERVAL '30' SECOND),
+username,
+COUNT(click_url)
+FROM user_clicks
+GROUP BY SESSION(ts, INTERVAL '30' SECOND), username;
+</code></pre> 
+<p>  会话窗口通常用于用户短活跃时间内的数据统计，如用户登录以来所有的浏览记录，超过10分钟没有操作视为会话断开，停止统计。<br> </p> 
+<h5><a id="2135_OVER__273"></a>2.1.3.5 OVER 窗口</h5> 
+<p>  「<strong>OVER 窗口</strong>」比较特殊，它认为每个元素都是一个窗口，每个窗口都有自己的时间戳；实际分为两种模式，合并<strong>过去 N 个窗口（实际就是 N 个元素）</strong>/合并<strong>过去N分钟</strong>对应的窗口，再进行最终结果计算。并且，它是<strong>唯一可以实时触发的窗口函数</strong>，前面3个窗口函数的触发时机都是窗口结束，而 OVER 窗口可以来一个输出一条、来一个输出一条。<br>  有点抽象，直接通过例子来看吧。</p> 
+<pre><code class="prism language-sql"><span class="token comment">-- 以Bounded ROWS OVER Window场景为例。</span>
+<span class="token comment">-- 假设，一张商品上架表，包含有商品ID、商品类型、商品上架时间、商品价格数据。</span>
+<span class="token comment">-- 要求输出在当前商品上架之前同类的3个商品中的最高价格。</span>
+
+<span class="token keyword">SELECT</span>
+    itemID<span class="token punctuation">,</span>
+    itemType<span class="token punctuation">,</span>
+    onSellTime<span class="token punctuation">,</span>
+    price<span class="token punctuation">,</span>  
+    <span class="token function">MAX</span><span class="token punctuation">(</span>price<span class="token punctuation">)</span> <span class="token keyword">OVER</span> <span class="token punctuation">(</span>
+        <span class="token keyword">PARTITION</span> <span class="token keyword">BY</span> itemType 
+        <span class="token keyword">ORDER</span> <span class="token keyword">BY</span> onSellTime 
+        <span class="token keyword">ROWS</span> <span class="token operator">BETWEEN</span> <span class="token number">2</span> <span class="token keyword">preceding</span> <span class="token operator">AND</span> <span class="token keyword">CURRENT</span> <span class="token keyword">ROW</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> maxPrice
+<span class="token keyword">FROM</span> tmall_item<span class="token punctuation">;</span>
+</code></pre> 
+<p>  如上代码块使用了 <strong>Rows Over Window</strong>，以 itemType 为分区键、以 onSellTime 为时间字段倒序排序、向前追溯2个窗口，计算 Max(price)。简单来说，就是<strong>以一个时间字段排序，往前追溯 N 行作为一个窗口计算</strong>。</p> 
+<pre><code class="prism language-sql"><span class="token comment">-- Bounded RANGE OVER Window场景为例。</span>
+<span class="token comment">-- 假设一张商品上架表，包含有商品ID、商品类型、商品上架时间、商品价格数据。</span>
+<span class="token comment">-- 需要求比当前商品上架时间早2分钟的同类商品中的最高价格。</span>
+
+<span class="token keyword">SELECT</span>  
+    itemID<span class="token punctuation">,</span>
+    itemType<span class="token punctuation">,</span> 
+    onSellTime<span class="token punctuation">,</span> 
+    price<span class="token punctuation">,</span>  
+    <span class="token function">MAX</span><span class="token punctuation">(</span>price<span class="token punctuation">)</span> <span class="token keyword">OVER</span> <span class="token punctuation">(</span>
+        <span class="token keyword">PARTITION</span> <span class="token keyword">BY</span> itemType 
+        <span class="token keyword">ORDER</span> <span class="token keyword">BY</span> onSellTime 
+        RANGE <span class="token operator">BETWEEN</span> <span class="token keyword">INTERVAL</span> <span class="token string">'2'</span> <span class="token keyword">MINUTE</span> <span class="token keyword">preceding</span> <span class="token operator">AND</span> <span class="token keyword">CURRENT</span> <span class="token keyword">ROW</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> maxPrice
+<span class="token keyword">FROM</span> tmall_item<span class="token punctuation">;</span>
+</code></pre> 
+<p>  如上代码块使用了 <strong>Range Over Window</strong>，以 itemType 为分区键、以 onSellTime 为时间字段倒序排序、向前追溯2分钟，计算 Max(price)。简单来说，就是<strong>以一个时间字段排序，往前追溯N分钟内元素作为一个窗口计算</strong>。</p> 
+<p>  数据计算通常由「时间量级」和「指标聚合」两部分组成，Flink 窗口函数大大简化了时间计算语义，再配合丰富的内置函数，使其变得极容易上手。<br> </p> 
+<h4><a id="214_Join___312"></a>2.1.4 Join - 表连接</h4> 
+<p>  「表连接 Join」大家都不陌生，<strong>通过特定条件构建表与表之间关联关系，达成补充/拓宽数据维度的效果</strong>。作为数据库广为流传的传统艺能，Flink SQL 自然也是支持的。<br>  传统的 Join（换句话说是批处理中的 Join）是<strong>两张表通过某个键进行逻辑关联</strong>，如下代码块是将订单表 order_record 与用户信息表 user_info_record 通过用户id进行关联，补充订单表中不存在的用户信息。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> 
+A<span class="token punctuation">.</span>id<span class="token punctuation">,</span>
+A<span class="token punctuation">.</span>order_id<span class="token punctuation">,</span>
+A<span class="token punctuation">.</span>price<span class="token punctuation">,</span>
+A<span class="token punctuation">.</span>user_id<span class="token punctuation">,</span>
+B<span class="token punctuation">.</span>user_name<span class="token punctuation">,</span>
+B<span class="token punctuation">.</span>user_sexual<span class="token punctuation">,</span>
+B<span class="token punctuation">.</span>user_age
+<span class="token keyword">FROM</span> order_record A
+<span class="token keyword">LEFT</span> <span class="token keyword">JOIN</span> user_info_record B
+<span class="token keyword">ON</span> A<span class="token punctuation">.</span>user_id <span class="token operator">=</span> B<span class="token punctuation">.</span>user_id
+<span class="token keyword">ORDER</span> <span class="token keyword">BY</span> A<span class="token punctuation">.</span>gmt_create <span class="token keyword">desc</span>
+<span class="token keyword">LIMIT</span> <span class="token number">100</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>  在关联关系左侧的表通常被称为「事实表 Fact Table」，右侧的表为「维表 Dimension Table」。依据数据库第三范式：<strong>独立性</strong>，事实表中通常只存储与当前行为强相关的信息（当然这并不绝对，有时也会视情况冗余一些字段），因此需要维表进行事实表的维度补充。<br>  在流式计算中构建表连接显然更具有挑战性——<strong>事实表是一个流，随时都会发生变化，表连接也要随时触发吗？维表在流式计算中又该如何描述、也能够被定义为流吗？</strong><br> </p> 
+<h5><a id="2141____331"></a>2.1.4.1 维表 &amp; 流表</h5> 
+<p>  维表相较事实表有几个显著差异：</p> 
+<ul><li><strong>变化频率更低</strong>：相较于事实表随时可能插入/修改，维表的信息相对固化，如城市编码信息、用户地址信息。</li><li><strong>维度更收敛</strong>：事实表通常含括一种行为对应的所有信息，如订单包含商品、用户、物流、评价、交易等信息，而一张维表通常只会包含一个维度的信息。</li><li><strong>数量级更小</strong>：相较事实表来说，一个维度通常不会有过多的可选项（甚至是枚举值），因此数据量会少很多。</li></ul> 
+<p>  在传统数据仓库中，维表与事实表的差异只存在于逻辑层面；但在流式计算中，维表与流表基本是两个独立的概念，因为「时间」是流式计算的一等公民。Flink 为何要花这么大功夫区分这两种语义，大家不妨先自己思考一下。<br>  从维表的定义其实就能看出一二，维度是对事实的补充，这意味着<strong>维表不会作为驱动计算的主体</strong>，自然也就没必要像流一样实时流入元素。<br>  其次，维表数据的变化频率较低，通常在小时级或天级；实时性不高的数据<strong>可以采取一定的缓存措施</strong>，避免每次查询都产生网络 IO，这也与流的强时效性不同。<br>  最后最重要的一点，维度是事实的附庸，因此<strong>维度的时间来源于事实的时间</strong>；换言之，<strong>维度不具有独立的时间属性</strong>，或者说他自身具有的时间毫无意义，必须依附于事实才有意义。说得再通俗一点，今天发生的事实，只有今天的维度于其才有意义。</p> 
+<table><thead><tr><th></th><th><strong>Timestamp</strong></th><th><strong>Streaming emit</strong></th><th><strong>Dimension version</strong></th></tr></thead><tbody><tr><td>1</td><td>2024-06-01 00:00:00</td><td>2024-06-01 00:00:00</td><td>2024-06-01 00:00:00</td></tr><tr><td>2</td><td>2024-06-01 06:00:00</td><td>2024-06-01 06:00:00</td><td>2024-06-01 06:00:00</td></tr><tr><td>3</td><td>2024-06-01 12:00:00</td><td>2024-06-01 12:00:00</td><td>2024-06-01 12:00:00</td></tr><tr><td>4</td><td>2024-06-01 18:00:00</td><td>2024-06-01 18:00:00</td><td>2024-06-01 18:00:00</td></tr><tr><td>5</td><td>2024-06-02 00:00:00</td><td>2024-06-02 00:00:00</td><td>2024-06-02 00:00:00</td></tr><tr><td>6</td><td>2024-06-02 00:00:00</td><td>2024-06-01 00:00:00 (乱序)</td><td>2024-06-02 00:00:00</td></tr></tbody></table> 
+<p>  有点绕，举个例子大家就懂了。流中元素因为一些原因出现了延迟，6月1日发生的事件延迟了整整一天、于6月2日才流入下游，维表数据此时已经更新到了最新版本6月2日；但对于延迟的事件来说，它需要的维度一定是6月1日，6月2日的维表数据确实是最新鲜的、最实时的，但没有意义。<br>  对于这个例子而言，查询条件是：关联键 + 事件时间，也就是找到历史版本的时间快照。因此维表在Flink当中其实是「历史表 Temporal Table」，是种具有时间/版本属性的表，这样就满足了找到任何时间线版本、而非最新版本数据的诉求，这是流无法实现的。<br> </p> 
+<h5><a id="2142__351"></a>2.1.4.2 维表/历史表连接器</h5> 
+<p>  为了区分这类特殊的数据源，Flink 提供了「维表/历史表连接器」。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">create</span> <span class="token keyword">TEMPORARY</span> <span class="token keyword">table</span> <span class="token identifier"><span class="token punctuation">`</span>dimension_table<span class="token punctuation">`</span></span>
+<span class="token punctuation">(</span>
+    <span class="token identifier"><span class="token punctuation">`</span>user_id<span class="token punctuation">`</span></span>       <span class="token keyword">VARCHAR</span>
+    <span class="token punctuation">,</span><span class="token identifier"><span class="token punctuation">`</span>user_name<span class="token punctuation">`</span></span> <span class="token keyword">VARCHAR</span>
+    <span class="token punctuation">,</span><span class="token identifier"><span class="token punctuation">`</span>user_age<span class="token punctuation">`</span></span> <span class="token keyword">VARCHAR</span>
+    <span class="token punctuation">,</span><span class="token identifier"><span class="token punctuation">`</span>user_sexual<span class="token punctuation">`</span></span> <span class="token keyword">VARCHAR</span>
+    <span class="token punctuation">,</span><span class="token identifier"><span class="token punctuation">`</span>user_weight<span class="token punctuation">`</span></span> <span class="token keyword">VARCHAR</span>
+    <span class="token punctuation">,</span><span class="token keyword">PRIMARY</span> <span class="token keyword">KEY</span> <span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>user_id<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token operator">NOT</span> ENFORCED
+<span class="token punctuation">)</span>
+<span class="token keyword">with</span> <span class="token punctuation">(</span>
+    <span class="token string">'connector'</span> <span class="token operator">=</span> <span class="token string">'mysql'</span>
+    <span class="token punctuation">,</span><span class="token string">'endpoint'</span> <span class="token operator">=</span> <span class="token string">'****'</span>
+    <span class="token punctuation">,</span><span class="token string">'project'</span> <span class="token operator">=</span> <span class="token string">'****'</span>
+    <span class="token punctuation">,</span><span class="token string">'tablename'</span> <span class="token operator">=</span> <span class="token string">'****'</span>
+    <span class="token punctuation">,</span><span class="token string">'accessid'</span> <span class="token operator">=</span> <span class="token string">'****'</span>
+    <span class="token punctuation">,</span><span class="token string">'accesskey'</span> <span class="token operator">=</span> <span class="token string">'****'</span>
+    <span class="token comment">-- 读取最大记录数，最好大于实际值</span>
+    <span class="token punctuation">,</span><span class="token string">'maxRowCount'</span> <span class="token operator">=</span> <span class="token string">'100000000'</span>
+    <span class="token comment">-- 动态最大分区</span>
+    <span class="token punctuation">,</span><span class="token string">'partition'</span> <span class="token operator">=</span> <span class="token string">'max_pt()'</span>
+    <span class="token comment">-- 缓存策略，仅支持ALL</span>
+    <span class="token punctuation">,</span><span class="token string">'cache'</span> <span class="token operator">=</span> <span class="token string">'ALL'</span>
+    <span class="token comment">-- 缓存超时时间，默认空，即永不过期 + 不reload缓存；需要设置该过期时间，才会刷新新分区！！！</span>
+    <span class="token punctuation">,</span><span class="token string">'cacheTTLMs'</span> <span class="token operator">=</span> <span class="token string">'3600000'</span>
+<span class="token punctuation">)</span>
+<span class="token punctuation">;</span>
+</code></pre> 
+<p>  维表连接器在元数据上多了<strong>数据缓存策略</strong>相关配置，维表数据通常固化，没必要每次都去发起查询（向外部存储介质发起网络 IO），因此可以采用一定的缓存策略：</p> 
+<ul><li><strong>None（默认值）</strong>：不使用缓存，每次都发起查询，一般只有在实时性极强的维表场景才会使用。</li><li><strong>LRU</strong>：最近使用缓存策略，配合缓存大小、缓存超时时间使用。</li><li><strong>ALL</strong>：全量缓存策略，在作业启动时一次性将所有维表数据读取进内存，配合缓存超时时间使用。</li></ul> 
+<p>  维表对作业的影响通常在于查询效率以及内存占用，需要根据维表数据特性选取合适的维表存储介质（更推荐 KV 型存储，如 HBase/Redis）和缓存策略，笔者在这里就踩了许多坑，后续会专门介绍。<br> </p> 
+<h5><a id="2143__Join_389"></a>2.1.4.3 流表 Join</h5> 
+<p>  流表 Join 是将流与维表进行关联，需要构建与维表主键的关联关系并指定时间属性。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> 
+A<span class="token punctuation">.</span>id<span class="token punctuation">,</span>
+A<span class="token punctuation">.</span>order_id<span class="token punctuation">,</span>
+A<span class="token punctuation">.</span>price<span class="token punctuation">,</span>
+A<span class="token punctuation">.</span>user_id<span class="token punctuation">,</span>
+B<span class="token punctuation">.</span>user_name<span class="token punctuation">,</span>
+B<span class="token punctuation">.</span>user_sexual<span class="token punctuation">,</span>
+B<span class="token punctuation">.</span>user_age
+<span class="token keyword">FROM</span> order_record A
+<span class="token keyword">LEFT</span> <span class="token keyword">JOIN</span> user_info_record <span class="token keyword">FOR</span> SYSTEM_TIME <span class="token keyword">AS</span> <span class="token keyword">OF</span> PROCTIME<span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> B
+<span class="token keyword">ON</span> A<span class="token punctuation">.</span>user_id <span class="token operator">=</span> B<span class="token punctuation">.</span>user_id
+
+</code></pre> 
+<p>  “FOR SYSTEM_TIME AS OF PROCTIME()”意为获取处理时间时刻的表快照，Flink 目前只支持使用处理时间，后续会支持事件时间。<br> </p> 
+<h5><a id="2144__Join_407"></a>2.1.4.4 双流 Join</h5> 
+<p>  双流 Join 就有点意思了，笔者第一次听到这个玩意儿的时候脑子里完全没概念，这两边都是无界数据流咋 join 啊？谁 join 谁啊？<br>  Join 说白了就是拿着一边的数据去另一边找，在流表 Join 场景下为拿着流里的元素去维表里找，因为只有流驱动计算；双流 Join 本质就是相互的过程，左侧流元素来了去右侧流里找找、右侧流元素来了去左侧流里找找。前提是两侧流的元素都得先保存下来，才能实现一侧来了去另一侧找，这就引出了 Flink/流式计算<strong>状态 State <strong>这一概念。<br>  Flink 十分依赖状态，比如现在讨论的双流 Join，就需要将左右侧流的元素分别维护在自己的状态中，待任意一侧元素流入、去对侧的 State 中进行 Join 计算，这被叫作「算子状态 OperatorState」。大部分算子都会维护一份自身的 State（也叫作有状态算子 Stateful Operator），例如上文提到的 Window 算子，也需要 State 存放时间窗口内的元素。一来是算子确实需要</strong>数据暂存</strong>的区域；二是算子需要<strong>保存中间结果</strong>，计算通常建立在中间结果基础之上，例如求和算子不可能每次都对全量数据发起重新计算，这不现实。<br>  言归正传，画个图来理解一下双流 Join 的流程，仍然以上面的订单表 Join 用户信息表为例。<br>  <img src="https://images2.imgbox.com/92/46/MQqOG8gd_o.png" alt="图8 双流 Join 流程图"><br>  在双流 Join 场景下，Join 算子会维护两侧流的 State（如图8中的 LeftState/RightState）。元素流入 Join 算子后会先暂存进 State 中，再触发 Join 计算、去另一侧的 State 中寻找可关联的元素。<br>  如图9的双流 Join 示例，左侧流会流入订单id/用户id、右侧流会流入用户id/用户名，以用户id作为关联键进行 Join 计算。Join 过程示意大致如下：</p> 
+<table><thead><tr><th><br>  </th><th><strong>time</strong></th><th><strong>id</strong></th><th><strong>user_id</strong></th><th><strong>user_name</strong></th><th><strong>is_retract</strong></th></tr></thead><tbody><tr><td><strong>1</strong></td><td><strong>00:00:00</strong></td><td><strong>null</strong></td><td><strong>null</strong></td><td><strong>null</strong></td><td><strong>null</strong></td></tr><tr><td><strong>2</strong></td><td><strong>00:00:01</strong></td><td><strong>1</strong></td><td><strong>1</strong></td><td><strong>null</strong></td><td><strong>false</strong></td></tr><tr><td><strong>3</strong></td><td><strong>00:00:02</strong></td><td><strong>null</strong></td><td><strong>null</strong></td><td><strong>null</strong></td><td><strong>null</strong></td></tr><tr><td><strong>4</strong></td><td><strong>00:00:03</strong></td><td><strong>1</strong></td><td><strong>1</strong></td><td><strong>null</strong></td><td><strong>true</strong></td></tr><tr><td><strong>5</strong></td><td></td><td><strong>1</strong></td><td><strong>1</strong></td><td><strong>Mr.One</strong></td><td><strong>false</strong></td></tr><tr><td><strong>6</strong></td><td><strong>00:00:04</strong></td><td><strong>null</strong></td><td><strong>null</strong></td><td><strong>null</strong></td><td><strong>null</strong></td></tr><tr><td><strong>7</strong></td><td><strong>00:00:05</strong></td><td><strong>1</strong></td><td><strong>1</strong></td><td><strong>Mr.BigOne</strong></td><td><strong>false</strong></td></tr><tr><td><strong>8</strong></td><td><strong>00:00:06</strong></td><td><strong>2</strong></td><td><strong>2</strong></td><td><strong>null</strong></td><td><strong>false</strong></td></tr><tr><td><strong>9</strong></td><td><strong>00:00:07</strong></td><td></td><td></td><td></td><td></td></tr></tbody></table> 
+<p>| <strong>2</strong> | <strong>2</strong> | <strong>null</strong> | <strong>true</strong> |<br> | <strong>10</strong> | | <strong>2</strong> | <strong>2</strong> | <strong>Mr.Two</strong> | <strong>false</strong> |<br> | <strong>11</strong> | | <strong>3</strong> | <strong>1</strong> | <strong>Mr.One</strong> | <strong>false</strong> |<br> | <strong>12</strong> | | <strong>3</strong> | <strong>1</strong> | <strong>Mr.BigOne</strong> | <strong>false</strong> |</p> 
+<p>  表头从左至右分别代表行数、时间、订单id、用户id、用户名、是否为回撤操作，再来逐行分析：</p> 
+<ol><li>无事发生。</li><li>左流来了一个元素、放入 LeftState 中，去 RightState 寻找 user_id = 1 的记录，未找到所以 user_name 补 null。最终向下游输出 1/1/null 。</li><li>无事发生。</li><li>右流来了一个元素、放入 RightState 中，去 LeftState 寻找 user_id = 1 的记录，找到1条记录。首先可以输出一条 1/1/Mr.One 的记录，但 LeftState 中该元素已经被计算并产生了结果（对应第2行的 1/1/null ），且该结果是不完整的结果；在右流已经能够补充左流时，之前输出的结果显然是不准确的，应当以当前结果为最终结果。<br>  因此，实际产生了2次结果输出，一次正向的输出（1/1/Mr.one）、一次逆向的撤回（1/1/null），这种撤回输出也叫<strong>回撤 Retract</strong>，是一种特殊的输出流，可以将之前输出的不完整/错误结果撤回。</li><li>同4。</li><li>无事发生。</li><li>右流来了一个元素、放入 RightState 中，去 LeftState 寻找 user_id = 1 的记录，找到1条记录；最终向下游输出 1/1/Mr.BigOne。</li><li>左流来了一个元素、放入 LeftState 中，去 RightState 寻找 user_id = 2 的记录，未找到所以 user_name 补null。最终向下游输出 2/2/null 。</li><li>右流来了一个元素、放入 RightState 中，去 LeftState 寻找 user_id = 2 的记录，找到1条记录。<br>  场景同4，最终向下游输出正向的 2/2/Mr.Two、逆向的 2/2/null。</li><li>同9。</li><li>左流来了一个元素、放入 LeftState 中，去 RightState 寻找 user_id = 1 的记录，找到2条记录。最终向下游输出 3/1/Mr.One 、 3/1/Mr.BigOne。</li><li>同11。</li></ol> 
+<p>  Left Join/Right Join/Inner Join本质上都是一样的过程，<strong>以 State 作为状态存储，由元素流入事件触发计算，输出正向（输出）/逆向（撤回）事件。</strong><br>  但这个过程显然有脆弱的环节，比如<strong>可预见的 State 容量膨胀</strong>、<strong>大量输出 null 事件产生的数据倾斜</strong>、<strong>多流 Join 是否会产生新的风暴</strong>？后续调优环节会探讨这些问题。<br> </p> 
+<h3><a id="22__SQL_444"></a>2.2 流式计算 SQL</h3> 
+<p>  看完 Flink SQL 章节，相信同学们对于「如何写」已经有了底气，但要「如何写好」又是另一门学问。本文一直在强调“流式计算是一项技术、更是一种理念”，流式计算倾向于描述：<strong>对流这种特殊载体的处理流程</strong>以及<strong>对变化事件的响应模式</strong>。<br>  为何要这么说，还是可以拿更传统的批处理作对比。<br>  批处理是完美的面向过程编程，对已知的数据分步骤处理、朝向最终期望的结果进发。可以发现当处理主体不可变时，唯一需要考虑的就是如何清晰地描述步骤，五步化作三步也无所谓，甚至一步到位也 OK。<br>  但这套理念套在 Streaming 上显然不成立，流式计算的主体是事件，是随时可产生、可变化、可伸缩的；不管你愿不愿意，事件/元素会不断流入。这意味着必须明确每个处理环节该做什么，处理好所有异常、边界、逻辑，否则流会因为某个环节的异常而整个 Crash。<br>  这种场景下其对于 SQL 的要求便更严格，SQL 的好坏直接影响到了执行计划的生成，而执行计划又对应了无数个执行节点，节点间的影响是相互的且无法估量的。如同一条由无数中转站连接的航道，任一站点异常都会影响整条航道的正常运转（例如产生<strong>反压 BackPressure</strong>，后续章节会介绍）。并且这对后续排查问题是极为重要的，如果作业的执行计划十分清晰，你就能快速定位到异常的执行节点，通过优化节点配置/算子来消除问题。<br>  因此，在编写流式计算 SQL 时有几个原则：</p> 
+<ul><li><strong>构思清晰的执行计划</strong></li><li><strong>以事件为主体的响应式处理</strong></li><li><strong>尽可能编写完美的函数</strong></li></ul> 
+<p>  也是老生常谈的「低耦合，高内聚」，尽可能保证每步处理的原子性。<br>  在 Flink SQL 中，可以采用「视图 View」来清晰地描述计算步骤、编写流式 SQL。举个简单例子，现在要计算订单中不同城市用户、对于不同消费金额的偏向水平，俗称城市级消费水平。<br>  这个过程可以描述为：</p> 
+<ol><li>按业务对于金额的分阶进行订单金额划分，这里以每百元作为分阶模式。</li><li>按省份对订单区域进行划分，需要将省份编码转换为对应名称。</li><li>统计不同城市、不同消费金额阶级的总数。</li></ol> 
+<pre><code class="prism language-sql"><span class="token comment">//简单的数据提取</span>
+<span class="token keyword">CREATE</span> <span class="token keyword">TEMPORARY</span> <span class="token keyword">VIEW</span> <span class="token identifier"><span class="token punctuation">`</span>original<span class="token punctuation">`</span></span>
+<span class="token keyword">AS</span> <span class="token keyword">SELECT</span>
+    total_price <span class="token keyword">AS</span> price
+    <span class="token punctuation">,</span>province_code <span class="token keyword">AS</span> province
+<span class="token keyword">FROM</span> <span class="token identifier"><span class="token punctuation">`</span>order_info<span class="token punctuation">`</span></span>
+<span class="token punctuation">;</span>
+
+<span class="token comment">//数据转换</span>
+<span class="token keyword">CREATE</span> <span class="token keyword">TEMPORARY</span> <span class="token keyword">VIEW</span> <span class="token identifier"><span class="token punctuation">`</span>price_rank_calculate<span class="token punctuation">`</span></span>
+<span class="token keyword">AS</span> <span class="token keyword">SELECT</span>
+    FLOOR<span class="token punctuation">(</span>price <span class="token operator">/</span> <span class="token number">100</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> price_rank
+    <span class="token punctuation">,</span>code_to_name<span class="token punctuation">(</span>province<span class="token punctuation">)</span> <span class="token keyword">AS</span> province
+<span class="token keyword">FROM</span> <span class="token identifier"><span class="token punctuation">`</span>original<span class="token punctuation">`</span></span>
+<span class="token punctuation">;</span>
+
+<span class="token comment">//group by</span>
+<span class="token keyword">CREATE</span> <span class="token keyword">TEMPORARY</span> <span class="token keyword">VIEW</span> <span class="token identifier"><span class="token punctuation">`</span>price_rank_group_by<span class="token punctuation">`</span></span>
+<span class="token keyword">AS</span> <span class="token keyword">SELECT</span>
+    province<span class="token punctuation">,</span>
+    price_rank<span class="token punctuation">,</span>
+    <span class="token function">count</span><span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">)</span> <span class="token keyword">as</span> total_count
+<span class="token keyword">FROM</span> <span class="token identifier"><span class="token punctuation">`</span>price_rank_calculate<span class="token punctuation">`</span></span>
+<span class="token keyword">GROUP</span> <span class="token keyword">BY</span> province<span class="token punctuation">,</span> price_rank
+<span class="token punctuation">;</span>
+
+<span class="token comment">//sink</span>
+<span class="token keyword">BEGIN</span> STATEMENT <span class="token keyword">SET</span>
+<span class="token punctuation">;</span>
+
+<span class="token keyword">INSERT</span> <span class="token keyword">INTO</span> <span class="token identifier"><span class="token punctuation">`</span>result<span class="token punctuation">`</span></span>
+<span class="token keyword">SELECT</span>
+    <span class="token operator">*</span>
+<span class="token keyword">FROM</span> <span class="token identifier"><span class="token punctuation">`</span>price_rank_group_by<span class="token punctuation">`</span></span>
+<span class="token punctuation">;</span>
+
+<span class="token keyword">END</span>
+<span class="token punctuation">;</span>
+</code></pre> 
+<p>  一定要将过程描述清晰，千万不要担心步骤过多（或者是字数过多）对性能产生影响，Flink 会根据 SQL 生成最优执行计划（例如进行算子合并等），因此描述得越清晰越细致、对于执行计划的生成就越有利。<br> </p> 
+<h2><a id="3_Flink__498"></a>3 江湖少侠：Flink 核心概念</h2> 
+<p>  本章会介绍是什么支撑了 Flink 以及流式计算、是什么使它变得如此美丽且不同，前面卖的所有关子，都会在这一章揭晓。笔者相信，这会成为你真正走进 Flink 以及 Streaming Compute 至关重要的一步。<br> </p> 
+<h3><a id="31__Duality_501"></a>3.1 流表对偶性 Duality</h3> 
+<p>  章节「<a href="#ez4CI" rel="nofollow">2.1.1 Source - 源表连接器</a>」中提到，仅需一句 DDL，就可以完成流式数据读取、数据结构映射。Flink 依靠 SQL 层面就了实现这样的语义转换，这实际是构建了一套流与表之间的映射协议，即本章的内容「流表对偶性 Duality」。<br> </p> 
+<h4><a id="311_MySQL_binlog_504"></a>3.1.1 MySQL binlog</h4> 
+<p>  binlog（Binary Log，二进制日志） MySQL 中极为重要的组件，是实现数据恢复、主从同步、增量监听的核心。binlog 记录了数据库所有执行的 DDL 与 DML，简言之为所有的变更操作。<br>  <img src="https://images2.imgbox.com/dd/ad/bVoc8nEm_o.png" alt="图9 binlog"><br>  如图 9 所示，binlog 将所有数据库操作视为事件并记录操作内容（具体见 binlog 的3种格式，Statement/Row/Mixed）。</p> 
+<pre><code class="prism language-sql"><span class="token comment"># at 447</span>
+<span class="token comment">#170330 14:19:25 server id 10  end_log_pos 607 CRC32 0x321d4518 	Update_rows: table id 133 flags: STMT_END_F</span>
+<span class="token comment">### UPDATE `sbtest`.`sbtest`</span>
+<span class="token comment">### WHERE</span>
+<span class="token comment">###   @1=1</span>
+<span class="token comment">###   @2=0</span>
+<span class="token comment">###   @3=''</span>
+<span class="token comment">###   @4='qqqqqqqqqqwwwwwwwwwweeeeeeeeeerrrrrrrrrrtttttttttt'</span>
+<span class="token comment">### SET</span>
+<span class="token comment">###   @1=1</span>
+<span class="token comment">###   @2=1</span>
+<span class="token comment">###   @3=''</span>
+<span class="token comment">###   @4='qqqqqqqqqqwwwwwwwwwweeeeeeeeeerrrrrrrrrrtttttttttt'</span>
+</code></pre> 
+<p>  操作事件具体内容如上代码块，记录了操作时间与操作内容，例如代码块内就记录了今天 14:19:25 执行的一条 UPDATE 语句。这也是为何通过 binlog 可以实现数据同步等功能，拥有 binlog 即拥有数据库进行的所有操作记录，通过回放 binlog 就可以还原完整的数据库数据。<br> </p> 
+<h4><a id="312__523"></a>3.1.2 流表对偶</h4> 
+<p>  对传统数据库而言，DDL 只是用于描述表元数据的语句，描述的是一张表静态的结构信息。而通过 binlog 回放可以发现，<strong>表的变更操作可以用带时间的事件描述、表也可以通过回放操作事件得到最终的变更结果。</strong><br>  动态表可由 DDL（静态结构） + binlog（动态变更事件） 描述，动态表的变化趋势可以视为流，而流的处理结果又构成了表。这就是<strong>流与动态表的对偶性</strong>：</p> 
+<blockquote> 
+ <p><strong>Dynamic Table = DDL + binlog &lt;=&gt; Streaming</strong></p> 
+</blockquote> 
+<p>  因此在 Flink 中，DDL 并非简单描述了表的结构，而是声明了动态表的结构与变更事件；又由于动态表与流的对偶性，这就相当于描述了流。<br> </p> 
+<h3><a id="32__Continuous_Queries_529"></a>3.2 持续查询 Continuous Queries</h3> 
+<p>  Flink 利用 DDL 描述了流，下面则要读取流并进行处理，Flink 又是如何实现通过 DML 语句读取并处理流的呢？<br>   在 MySQL 中执行“SELECT * FROM table_a”，会得到当前时间节点表的结果，且只会执行一次；在 Flink 中执行效果显然不同，每当元素流入就会触发计算，并且计算得是最新一条记录。<strong>可以将这两种效力不同的查询称为「静态查询/持续查询」，前者仅在调用时触发一次、得到的是快照结果，后者每次元素流入都会触发、得到的是当前记录。</strong><br>  显然，Flink 用 DML 语句描述了后者、也就是持续查询的过程。再结合章节「<a href="#zFveP" rel="nofollow">3.1 流表对偶性 Duality</a>」所讲述，DML 的结果又可以被映射为流，这就组成了完整的计算流程：</p> 
+<ul><li>声明动态表（Source + DDL）</li><li>持续读取动态表（DML）+ 处理最新记录（Operator）</li><li>流向下游节点（DML）</li><li>······</li><li>输出结果（Sink）</li></ul> 
+<p>  利用「流表对偶性」与「持续查询」，Flink 实现了真正意义上的无损转换与流式读取，通过 SQL API 大大降低了流式计算的难度。<br> </p> 
+<h3><a id="33__Watermark_540"></a>3.3 数据水位 Watermark</h3> 
+<p>  章节「<a href="#tzm5P" rel="nofollow">2.1.3.1 时间</a>」中提到，Flink 提供了处理时间/事件时间两种时间语义，同时更加推荐使用事件时间来避免流乱序导致的时间戳混乱。也留下了另一个问题：<strong>元素延迟流入该如何处理？</strong><br>  其实并非所有场景都需要处理元素延迟，例如基于特定 key group by 求和，只要元素最终总会流入、那么最终结果就一定是精准的。这种场景时间属性不强，所以对延迟不敏感；但不划分时间窗口进行计算，相当于在求从盘古开天辟地起的某个指标。<br>  你说时间窗口太复杂，就不用就不用。直接将时间字段也作为 group by 键，需要天级就将时间格式化为 yyyyMMdd、小时级就 yyyyMMdd HH，你就说能不能用吧？这种做法确实可以达到目的、也不用考虑乱序和延迟，但并不是优雅实现方式。按理来说，天级时间窗口聚合，一天就 1 条记录；而照这种方式一天会有 N 条记录，因为每个元素都会触发一次计算、下发一次结果，对于作业吞吐以及存储容量都是非常不利的。<br>  因此时间属性相关的聚合计算都应该使用 Window 算子，以时间窗口而非元素作为计算的触发条件，而使用窗口算子就必须考虑元素的延迟问题，因为达到了窗口边界就会触发计算。<br>  <img src="https://images2.imgbox.com/98/dd/ZgGj9Iuo_o.png" alt="图10 滚动窗口-粘贴过来的"><br>  以章节「<a href="#OgqPx" rel="nofollow">2.1.3.2 滚动窗口</a>」窗口长度为 5s 的滚动窗口为例，如图 10 所示，5s 与 10s 会触发计算，分别计算 [0, 5)、[5, 10) 窗口内的元素。<br>  <img src="https://images2.imgbox.com/3e/96/oidYMdEl_o.png" alt="图11 滚动窗口-元素延迟"><br>  如图 11 所示，坐标轴代表机器时钟、坐标轴上方箭头代表元素流入。现在发生了可怕的事，这 5 个元素的事件时间都处于 [0, 5) 窗口，但第 4 秒产生的元素因为网络延迟、5 秒多才流入算子。延迟元素属于第一个窗口，但它<strong>流入时该窗口已经触发过计算</strong>，也不能把它算在第二个窗口内，否则第二个窗口也不准了。这种延迟很常见，你没法指望事件发生的瞬间就进入 Flink，也不可能指望作业永远年轻永远不背压。如果没有容错机制，窗口末端的大部分元素计算都会不准确。<br>  解决思路其实并不复杂，Window 算子本身在窗口结束就会触发计算、此时又无法确认窗口内的元素是否全部流入、但又不能一直死等，<strong>那索性就给点 buffer，稍微等等再触发</strong>。回到图 11 的例子，[0, 5) 窗口原本会于 5s 触发计算，此时最后一个元素是一定会漏掉的；如果给 3 秒的 buffer，窗口于 8s 再触发计算，就能将延迟 3 秒内的元素含括进去，元素延迟导致的漏算就被大大改善了。<br>  这种机制就是 Flink 的「数据水位」，在元素流入时基于其事件时间再生成一个水位时间，水位时间会比事件时间小一些（如例子中的 -3s）。<br>  <strong>使用 Watermark 后，Window 算子的触发时机就不再是时间窗口结束，而是根据事件时间不断推进系统 Watermark，并判断 Watermark &gt;= Window 边界，如果满足条件、则说明可容忍的最大延迟时间也超过了窗口结束时间，此时可视为窗口结束并触发计算。后续仍有迟到元素流入，则可以丢弃/再忍一次/收集后统一分析。</strong><br>  <img src="https://images2.imgbox.com/3c/ae/hnF3zTbe_o.png" alt="图12 Watermark"><br>  如图 12 所示，设置 <strong>Watermark = EventTime - 3s</strong>：</p> 
+<ul><li>事件时间在 [0, 8) 内的元素都能被 [0, 5) 窗口捕获，因为 [0, 8) 内生成的 Watermark 都会处于 [0, 5) 窗口；<strong>系统 Watermark &lt; 5s，此时不会触发窗口计算。</strong></li><li>当 EventTime = 9s 的元素流入，其 Watermark = 6s；<strong>系统 Watermark 被推进到 6s，此时 10s &gt; Watermark &gt; 5s，触发 [0, 5) 窗口计算、继续收集 [5, 10) 窗口元素。</strong></li><li>当 EventTime = 10s 的元素流入，其 Watermark = 7s；<strong>系统 Watermark 被推进到 7s，此时 Watermark &lt; 10s，继续收集 [5, 10) 窗口元素。</strong></li><li>当 EventTime = 12s 的元素流入，其 Watermark = 9s；<strong>系统 Watermark 被推进到 9s，此时 Watermark &lt; 10s，继续收集 [5, 10) 窗口元素。</strong></li><li>当 EventTime = 15s 的元素流入，其 Watermark = 12s；<strong>系统 Watermark 被推进到 12s，此时 15s &gt; Watermark &gt; 10s，触发 [5, 10) 窗口计算、继续收集 [10, 15) 窗口元素。</strong></li><li>·······</li></ul> 
+<p>  设置合理的 Watermark 确实可以解决大部分元素延迟，但也是把双刃剑——降低了结果的实时性，窗口计算结果最少也会延迟所设定的时间之久；其次在笔者看来，如果 Watermark 一直不推进（即一直没有元素流入）、已结束窗口的计算就一直不会被触发（<strong>这里需要了解 Watermark 的两种生成模式「Punctuated Watermark 标点水位线」与「Periodic Watermark 定期水位线」，标点水位线是以元素流入事件触发 Watermark 生成、后者是周期性生成。使用标点水位线就可能会出现 Watermark 不推进的现象，但实时性更强</strong>）。<br>  因此不建议设置过长的水位延迟时间，根据业务可能存在的延迟时间及实时性要求合理配置即可。<br> </p> 
+<h3><a id="34__State_552"></a>3.4 状态 State</h3> 
+<p>  章节「<a href="#WzKG9" rel="nofollow">2.1.4.4 双流 Join</a>」中提到，在进行双流 Join 时会先元素保存在自身的 State 中、再去对侧 State 发起 Join 计算。<br>  「状态 State」是流式计算/实时计算极为核心的构成，与批计算不同的是，批计算不存在中间结果、也不存在计算进度，失败了就重新发起全量计算；流计算失败重启一定依赖于已知的状态节点，因为流计算本身是有状态计算，具有<strong>计算位点、时间、元素暂存、中间结果</strong>等状态。<br>  Flink 中存在两类 State：</p> 
+<ul><li><strong>Keyed State</strong>：具有分区键的算子会以键为单位维护自身的 State，例如 group by 算子在求和计算时，会为每个分区键维护其数量总和。结构大致为 Map&lt;Keyed, Long&gt;。</li><li><strong>Operator State</strong>：不具有分区键算子的 State 统称为算子 State，例如 Source 连接消息队列时需要维护已消费位点、双流 Join 时需要维护左右侧流中元素。结构大致为 Map&lt;Operator, State&gt;。</li></ul> 
+<p>  通常情况下，State <strong>会先维护在内存内，通俗地说就是一个 HashMap</strong>**；<strong>经过一段时间、或内存占用量达到阈值</strong>，会写入本地的 RocksDBStateBackend，这是 Flink 提供的本地高性能 KV 数据库**；为了避免作业异常重启、确保 Checkpoint 构建，<strong>隔一段时间还要将 State 从 RocksDB、异步同步到外部分布式存储（通常是 HDFS）</strong>。这样的架构，既避免内存不断膨胀、也保证数据的安全性，同时通过异步保障性能。<br>  还有 <strong>HashMapStateBackend</strong> 供选择，即纯内存 StateBackend，由于其不存在磁盘 IO 与序列化，因此性能比 RocksDBStateBackend 快一个数量级；但完全依赖分配内存，并且安全性较弱，因此这里不作探讨。<br>  使用者还可以<strong>维护自身的 State</strong>，通过实现 ValueState、ListState、ReducingState、MapState&lt;UK, UV&gt;等接口，将信息缓存在本地状态中。但需要时刻注意 State 对于内存的占用，设置合理的清除策略或 TTL。<br> </p> 
+<h3><a id="35__Checkpoint_560"></a>3.5 检查点 Checkpoint</h3> 
+<p>  Checkpoint 意为检查点，是 Flink Failover 最大的仰仗。其本质就是<strong>保存全局快照</strong>，快照内存储了集群内所有算子的 State，在读取时重放所有算子的状态，并一比一恢复到 Checkpoint 存储的状态。<br>  这一章太过艰深，利用许多算法来解决诸如：分布式集群全局状态一致性、Checkpoint 持久化模式、Exactly-Once/At-Least-Once 语义保证之类的问题。因此不作展开，有兴趣的同学可以自行学习。<br> </p> 
+<h3><a id="36__Retract_563"></a>3.6 回撤流 Retract</h3> 
+<p>  章节「<a href="#WzKG9" rel="nofollow">2.1.4.4 双流 Join</a>」中提到，当右侧流中出现能补齐左侧流已输出不完整结果的元素时，会产生两次输出：一次<strong>正向的、带有完整结果的输出</strong>，一次<strong>反向的、试图撤回不完整结果的输出</strong>。<strong>这种特殊的回撤行为称为回撤算子，其产生的流被称为「回撤流 Retract」。</strong><br>  支持回撤的算子内部会记录已输出元素，每次输出前会根据 key 进行匹配，如该元素已经输出过、则发往下游一条回撤 + 一条输出。回撤流与流并没有本质区别，只不过将加运算变成了减运算。例如聚合算子中，流会对聚合结果产生正向影响（+），回撤流则会对结果产生逆向影响（-），回撤流使得计算的最终结果更加精准。<br>  <img src="https://images2.imgbox.com/fa/24/t0D6UgDA_o.png" alt="图13 回撤输出"><br>  如图 13 所示，第一次输出包含：一次正向输出 1/1、一次回撤输出 1/1、一次正向输出 1/2，说明第一次计算的最终结果是 1/2。第二次输出同理，两次正向两次逆向，最后啥也没剩下。<br>  这种特性并非所有场景都支持，Sink 算子在不同插入模式下对回撤流的支持程度也不同。Sink 插入模式分为 3 种：</p> 
+<ul><li><strong>Append Only</strong>：仅支持追加。</li><li><strong>Upsert</strong>：支持插入、更新、删除，最完备的模式。</li><li><strong>Retract</strong>：支持插入、删除。</li></ul> 
+<p>  Append Only 模式不支持回撤，每次 Sink 都会插入一条记录。而 Upsert 模式在处理回撤流时，可以根据主键直接更新已有的记录，或者先删除已有记录、再插入新的记录代替它，实现结果上的更新。Retract 模式使用先删除、后插入，也可以实现更新效果。显然 Append Only 模式的数据准确性不如其他两者，只有最新输出的一条记录才是准确的。<br>  不同数据源支持不同的插入模式，例如 Kafka 只支持 Append Only ，但其是消息队列所以可以接受这种顺序读写；而 MySQL 如果只支持 Append Only 那就成灾难了，基本没法使用，因此其支持基于主键的 Upsert。因此在使用回撤流以及回撤算子时，需要结合数据源的插入模式分别考虑，合理利用回撤流来保证数据的准确性。<br> </p> 
+<h3><a id="37__BackPressure_572"></a>3.7 反压/背压 BackPressure</h3> 
+<p>  章节「<a href="#m22Wr" rel="nofollow">2.2 流式计算 SQL</a>」中提到，SQL 的好坏直接影响执行计划的生成，执行计划中的执行节点又会互相影响，任一节点异常都会影响整个作业，这种现象就叫做「反压 BackPressure」，也称作背压。<br>  反压是流式系统中常见的概念，具体指<strong>下游节点的处理速率 &lt; 上游节点的生产速率，此时下游节点所采取保护自身的策略</strong>，就被称为反压。其实这种场景极为常见，并非流式系统独有；下游服务经常会面对上游流量激增、或自身服务出现异常，而不得不采取一些措施，例如<strong>熔断/限流/降级</strong>。这些措施本质上也是反压的一种，提供者通过一些手段来防止上游的无序调用，防止自身被压垮导致服务不可用。<br>  举个最简单的例子， Java 有界阻塞队列 LinkedBlockingQueue，当队列容量达到上限，再次尝试放入元素会直接阻塞。这就是最简单且常见的反压实现。</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">put</span><span class="token punctuation">(</span><span class="token class-name">E</span> e<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">InterruptedException</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>e <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">NullPointerException</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// Note: convention in all put/take/etc is to preset local var</span>
+    <span class="token comment">// holding count negative to indicate failure unless set.</span>
+    <span class="token keyword">int</span> c <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token class-name">Node</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">E</span><span class="token punctuation">&gt;</span></span> node <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Node</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">E</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">final</span> <span class="token class-name">ReentrantLock</span> putLock <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>putLock<span class="token punctuation">;</span>
+    <span class="token keyword">final</span> <span class="token class-name">AtomicInteger</span> count <span class="token operator">=</span> <span class="token keyword">this</span><span class="token punctuation">.</span>count<span class="token punctuation">;</span>
+    putLock<span class="token punctuation">.</span><span class="token function">lockInterruptibly</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">/*
+             * Note that count is used in wait guard even though it is
+             * not protected by lock. This works because count can
+             * only decrease at this point (all other puts are shut
+             * out by lock), and we (or some other waiting put) are
+             * signalled if it ever changes from capacity. Similarly
+             * for all other uses of count in other wait guards.
+             */</span>
+        <span class="token keyword">while</span> <span class="token punctuation">(</span>count<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> capacity<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            notFull<span class="token punctuation">.</span><span class="token function">await</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token function">enqueue</span><span class="token punctuation">(</span>node<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        c <span class="token operator">=</span> count<span class="token punctuation">.</span><span class="token function">getAndIncrement</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>c <span class="token operator">+</span> <span class="token number">1</span> <span class="token operator">&lt;</span> capacity<span class="token punctuation">)</span>
+            notFull<span class="token punctuation">.</span><span class="token function">signal</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">finally</span> <span class="token punctuation">{<!-- --></span>
+        putLock<span class="token punctuation">.</span><span class="token function">unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>c <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+        <span class="token function">signalNotEmpty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>  在笔者之前的一篇文章《Reactor 响应式编程》中有介绍过，<strong>Reactor 采取了推拉结合的方式</strong>，下游向上游发出具体拉取元素数量的信号量，上游根据信号量向下游推送对应数量（具体见<a href="https://blog.csdn.net/m0_62375467/article/details/132404504">https://blog.csdn.net/m0_62375467/article/details/132404504</a> 《响应式编程：面向数据/事件流的编程范式<br> 》）。不同系统对反压有不同的实现方式，<strong>本质都是对下发/消费速率的调控与平衡，并且反压都是级联，从反压节点一路向上影响到初始节点。</strong><br>  而 Flink 支持反压的方式十分自然，可谓是天生反压圣体。<br>  当节点的消费速率 &lt; 生产速度，节点的 local buffer（本地缓冲区，可以理解为 JVM 内存）就会趋于膨胀；local buffer 塞不进去，Netty 的 buffer 就没法腾地方出来，也会跟着膨胀；Netty buffer 在膨胀到一定程度后也塞不下了，就会停止读取 Socket 中的数据（不发起调用recv()函数或调用被阻塞）；而 Socket 不被读取后，TCP 又具有端到端自动调速的能力（详见 TCP 滑动窗口），TCP 的发送方就会自动停止。<br>  整个反压的过程浑然天成，利用了所有可利用的网络传输机制，牛逼。考虑到这个过程有些抽象，以下游节点的视角重新梳理一次反压过程：</p> 
+<ol><li>节点的消费速率 &lt; 生产速度，<strong>local buffer</strong> 开始膨胀，直至打满。</li><li>local buffer 打满，Netty 无法写入，导致 <strong>Netty buffer</strong> 开始膨胀，直至打满。</li><li>Netty buffer 打满，停止读取 Socket，导致 **Socket read buffer **开始膨胀，直至打满。</li><li>Socket read buffer 打满，TCP 写入（write()函数）read buffer 操作阻塞。</li><li>TCP 发起端到端自动调速，<strong>TCP 发送方自动停止</strong>。</li><li><mark><mark><mark><mark><mark><mark><mark><mark><mark><mark><mark><mark>分割线</mark></mark></mark></mark></mark></mark></mark></mark></mark></mark></mark></mark></li><li>上游节点作为 TCP 发送方，此时也受到了影响。</li><li>TCP 无法继续发送，Socket write buffer 打满。</li><li>Socket write buffer 打满，Netty 不可写，Netty buffer 打满。</li><li>Netty buffer 打满，local buffer 无法回收，也打满。</li><li>······</li></ol> 
+<p>  如图 14 是 Alibaba VVP 作业运维的执行计划信息，该作业的 Vertex5 节点负载较高，该节点就会发起反压；Vertex4 节点受到反压影响，调整生产速率，但其本身的消费速率也会受到影响（他是下游的生产者、也是上游的消费者）。因此可以看出，每个节点都有不同程度的反压。整个过程周而复始，最坏的情况下反压会一路影响到 Source 节点，整个作业会 Crash 重启；因此反压现象是一定要处理的，后续的作业调优会介绍大致方法。<br>  <img src="https://images2.imgbox.com/d4/bf/7939yxjc_o.png" alt="图14 反压"><br>  反压过程远比描述复杂得多，笔者唯恐误人子弟，建议有兴趣的同学了解一下以下知识：<strong>Flink 网络传输模型</strong>、<strong>Netty 实现及水位线</strong>、<strong>TCP 滑动窗口及拥塞控制</strong>。<br> </p> 
+<h2><a id="4_Flink__624"></a>4 江湖豪侠：Flink 作业调优</h2> 
+<p>  看到这里的你，已经对如何开发一个 Flink Job 有了基本的认知，也对 Flink 最核心的概念、以及依托于其之上的设计有了大致的理解。<br>  本章将会更贴近工程层面，就 Flink Job 如何生成、如何调优、并结合场景具体分析。磨刀不误砍柴工，在思考如何调优前，更需要先知晓一个 Flink Job 进入系统后都发生了什么，本章也会以该顺序循序渐进展开讨论。<br> </p> 
+<h3><a id="41_Flink__627"></a>4.1 Flink 运行时架构</h3> 
+<p>  章节「<a href="#zFBBP" rel="nofollow">1.2 分布式</a>」初步介绍了 Flink 具备的分布式特性，并且提到 Flink 实际就是一个大型 JVM 进程集群，其由 4 大组件构成，本章将会具体介绍运行时架构以及构成组件。<br>  如图 15 为 Flink 官方给出的整体架构图，逻辑上划分为「内部组件 Flink Components」（必需）、「外部组件 External Components」（可选）。外部组件不多作介绍，主要包含高可用支持、文件/持久化存储、指标存等。从图中能明显看出，<strong>JobManager 与 TaskManager 之间的交互才是核心</strong>——也是本章的核心内容，运行时架构。<br>  <img src="https://images2.imgbox.com/02/4d/ZEe6eltj_o.png" alt="图15 Flink 整体架构"><br>  Flink 的运行时架构主要包含四大组件：</p> 
+<ol><li><strong>JobManager 作业管理器</strong>：Flink 集群的 Master，每个集群<strong>有且只有一个主 JobManager</strong>（为保障高可用会有多个备 JobManager），负责 Flink 集群的作业管理、资源调度、任务分配、环境协调等等，是集群真正的心脏。</li><li><strong>ResourceManager 资源管理器</strong>：负责 Flink 集群的<strong>资源分配管理</strong>，JobManager 在进行任务分配时需要先获取相应的运行资源（<strong>TaskSlot</strong>），此时就会与 ResourceManager 产生交互。每个集群有且只有一个 ResourceManager。<br>  比较有意思的点是，它可以与资源管理框架交互（如 YARN、K8S、Mesos 等），动态控制资源的扩缩容。</li><li><strong>TaskManager 任务管理器</strong>：Flink 集群的 Worker，<strong>任务真正执行的工作节点</strong>，通常一个集群有 N 个 TaskManager（非 standalone 模式）。最小工作单元是 TaskSlot（任务槽），一个 TaskManager 可以提供多个 TaskSlot，这些 Slot 会作为 ResourceManager 的分配单元。<br>  每个 Slot 拥有独立的内存空间，但 CPU 资源会被共享，因此通常建议 Slot 数 = CPU 核数。</li><li><strong>Dispatcher 分发器</strong>：主要提供 REST 接口用于提交作业，以及 Web UI 用于展示作业执行监控，非必需。</li></ol> 
+<p>  说直白点：</p> 
+<ul><li>JobManager 是大老板，集群的协调分配者；</li><li>TaskManager 是工作人员，纯干活儿的，负责执行计算任务；</li><li>ResourceManager 是管账的，JobManager 协调资源先找 ResourceManager，负责分配/回收 TaskManager；</li><li>Dispatcher 是前台，负责任务提交后报信给 JobManager，以及作业指标展示。</li></ul> 
+<p><img src="https://images2.imgbox.com/73/c3/P8kQ81t1_o.png" alt="图16 Flink 运行时架构"><br>  那么在 Flink Job 提交进 Flink 集群后，运行时架构的运行交互关系（如图 16）可以简述为：</p> 
+<ul><li>**JobManager **将 Job 解析为 <strong>ExecutionGraph</strong>（执行图），即一份具体的执行计划（DAG）；</li><li>**JobManager **根据执行图向 **ResourceManager **申请执行所需资源，**ResourceManager **与底层资源管理系统（如 YARN）交互，确保集群资源满足执行要求（通常伴随着动态扩缩容、启停 TaskManager）；</li><li>**JobManager **获取所需资源后，将任务分发给 <strong>TaskManager</strong>，由 **TaskManager **具体执行计算逻辑；</li><li>**TaskManager **会持续上报执行状态 State，并由 **JobManager **维护检查点 Checkpoint，确保作业的故障恢复。<br> </li></ul> 
+<h3><a id="42__649"></a>4.2 执行计划</h3> 
+<p>  Flink 运行时架构的全貌大致清晰，Flink 官方也通过整体架构图（如图 15）强调了 <strong>JobManager 与 TaskManager 、以及二者间关联的重要性</strong>，这是作业调优不可缺少的前置知识。本章将会着重介绍 JobManager 如何解析并构建执行计划。<br>  借用 Flink Forward Asia 2022《Adaptive and flexible execution management for batch jobs》中的一张图，图 17 描述了最终的<strong>执行计划 ExecutionGraph</strong> 是如何生成的。<br>  <img src="https://images2.imgbox.com/d2/e4/JyjsRRoC_o.png" alt="图17 执行计划生成"><br>  以 DataStream 作业为例，作业代码编译完毕后会生成「<strong>流图 StreamGraph</strong>」，流图内描述了完整的 DataStream API 计算逻辑，如图中例子为：Source -&gt; 元素转换 -&gt; 按 key 分组并求和 -&gt; Sink。<br>  在未禁用「<strong>算子链（Operator chain）合并</strong>」的情况下，编译期间还会根据算子逻辑的复杂程度、并行度、分发方式（分组/forward）等因素，对相连算子进行合并、组成一个算子链。算子链合并是 Flink 最常用的优化手段之一，因为算子逻辑天然存在复杂度差异，如果每个算子都分配单独的资源，会使得负载极其不均衡；合并也能够减少服务间网络通讯、线程切换、序列化带来的损耗。因此，编译的最终结果会生成「<strong>作业图 JobGraph</strong>」，即算子合并后的图。<br>  JobGraph 提交给 JobManager，JobManager 会根据每个任务节点的并行度进行展开，并确定节点间的连接关系，生成最终可执行的「<strong>执行图 ExecutionGraph</strong>」，此时每个任务节点都对应一个具体执行的 TaskSlot。「<strong>并行度 Parallelism</strong>」代表每个算子需要几个 Worker ，类似于多线程并行消费，只不过调度资源由 Thread 变成了 TaskSlot。<br>  例如图 17 中的作业并行度为 2，A 节点的结果会发往 B，因此最终执行图为 A1/A2 -&gt; B1/B2，共对应 4 个 TaskSlot。而实际的执行计划还存在进一步优化空间。如图 18 所示，在经过算子合并后的每个算子链会分配一个 TaskSlot，部分节点计算逻辑仍然相对简单，其分配到的 TaskSlot 大部分时间是空闲的，其他节点却一秒没闲着。<br>  <img src="https://images2.imgbox.com/b3/7f/d5kcaU2i_o.png" alt="图18 TaskSlot 共享-1"><br>  因此 Flink 会在 Slot 维度采取进一步合并，<strong>将简单算子的 Slot 共享给复杂算子（Slot Sharing）</strong>，反正闲着也是闲着，不如给别人用；在算子并发度高的场景下，最终会得到如图 19 的执行计划。但是同一个 Slot 只能共享给同一 Job 内不同的算子，例如合并 Map + Sink，将两个相同的算子放在一个 Slot 内无法实现并行。<img src="https://images2.imgbox.com/c1/56/QcXoK5LE_o.png" alt="图19 TaskSlot 共享-2"><br> </p> 
+<h3><a id="43__652"></a>4.3 性能瓶颈</h3> 
+<p>  讨论到 Flink Job 的性能瓶颈，其表现形式在前文其实都有提及。<br>  首先是<strong>背压</strong>，在消费速率 &lt; 生产速率时该节点会向上游算子发起背压，严重时会阻塞住整个作业的运行；表现出来就是<strong>数据延时越来越大</strong>，这种情况不手动调优是不可能主动恢复的。<br>  其次是所有运行于 JVM 之上程序的共性问题——<strong>内存</strong>。于 Flink 而言又分为两类：</p> 
+<ul><li><strong>堆内占用过大</strong>，如图 20 中的 Task Heap（<strong>图 20 是 Flink TaskManager 的内存模型，分为堆内/堆外内存，有兴趣的同学可以自行了解</strong>），算子逻辑与业务代码产生的内存将会占用 Task Heap 空间；这个区域非常容易膨胀，处理复杂运算逻辑时更甚。</li><li><strong>堆外内存占用过大</strong>，如图 20 中的 Managed Memory，Flink Job State 会存储在这个区域内；算子逻辑复杂（或者是双流 Join 这种本身就强依赖 State 的算子）一定程度也会导致 State 变大，也是俗称的「大状态」。</li></ul> 
+<p><img src="https://images2.imgbox.com/a6/a9/2AXUiB61_o.png" alt="图20 TaskManager 内存模型"><br>  内存瓶颈的表现形式通常为<strong>作业 OOM 后崩溃重启，如果不进行调整作业会一直重启</strong>。<br> </p> 
+<h3><a id="44__660"></a>4.4 配置调优</h3> 
+<p>  首先记住大原则：<strong>写出高性能 SQL 才是最有效的优化方案！！！</strong><br>  不过要写出美丽高性能 SQL 还是有难度的，例如<strong>谓词下推</strong>、<strong>手动构建 PK</strong>、<strong>避免 NULL 热点</strong>、<strong>Shuffle/Rebalance</strong> 等概念，每个拿出来都能说半天。因此本章还是仅针对上文场景、讨论配置层面的调优方向，不涉及特定算子及计算模式层面的优化方式。<br> </p> 
+<h4><a id="441__663"></a>4.4.1 加机器</h4> 
+<p>  直白地说，Flink 中的大部分性能问题都能够通过加机器解决。算子消费速率过低？上 128C 的！数据延迟越来越大？再加二北台机器！内存占用过大一直 OOM？上 128G 的！甚至连 Flink 官方也建议先通过加内存/加机器来尝试解决问题（来自 Flink 官方文档 -&gt; Tunning Checkpoints and Large State -&gt; Tuning RocksDB Memory 的原话），可谓是一力降十会。<br>  因此在作业性能出现问题时，建议<strong>先加机器恢复正常运行，后续再针对细节进行优化</strong>。当然也不能无脑加，需要结合实际的执行计划和具体异常节点，合理且有针对性地调整。<br> </p> 
+<h4><a id="442__666"></a>4.4.2 算子并发度</h4> 
+<p>  作业的瓶颈通常是由于单节点吞吐 &lt; 整体吞吐导致的，常见的水桶效应。这种现象十分正常，章节「<a href="#u0Xpx" rel="nofollow">4.2 执行计划</a>」中提到，算子复杂度天然存在差别，Map 算子的吞吐自然大于 Join 算子（Map 为无状态算子，只有 convert 逻辑，Join 要考虑得就多了），Join 算子的吞吐就可能成为整个作业的瓶颈。此时可以<strong>针对执行计划中忙碌的节点调高并发度</strong>，直至作业吞吐恢复正常。<br>  而上游 Source 流量激增的场景，即使没有单点瓶颈也无法满足目前的需求，作业延时还是会越来越大。此时则需要调整整个作业的并发度，再寻找单点瓶颈逐个击破。<br> </p> 
+<h4><a id="443__669"></a>4.4.3 关闭共享</h4> 
+<p>  前文提到 Flink 在执行计划层面会采取两种优化：<strong>算子链合并</strong>和 <strong>Slot 共享</strong>，但好心也有可能办坏事。<br>  算子链合并确实能一定程度减少网络通讯带来的损耗，并且实打实节省了资源。但同时也<strong>导致了资源分配不均且不透明</strong>，原本一人一个了变成一人一半（甚至可能因为争抢导致不足一人一半）。并且<strong>为算子层面的调优造成了极大困难</strong>，在不开启算子链合并的情况下，每个算子独立存在，哪个算子异常一眼便知；合并后，5 个算子合成一个，只能看到这一坨，基本没法定位某个算子来调整细节。Slot 共享同理，原本一个算子用 4C，现在变成一人 2C，对性能的影响是必然的。<br>  因此需要算子层面的细节调优时，可以<strong>关闭这两类共享</strong>（或者调整为仅允许某些高吞吐算子共享，将这类算子设置相同的组别，详见 <strong>SlotSharingGroup</strong>）。<br> </p> 
+<h4><a id="444__672"></a>4.4.4 内存分配</h4> 
+<p>  前文提到与内存有关的性能瓶颈通常出现在两块区域，对应 TaskManager 的堆内/堆外内存的核心部分，即<strong>运行时内存 Task Heap</strong>、<strong>管理内存 Managed Memory</strong>。两块内存的具体大小会根据比例自行计算，默认情况下 <strong>Managed Memory 会占用总内存的 40%</strong>，而 <strong>Task Heap 会用所有内存区域分配完毕后剩余的</strong>。<br>  Managed Memory 通常用于存储 State Backend，而 Flink 最常见使用场景是做数据 ETL，ETL 本质上就是 Mapping，而 Map 算子是无状态算子。这意味着大部分作业的 State 容量并不会很大，Managed Memory 利用率也就低得可怜。如图 21 是一个纯 ETL 作业的内存占用情况，可以看到 Managed Memory 的占用量是 0%，却和堆内内存大小持平（1.19GB/1.33GB）——这是由于 Flink 的默认配置中，<strong>Managed Memory 会分配到总内存的 40%</strong>。<br>  <img src="https://images2.imgbox.com/0e/5c/NQHER8Zl_o.png" alt="图21 内存占用"><br>  但图中的作业设置分配 5% 就已经足够，甚至更低。因此，使用者应当<strong>根据运行时不同内存区域的占用情况，自行调整内存分配</strong>。<br> </p> 
+<h4><a id="445__675"></a>4.4.5 大状态</h4> 
+<p>  前文提到，内存瓶颈最大的罪魁祸首之一便是「大状态」，大状态对 Flink Job 稳定性的危害是不言而喻的：</p> 
+<ul><li>大状态会迅速填满 Managed Memory，<strong>加剧节点 GC</strong>。</li><li>从 RocksDBStateBackend 中<strong>读取大状态效率很差</strong>，因为涉及大量数据的检索、磁盘 IO、序列化/反序列化。</li><li>Checkpoint 的构建依赖状态，<strong>状态越大构建效率越低</strong>。</li></ul> 
+<p>  在双流 Join、以及无边界的聚合计算等场景，State 非常容易膨胀。但实际使用者能做得也不多，要减少对 State 的使用那是执行计划层面的优化，不在本章探讨范围内。<br>  但绝大多数情况大状态的出现，是因为<strong>没有设置 State TTL，TTL 默认是永久，你敢信</strong>？所以，请务必根据业务对 State 中历史数据的依赖程度（例如双流 Join 中，业务方不会出现依赖 1 天前记录场景下，就可以设置 TTL 为 24H 左右），<strong>设置合理的 State TTL！</strong><br> </p> 
+<h4><a id="446_MiniBatch_684"></a>4.4.6 Mini-Batch</h4> 
+<p>  <strong>Mini-Batch 俗称攒批</strong>，是 Flink 中最常用、好用的调优方式之一。<br>  在聚合计算场景下，每个元素的到来都会触发一次计算，即 State 读取 + State 累加 + State 回写；当上游 RPS 极高时，State 的急剧膨胀及高频率读写会成为极大的性能瓶颈。而使用方大部分时候并不需要感知每一秒的指标变化，此时便可以使用 Mini-Batch。<br>  Mini-Batch 的原理实际就是将元素攒在手里，周期性地触发计算，而不是每次元素到来都触发。这样做能大幅度降低计算频率，减少高频率计算产生的性能负担；最重要的是用批量操作 State 代替了单行操作，要知道每次 State 操作都意味着磁盘 IO + 序列化。Mini-Batch 会以使用者配置的<strong>允许延迟时长</strong>作为周期触发计算，性能提升的同时意味着数据的实时性降低了，这一秒发生的事件需要 N 秒后才能看到结果。<br>  因此需要<strong>结合对数据时效性的要求合理设置是否开启 Mini-Batch、合理配置允许延迟时长</strong>。<br> </p> 
+<h3><a id="45__687"></a>4.5 调优效果</h3> 
+<p>  以上为笔者曾经使用过的部分调优策略，笔者的一个作业曾经由于 Source RPS 突然提高了 3000 左右，导致部分节点反压，作业延迟一度增大到 3 小时。在尝试过以上所有的调优策略后，吞吐量增长也是十分显著：<br>  <img src="https://images2.imgbox.com/cc/85/da6ZuGgZ_o.png" alt="图22 调优-1"><br>  <img src="https://images2.imgbox.com/86/ba/b4KMHgZq_o.png" alt="图23 调优-2"><br>  从 3000 输出 RPS 最终达到稳定 16000+，非常好用。<br> </p> 
+<h2><a id="5__690"></a>5 一代宗师：后车之师</h2> 
+<p>  到这里，对于 Flink 的整体介绍基本结束，相信你已经深切感受到 Flink/流式计算的魅力所在，也衷心祝愿你能在流式计算的世界里越走越远。<br>  笔者在学习与使用 Flink 的过程中踩了不少坑，希望在最后能帮到你。<br> </p> 
+<h3><a id="51__Join__OOM_693"></a>5.1 大型维表 Join 导致 OOM</h3> 
+<p>  维表 Join 是很常见的计算场景，章节「<a href="#R1e7D" rel="nofollow">2.1.4.2 维表/历史表连接器</a>」中提到，由于维表变动不频繁的特性，其可以采取一定的缓存策略，避免每次查询产生的网络 IO。不同存储介质对缓存策略的支持程度不同，KV/列式存储对 LRU 策略支持较好，而笔者的使用场景 ODPS 仅支持全量缓存策略。<br>  这意味着作业启动时，<strong>要将表中的所有数据一次性读取进内存（Task Heap）</strong>。这就很令人犯难了，这张维表正好是张巨大的维表，笔者尽全力去缩减数据量仍然只能控制在一千万上下。粗略估算仅这些数据，就能占据几十 G 的内存空间。自从引入这张维表后，笔者的作业启动就十分艰难。TaskManager 在读取维表全量数据时会疯狂的 OOM，然后不断重启重启重启。<br>  笔者当时采取了几种思路：</p> 
+<ul><li>加内存、加内存、加内存，但这样肯定不是个事。</li><li>调整内存空间分配，由于维表数据存储在 Task Heap 区域、且并不是大状态作业，因此可以调小其他区域（如上文提到的 Managed Memory），优先确保 Task Heap 空间。</li></ul> 
+<p>  在初期确实能够很好的缓解问题，但维表的数据会一直膨胀，总不能没事就来调调作业的内存吧？但既然一台机器放不下所有记录，能不能打散到所有机器内呢？<br>  答案是可以！Flink 的分区算子就是干这个的。<br>  <strong>通常情况下，上游算子流入哪个下游算子分区（可以理解为哪台机器）是 shuffle 算子随机选择的（keyedBy 聚合场景除外），因为都大差不差；但如果在 Join 计算前先对 Join Key 作 hash 运算，将左侧流元素根据 hash 结果分配到同一分区，确保相同 hash 的记录落在同一分区内，那就可以确定每个分区需要加载哪些 key 对应的维表信息。</strong><br>  相当于从<strong>每台机器加载全量维表数据</strong>，变成了<strong>每台机器只加载被分配到的 key 的维表数据</strong>，数据量缩减到了 <strong>1/Parallelism</strong>。但前提要先扩大算子并发数，否则就 1 个分区参与分配等于没分。<br>  <img src="https://images2.imgbox.com/ac/11/GJ97WEsb_o.png" alt="图24 ShuffleHash"><br> </p> 
+<h3><a id="52__701"></a>5.2 并发度过高导致无法启动</h3> 
+<p>  调整并发度是提高作业吞吐非常有效的手段，但连接器的吞吐往往不是越大越好。因为提高并发度相当于增加同时计算的 Worker，而数据源的读取通常具有事务性，不能谁来都能读。例如 Kafka Connector，有多少个 shard 就支持多少个并发，调大了剩下几个 Worker 就只能一直闲着。<br>  笔者有次遇到一个奇怪的问题，在数据源 Datahub（类似 Kafka 的消息队列）shard 数为 1 的场景下设置了并发度为 4，此时作业出现一直重启的现象；在调低并发度后（即调整并发度 = shard 数），作业又能够正常启动了。但是笔者后续再也没有复现过该场景，哪怕并发度与 shard 不对等也没有影响作业的启动。<br>  这也成了笔者心中的一根刺，希望有人能解惑。T_T<br> </p> 
+<h3><a id="53__704"></a>5.3 窗口函数启动异常</h3> 
+<p>  使用窗口函数时需要<strong>指定时间字段</strong>，且该<strong>字段类型必须是 timestamp + rowtime</strong>，否则无法正常启动窗口。<br>  笔者在 DDL 中指定了时间字段、将其转换为 timestamp 类型、还设置了 Watermark，可以说是妥妥的优质可开窗字段。但在调用下方的 TUMBLE 算子后，还是报出了“当前字段不是时间格式”的错误。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">CREATE</span> <span class="token keyword">TEMPORARY</span> <span class="token keyword">TABLE</span> user_clicks<span class="token punctuation">(</span>
+  username <span class="token keyword">varchar</span><span class="token punctuation">,</span>
+  click_url <span class="token keyword">varchar</span><span class="token punctuation">,</span>
+  eventtime <span class="token keyword">varchar</span><span class="token punctuation">,</span>                                                        
+  ts <span class="token keyword">AS</span> TO_TIMESTAMP<span class="token punctuation">(</span>eventtime<span class="token punctuation">)</span><span class="token punctuation">,</span>
+  WATERMARK <span class="token keyword">FOR</span> ts <span class="token keyword">AS</span> ts <span class="token operator">-</span> <span class="token keyword">INTERVAL</span> <span class="token string">'2'</span> <span class="token keyword">SECOND</span>  <span class="token comment">--为Rowtime定义Watermark。</span>
+<span class="token punctuation">)</span> <span class="token keyword">with</span> <span class="token punctuation">(</span>
+  <span class="token string">'connector'</span><span class="token operator">=</span><span class="token string">'sls'</span><span class="token punctuation">,</span>
+  <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+<span class="token keyword">CREATE</span> <span class="token keyword">TEMPORARY</span> <span class="token keyword">VIEW</span> one_minute_window_output <span class="token keyword">AS</span> 
+<span class="token keyword">SELECT</span> 
+  TUMBLE_ROWTIME<span class="token punctuation">(</span>ts<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'1'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span> <span class="token keyword">as</span> rowtime<span class="token punctuation">,</span>  <span class="token comment">--使用TUMBLE_ROWTIME作为二级Window的聚合时间。</span>
+  username<span class="token punctuation">,</span> 
+  <span class="token function">COUNT</span><span class="token punctuation">(</span>click_url<span class="token punctuation">)</span> <span class="token keyword">as</span> cnt
+<span class="token keyword">FROM</span> user_clicks
+<span class="token keyword">GROUP</span> <span class="token keyword">BY</span> TUMBLE<span class="token punctuation">(</span>ts<span class="token punctuation">,</span> <span class="token keyword">INTERVAL</span> <span class="token string">'1'</span> <span class="token keyword">MINUTE</span><span class="token punctuation">)</span><span class="token punctuation">,</span>username<span class="token punctuation">;</span>
+</code></pre> 
+<p>  笔者简直不敢相信自己的眼睛，并且其他的测试 demo 中，同样的写法也没有任何问题。<br>  在不断地排错后，发现问题出在开窗的时机不对。笔者的 SQL 类似于一个子查询查出表中所有的字段、再于子查询外侧调用窗口算子，查完表字段直接开窗就没有出现问题。这说明：<strong>子查询在查出时间字段时，没有保留其附加的 rowtime 属性，只剩了基本的数据类型 timestamp</strong>。这就有点坑了，原封不动地查出来还能把字段上的属性丢掉？在笔者看来这应该属于 bug。<br>  因此，<strong>子查询可能会丢失字段原有的属性</strong>，这点是可能存在的风险。<br> </p> 
+<h3><a id="54__729"></a>5.4 序列化</h3> 
+<p>  由于 Flink 中存在大量的网络/磁盘 IO，因此其要求<strong>所有传输的对象都必须是可序列化的</strong>。而在一次 Flink UDF 开发中，笔者在上传 UDF 并尝试启动后，发现作业一直报序列化错误：</p> 
+<pre><code class="prism language-java"><span class="token class-name">Exception</span> in thread <span class="token string">"main"</span> <span class="token class-name"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>api<span class="token punctuation">.</span>common<span class="token punctuation">.</span></span>InvalidProgramException</span><span class="token operator">:</span> java<span class="token punctuation">.</span>*<span class="token operator">*</span><span class="token operator">*</span><span class="token punctuation">.</span>*<span class="token operator">*</span><span class="token operator">*</span>$<span class="token operator">*</span><span class="token operator">*</span><span class="token operator">*</span><span class="token annotation punctuation">@123</span> is not serializable<span class="token punctuation">.</span>
+</code></pre> 
+<p>  令人困惑的是，UDF 实现的 TableFunction 接口本身实现了 Serializable 序列化接口，那为啥又会出现序列化错误呢？在不断地寻觅后，笔者发现 UDF 的一个局部变量没有实现序列化，笔者将这个类删掉以后就没报错了。但那又是个很重要的外部类，没法删掉、也不方便 copy 过来的那种，笔者当时心凉了半截。<br>  那这个问题该如何解决呢？<br>  首先想到 <strong>transient</strong> 修饰符，它用于<strong>标记一个局部变量不用被序列化</strong>。看起来没什么实际意义，因为字段如果不被序列化，那在分布式环境肯定是没法使用的；但如果这个字段在外部环境确实没什么用，只在系统内部（内/外部指网络通讯的发起/接收者）使用，外部不感知，那确实是不用被序列化。笔者试了试，倒是不报序列化错误了，但调用该类的时候直接开始报错，因为变量根本没被序列化（服了。。。）。<br>  可如果变量本身就无法被序列化，那就必须得用 transient 标记，不然对象都无法正常序列化并传输。那不成死结了？<br>  但是，Java 基础知识中提到：<strong>类变量属于类、不归属于对象</strong>。而序列化/反序列化都是在字节序列和对象之间转换，如果一个变量不属于对象，它也就不需要参与序列化。<br>  所以最终解决方案就是<strong>把它标记为成员变量（类变量）</strong>，如果要网络传输某个字段、而这个字段又没有实现序列化，就把它标记成类变量吧，准好使。<br> </p> 
+<h2><a id="6__736"></a>6 特别鸣谢</h2> 
+<p>  感谢你看到这里，也感谢领笔者进门的两位帮派师兄，最后感谢所有 Committer、编写官方文档、分享技术知识、极具开源精神的程序员们。<br>  再推荐几篇笔者觉得非常有意思的文章（也同时作为本文的参考文献），链接一同贴在下面，再次感谢各位的无私奉献。</p> 
+<ul><li>阿里云 Flink 产品文档：<a href="https://help.aliyun.com/zh/flink/?spm=a2c4g.11186623.0.0.15584a58S2EZt8" rel="nofollow">https://help.aliyun.com/zh/flink/?spm=a2c4g.11186623.0.0.15584a58S2EZt8</a></li><li>Apache Flink 漫谈系列（<strong>必看！必看！必看！</strong>）：<a href="https://developer.aliyun.com/article/666043" rel="nofollow">https://developer.aliyun.com/article/666043</a></li><li>Apache Flink 官方文档：<a href="https://nightlies.apache.org/flink/flink-docs-release-1.19/docs/try-flink/local_installation/" rel="nofollow">https://nightlies.apache.org/flink/flink-docs-release-1.19/docs/try-flink/local_installation/</a></li><li>Flink Forward Asia 2022：<a href="https://2022.flink-forward.org.cn/" rel="nofollow">https://2022.flink-forward.org.cn/</a></li></ul> 
+<p>  如果你对本文的内容仍有疑惑、指正、补充、更优解，欢迎随时找笔者讨论，不允许自带酒水。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c838fed12a7e158516e95d9e5910bb57/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C#面：举列 a=10,b=15，在不用第三方变量的前提下，把a,b的值互换</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a3dd1e04dab0954519765ea32b6695e4/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">华为手机改变休眠时间 不让手机动不动黑屏</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

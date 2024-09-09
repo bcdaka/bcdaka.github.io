@@ -1,0 +1,481 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>基于 RabbitMQ 实现 Eureka 服务平滑灰度发布 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/928239b5a02d30050336891b6f21bb41/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="基于 RabbitMQ 实现 Eureka 服务平滑灰度发布">
+  <meta property="og:description" content="前⾔ 前段时间⼀位⼤龄程序来公司⾯试，已经是做到技术 leader 的级别，⾯试开始他⽐较⾃豪地向
+我们介绍的设计技术架构、缓存设计、业务设计等等，他说该项⽬是他⼀⼿打造起来的。在服
+务⾼可⽤⽅⾯，声称可以做到 4 个 9。因为也是 Spring Boot、Spring Cloud 这套⽐较流⾏的东⻄。因为我们也是⽤ Spring Cloud 全家桶，但是有些问题我们还没有解决的，⼀听到对⽅说 4 个 9。顿时来了兴趣，准备膜拜⼀下⼤神怎么解决⾼可⽤问题的。
+他说⽤是 Eureka、Ribbon 这套机制实现⾼可⽤，我们问题是 Eureka、Ribbon 怎么实现⾼可
+⽤的，有什么弊端。对⽅语塞，开始东拉⻄扯，⼤失所望。可能有些同学不知道，在使⽤ Eureka、Ribbon 时候，由于 Eureka、Ribbon 内部的缓存机 制。会导致服务上线或者下线的时候会出现服务不可⽤的情况，极端情况下会出现 90 秒服务不可能。在没有解决这些问题的前提下，使⽤ Eureka、Ribbon 搭建微服务应⽤是不可能会有 4 个 9 的。
+对于这种情况，官⽅也没有给具体的解决⽅案。在没有解决这个问题之前，很多公司也许会跟
+我们采取同样的做法，就是在晚上流量⽐较少情况停服发布。但是试下⼀想，每次发布都只能
+在 23 点以后发布，关闭 SLB，停机，执⾏ SQL，起服务。⼗⼏个服务，验证功能，⼀顿操作
+⼀下，⾄少要搞到两三点。这对于整个开发团队来说都是⼀种负担。
+本⽂将分享是如何解决 Eureka、Ribbon 组件使⽤上的弊端。
+Eureka 注册，服务发现机制原理 相信熟悉微服务架构的⼈，都知道服务注册与发现的作⽤。在成百上千个微服务中，我们必须
+需要⼀个中⼼来通知⽣产者与消费者的服务状态变化，以便我们在微服务架构中理清我们的服
+务调⽤关系。
+经过微服务架构多年的发展，出现很多种注册中⼼，如 Naco、Eureka、etc、ZooKeeper 等
+等，其实⼤体思想都⼀样。在服务启动时候向注册中⼼发送消息告诉注册中⼼我已经 ready，
+可以被调⽤了，然后再持续运⾏过程通过⼼跳的⽅式向注册中⼼汇报⾃身的状态。
+注册中⼼收到服务注册信息后，向调⽤⽅推送或者调⽤⽅主动拉取需要调⽤的服务的状态信
+息。在这个过程中其实并没有很⾼深的理论与思想。注册中⼼与各个服务的交互⽅式⽆⾮就是
+⻓连或者短连。
+服务注册与续约机制，缓存刷新 在服务环境完全启动完成之后，集成了 eureka-client 的服务会实例化com.netflix.discovery.DiscoveryClient 实例，DiscoveryClient 实例对 Eureka 客户端来说⾄关重要，各种线程池 初始化、服务注册、续约、刷新缓存都在这个对象完成。DiscoveryClient 有个强⼤的构造⽅法，在初始化的构造三个⾄关的重要的线程池">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-04-27T20:31:46+08:00">
+    <meta property="article:modified_time" content="2024-04-27T20:31:46+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">基于 RabbitMQ 实现 Eureka 服务平滑灰度发布</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2><a id="_0"></a></h2> 
+<h3 id="hCVRQ">前⾔</h3> 
+<p id="uc7eb790c">前段时间⼀位⼤龄程序来公司⾯试，已经是做到技术 leader 的级别，⾯试开始他⽐较⾃豪地向</p> 
+<p id="u27e18c7c">我们介绍的设计技术架构、缓存设计、业务设计等等，他说该项⽬是他⼀⼿打造起来的。在服</p> 
+<p id="u9897b73f">务⾼可⽤⽅⾯，声称可以做到 4 个 9。因为也是 Spring Boot、Spring Cloud 这套⽐较流⾏的东⻄。因为我们也是⽤ Spring Cloud 全家桶，但是有些问题我们还没有解决的，⼀听到对⽅说 4 个 9。顿时来了兴趣，准备膜拜⼀下⼤神怎么解决⾼可⽤问题的。</p> 
+<p id="u72998203"></p> 
+<p id="u42e7b81a">他说⽤是 Eureka、Ribbon 这套机制实现⾼可⽤，我们问题是 Eureka、Ribbon 怎么实现⾼可</p> 
+<p id="u3d6a8b2c">⽤的，有什么弊端。对⽅语塞，开始东拉⻄扯，⼤失所望。可能有些同学不知道，在使⽤ Eureka、Ribbon 时候，由于 Eureka、Ribbon 内部的缓存机 制。会导致服务上线或者下线的时候会出现服务不可⽤的情况，极端情况下会出现 90 秒服务不可能。在没有解决这些问题的前提下，使⽤ Eureka、Ribbon 搭建微服务应⽤是不可能会有 4 个 9 的。</p> 
+<p id="ucd6a556a"></p> 
+<p id="uf1d36296">对于这种情况，官⽅也没有给具体的解决⽅案。在没有解决这个问题之前，很多公司也许会跟</p> 
+<p id="u980b6e44">我们采取同样的做法，就是在晚上流量⽐较少情况停服发布。但是试下⼀想，每次发布都只能</p> 
+<p id="ue0c84737">在 23 点以后发布，关闭 SLB，停机，执⾏ SQL，起服务。⼗⼏个服务，验证功能，⼀顿操作</p> 
+<p id="u165e38d4">⼀下，⾄少要搞到两三点。这对于整个开发团队来说都是⼀种负担。</p> 
+<p id="u5cdf87af"></p> 
+<p id="u613569ff"><strong>本⽂将分享是如何解决 Eureka、Ribbon 组件使⽤上的弊端。</strong></p> 
+<h3 id="XEoBV">Eureka 注册，服务发现机制原理</h3> 
+<p id="u02606013">相信熟悉微服务架构的⼈，都知道服务注册与发现的作⽤。在成百上千个微服务中，我们必须</p> 
+<p id="u0d47be48">需要⼀个中⼼来通知⽣产者与消费者的服务状态变化，以便我们在微服务架构中理清我们的服</p> 
+<p id="u5e7aeaf0">务调⽤关系。</p> 
+<p id="ubf42e7aa">经过微服务架构多年的发展，出现很多种注册中⼼，如 Naco、Eureka、etc、ZooKeeper 等</p> 
+<p id="u70b941f6">等，其实⼤体思想都⼀样。在服务启动时候向注册中⼼发送消息告诉注册中⼼我已经 ready，</p> 
+<p id="ub926a1e1">可以被调⽤了，然后再持续运⾏过程通过⼼跳的⽅式向注册中⼼汇报⾃身的状态。</p> 
+<p id="ua1a771df"></p> 
+<p id="u564d35d3">注册中⼼收到服务注册信息后，向调⽤⽅推送或者调⽤⽅主动拉取需要调⽤的服务的状态信</p> 
+<p id="uae0b0d3f">息。在这个过程中其实并没有很⾼深的理论与思想。注册中⼼与各个服务的交互⽅式⽆⾮就是</p> 
+<p id="uceee262c">⻓连或者短连。</p> 
+<p class="img-center"><img alt="" height="646" id="u4d36eb94" src="https://images2.imgbox.com/8a/9c/Dwq8oX3l_o.png" width="1200"></p> 
+<h3 id="Kkjx5">服务注册与续约机制，缓存刷新</h3> 
+<p id="u23548c57"></p> 
+<p id="ua0490455">在服务环境完全启动完成之后，集成了 eureka-client 的服务会实例化com.netflix.discovery.DiscoveryClient 实例，DiscoveryClient 实例对 Eureka 客户端来说⾄关重要，各种线程池 初始化、服务注册、续约、刷新缓存都在这个对象完成。DiscoveryClient 有个强⼤的构造⽅法，在初始化的构造三个⾄关的重要的线程池</p> 
+<pre id="Z2WHm"><code class="language-java">// 线程调度器
+private final ScheduledExecutorService scheduler;
+// ⼼跳线程池 ，主要⽤于注册与续约
+private final ThreadPoolExecutor heartbeatExecutor;
+// 本地缓存刷新线程池
+private final ThreadPoolExecutor cacheRefreshExecutor;</code></pre> 
+<p id="u025eef9a"><strong>🖐️</strong><strong>在构造⽅法⾥⾯同时调⽤⼀个重要⽅法 initScheduledTasks</strong></p> 
+<pre id="gpJwv"><code class="language-java">private void initScheduledTasks() {
+......
+if (this.clientConfig.shouldFetchRegistry()) {
+    ......
+    // 这⾥⽤ cacheRefreshExecutor 线程池启动定时任务来定时刷新缓存 的操作
+    this.scheduler.schedule(new TimedSupervisorTask("cacheRe‐
+                                                    fresh", this.scheduler, this.cacheRefreshExecutor, renewalIntervalIn‐
+                                                    Secs, TimeUnit.SECONDS, expBackOffBound, new
+                                                    DiscoveryClient.CacheRefreshThread()), (long)renewalIntervalInSecs, 
+                            TimeUnit.SECONDS);
+}
+if (this.clientConfig.shouldRegisterWithEureka()) {
+    .......
+    // 这⾥使⽤了 heartbeatExecutor 线程池来来启动任务进⾏注册与续约的 操作
+    this.scheduler.schedule(new
+                            TimedSupervisorTask("heartbeat", this.scheduler, this.heartbeatExecu‐
+                                                tor, renewalIntervalInSecs, TimeUnit.SECONDS, expBackOffBound, new
+                                                DiscoveryClient.HeartbeatThread()), (long)renewalIntervalInSecs, 
+                            TimeUnit.SECONDS);
+    ..... 
+} else {
+    logger.info("Not registering with Eureka server per con‐
+    figuration");
+} }</code></pre> 
+<p id="u968b7656"></p> 
+<p id="u6d726eb5"><strong>注册与续约的时候的线程是 HeartbeatThread：</strong></p> 
+<pre id="DUlOb"><code class="language-java">private class HeartbeatThread implements Runnable {
+    private HeartbeatThread() { }
+    public void run() {
+        if (DiscoveryClient.this.renew()) {
+            DiscoveryClient.this.lastSuccessfulHeartbeatTimestamp 
+            = System.currentTimeMillis();
+        } }
+}</code></pre> 
+<p id="u6b35d0e7">到这⾥我们基本明⽩注册与续约都是⽤了 DiscoveryClient 对象的 renew ⽅法。</p> 
+<p id="u97b485d1">同理我们看到缓存刷新使⽤的是 CacheRefreshThread 线程：</p> 
+<pre id="kmOx7"><code class="language-java">class CacheRefreshThread implements Runnable {
+    CacheRefreshThread() {
+    }
+    public void run() {
+        DiscoveryClient.this.refreshRegistry();
+    } 
+}</code></pre> 
+<p id="udf6792f0">由代码可以看出，刷新 Eureka 客户端的缓存是通过 DiscoveryClient 对象的 refreshRegistry</p> 
+<p id="u5097fbf2">⽅法实现的。</p> 
+<h3 id="Y5c4a">Ribbon 的负载负载均衡策略</h3> 
+<p id="u5be78134"></p> 
+<p id="u849a0e46">在使⽤ Spring Cloud 全家桶的 Ribbon 做负载均衡时候，Ribbon 不同于 F5、Nginx 等等通过</p> 
+<p id="u88e25b83">软件或者硬件做负载均衡，Ribbon 直接就在应⽤端做负载均衡。Ribbon ⾃⼰实现负载均衡器，根据⼀定规则，从 Ribbon 的本地缓存的服务列表⾥⾯选择服务进⾏调⽤。值得注意的是，Ribbon给每个服务都初始化了⼀个 Spring 容器。Eureka 的缓存列表是通过定 时任务去注册中⼼拉取，Ribbon 的本地服务缓存列表则是通过定时任务通过 Eureka 的缓存列表同步过来。</p> 
+<p id="u0983f71a"></p> 
+<p id="u25cd9705">打开 org.springframework.cloud.netflix.ribbon.RibbonClientConfiguration 在这个配置类⾥</p> 
+<p id="u6e45eb39">⾯，可以看到定义了各种 Ribbon 负载均衡需要的各种对象。其中有定义了默认的负载均衡规</p> 
+<p id="u537451ed">则，默认的拉取服务列表的策略。</p> 
+<pre id="cYkXS"><code class="language-java">@Bean
+@ConditionalOnMissingBean
+public IRule ribbonRule(IClientConfig config) {
+    if (this.propertiesFactory.isSet(IRule.class, this.name)) {
+        return (IRule)this.propertiesFactory.get(IRule.class, con‐
+                                                 fig, this.name);
+    } else {
+        ZoneAvoidanceRule rule = new ZoneAvoidanceRule();
+        rule.initWithNiwsConfig(config);
+        return rule;
+    } 
+}</code></pre> 
+<p id="ucd4eefec"></p> 
+<p id="u6742bbbd">上⾯的代码给我们定义了 Ribbon 默认的负载均衡策略，在我们没有初始化其他实现 IRule 类</p> 
+<p id="u510ab875">的时候执⾏。</p> 
+<p id="u36a18632"><strong>Ribbon 主要实现了⼀下⼏种负载均衡策略： </strong></p> 
+<ul><li id="ud3d78d99">RoundRobinRule：轮询策略</li><li id="u80124e0b">RandomRule：随机策略</li><li id="u2bce1403">AvailabilityFilteringRule：可⽤过滤策略</li><li id="ue8f03910">WeightedResponseTimeRule：响应时间权重策略</li><li id="uf6926c04">RetryRule：轮询失败重试策略</li><li id="u9674c630">BestAvailableRule：并发量最⼩可⽤策略</li><li id="udc805b87">ZoneAvoidanceRule：根据 server 所在区域的性能和 server 的可⽤性</li></ul> 
+<p id="u545093c7">当然，我们也可以根据业务要求⾃定义负载均衡规则。</p> 
+<p id="u06977822">如下代码，Ribbon 定义了默认的拉取服务列表的⽅式：</p> 
+<pre id="r2VWS"><code class="language-java">@Bean
+@ConditionalOnMissingBean
+public ServerListUpdater ribbonServerListUpdater(IClientConfig 
+                                                 config) {
+    return new PollingServerListUpdater(config);
+}</code></pre> 
+<p id="u9c86b5f4"></p> 
+<p id="u22dd434c"><strong>Ribbon 实现了两种拉取服务的⽅式： </strong></p> 
+<ul><li id="u630ca302">PollingServerListUpdater：通过线程池定时任务的⽅式每隔 30s 从 Eureka 缓存拉取</li><li id="u6d20d360">EurekaNotificationServerListUpdater：通过监听 Eureka 的缓存更新事件，当 Eureka 客 户端从注册中⼼拉取服务列表的时候，同时同步到 Ribbon 的缓存列表中。上⾯两个类都是 ServerListUpdater 的实现类，都实现了 ServerListUpdate 的 start ⽅法。⽽ start ⽅法会在 DynamicServerListLoadBalancer（Ribbon 负载均衡器）初始化的时候的被调⽤。下⾯可以看下 start ⽅法的代码实现：</li></ul> 
+<pre id="v615m"><code class="language-java">public class EurekaNotificationServerListUpdater implements ServerListUpdater {
+    //......省略代码
+    public synchronized void start(final UpdateAction updateAction) {
+        if (this.isActive.compareAndSet(false, true)) {
+            // 初始化 Eureka 时间监听器
+            this.updateListener = new EurekaEventListener() {
+                public void onEvent(EurekaEvent event) {
+                    // ......省略代码 }
+                };
+                //......省略代码
+                // 把监听器注册到 Eureka 的缓存更新事件中
+                this.eurekaClient.registerEventListener(this.updateListen‐
+                                                        er);
+        } else {
+            logger.info("Update listener already registered, no-op");
+        }
+        ......省略代码 }
+    public class PollingServerListUpdater implements ServerListUpdater {
+        //...... 省略代码
+        public synchronized void start(final UpdateAction updateAction) {
+            if (this.isActive.compareAndSet(false, true)) {
+                // 初始化线程
+                Runnable wrapperRunnable = new Runnable() {
+                    public void run() {
+                        if (!PollingServerListUpdater.this.isActive.get())
+                        {
+                            if (PollingServerListUpdater.this.scheduledFu‐
+                                ture != null) {
+                                PollingServerListUpdater.this.scheduledFu‐
+                                ture.cancel(true);
+                            }
+                        } else {
+                            try {
+                                updateAction.doUpdate();
+                                PollingServerListUpdater.this.lastUpdated 
+                                = System.currentTimeMillis();
+                            } catch (Exception var2) {
+                                PollingServerListUpdater.logger.warn("Failed one update cycle", var2);
+                            } } }
+                };
+                // 启动定时任务更新 Ribbon 缓存
+                this.scheduledFuture = getRefreshExecutor().scheduleWith‐
+                FixedDelay(wrapperRunnable, this.initialDelayMs, this.refreshInter‐
+                           valMs, TimeUnit.MILLISECONDS);
+            } else {
+                logger.info("Already active, no-op");
+            } 
+        }</code></pre> 
+<h3 id="s5Coh">Eureka、Ribbon 的缓存机制</h3> 
+<p id="ua74a5a77"></p> 
+<p id="u8586a17b">通过上⾯的分析，我们所了解到有两个地⽅的缓存，⼀是 Eureka 客户端缓存，⼆是 Ribbon 负</p> 
+<p id="ucb3693c4">载均衡器的缓存。这些缓存机制是否都是必须存在的呢？很明显，这些缓存机制都是有存在的必要的，⽽且是⾮</p> 
+<p id="u56c1f6f1">常合理的。因为你的服务状态不可能是时时变化的。在 Eureka、Ribbon 这两个组件中还有</p> 
+<p id="u8665e063">eureka-server 也是有缓存中的。加起来三个地⽅有缓存。eureka-server 中⽤ guava 定义了 readWriteCacheMap，readOnlyCacheMap 两个缓存。当我们的服务注册到 eureka-server，服务的各类元数据信息会先存储在 readWriteCacheMap，然后定时任务每隔 30s 同步到 readOnlyCacheMap 中，所以服务提供者刚注册到注册中⼼，服务调⽤者是拉取不到的。</p> 
+<p id="u6f299ec7"><strong>综上各级缓存，我们可以看下图⽐较直观： </strong></p> 
+<p class="img-center"><img alt="" height="968" id="u71021f17" src="https://images2.imgbox.com/8e/d7/xJJKS7a2_o.png" width="1200"></p> 
+<p id="uf4b87d82">由于服务启动的时候，服务会⾃动注册到注册中⼼，所以只是在续约的时候，服务提供者到注</p> 
+<p id="u6bf94e84">册中⼼才有 30s。</p> 
+<h3 id="MYrk3">Eureka、Ribbon 使⽤的弊端</h3> 
+<p id="u3b5f69be">通过上⽂的各种分析，相信⼤家已经知道使⽤ Eureka、Ribbon 的问题所在了。正式因为各级</p> 
+<p id="u709e40fc">缓存，各类定时任务的存在，所以我们在正常使⽤ Eureka、Ribbon 的时候是没有办法做到 4</p> 
+<p id="u3ee14a87">个 9 ⾼可⽤的。试想⼀下，当我们⼀个服务启动提供，服务注册到 eureka-server。readWriteCacheMap 到 readOnlyCacheMap 需要 30s，readOnlyCacheMap 到 eureka-client 需要 30s，eureka-client 到 Ribbon 需要 30s，所以极端情况下，调⽤⽅ 90s 之后才能知道服务提供者的信息。 同理，当我们下线⼀个服务的时候，由于 readOnlyCacheMap、eureka-client、Ribbon 三个 端都存在缓存，所以在极端情况下，90s 内会出现服务提供者的接⼝调⽤异常，因为它已经下 线了。如果像天猫淘宝这种流量级别⽹站，这种情况当然是不可接受的。</p> 
+<p id="ua82c3125"></p> 
+<h3 id="dK3z2">如何使⽤ RabbitMQ 解决 Eureka、Ribbon 的弊端</h3> 
+<p id="u6a3acbc3"><strong>主要实现两个⽬标： </strong></p> 
+<ul><li id="u7a811c7e">服务平滑下线，先让客户端感知即将要下线，不负载均衡到即将要下线的服务中，等下线服务已经请求进来的流量跑完，最后平滑下线</li><li id="uf041bb00">服务快速感知，当服务上线后，服务调⽤⽅可以快速感知已上线的服务。</li></ul> 
+<p id="u330c09b2"></p> 
+<p id="u2680ee89">我们要实现上⾯两个⽬标，⾸先是要想办法⼲掉各种缓存机制。⼲掉缓存操作办法也很简单。</p> 
+<p id="u5db22989">第⼀，使⽤在 eureka-server 使⽤下⾯两个配置：</p> 
+<pre id="GM2ut"><code class="language-java"># 禁⽤保护模式
+eureka.server.enable-self-preservation=false
+# 禁⽤ readOnlyCacheMap
+eureka.server.use-read-only-response-cache=false</code></pre> 
+<p id="uae02e69d">第⼆，eureka-client 端使⽤ EurekaNotificationServerListUpdater ⽅式同步可⽤服务列表更新</p> 
+<p id="u9da67300">到 Ribbon，即 eureka-client 更新缓存的同时⻢上 Ribbon 缓存。</p> 
+<p class="img-center"><img alt="" height="842" id="u19922e67" src="https://images2.imgbox.com/29/66/AhlA7B6D_o.png" width="1200"></p> 
+<p id="u3202d026">当我们分析服务注册推送到注册中⼼的 com.netflix.appinfo.InstanceInfo 对象发现：</p> 
+<pre id="X7hYD"><code class="language-java">public class InstanceInfo {
+    // eureka 允许我们⾃定义业务的元数据
+    @XStreamAlias("metadata")
+    private volatile Map&lt;String, String&gt; metadata;
+    @Auto
+    private volatile Long lastUpdatedTimestamp;
+    @Auto
+    private volatile Long lastDirtyTimestamp;
+    @Auto
+    private volatile InstanceInfo.ActionType actionType;
+    @Auto
+    private volatile String asgName;
+    private String version;
+}</code></pre> 
+<p id="u48f65141"></p> 
+<p id="u0f837930">InstanceInfo 提供了 metadata 属性，允许我们⾃定义业务元数据推到注册中⼼。基于这个，当服务下线时，先保持服务状态不变，设置服务下线的标志元数据推送到注册中⼼，通知所有的服务消费者这个服务要下线了，重新拉取服务列表的状态信息。 这个通知的过程我们需要借助⼀些消息中间件，如 RabbitMQ、RocketMQ 等等，⾃定义Ribbon 负载均衡规则，服务列表⾥⾯剔除带有下线标志位的服务后再做负载均衡。最后 30s 后再杀掉服务，⾄此，这个服务实现平滑下线。当服务要上线的时候，监听 Spring 容器的初始化完成事件，在监听事件⾥⾯只做⼀件事，发送服务上线消息到 MQ，服务消费者收到消息后执⾏重新拉取服务列表的操作，实现服务快速感知。</p> 
+<h3 id="AIxaZ">平滑发布实现的设计实现原理</h3> 
+<p id="uea6ab32d">总体思路，利⽤ MQ 的原⼦消息⼴播，通知每个服务消费者，在此前提下，我们必须⽐较了解</p> 
+<p id="u2c96d702">Eureka、Ribbon 的⼀些代码实现，上⽂已跟⼤家分析了个⼤概。现在来看下总体的设计思路图</p> 
+<p class="img-center"><img alt="" height="1200" id="Y1StS" src="https://images2.imgbox.com/ed/77/tZKBRK3W_o.png" width="1200"></p> 
+<p class="img-center"><img alt="" height="922" id="BXLqH" src="https://images2.imgbox.com/38/b4/XJnkrdTf_o.png" width="1200"></p> 
+<p class="img-center"><img alt="" height="970" id="SynZU" src="https://images2.imgbox.com/6e/56/WPoubeC4_o.png" width="1200"></p> 
+<h3 id="nI7Rx">平滑发布代码实现</h3> 
+<p id="u7b66b1e4">有了上⾯的⽅法论，接下来就是代码实现了。</p> 
+<h4 id="zXfio">1. 监听服务启动事件：</h4> 
+<pre id="QK0mQ"><code class="language-java">@Component
+@Slf4j
+public class SpringContextGcdListener implements
+ApplicationListener&lt;ContextRefreshedEvent&gt; {
+    private volatile AtomicBoolean isSend =new AtomicBoolean(false);
+    @Autowired
+    private ApplicationInfoManager applicationInfoManager;
+    @Autowired
+    private SksEurekaManager sksEurekaManager;
+    @SneakyThrows
+    @Override
+    public void onApplicationEvent(ContextRefreshedEvent event) {
+        try{
+            if(event.getApplicationContext().getParent() instanceof
+               AnnotationConfigApplicationContext) {
+                //防⽌重复触发
+                if (isSend.compareAndSet(false, true)) {
+                    for (int i = 0; i &lt; 10; i++) {
+                        DiscoveryClient discoveryClient = 
+                        SpringContextHolder.getBean(DiscoveryClient.class);
+                        if (Objects.nonNull(discoveryClient)) {
+                            InstanceInfo instanceInfo = applicationIn‐
+                            foManager.getInfo();
+                            EurekaConstant.setQueue(instanceInfo.getAppName(), instanceInfo.getH‐
+                                                    ostName(), instanceInfo.getPort());
+                            ServerConsumer consumer = 
+                            SpringContextHolder.getBean(ServerConsumer.class);
+                            consumer.setQueueName(EurekaConstant.EU‐
+                                                  REKA_RIBBON_QUEUE);
+                            consumer.start();
+                            LogUtil.info(log, "SpringContextListener",
+                                         "MQ 消费启动监听");
+                            ServerChangeEvent changeEvent = change‐
+                            Event(instanceInfo, ServerStatus.UP);
+                            // 推送 MQ 消息
+                            EurekaManager.sendMqMessage(changeEvent);
+                            //LogUtil.info(log, 
+                            "SpringContextListener", "queue :{}", 
+                            EurekaConstant.EUREKA_RIBBON_QUEUE);
+                            LogUtil.info(log, "SpringContextListener",
+                                         "app start up send mq message :{}", JsonUtil.toJson(changeEvent));
+                            break; }
+                        Thread.sleep(1000);
+                    } } } }catch (Exception e){
+            LogUtil.error(log,"SpringContextListener","onApplication‐
+                          Event:{}",e);
+        } } 
+}</code></pre> 
+<p id="u6ed015ef"></p> 
+<h4 id="LQtcN">2. MQ 消费处理：</h4> 
+<pre id="iuwg1"><code class="language-java">@Slf4j
+@Component
+public class ConsumerTask {
+    public boolean consumer( byte[] bytes) {
+        String json = new String(bytes);
+        ServerChangeEvent event = JsonUtil.fromStr(json, 
+                                                   ServerChangeEvent.class);
+        try{
+            DiscoveryClient discoveryClient = 
+            SpringContextHolder.getBean(DiscoveryClient.class);
+            // 重新拉取服务列表
+            Method refresh = 
+            DiscoveryClient.class.getDeclaredMethod(EurekaConstant.REFRESH_METHOD)
+            ;
+            refresh.setAccessible(true);
+            refresh.invoke(discoveryClient);
+        }catch (Exception e){
+            LogUtil.error(log,"EurekaServerConsumerTask","eureka rib‐
+                          bon refresh :{}",e);
+        }
+        return true; } 
+}</code></pre> 
+<p id="ubecfeb01"></p> 
+<h4 id="kLwUA">3. ⾃定义负载均衡规则：</h4> 
+<pre id="MCEld"><code class="language-java">@Slf4j
+public class EurekaRibbonRule extends ClientConfigEnabledRoundRobinRule {
+    private LoadBalancerStats loadBalancerStats;
+    @Override
+    public Server choose(Object key) {
+        if (loadBalancerStats == null) {
+            return super.choose(key);
+        }
+        List&lt;Server&gt; serverList = getLoadBalancer().getAllServers();
+        // 踢掉要下线的服务
+        List&lt;Server&gt; upServerList = Lists.newArrayList();
+        for(Server server: serverList){
+            if (server instanceof DiscoveryEnabledServer) {
+                final DiscoveryEnabledServer discoveryEnabledServer = 
+                (DiscoveryEnabledServer) server;
+                final Map&lt;String, String&gt; metadata = discoveryEnabled‐
+                Server.getInstanceInfo().getMetadata();
+                final String down = metadata.get(SERVER_STATUS_KEY);
+                if (!ServerStatus.DOWN.name().equals(down)) {
+                    upServerList.add(server);
+                } } }
+        if(upServerList.isEmpty()){
+            return null; }
+        //... 根据需要做负载负载均衡规则
+        if (chosen == null) {
+            return super.choose(key);
+        } else {
+            return chosen;
+        } 
+}</code></pre> 
+<p id="uf5e6660a"></p> 
+<h4 id="XAsK5">4. 服务上线发送原⼦消息⼴播：</h4> 
+<pre id="RJXYN"><code class="language-java">private void changeServer(ServerStatus serverStatus) {
+    Map&lt;String,String&gt; engMetaMap = Maps.newHashMap();
+    engMetaMap.put(EurekaConstant.SERVER_STATUS_KEY, serverSta‐
+                   tus.name());
+    applicationInfoManager.registerAppMetadata(engMetaMap);
+    DiscoveryClient discoveryClient = 
+    SpringContextHolder.getBean(DiscoveryClient.class);
+    try {
+        Method renew = 
+        DiscoveryClient.class.getDeclaredMethod(EurekaConstant.RENEW_METHOD);
+        renew.setAccessible(true);
+        renew.invoke(discoveryClient);
+        ServerChangeEvent event = changeEvent(applicationInfoMan‐
+                                              ager.getInfo(),serverStatus);
+        sendMqMessage(event);
+    } catch (Exception e) {
+    } 
+}</code></pre> 
+<p id="u6dcafd00"></p> 
+<h4 id="m6G1T">5. 初始化负载均衡规则和 Ribbon 缓存更新⽅式：</h4> 
+<p id="ue72fb2c4"></p> 
+<p id="uc435c9d1">由 于 Ribbon 会 给 每 个 服 务 提 供 初 始 化 容 器 ， 为 了 使 Ribbon 容 器 都 加 载 到RibbonAutoGcdConfiguration 配置，我们需要在服务启动类上加上</p> 
+<pre id="qn8jT"><code class="language-java">@RibbonClients(defaultConfiguration = RibbonAutoGcdConfiguration.class)</code></pre> 
+<p id="u709aa9a4"></p> 
+<p id="u0e428a0b">⾄此，所有核⼼代码完毕，上⾯只是⼀些核⼼代码，根据思路，相信⼤家也能搞出来，如有不详尽，欢迎⼤家留⾔讨论，我将知⽆不⾔。</p> 
+<h3 id="GnMie">基于 Eureka、Ribbon 的灰度发布</h3> 
+<p id="u391facb8">在使⽤ Eureka、Ribbon 要做灰度的话，要利⽤⼀下⽹关的组件，灰度的实现⽅式有很多，我发⼀下我的思路，希望跟⼤家讨论交流⼀下。</p> 
+<p class="img-center"><img alt="" height="964" id="ufaffb32a" src="https://images2.imgbox.com/e0/5a/S69rHD85_o.png" width="1200"></p> 
+<p>免费<a class="link-info" href="https://moreit.club" rel="nofollow" title="IT资源小站">IT资源小站</a>，最后送给大家一套学习RabbitMQ的课程：<a href="https://moreit.club/?p=264" rel="nofollow" title="中间件MQ-RabbitMQ入门到实战课程 - IT资源小站">中间件MQ-RabbitMQ入门到实战课程 - IT资源小站</a></p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b50e085c8b0f8405ae12dcd6766049d3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【java数据结构之八大排序（上）-直接插入排序，希尔排序，选择排序，堆排序，向下调整(大根堆，小根堆)等知识详解】</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1c5cb9a00cc9b92f1ef527b226ec2afa/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">深入探索Android Service：后台服务的终极指南（上）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

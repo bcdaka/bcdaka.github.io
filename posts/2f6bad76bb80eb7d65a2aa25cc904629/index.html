@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>GaussDB关键技术原理|高可用：逻辑复制 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/2f6bad76bb80eb7d65a2aa25cc904629/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="GaussDB关键技术原理|高可用：逻辑复制">
+  <meta property="og:description" content="GaussDB关键技术原理|高可用：DCF&amp;双集群容灾从DCF与双集群容灾技术两方面对GaussDB的高可用能力进行了介绍，本篇将从逻辑复制方面继续解读GaussDB高可用能力。
+目录
+3 逻辑复制
+3.1 基本概念
+3.2 逻辑解码
+3.3 备机解码
+3.4 并行解码
+3.5 一致性解码
+3.6 分布式解码
+3 逻辑复制 逻辑复制属于数据复制服务（Data Replication Service，简称DRS）一种，是一种易用、稳定、高效的数据库迁移和数据库同步。逻辑复制由逻辑解码和数据复制两部分组成，逻辑解码输出以事务为单位组织的逻辑日志，业务或数据库中间件对逻辑日志进行解析回放并最终实现数据复制。逻辑复制对目标数据库的形态限制较少，支持异构数据库、同构异形数据库，且同步期间目标库可读可写。另一方面，相比数据迁移工具定期同步数据逻辑复制数据同步时延低，提供实时数据复制的能力。
+众所周知，在不同选型数据库或数据库不同版本间，通常在物理日志、数据存储格式等方面存在差异，差异导致无法在物理层面实现数据复制。逻辑复制解析事务物理日志（数据及其操作记录）抽取具有类SQL的逻辑日志，通过逻辑日志重放屏蔽源和目标数据库物理差异从而实现数据同步。例如 GaussDB 解析WAL日志，通过DRS工具转为SQL发送到 Oracle 执行，完成GaussDB和Oracle这种异构数据库之间数据备份，如图所示。
+端到端的逻辑复制分成三部分：
+解码源端事务物理日志从中抽取业务操作对应的逻辑日志。
+DRS工具将逻辑日志转换/变型成目标端支持的SQL/调用。
+目标端接收DRS转换的SQL/调用并高效执行实现数据复制。
+值的注意的是，逻辑复制不是“SQL”复制，而是复制SQL操作的结果。异构数据库的逻辑复制一般都通过SQL标准语法作为中间桥梁（共同理解的语言），从而实现异构数据库间的等价语义传递。
+物理复制和逻辑复制各有优劣，分别有其适用的业务场景。逻辑复制使用场景和优点主要体现在灵活、细粒度、双向、异构等，适用场景但不限于：关键数据备份（细粒度复制）、数据分发/合聚复制、异构数据在线迁移、大版本滚动升级、数据抢救找回、数据异地容灾等。但在低时延、低损耗、读写分离等一致性要求非常严格的场景，建议选择物理复制。
+对于逻辑复制特性，GaussDB聚焦于物理日志到逻辑日志的解码转换(提供CDC所需要的基础设施)，提供多种逻辑日志格式以便于二次开发，以及提升逻辑解码和日志重放性能来降低复制时延，保证数据同步的时效性和一致性。如图所示，GaussDB针对异构数据库间逻辑复制（蓝色链路）仅提供“逻辑解码”基础能力，DRS等数据库中间件处理逻辑日志并适配目标数据库回放，协同构建完整的逻辑复制。而同构的GaussDB之间通过发布订阅（黄色链路）特性承载，消除逻辑日志中转和翻译等，实现更高效更低时延的逻辑复制。
+3.1 基本概念 复制行标识（Replica ID）
+数据库复制技术进行数据同步时用于标识数据库中复制的行或记录的唯一标识符。该标识可以是一个自增数字、全局唯一的UUID或其他形式，例如：逻辑日志主键列集或者唯一索引列集。
+复制行标识的主要作用包括：
+数据一致性：通过复制行标识确保不同的数据库实例之间复制的行唯一性和一致性，避免数据冲突和重复复制。
+冲突解决：复制行标识定位冲突行，依据行不同内容识别正确的版本。
+同步跟踪：根据行标识确定哪些行已经被复制，哪些行还未被复制。
+GaussDB逻辑复制的行标识通过ALTER TABLE .. REPLICA IDENTITY指定四种复制行标识：
+DEFAULT记录主键列的旧值，没有主键则不记录。
+USING INDEX记录索引列的旧值，索引必须是全局唯一的、不可延迟的，并且索引列含有NOT NULL约束。
+FULL记录该行中所有列的旧值。
+NOTHING不记录有关旧行的信息。
+逻辑复制源
+逻辑复制源是逻辑复制中同步的数据库实例、库或表，通过解析和重放逻辑日志，将源数据库的数据变更复制到目标数据库。逻辑复制的源与目标之间可以是主从关系，也可以是多对多的关系；多对多关系意味着源和目标之间可以相互复制。通过给逻辑复制源赋予一个标识，重放设置逻辑日志来自的逻辑复制源标识，解码过滤重放物理日志的逻辑日志，从而避免循环无限复制。
+GaussDB逻辑复制源使用流程：
+pg_replication_origin_create()创建复制源。
+pg_replication_origin_session_setup()设置会话重放逻辑日志的复制源。
+逻辑解码指定启动选项only-local过滤重放会话的逻辑日志。
+补充日志
+解码补充日志(Supplemental Logging)并不是独立的一种日志，它是对重做记录中变更内容的补充，增加的信息量以满足逻辑解码的基本要求或增强功能。若缺少解码补充日志，逻辑解码将无法正常工作。补充日志通常有：行标识、版本信息、事务用户等。GaussDB通过GUC参数WAL_LEVEL=logical调整物理日志记录级别，配置系统记录解码补充日志(重启生效) 。同时,该参数生效时阻塞AUTO VACCUM提前回收系统表中逻辑解码依赖的旧版本对象信息(被删除行)。
+增量复制
+相对全量复制，增量复制仅仅处理全量后被修改的增量(插、删、改)数据。逻辑解码通过解析增量的物理日志提取逻辑操作，提供一套完整的全量和增量数据的衔接,保证逻辑复制的数据完整性。GaussDB创建逻辑复制槽用于新建一个逻辑解码任务，返回的查询快照可以用于构建解码相关的全量复制数据。
+3.2 逻辑解码 逻辑解码是一项数据库技术，用于将数据库的事务日志解析为易于理解和处理的格式。它允许用户对数据库操作进行实时监控、数据变更跟踪和数据复制等应用。当启用逻辑解码时，GaussDB将每个事务的基本操作和解码辅助信息记录到事务日志中，并以一种结构化的方式存储。这些事务(物理)日志包含数据库中发生的所有数据变更的细节，包括插入、更新和删除等操作，同时包含了诸多用户理解不友好的数据库内部细节和特有实现。逻辑解码通过输出格式插件形式将这些事务日志解析为易于理解的格式，例如JSON或自定义二进制格式等多种更高级别的事件或操作，使得用户可以根据自身需求来解析和处理这些数据变更事件。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-30T10:10:53+08:00">
+    <meta property="article:modified_time" content="2024-07-30T10:10:53+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">GaussDB关键技术原理|高可用：逻辑复制</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><a class="link-info" href="https://blog.csdn.net/GaussDB/article/details/140342942?spm=1001.2014.3001.5501" title="GaussDB关键技术原理|高可用：DCF&amp;双集群容灾从DCF与双集群容灾技术">GaussDB关键技术原理|高可用：DCF&amp;双集群容灾从DCF与双集群容灾技术</a>两方面对GaussDB的高可用能力进行了介绍，本篇将从<strong>逻辑复制</strong>方面继续解读GaussDB高可用能力。</p> 
+<p id="main-toc"><strong>目录</strong></p> 
+<p id="-toc" style="margin-left:80px;"></p> 
+<p id="3%20%E9%80%BB%E8%BE%91%E5%A4%8D%E5%88%B6-toc" style="margin-left:0px;"><a href="#3%20%E9%80%BB%E8%BE%91%E5%A4%8D%E5%88%B6" rel="nofollow">3 逻辑复制</a></p> 
+<p id="3.1%20%E5%9F%BA%E6%9C%AC%E6%A6%82%E5%BF%B5-toc" style="margin-left:40px;"><a href="#3.1%20%E5%9F%BA%E6%9C%AC%E6%A6%82%E5%BF%B5" rel="nofollow">3.1 基本概念</a></p> 
+<p id="3.2%20%E9%80%BB%E8%BE%91%E8%A7%A3%E7%A0%81-toc" style="margin-left:40px;"><a href="#3.2%20%E9%80%BB%E8%BE%91%E8%A7%A3%E7%A0%81" rel="nofollow">3.2 逻辑解码</a></p> 
+<p id="3.3%20%E5%A4%87%E6%9C%BA%E8%A7%A3%E7%A0%81-toc" style="margin-left:40px;"><a href="#3.3%20%E5%A4%87%E6%9C%BA%E8%A7%A3%E7%A0%81" rel="nofollow">3.3 备机解码</a></p> 
+<p id="3.4%20%E5%B9%B6%E8%A1%8C%E8%A7%A3%E7%A0%81-toc" style="margin-left:40px;"><a href="#3.4%20%E5%B9%B6%E8%A1%8C%E8%A7%A3%E7%A0%81" rel="nofollow">3.4 并行解码</a></p> 
+<p id="3.5%20%E4%B8%80%E8%87%B4%E6%80%A7%E8%A7%A3%E7%A0%81-toc" style="margin-left:40px;"><a href="#3.5%20%E4%B8%80%E8%87%B4%E6%80%A7%E8%A7%A3%E7%A0%81" rel="nofollow">3.5 一致性解码</a></p> 
+<p id="3.6%20%E5%88%86%E5%B8%83%E5%BC%8F%E8%A7%A3%E7%A0%81-toc" style="margin-left:40px;"><a href="#3.6%20%E5%88%86%E5%B8%83%E5%BC%8F%E8%A7%A3%E7%A0%81" rel="nofollow">3.6 分布式解码</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h4></h4> 
+<h2 id="3%20%E9%80%BB%E8%BE%91%E5%A4%8D%E5%88%B6"><strong>3 逻辑复制</strong></h2> 
+<p>逻辑复制属于数据复制服务（Data Replication Service，简称DRS）一种，是一种易用、稳定、高效的数据库迁移和数据库同步。逻辑复制由逻辑解码和数据复制两部分组成，逻辑解码输出以事务为单位组织的逻辑日志，业务或数据库中间件对逻辑日志进行解析回放并最终实现数据复制。逻辑复制对目标数据库的形态限制较少，支持异构数据库、同构异形数据库，且同步期间目标库可读可写。另一方面，相比数据迁移工具定期同步数据逻辑复制数据同步时延低，提供实时数据复制的能力。</p> 
+<p>众所周知，在不同选型数据库或数据库不同版本间，通常在物理日志、数据存储格式等方面存在差异，差异导致无法在物理层面实现数据复制。逻辑复制解析事务物理日志（数据及其操作记录）抽取具有类SQL的逻辑日志，通过逻辑日志重放屏蔽源和目标数据库物理差异从而实现数据同步。例如 GaussDB 解析WAL日志，通过DRS工具转为SQL发送到 Oracle 执行，完成GaussDB和Oracle这种异构数据库之间数据备份，如图所示。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="245" src="https://images2.imgbox.com/4b/03/a7Hs3qUl_o.png" width="865"></p> 
+<p>端到端的逻辑复制分成三部分：</p> 
+<ul><li> <p>解码源端事务物理日志从中抽取业务操作对应的逻辑日志。</p> </li><li> <p>DRS工具将逻辑日志转换/变型成目标端支持的SQL/调用。</p> </li><li> <p>目标端接收DRS转换的SQL/调用并高效执行实现数据复制。</p> </li></ul> 
+<p>值的注意的是，逻辑复制不是“SQL”复制，而是复制SQL操作的结果。异构数据库的逻辑复制一般都通过SQL标准语法作为中间桥梁（共同理解的语言），从而实现异构数据库间的等价语义传递。</p> 
+<p>物理复制和逻辑复制各有优劣，分别有其适用的业务场景。逻辑复制使用场景和优点主要体现在灵活、细粒度、双向、异构等，适用场景但不限于：关键数据备份（细粒度复制）、数据分发/合聚复制、异构数据在线迁移、大版本滚动升级、数据抢救找回、数据异地容灾等。但在低时延、低损耗、读写分离等一致性要求非常严格的场景，建议选择物理复制。</p> 
+<p class="img-center"><img alt="" height="457" src="https://images2.imgbox.com/7c/76/Jo9VifqM_o.png" width="819"></p> 
+<p>对于逻辑复制特性，GaussDB聚焦于物理日志到逻辑日志的解码转换(提供CDC所需要的基础设施)，提供多种逻辑日志格式以便于二次开发，以及提升逻辑解码和日志重放性能来降低复制时延，保证数据同步的时效性和一致性。如图所示，GaussDB针对异构数据库间逻辑复制（蓝色链路）仅提供“逻辑解码”基础能力，DRS等数据库中间件处理逻辑日志并适配目标数据库回放，协同构建完整的逻辑复制。而同构的GaussDB之间通过发布订阅（黄色链路）特性承载，消除逻辑日志中转和翻译等，实现更高效更低时延的逻辑复制。</p> 
+<h3 id="3.1%20%E5%9F%BA%E6%9C%AC%E6%A6%82%E5%BF%B5"><strong>3.1 基本概念</strong></h3> 
+<p><strong>复制行标识（Replica ID）</strong></p> 
+<p>数据库复制技术进行数据同步时用于标识数据库中复制的行或记录的唯一标识符。该标识可以是一个自增数字、全局唯一的UUID或其他形式，例如：逻辑日志主键列集或者唯一索引列集。</p> 
+<p><strong>复制行标识的主要作用包括：</strong></p> 
+<p><strong>数据一致性：</strong>通过复制行标识确保不同的数据库实例之间复制的行唯一性和一致性，避免数据冲突和重复复制。</p> 
+<p><strong>冲突解决：</strong>复制行标识定位冲突行，依据行不同内容识别正确的版本。</p> 
+<p><strong>同步跟踪：</strong>根据行标识确定哪些行已经被复制，哪些行还未被复制。</p> 
+<p>GaussDB逻辑复制的行标识通过ALTER TABLE .. <strong>REPLICA IDENTITY</strong>指定四种复制行标识：</p> 
+<p>DEFAULT记录主键列的旧值，没有主键则不记录。</p> 
+<p>USING INDEX记录索引列的旧值，索引必须是全局唯一的、不可延迟的，并且索引列含有NOT NULL约束。</p> 
+<p>FULL记录该行中所有列的旧值。</p> 
+<p>NOTHING不记录有关旧行的信息。</p> 
+<p><strong>逻辑复制源</strong></p> 
+<p>逻辑复制源是逻辑复制中同步的数据库实例、库或表，通过解析和重放逻辑日志，将源数据库的数据变更复制到目标数据库。逻辑复制的源与目标之间可以是主从关系，也可以是多对多的关系；多对多关系意味着源和目标之间可以相互复制。通过给逻辑复制源赋予一个标识，重放设置逻辑日志来自的逻辑复制源标识，解码过滤重放物理日志的逻辑日志，从而避免循环无限复制。</p> 
+<p>GaussDB逻辑复制源使用流程：</p> 
+<p>pg_replication_origin_create()创建复制源。</p> 
+<p>pg_replication_origin_session_setup()设置会话重放逻辑日志的复制源。</p> 
+<p>逻辑解码指定启动选项only-local过滤重放会话的逻辑日志。</p> 
+<p><strong>补充日志</strong></p> 
+<p>解码补充日志(Supplemental Logging)并不是独立的一种日志，它是对重做记录中变更内容的补充，增加的信息量以满足逻辑解码的基本要求或增强功能。若缺少解码补充日志，逻辑解码将无法正常工作。补充日志通常有：行标识、版本信息、事务用户等。GaussDB通过GUC参数WAL_LEVEL=logical调整物理日志记录级别，配置系统记录解码补充日志(重启生效) 。同时,该参数生效时阻塞AUTO VACCUM提前回收系统表中逻辑解码依赖的旧版本对象信息(被删除行)。</p> 
+<p><strong>增量复制</strong></p> 
+<p>相对全量复制，增量复制仅仅处理全量后被修改的增量(插、删、改)数据。逻辑解码通过解析增量的物理日志提取逻辑操作，提供一套完整的全量和增量数据的衔接,保证逻辑复制的数据完整性。GaussDB创建逻辑复制槽用于新建一个逻辑解码任务，返回的查询快照可以用于构建解码相关的全量复制数据。</p> 
+<h3 id="3.2%20%E9%80%BB%E8%BE%91%E8%A7%A3%E7%A0%81"><strong>3.2 逻辑解码</strong></h3> 
+<p>逻辑解码是一项数据库技术，用于将数据库的事务日志解析为易于理解和处理的格式。它允许用户对数据库操作进行实时监控、数据变更跟踪和数据复制等应用。当启用逻辑解码时，GaussDB将每个事务的基本操作和解码辅助信息记录到事务日志中，并以一种结构化的方式存储。这些事务(物理)日志包含数据库中发生的所有数据变更的细节，包括插入、更新和删除等操作，同时包含了诸多用户理解不友好的数据库内部细节和特有实现。逻辑解码通过输出格式插件形式将这些事务日志解析为易于理解的格式，例如JSON或自定义二进制格式等多种更高级别的事件或操作，使得用户可以根据自身需求来解析和处理这些数据变更事件。</p> 
+<p class="img-center"><img alt="" height="438" src="https://images2.imgbox.com/63/01/RQIJoMtD_o.png" width="865"></p> 
+<p>物理日志和系统表对象元数据是逻辑解码的<strong>内容来源</strong>。逻辑解码从物理日志捕获用户表DML的变更记录，依据其中的物理存储标识（relfilenode）和记录时系统提交序号（CSN）到加载系统表对应时刻的对象元信息；继而将物理变更记录中强耦合的内部信息转换为用户可理解的表内容，生成和数据库实现无关的逻辑变更记录；最后重排和发送逻辑变更记录。</p> 
+<p>如上图所示，逻辑解码实现涉及五大部分：</p> 
+<p>（1）修改内核配置支持逻辑解码，设置捕获表复制行标识。</p> 
+<p>（2）创建逻辑解码任务——逻辑复制槽。</p> 
+<p>（3）生成用于逻辑解码的物理日志，阻塞回收系统表旧版本对象元数据。</p> 
+<p>（4）启动逻辑解码从物理日志中抽取用户期望格式的逻辑日志。</p> 
+<p>（5）重排汇总事务逻辑日志，以事务为单位按照提交顺序发送逻辑日志。</p> 
+<p>GaussDB提供两种获取逻辑日志的<strong>接口</strong>：函数解码和流式解码。函数解码属于用户多次执行SQL拉取（PULL），SQL调用系统解码函数按照数据集的方式返回逻辑日志；流式解码不同于函数解码，内核持续不断的解码并PUSH逻辑日志，用户侧从数据流中不断接收逻辑日志。当前函数解码只支持串行解码，流式解码支持串行和并行解码；流式解码相对函数解码性能好时延低，更适用于实时同步的业务场景。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="392" src="https://images2.imgbox.com/2d/82/zajdmCEY_o.png" width="865"></p> 
+<p>当前JDBC驱动封装逻辑复制接口，流式解码流程大致如图所示：（1）复制业务或工具设定解码选项，通过JDBC封装接口启动内核逻辑解码，得到获取逻辑日志的数据流；（2）内核解析选项启动逻辑解码，处理存量物理日志并监测新日志产生，持续抽取逻辑日志并将其推送（PUSH）到数据流；（3）复制业务或工具从数据流中读取(readPending)逻辑日志进行处理或传递下游；（4）完成逻辑日志处理，复制业务或工具反馈(setFlushedLSN+forceUpdateStatus)内核来推进逻辑解码任务，后续启动解码将不再发送已处理的逻辑日志。</p> 
+<p>注意：复制业务或工具若是提前反馈，内核推进了逻辑解码任务可能导致数据丢失；若是不反馈或者反馈周期较长，内核将出现物理日志堆积和系统表膨胀影响正常业务。</p> 
+<h3 id="3.3%20%E5%A4%87%E6%9C%BA%E8%A7%A3%E7%A0%81"><strong>3.3 备机解码</strong></h3> 
+<p>逻辑解码读取物理日志消耗大量IO，逻辑日志生成消耗大量CPU，是一个资源密集型功能。考虑逻辑解码读取的物理日志和系统表，属于“读”操作不会产生数据变更，若在备机逻辑解码将会规避使用主机资源，降低对在线业务的影响。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="461" src="https://images2.imgbox.com/29/83/nOkx8fxQ_o.png" width="565"></p> 
+<p>备机逻辑解码实现需要解决：（1）可以加载哪些物理日志解码；（2）解码是否可以读取系统表的历史版本元组；（3）推进逻辑复制槽的“写”如何实现。针对（1），虽然解码到事务提交才将事务逻辑日志返回给下游客户，但没有达成大多数派的物理日志不能参与逻辑解码。针对（2），逻辑解码依赖备机读功能，要求并行回放、极致RTO场景实现系统表的历史版本一致性访问。因此，备机解码加载的物理日志不超过ReplayLSN，保证解码日志所需的系统表可以正常读取。针对（3），备机解码首先根据客户反馈推进本地逻辑复制槽，然后创建内部到主机的连接使用复制advance协议推进逻辑复制槽，并通过物理日志实现与其他备机的逻辑复制槽同步。</p> 
+<h3 id="3.4%20%E5%B9%B6%E8%A1%8C%E8%A7%A3%E7%A0%81"><strong>3.4 并行解码</strong></h3> 
+<p>通过分析串行解码，逻辑解码三个主要步骤（读取日志、解码日志、发送日志）中的解码日志耗时占整个流程的70%以上，成为性能瓶颈。解码日志阶段属于CPU密集型业务，并行解码利用多线程并发技术，极大提高了逻辑解码吞吐量。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="334" src="https://images2.imgbox.com/55/06/4Msa7F6n_o.png" width="865"></p> 
+<p>并行解码基于日志粒度实现并行，如图所示，它包含三类线程：Reader线程读取物理日志，抽取业务DML操作以及解码必要内容构建LogicalLogChange变更，完成TOAST元组拼接并在主表的元组展开，轮询分发到Decoder线程的输入队列；Decoder线程从输入队列获取LogicalLogChange，根据日志版本内容加载数据表的元信息，将日志中物理数据转换成表名、列名、列数据外部形式等用户易理解的逻辑数据，传递转换后LogicalLog到输出队列；Sender线程按照DML日志生成顺序收集解码后的LogicalLog，根据事务ID桶排序进行汇总，以事务的提交顺序发送逻辑日志。</p> 
+<p>并行解码解除了串行解码可见性判断逻辑需要构建活跃事务链表快照的依赖，基于CSN轻量化可见性判断逻辑极大简化了并行解码元数据加载。并行解码Reader和Decoder线程过程中访问系统表加载并缓存解码元数据；由于业务DDL引起元数据发生变更，Reader线程在DDL日志或事务结束时失效本地相应缓存，并将失效消息加入Decoder线程输入队列，广播通知Decoder线程失效缓存。</p> 
+<h3 id="3.5%20%E4%B8%80%E8%87%B4%E6%80%A7%E8%A7%A3%E7%A0%81"><strong>3.5 一致性解码</strong></h3> 
+<p>事务CSN改造优化快照获取消除gtm瓶颈，GaussDB对业务可见性的事务一致性序CommitCSN。为保证基于逻辑复制的备机数据对业务可见性和主机一致，逻辑解码提供基于事务CommitCSN有序发送逻辑日志，并根据下游反馈推进逻辑复制槽，回收系统表旧版本元组和物理日志。</p> 
+<p>逻辑解码流式加载物理日志抽取逻辑日志，按照CommitLSN有序完成事务解析。考虑事务并发场景下先分配CommitCSN的事务不一定先获取锁写入物理日志，逻辑解码按照日志产生顺序从事务提交日志获取的CommitCSN并不保证有序递增。为了实现按照CommitCSN有序发送事务逻辑日志, 逻辑解码解析到事务提交日志发送前需要识别是否存在CommitCSN比该事务小的事务，优先发送较小CommitCSN事务的逻辑日志。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="548" src="https://images2.imgbox.com/d7/09/IahfQd4M_o.png" width="865"></p> 
+<p>如图所示，逻辑解码在发送逻辑日志进行事务重排逻辑：</p> 
+<p>（1）新增两个双链表toplevel_by_committing_csn和toplevel_by_csn，记录正在提交的事务和已经提交待发送的事务。</p> 
+<p>（2）解码事务句柄新增dependTxnCnt字段记录依赖该事务的数量，新增referTxns单链表记录依赖该事务的事务句柄。</p> 
+<p>（3）解析事务的COMMITTING日志时，将事务按照committingCSN有序添加到toplevel_by_committing_csn链表。</p> 
+<p>（4）解析到事务的COMMIT日志时：</p> 
+<ul><li> <p>将当前事务从toplevel_by_committing_csn移除，所有等待该事务的事务等待计数dependTxnCnt减1；</p> </li><li> <p>从头往尾遍历toplevel_by_committing_csn，将当前事务添加到CommittingCSN小于当前事务Commit CSN的事务的referTxns链表，并让其dependTxnCnt加1；</p> </li><li> <p>从尾往头遍历，将当前事务按照CommitCSN有序添加到toplevel_by_csn链表；</p> </li><li> <p>从头往尾遍历toplevel_by_csn，若事务dependTxnCnt为0，则从链表移除并发送其逻辑日志;直到遇到事务dependTxnCnt不为0或到达链表末尾。</p> </li></ul> 
+<h3 id="3.6%20%E5%88%86%E5%B8%83%E5%BC%8F%E8%A7%A3%E7%A0%81"><strong>3.6 分布式解码</strong></h3> 
+<p>事务提交顺序（CommitCSN）代表事务完成的先后顺序。对于有依赖两个事务，后执行事务的CommitCSN大于先执行事务的CommitCSN。若逻辑回放按照CommitCSN从小到大执行，实现业务视角的数据强一致性。分布式逻辑解码按照CommitCSN有序返回事务的逻辑日志，提供逻辑复制数据强一致的基础。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="433" src="https://images2.imgbox.com/9c/dc/tz8xYFXC_o.png" width="865"></p> 
+<p>如图所示，多DN各自按照事务提交顺序（CommitCSN）返回局部事务的逻辑日志，CN通过堆排序协调汇总来自多DN的事务逻辑日志，CN和DN配合提供全局分布式事务提交顺序(CommitCSN)有序的事务逻辑日志。CN逻辑解码可简单归纳为：从每个DN读取下一个待发送事务的CommitCSN（DN逻辑解码保证下一个事务是该DN CommitCSN最小的事务），通过堆排序查找所有DN中最小CommitCSN的事务，返回该事务的所有逻辑日志给业务。</p> 
+<p>分布式事务涉及多DN的数据变化，每个DN相关事务拥有不同的事务号，但涉及DN所有事务拥有相同的分布式事务提交顺序（CommitCSN）序号。分布式事务对业务来说是一个完整的事务，分布式逻辑解码不能因分布式事务涉及数据分布在多个DN而拆分多个事务，而应该合并多DN的事务逻辑日志作为一个完整的事务。分布式事务的多DN事务逻辑日志合并需要考虑：（1) 多DN之间逻辑日志间的先后关系；（2）逻辑日志先后无关时DN间解码快慢差异。通过堆排序键&lt;CommitCSN, CID, BATCH_ID&gt;阐述相关问题和方案策略。</p> 
+<p><strong>CommitCSN</strong>：作为堆排序第一个键，实现按照CommitCSN的顺序返回事务的逻辑日志。CN发送时每次获取小顶堆的堆顶事务，返回来自DN该事务的所有逻辑日志，再根据该DN下一个事务的CommitCSN重新调整堆为小顶堆。</p> 
+<p><strong>CID</strong>：Command ID。DDL将单个DN的事务逻辑日志拆分成多个区段，每个区段表的元数据有差异，合并分布式事务在多个DN的逻辑日志需要按照DDL划分的区段进行合并。另外，虽然当前主键必须包含分布键且不允许更新分布键，DN节点内解码保证了主键唯一性的事务前后依赖（按照LSN返回事务的逻辑日志），但是分布式事务在多DN之间的DML操作也可能存在依赖关系。例如：业务操作全局唯一索引先在DN-1删除后在DN-2插入，如果CN逻辑解码合并事务成先在DN-2插入后在DN-1删除，逻辑日志回放出现违反唯一性约束错误。针对DDL和DML混合事务场景，CN汇总DN逻辑日志引入事务CID，实现事务间按照CommitCSN排序、事务内按照CID排序。</p> 
+<p><strong>BATCH_ID</strong>：分布式事务同一个SQL可能在不同DN产生众多逻辑日志，考虑DN解码性能和网络状况差异，CN若是在没有收到某DN所需所有逻辑日志之前能够返回其他DN节点该事务CID的就绪逻辑日志，可以减少CN不必要的等待，提升CN逻辑日志汇总性能。引入分布式事务的日志批次编号BATCH_ID，当CN返回DN就绪的某事务某CID的逻辑日志后，仍没有遇到DN该事务下一个CID或下一个事务，则更新该DN发送批次BATCH_ID。同事务同CID其他DN将被调整到堆顶，实现优先发送其他DN已就绪的逻辑日志。</p> 
+<p>逻辑解码在较长时间没有和客户端通信时主动给客户端侧发送keepalive消息，要求客户端侧回复该消息；若是客户端没有回复keepalive消息，逻辑解码主动断开和客户侧的连接，避免客户端hang住长时间占有逻辑复制槽，导致业务无法及时切换启动新的逻辑解码任务。分布式逻辑解码采用多线程异步接收+多DN事务逻辑日志队列，CN及时响应DN发送的keepalive消息，同时减少获取DN事务逻辑日志的同步等待。当DN逻辑解码异常退出，CN将屏蔽集群内部异常，自动连接DN启动解码和异常恢复。</p> 
+<p>以上内容从逻辑复制方面对GaussDB的高可用能力进行了解读，下篇将从<strong>两地三中心跨Region容灾</strong>方面继续介绍GaussDB高可用相关技术，敬请期待！</p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e81678829387a9d04c835aa687887358/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Minio多主机分布式 docker-compose 集群部署</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/49ec739ec90b6fee8bc766437ed3ce24/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">六小龄童评价《黑神话悟空》 黑神话悟空是什么游戏 苹果电脑能玩黑神话悟空吗</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

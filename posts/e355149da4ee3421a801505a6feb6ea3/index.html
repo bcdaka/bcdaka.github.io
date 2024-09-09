@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>kafka生产消费流程 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/e355149da4ee3421a801505a6feb6ea3/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="kafka生产消费流程">
+  <meta property="og:description" content="kafka数据写入流程 1.生产者先从zookeeper的&#34;/brokers/topic/主题名/partitions/分区名/state&#34;节点找到该partition的leader
+生产者在ZK中找到对应的broker
+broker进程上的leader将消息写入到本地log中。
+follower从leader上拉取消息，写入到本地log，并向leader发送ACK
+leader接收到所有的ISR中的Replica的ACK中，并向生产者返回ACK
+Kafka数据消费流程 两种消息队列消费 kafka采用拉取模型，由消费者自己记录消费状态，每个消费者相互独立的顺序拉取消息。
+消费者可以按照任意的顺序消费消息。比如，消费者可以重置到旧的偏移量，重新处理之前已经消费过的消息；或者直接跳到最近的位置，从当前的时刻开始消费。
+Kafka消费数据流程 每个consumer都可以根据分配策略(默认RangeAssignor)，获得要消费的分区。获取到consumer对应的offset(默认从ZK获取上一次消费的offset)找到分区的leader，拉取数据。消费者提交offset Kafka的数据存储形式 一个topic有多个partition分区组成。
+一个分区(partition)有多个segment(段)组成。
+一个segment(段)由多个文件组成（log,index,timeindex）
+存储日志 Kafka中的数据到底是怎么在磁盘中存储的。
+kafka中的数据保存在/export/server/kafka_2.12-2.41/data中
+消息是保存在以：【主题名-分区ID】的文件夹中的。
+数据文件夹中包含以下内容
+这些分别对应：
+文件名说明0000000000000000000.index索引文件，根据offset查找数据就是通过该索引文件来操作的。0000000000000000000.log日志数据文件0000000000000000000.timeindex时间索引 leader-epoch-checkpoint
+持久化每个partition leader对应的LEO(log end offset,日志文件中下一条待写入消息的offset) 每个日志文件的文件名为起始偏移量，因为每个分区的起始偏移量是0，所以，分区的日志文件都以0000000000000000000.log开始
+默认的每个日志文件最大为「log.segment.bytes =1024*1024*1024」1G
+为了简化根据offset查找消息，Kafka日志文件名设计为开始的偏移量
+观察测试 为了方便测试观察，新创建一个topic：「test_10m」，该topic每个日志数据文件最大为10
+bin/kafka-topics.sh --create --zookeeper node1.itcast.cn --topic test_10m --replication-factor 2 --partitions 3 --config segment.bytes=10485760 使用之前的生产者程序往「test_10m」主题中生产数据，可以观察到如下：
+新的消息总是写入到最后的一个日志文件中
+该文件如果到达指定的大小（默认为：1GB）时，将滚动到一个新的文件中
+读取消息 根据【offset】首先需要找到存储数据的segment段(注意:offset指定分区的全局偏移量)
+然后根据这个【全局分区offset】找到相对于文件的【segment段offset】
+最后再根据 「segment段offset」读取消息
+为了提高查询效率，每个文件都会维护对应的范围内存，查找的时候就是使用简单的二分查找
+删除消息 在Kafka中，消息是会被定期清理的。一次删除一个segment段的日志文件
+Kafka的日志管理器，会根据Kafka的配置，来决定哪些文件可以被删除">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-09T19:59:57+08:00">
+    <meta property="article:modified_time" content="2024-06-09T19:59:57+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">kafka生产消费流程</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p></p> 
+<h4>kafka数据写入流程</h4> 
+<p><img alt="" height="379" src="https://images2.imgbox.com/5c/fb/wtP6RYQu_o.png" width="879"></p> 
+<p></p> 
+<p>1.生产者先从zookeeper的"/brokers/topic/主题名/partitions/分区名/state"节点找到该partition的leader<img alt="" height="501" src="https://images2.imgbox.com/82/65/LjktPakt_o.png" width="938"></p> 
+<p>生产者在ZK中找到对应的broker</p> 
+<p><img alt="" height="479" src="https://images2.imgbox.com/40/58/ydiSfecV_o.png" width="787"></p> 
+<p>broker进程上的leader将消息写入到本地log中。</p> 
+<p>follower从leader上拉取消息，写入到本地log，并向leader发送ACK</p> 
+<p>leader接收到所有的ISR中的Replica的ACK中，并向生产者返回ACK</p> 
+<p></p> 
+<h4>Kafka数据消费流程</h4> 
+<h5><strong>两种消息队列消费</strong></h5> 
+<p><img alt="" height="373" src="https://images2.imgbox.com/e5/33/jlFLXzxC_o.png" width="752"></p> 
+<p>kafka采用拉取模型，由消费者自己记录消费状态，每个消费者相互独立的顺序拉取消息。</p> 
+<p>消费者可以按照任意的顺序消费消息。比如，消费者可以重置到旧的偏移量，重新处理之前已经消费过的消息；或者直接跳到最近的位置，从当前的时刻开始消费。</p> 
+<h5>Kafka消费数据流程</h5> 
+<p><img alt="" height="397" src="https://images2.imgbox.com/8f/ca/W7jZvfbr_o.png" width="617"></p> 
+<ul><li>每个consumer都可以根据分配策略(默认RangeAssignor)，获得要消费的分区。</li><li>获取到consumer对应的offset(默认从ZK获取上一次消费的offset)</li><li>找到分区的leader，拉取数据。</li><li>消费者提交offset</li></ul> 
+<p></p> 
+<h3>Kafka的数据存储形式</h3> 
+<p><img alt="" height="484" src="https://images2.imgbox.com/1e/fa/oVZ2hyW0_o.png" width="713"></p> 
+<p>一个topic有多个partition分区组成。</p> 
+<p>一个分区(partition)有多个segment(段)组成。</p> 
+<p>一个segment(段)由多个文件组成（log,index,timeindex）</p> 
+<h4>存储日志</h4> 
+<p>Kafka中的数据到底是怎么在磁盘中存储的。</p> 
+<p>kafka中的数据保存在/export/server/kafka_2.12-2.41/data中</p> 
+<p>消息是保存在以：【主题名-分区ID】的文件夹中的。</p> 
+<p>数据文件夹中包含以下内容</p> 
+<p><img alt="" height="127" src="https://images2.imgbox.com/90/0e/ixebsEvg_o.png" width="930"></p> 
+<p>这些分别对应：</p> 
+<table border="1" cellpadding="1" cellspacing="1" style="width:500px;"><tbody><tr><td>文件名</td><td>说明</td></tr><tr><td>0000000000000000000.index</td><td>索引文件，根据offset查找数据就是通过该索引文件来操作的。</td></tr><tr><td>0000000000000000000.log</td><td>日志数据文件</td></tr><tr><td>0000000000000000000.timeindex</td><td>时间索引</td></tr><tr><td style="border-color:#d8d8d8;vertical-align:top;width:225pt;"> <p style="margin-left:0;text-align:justify;">leader-epoch-checkpoint</p> </td><td>持久化每个partition leader对应的LEO(log end offset,日志文件中下一条待写入消息的offset)</td></tr><tr><td></td><td></td></tr></tbody></table> 
+<p> 每个日志文件的文件名为起始偏移量，因为每个分区的起始偏移量是0，所以，分区的日志文件都以0000000000000000000.log开始</p> 
+<p>默认的每个日志文件最大为「log.segment.bytes =1024*1024*1024」1G</p> 
+<p>为了简化根据offset查找消息，Kafka日志文件名设计为开始的偏移量</p> 
+<h5>观察测试</h5> 
+<p style="margin-left:0;">为了方便测试观察，新创建一个topic：「test_10m」，该topic每个日志数据文件最大为10</p> 
+<pre><code class="hljs">bin/kafka-topics.sh --create --zookeeper node1.itcast.cn --topic test_10m --replication-factor 2 --partitions 3 --config segment.bytes=10485760</code></pre> 
+<p style="margin-left:0;">使用之前的生产者程序往「test_10m」主题中生产数据，可以观察到如下：</p> 
+<p style="margin-left:0;"><img alt="" height="470" src="https://images2.imgbox.com/ec/bc/qwH48sB4_o.png" width="967"></p> 
+<p style="margin-left:0;"><img alt="" height="161" src="https://images2.imgbox.com/9e/45/m9iXQptX_o.png" width="957"></p> 
+<p> 新的消息总是写入到最后的一个日志文件中</p> 
+<p style="margin-left:0;">该文件如果到达指定的大小（默认为：1GB）时，将滚动到一个新的文件中</p> 
+<p style="margin-left:0;"><img alt="" height="471" src="https://images2.imgbox.com/f8/4e/ckOQOS46_o.png" width="932"></p> 
+<h5 style="margin-left:0px;">读取消息</h5> 
+<p><img alt="" height="500" src="https://images2.imgbox.com/95/f9/58fgbcsO_o.png" width="739"></p> 
+<p>根据【offset】首先需要找到存储数据的segment段(注意:offset指定分区的全局偏移量)</p> 
+<p>然后根据这个【全局分区offset】找到相对于文件的【segment段offset】</p> 
+<p><img alt="" height="486" src="https://images2.imgbox.com/07/8a/eRvywi2o_o.png" width="868"></p> 
+<p>最后再根据 「segment段offset」读取消息</p> 
+<p>为了提高查询效率，每个文件都会维护对应的范围内存，查找的时候就是使用简单的二分查找</p> 
+<h5 style="margin-left:0px;">删除消息</h5> 
+<p>在Kafka中，消息是会被<strong><span style="color:#c00000;">定期清理</span></strong>的。一次删除一个segment段的日志文件</p> 
+<p>Kafka的日志管理器，会根据Kafka的配置，来决定哪些文件可以被删除</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/60bc46b66395cdf14700c8914ab48e9d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【wiki知识库】06.文档管理页面的添加--前端Vue部分</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/841783d3a923462cb2a6448216778028/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">kafka如何保证消息不丢失</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

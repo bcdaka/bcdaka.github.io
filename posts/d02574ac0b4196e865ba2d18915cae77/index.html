@@ -1,0 +1,680 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>汽车架构解析：python解析Autosar架构的ARXML - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/d02574ac0b4196e865ba2d18915cae77/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="汽车架构解析：python解析Autosar架构的ARXML">
+  <meta property="og:description" content="文章目录 前言一、Container-I-PDU概念引入二、以文本形式读取ARXML文件三、解析Frame的基本参数四、解析Frame中的PDU五、解析PDU中的Signals六、解析Signal中的初始值和长度七、解析Signal中的起始位置八、解析Signal中的枚举值或公式九、解析ARXML总结 前言 Autosar架构下arxml文件作为通用数据库文件，在数据传输和存储中起到关键作用。行业上其实有一些arxml的工具可以将arxml转换成dbc，再将dbc转换成自己想要的数据，但是拿到的数据是不完整的，arxml有一些数据dbc是没有的，也根据缺少的数据直接到ARXML拿，不用硬解ARXML。想要解析ARXML的最好的方法就是对原始数据进行处理。网上有一些python的库推荐，如xml.etree.ElementTree等，我试用了下，arxml的层级关系太多了感觉处理起来不太自由。于是我决定用python的正则表达式来解析，因为知道了所需数据存放的结构体，就可以通过正则表达式快速定位获取数据，而且可以自由的获取arxml的任意数据片段，按照自己的规则解析。 正则表达式相关学习点这里
+一、Container-I-PDU概念引入 1、下图为autosar的协议栈，可以看出具备多种类型的PDU：Dcm-I-PDU、General-Purpose-PDU、General-Purpose-I-PDU、I-Signal-I-PDU、Multiplexed-I-PDU、NM-PDU、N-PDU、User-Defined-PDU、User-Defined-I-PDU、XCP-PDU、J1939-Dcm-I-PDU 和 Secured-I-PDU。
+2、而Container-I-PDU 是一种在 AUTOSAR 中使用的数据单元，用于封装其他类型的 PDU（Protocol Data Unit）。它是一种容器，可以包含不同类型的 PDU 作为其成员。Container-I-PDU 的主要目的是将多个 PDU 组合成一个逻辑单元进行传输。通过将多个 PDU 打包到一个 Container-I-PDU 中，可以减少通信开销，并提高通信效率。
+3、虽然有Container-I-PDU的概念，但是不代表I-PDU就一定需要通过Container-I-PDU去传输，因此也有两种传输方式。
+1）通过Container-I-PDU打包传输：
+如果是通过Container-I-PDU打包发出则需要先找到Container-I-PDU，再找到I-PDU，最后才能找到Signal。
+2）不通过Container-I-PDU打包传输：
+如果是直接通过I-PDU发出，则直接找到I-PDU,再找到Signal。
+二、以文本形式读取ARXML文件 import re file_path = r&#39;C:\Users\Desktop\Demo.arxml&#39; # ============读取Arxml文件============ with open(file_path, &#39;r&#39;) as file: # 读取文件内容 arxml_data = file.read() 三、解析Frame的基本参数 1、下面是arxml的片段其中就包括了CAN报文的名称DMS_ADCANFD_FrP01，寻址模式STANDARD，通讯协议CAN-FD，以及报文ID554；
+2、我们查找报文相关的参数就可以通过查找&lt;CAN-FRAME-TRIGGERING...&gt;数据片段&lt;/CAN-FRAME-TRIGGERING&gt;来获取arxml中的数据片段，再进行更详细的匹配获取其余数据。
+匹配片段中的&lt;FRAME-REF DEST=&#34;CAN-FRAME&#34;&gt;../报文名称&lt;/FRAME-REF&gt;来获得报文名称；匹配片段中的&lt;CAN-ADDRESSING-MODE&gt;帧类型&lt;/CAN-ADDRESSING-MODE&gt;来获得帧类型；匹配片段中的&lt;CAN-FRAME-TX-BEHAVIOR&gt;报文类型&lt;/CAN-FRAME-TX-BEHAVIOR&gt;来获得报文类型；匹配片段中的&lt;IDENTIFIER&gt;报文ID&lt;/IDENTIFIER&gt;来获得报文ID； &lt;CAN-FRAME-TRIGGERING UUID=&#34;09816ea3-a46c-3b48-97f8-d9f3f92799e8&#34;&gt; &lt;SHORT-NAME&gt;FrTrDMS_ADCANFD_FrP01&lt;/SHORT-NAME&gt; &lt;FRAME-PORT-REFS&gt; &lt;FRAME-PORT-REF DEST=&#34;FRAME-PORT&#34;&gt;/ECUSystem/DMS/DMSC/DMSCCfg/DMSCCfg/ADCANFD/FramePort_Out&lt;/FRAME-PORT-REF&gt; &lt;FRAME-PORT-REF DEST=&#34;FRAME-PORT&#34;&gt;/VectorAutosarExplorerGeneratedObjects/ECU_INSTANCES/OtherNodes/Connector_OtherNodes_64e0f3f0db5999fe/framePort_ac33e765d8d23aa9&lt;/FRAME-PORT-REF&gt; &lt;/FRAME-PORT-REFS&gt; &lt;FRAME-REF DEST=&#34;CAN-FRAME&#34;&gt;/Communication/Frame/DMS_ADCANFD_FrP01&lt;/FRAME-REF&gt; &lt;PDU-TRIGGERINGS&gt; &lt;PDU-TRIGGERING-REF-CONDITIONAL&gt; &lt;PDU-TRIGGERING-REF DEST=&#34;PDU-TRIGGERING&#34;&gt;/VehicleTopology/ADCANFD/PhCnADCANFD/PduTrDMS_ADCANFD_050ms_Container01&lt;/PDU-TRIGGERING-REF&gt; &lt;/PDU-TRIGGERING-REF-CONDITIONAL&gt; &lt;/PDU-TRIGGERINGS&gt; &lt;CAN-ADDRESSING-MODE&gt;STANDARD&lt;/CAN-ADDRESSING-MODE&gt; &lt;CAN-FRAME-TX-BEHAVIOR&gt;CAN-FD&lt;/CAN-FRAME-TX-BEHAVIOR&gt; &lt;IDENTIFIER&gt;554&lt;/IDENTIFIER&gt; &lt;/CAN-FRAME-TRIGGERING&gt; 3、正则表达式处理数据">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2023-11-22T19:16:42+08:00">
+    <meta property="article:modified_time" content="2023-11-22T19:16:42+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">汽车架构解析：python解析Autosar架构的ARXML</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-dracula">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_7" rel="nofollow">前言</a></li><li><a href="#ContainerIPDU_18" rel="nofollow">一、Container-I-PDU概念引入</a></li><li><a href="#ARXML_50" rel="nofollow">二、以文本形式读取ARXML文件</a></li><li><a href="#Frame_61" rel="nofollow">三、解析Frame的基本参数</a></li><li><a href="#FramePDU_123" rel="nofollow">四、解析Frame中的PDU</a></li><li><a href="#PDUSignals_277" rel="nofollow">五、解析PDU中的Signals</a></li><li><a href="#Signal_397" rel="nofollow">六、解析Signal中的初始值和长度</a></li><li><a href="#Signal_466" rel="nofollow">七、解析Signal中的起始位置</a></li><li><a href="#Signal_522" rel="nofollow">八、解析Signal中的枚举值或公式</a></li><li><a href="#ARXML_689" rel="nofollow">九、解析ARXML总结</a></li></ul> 
+</div> 
+<p></p> 
+<hr> 
+<h2><a id="_7"></a>前言</h2> 
+<ul><li>Autosar架构下arxml文件作为通用数据库文件，在数据传输和存储中起到关键作用。行业上其实有一些arxml的工具可以将arxml转换成dbc，再将dbc转换成自己想要的数据，但是拿到的数据是不完整的，arxml有一些数据dbc是没有的，也根据缺少的数据直接到ARXML拿，不用硬解ARXML。</li><li>想要解析ARXML的最好的方法就是对原始数据进行处理。网上有一些python的库推荐，如xml.etree.ElementTree等，我试用了下，arxml的层级关系太多了感觉处理起来不太自由。</li><li>于是我决定用python的正则表达式来解析，因为知道了所需数据存放的结构体，就可以通过正则表达式快速定位获取数据，而且可以自由的获取arxml的任意数据片段，按照自己的规则解析。</li></ul> 
+<p><a href="https://editor.csdn.net/md/?articleId=128356853" rel="nofollow">正则表达式相关学习点这里</a></p> 
+<hr> 
+<h2><a id="ContainerIPDU_18"></a>一、Container-I-PDU概念引入</h2> 
+<p>1、下图为autosar的协议栈，可以看出具备多种类型的PDU：Dcm-I-PDU、General-Purpose-PDU、General-Purpose-I-PDU、I-Signal-I-PDU、Multiplexed-I-PDU、NM-PDU、N-PDU、User-Defined-PDU、User-Defined-I-PDU、XCP-PDU、J1939-Dcm-I-PDU 和 Secured-I-PDU。</p> 
+<p><img src="https://images2.imgbox.com/ce/a0/2X2Ba3fe_o.png" alt="在这里插入图片描述"></p> 
+<hr> 
+<p>2、而Container-I-PDU 是一种在 AUTOSAR 中使用的数据单元，用于封装其他类型的 PDU（Protocol Data Unit）。它是一种容器，可以包含不同类型的 PDU 作为其成员。Container-I-PDU 的主要目的是将多个 PDU 组合成一个逻辑单元进行传输。<strong>通过将多个 PDU 打包到一个 Container-I-PDU 中</strong>，可以减少通信开销，并提高通信效率。</p> 
+<p><img src="https://images2.imgbox.com/fb/da/YuqpBtDD_o.png" alt="在这里插入图片描述"></p> 
+<hr> 
+<p>3、虽然有Container-I-PDU的概念，但是不代表I-PDU就一定需要通过Container-I-PDU去传输，因此也有两种传输方式。</p> 
+<p>1）通过Container-I-PDU打包传输：</p> 
+<p><img src="https://images2.imgbox.com/b6/39/Q9JLx7c5_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/0d/0a/iI29XzV4_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>如果是通过Container-I-PDU打包发出则需要先找到Container-I-PDU，再找到I-PDU，最后才能找到Signal。</p> 
+</blockquote> 
+<p>2）不通过Container-I-PDU打包传输：</p> 
+<p><img src="https://images2.imgbox.com/6e/6b/AUT6IdCr_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/6b/7f/dWpYHDTj_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p>如果是直接通过I-PDU发出，则直接找到I-PDU,再找到Signal。</p> 
+</blockquote> 
+<h2><a id="ARXML_50"></a>二、以文本形式读取ARXML文件</h2> 
+<pre><code class="prism language-python"><span class="token keyword">import</span> re
+file_path <span class="token operator">=</span> <span class="token string">r'C:\Users\Desktop\Demo.arxml'</span>
+<span class="token comment"># ============读取Arxml文件============</span>
+<span class="token keyword">with</span> <span class="token builtin">open</span><span class="token punctuation">(</span>file_path<span class="token punctuation">,</span> <span class="token string">'r'</span><span class="token punctuation">)</span> <span class="token keyword">as</span> <span class="token builtin">file</span><span class="token punctuation">:</span>
+    <span class="token comment"># 读取文件内容</span>
+    arxml_data <span class="token operator">=</span> <span class="token builtin">file</span><span class="token punctuation">.</span>read<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<hr> 
+<h2><a id="Frame_61"></a>三、解析Frame的基本参数</h2> 
+<p>1、下面是arxml的片段其中就包括了CAN报文的名称<code>DMS_ADCANFD_FrP01</code>，寻址模式<code>STANDARD</code>，通讯协议<code>CAN-FD</code>，以及报文ID<code>554</code>；</p> 
+<p>2、我们查找报文相关的参数就可以通过查找<code>&lt;CAN-FRAME-TRIGGERING...&gt;数据片段&lt;/CAN-FRAME-TRIGGERING&gt;</code>来获取arxml中的数据片段，再进行更详细的匹配获取其余数据。</p> 
+<ul><li>匹配片段中的<code>&lt;FRAME-REF DEST="CAN-FRAME"&gt;../报文名称&lt;/FRAME-REF&gt;</code>来获得报文名称；</li><li>匹配片段中的<code>&lt;CAN-ADDRESSING-MODE&gt;帧类型&lt;/CAN-ADDRESSING-MODE&gt;</code>来获得帧类型；</li><li>匹配片段中的<code>&lt;CAN-FRAME-TX-BEHAVIOR&gt;报文类型&lt;/CAN-FRAME-TX-BEHAVIOR&gt;</code>来获得报文类型；</li><li>匹配片段中的<code>&lt;IDENTIFIER&gt;报文ID&lt;/IDENTIFIER&gt;</code>来获得报文ID；</li></ul> 
+<pre><code class="prism language-python">  <span class="token operator">&lt;</span>CAN<span class="token operator">-</span>FRAME<span class="token operator">-</span>TRIGGERING UUID<span class="token operator">=</span><span class="token string">"09816ea3-a46c-3b48-97f8-d9f3f92799e8"</span><span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>FrTrDMS_ADCANFD_FrP01<span class="token operator">&lt;</span><span class="token operator">/</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span>FRAME<span class="token operator">-</span>PORT<span class="token operator">-</span>REFS<span class="token operator">&gt;</span>
+	  <span class="token operator">&lt;</span>FRAME<span class="token operator">-</span>PORT<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"FRAME-PORT"</span><span class="token operator">&gt;</span><span class="token operator">/</span>ECUSystem<span class="token operator">/</span>DMS<span class="token operator">/</span>DMSC<span class="token operator">/</span>DMSCCfg<span class="token operator">/</span>DMSCCfg<span class="token operator">/</span>ADCANFD<span class="token operator">/</span>FramePort_Out<span class="token operator">&lt;</span><span class="token operator">/</span>FRAME<span class="token operator">-</span>PORT<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+	  <span class="token operator">&lt;</span>FRAME<span class="token operator">-</span>PORT<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"FRAME-PORT"</span><span class="token operator">&gt;</span><span class="token operator">/</span>VectorAutosarExplorerGeneratedObjects<span class="token operator">/</span>ECU_INSTANCES<span class="token operator">/</span>OtherNodes<span class="token operator">/</span>Connector_OtherNodes_64e0f3f0db5999fe<span class="token operator">/</span>framePort_ac33e765d8d23aa9<span class="token operator">&lt;</span><span class="token operator">/</span>FRAME<span class="token operator">-</span>PORT<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span><span class="token operator">/</span>FRAME<span class="token operator">-</span>PORT<span class="token operator">-</span>REFS<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span>FRAME<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"CAN-FRAME"</span><span class="token operator">&gt;</span><span class="token operator">/</span>Communication<span class="token operator">/</span>Frame<span class="token operator">/</span>DMS_ADCANFD_FrP01<span class="token operator">&lt;</span><span class="token operator">/</span>FRAME<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span>PDU<span class="token operator">-</span>TRIGGERINGS<span class="token operator">&gt;</span>
+	  <span class="token operator">&lt;</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF<span class="token operator">-</span>CONDITIONAL<span class="token operator">&gt;</span>
+	    <span class="token operator">&lt;</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"PDU-TRIGGERING"</span><span class="token operator">&gt;</span><span class="token operator">/</span>VehicleTopology<span class="token operator">/</span>ADCANFD<span class="token operator">/</span>PhCnADCANFD<span class="token operator">/</span>PduTrDMS_ADCANFD_050ms_Container01<span class="token operator">&lt;</span><span class="token operator">/</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+	  <span class="token operator">&lt;</span><span class="token operator">/</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF<span class="token operator">-</span>CONDITIONAL<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span><span class="token operator">/</span>PDU<span class="token operator">-</span>TRIGGERINGS<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span>CAN<span class="token operator">-</span>ADDRESSING<span class="token operator">-</span>MODE<span class="token operator">&gt;</span>STANDARD<span class="token operator">&lt;</span><span class="token operator">/</span>CAN<span class="token operator">-</span>ADDRESSING<span class="token operator">-</span>MODE<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span>CAN<span class="token operator">-</span>FRAME<span class="token operator">-</span>TX<span class="token operator">-</span>BEHAVIOR<span class="token operator">&gt;</span>CAN<span class="token operator">-</span>FD<span class="token operator">&lt;</span><span class="token operator">/</span>CAN<span class="token operator">-</span>FRAME<span class="token operator">-</span>TX<span class="token operator">-</span>BEHAVIOR<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span>IDENTIFIER<span class="token operator">&gt;</span><span class="token number">554</span><span class="token operator">&lt;</span><span class="token operator">/</span>IDENTIFIER<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span><span class="token operator">/</span>CAN<span class="token operator">-</span>FRAME<span class="token operator">-</span>TRIGGERING<span class="token operator">&gt;</span>
+</code></pre> 
+<p>3、正则表达式处理数据</p> 
+<p><code>python代码：</code></p> 
+<pre><code class="prism language-python"><span class="token comment">#找出所有frame的数据片段</span>
+CANFrameNode_pattern  <span class="token operator">=</span> <span class="token string">r'&lt;CAN-FRAME-TRIGGERING.*?&gt;(.*?)&lt;/CAN-FRAME-TRIGGERING&gt;'</span>
+CANFrameNodes_List <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>CANFrameNode_pattern<span class="token punctuation">,</span> arxml_data<span class="token punctuation">,</span> re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span> <span class="token comment"># 使用 re.DOTALL 标志使 . 匹配任意字符，包括换行符</span>
+
+<span class="token comment">#设置CANFrame的匹配规则：报文名称：&lt;FRAME-REF DEST="CAN-FRAME"&gt;(.*?)&lt;/FRAME-REF&gt;，寻址模式：&lt;CAN-ADDRESSING-MODE&gt;，报文类型CAN/CANFD：&lt;CAN-FRAME-TX-BEHAVIOR&gt;，报文标识ID：&lt;IDENTIFIER&gt;</span>
+CANFrame_pattern <span class="token operator">=</span> <span class="token string">r'&lt;FRAME-REF DEST="CAN-FRAME"&gt;(.*?)&lt;/FRAME-REF&gt;.*?&lt;CAN-ADDRESSING-MODE&gt;(.*?)&lt;/CAN-ADDRESSING-MODE&gt;.*?&lt;CAN-FRAME-\wX-BEHAVIOR&gt;(.*?)&lt;/CAN-FRAME-\wX-BEHAVIOR&gt;.*?&lt;IDENTIFIER&gt;(.*?)&lt;/IDENTIFIER&gt;'</span>
+
+<span class="token comment">#开始匹配上述参数</span>
+<span class="token keyword">for</span> CANFrameNodes <span class="token keyword">in</span> CANFrameNodes_List<span class="token punctuation">:</span>
+    CANFrames_match <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>CANFrame_pattern<span class="token punctuation">,</span> CANFrameNodes<span class="token punctuation">,</span> re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>  <span class="token comment"># 使用 re.DOTALL 标志使 . 匹配任意字符，包括换行符</span>
+    <span class="token keyword">if</span> CANFrames_match<span class="token punctuation">:</span>
+        <span class="token keyword">for</span> CANFrame <span class="token keyword">in</span> CANFrames_match<span class="token punctuation">:</span>
+            CAN_FrameData_dict <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token string">"FrameName"</span><span class="token punctuation">:</span><span class="token string">""</span><span class="token punctuation">,</span><span class="token string">"AdressingMode"</span><span class="token punctuation">:</span><span class="token string">''</span><span class="token punctuation">,</span><span class="token string">"Frametype"</span><span class="token punctuation">:</span><span class="token string">""</span><span class="token punctuation">,</span><span class="token string">"CanId"</span><span class="token punctuation">:</span><span class="token string">""</span><span class="token punctuation">,</span><span class="token string">"signals"</span><span class="token punctuation">:</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">}</span>
+            CAN_FrameData_dict<span class="token punctuation">[</span><span class="token string">"FrameName"</span><span class="token punctuation">]</span> <span class="token operator">=</span> CANFrame<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">.</span>split<span class="token punctuation">(</span><span class="token string">"/"</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span>
+            CAN_FrameData_dict<span class="token punctuation">[</span><span class="token string">"AdressingMode"</span><span class="token punctuation">]</span> <span class="token operator">=</span> CANFrame<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span>
+            CAN_FrameData_dict<span class="token punctuation">[</span><span class="token string">"Frametype"</span><span class="token punctuation">]</span> <span class="token operator">=</span> CANFrame<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span>
+            CAN_FrameData_dict<span class="token punctuation">[</span><span class="token string">"CanId"</span><span class="token punctuation">]</span> <span class="token operator">=</span> CANFrame<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">]</span>
+            CAN_matrix<span class="token punctuation">.</span>append<span class="token punctuation">(</span>CAN_FrameData_dict<span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span>CAN_matrix<span class="token punctuation">)</span>
+</code></pre> 
+<p><code>打印结果：</code></p> 
+<pre><code class="prism language-python"><span class="token comment">#打印结果只列举一个</span>
+<span class="token punctuation">[</span><span class="token punctuation">{<!-- --></span><span class="token string">'FrameName'</span><span class="token punctuation">:</span> <span class="token string">'DMS_ADCANFD_FrP01'</span><span class="token punctuation">,</span> <span class="token string">'AdressingMode'</span><span class="token punctuation">:</span> <span class="token string">'STANDARD'</span><span class="token punctuation">,</span> <span class="token string">'Frametype'</span><span class="token punctuation">:</span> <span class="token string">'CAN-FD'</span><span class="token punctuation">,</span> <span class="token string">'CanId'</span><span class="token punctuation">:</span> <span class="token string">'554'</span><span class="token punctuation">,</span> <span class="token string">'signals'</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">}</span><span class="token punctuation">]</span>
+</code></pre> 
+<hr> 
+<h2><a id="FramePDU_123"></a>四、解析Frame中的PDU</h2> 
+<p>1、<strong>这里举例解析Frame中的Container-I-PDU和Signal-I-PDU，这里强调必须注意是否存在Container-I-PDU，因为匹配的方法不太一样。</strong></p> 
+<p>2、下面是arxml的片段其中就包括了CAN报文的名称<code>DMS_ADCANFD_FrP01</code>，PDU名称<code>PduTrDMS_ADCANFD_050ms_Container01</code>；</p> 
+<p>3、我们查找报文相关的参数就可以通过查找<code>&lt;CAN-FRAME-TRIGGERING...&gt;数据片段&lt;/CAN-FRAME-TRIGGERING&gt;</code>来获取arxml中的数据片段，再进行更详细的匹配获取其余数据。</p> 
+<ul><li>匹配片段中的<code>&lt;FRAME-REF DEST="CAN-FRAME"&gt;../报文名称&lt;/FRAME-REF&gt;</code>来获得报文名称；</li><li>匹配片段中的<code>&lt;PDU-TRIGGERING-REF DEST="PDU-TRIGGERING"&gt;../PDU名称&lt;/PDU-TRIGGERING-REF&gt;</code>来获取PDU名称；</li></ul> 
+<pre><code class="prism language-python">  <span class="token operator">&lt;</span>CAN<span class="token operator">-</span>FRAME<span class="token operator">-</span>TRIGGERING UUID<span class="token operator">=</span><span class="token string">"09816ea3-a46c-3b48-97f8-d9f3f92799e8"</span><span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>FrTrDMS_ADCANFD_FrP01<span class="token operator">&lt;</span><span class="token operator">/</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span>FRAME<span class="token operator">-</span>PORT<span class="token operator">-</span>REFS<span class="token operator">&gt;</span>
+	  <span class="token operator">&lt;</span>FRAME<span class="token operator">-</span>PORT<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"FRAME-PORT"</span><span class="token operator">&gt;</span><span class="token operator">/</span>ECUSystem<span class="token operator">/</span>DMS<span class="token operator">/</span>DMSC<span class="token operator">/</span>DMSCCfg<span class="token operator">/</span>DMSCCfg<span class="token operator">/</span>ADCANFD<span class="token operator">/</span>FramePort_Out<span class="token operator">&lt;</span><span class="token operator">/</span>FRAME<span class="token operator">-</span>PORT<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+	  <span class="token operator">&lt;</span>FRAME<span class="token operator">-</span>PORT<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"FRAME-PORT"</span><span class="token operator">&gt;</span><span class="token operator">/</span>VectorAutosarExplorerGeneratedObjects<span class="token operator">/</span>ECU_INSTANCES<span class="token operator">/</span>OtherNodes<span class="token operator">/</span>Connector_OtherNodes_64e0f3f0db5999fe<span class="token operator">/</span>framePort_ac33e765d8d23aa9<span class="token operator">&lt;</span><span class="token operator">/</span>FRAME<span class="token operator">-</span>PORT<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span><span class="token operator">/</span>FRAME<span class="token operator">-</span>PORT<span class="token operator">-</span>REFS<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span>FRAME<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"CAN-FRAME"</span><span class="token operator">&gt;</span><span class="token operator">/</span>Communication<span class="token operator">/</span>Frame<span class="token operator">/</span>DMS_ADCANFD_FrP01<span class="token operator">&lt;</span><span class="token operator">/</span>FRAME<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span>PDU<span class="token operator">-</span>TRIGGERINGS<span class="token operator">&gt;</span>
+	  <span class="token operator">&lt;</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF<span class="token operator">-</span>CONDITIONAL<span class="token operator">&gt;</span>
+	    <span class="token operator">&lt;</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"PDU-TRIGGERING"</span><span class="token operator">&gt;</span><span class="token operator">/</span>VehicleTopology<span class="token operator">/</span>ADCANFD<span class="token operator">/</span>PhCnADCANFD<span class="token operator">/</span>PduTrDMS_ADCANFD_050ms_Container01<span class="token operator">&lt;</span><span class="token operator">/</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+	  <span class="token operator">&lt;</span><span class="token operator">/</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF<span class="token operator">-</span>CONDITIONAL<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span><span class="token operator">/</span>PDU<span class="token operator">-</span>TRIGGERINGS<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span>CAN<span class="token operator">-</span>ADDRESSING<span class="token operator">-</span>MODE<span class="token operator">&gt;</span>STANDARD<span class="token operator">&lt;</span><span class="token operator">/</span>CAN<span class="token operator">-</span>ADDRESSING<span class="token operator">-</span>MODE<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span>CAN<span class="token operator">-</span>FRAME<span class="token operator">-</span>TX<span class="token operator">-</span>BEHAVIOR<span class="token operator">&gt;</span>CAN<span class="token operator">-</span>FD<span class="token operator">&lt;</span><span class="token operator">/</span>CAN<span class="token operator">-</span>FRAME<span class="token operator">-</span>TX<span class="token operator">-</span>BEHAVIOR<span class="token operator">&gt;</span>
+	<span class="token operator">&lt;</span>IDENTIFIER<span class="token operator">&gt;</span><span class="token number">554</span><span class="token operator">&lt;</span><span class="token operator">/</span>IDENTIFIER<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span><span class="token operator">/</span>CAN<span class="token operator">-</span>FRAME<span class="token operator">-</span>TRIGGERING<span class="token operator">&gt;</span>
+</code></pre> 
+<p>4、正则表达式处理数据</p> 
+<p><code>python代码：</code><br> 这里的参数不和上述的《三、解析Frame的基本参数》一起匹配的原因是Frame中的Container-I-PDU的数量可能不唯一，用贪婪匹配可以匹配多个结果。</p> 
+<pre><code class="prism language-python"><span class="token comment">#设置PDU的匹配规则：报文名称：&lt;FRAME-REF DEST="CAN-FRAME"&gt;， PDU名称：&lt;PDU-TRIGGERING-REF DEST="PDU-TRIGGERING"&gt;</span>
+PDUS_pattern <span class="token operator">=</span> <span class="token string">r'&lt;FRAME-REF DEST="CAN-FRAME"&gt;(.*?)&lt;/FRAME-REF&gt;|&lt;PDU-TRIGGERING-REF DEST="PDU-TRIGGERING"&gt;(.*?)&lt;/PDU-TRIGGERING-REF&gt;'</span>
+
+Frame_Pdus_Data <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+Pdus_data <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+<span class="token comment">#匹配FrameName和PDU</span>
+<span class="token keyword">for</span> CANFrameNode <span class="token keyword">in</span> CANFrameNodes_List<span class="token punctuation">:</span>
+    Frame_Pdus_dict <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token string">"FrameName"</span><span class="token punctuation">:</span><span class="token string">""</span><span class="token punctuation">,</span><span class="token string">"pduname"</span><span class="token punctuation">:</span><span class="token string">""</span><span class="token punctuation">}</span>
+    PDUS_match <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>PDUS_pattern<span class="token punctuation">,</span> CANFrameNode<span class="token punctuation">,</span>re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+    Framepdu <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token keyword">match</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">.</span>split<span class="token punctuation">(</span><span class="token string">"/"</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token keyword">or</span> <span class="token keyword">match</span><span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>split<span class="token punctuation">(</span><span class="token string">"/"</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token keyword">for</span> <span class="token keyword">match</span> <span class="token keyword">in</span> PDUS_match <span class="token keyword">if</span> <span class="token keyword">match</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span> <span class="token keyword">or</span> <span class="token keyword">match</span><span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">]</span>
+    Frame_Pdus_dict<span class="token punctuation">[</span><span class="token string">"FrameName"</span><span class="token punctuation">]</span> <span class="token operator">=</span> Framepdu<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span>
+    Frame_Pdus_dict<span class="token punctuation">[</span><span class="token string">"pduname"</span><span class="token punctuation">]</span> <span class="token operator">=</span> Framepdu<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">:</span><span class="token punctuation">]</span>
+    Frame_Pdus_Data<span class="token punctuation">.</span>append<span class="token punctuation">(</span>Frame_Pdus_dict<span class="token punctuation">)</span>
+
+<span class="token keyword">print</span><span class="token punctuation">(</span>Frame_Pdus_Data<span class="token punctuation">)</span>
+</code></pre> 
+<p><code>打印结果：</code></p> 
+<pre><code class="prism language-python"><span class="token comment">#打印结果只列举一个</span>
+<span class="token punctuation">[</span><span class="token punctuation">{<!-- --></span><span class="token string">'FrameName'</span><span class="token punctuation">:</span> <span class="token string">'DMS_ADCANFD_FrP01'</span><span class="token punctuation">,</span> <span class="token string">'pduname'</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">'PduTrDMS_ADCANFD_050ms_Container01'</span><span class="token punctuation">]</span><span class="token punctuation">}</span><span class="token punctuation">]</span>
+</code></pre> 
+<hr> 
+<p>5、下面是arxml的片段其中就包括了PDU的名称<code>CCP_ADCANFD_020ms_Container11</code>，Container-I-PDU中的I-PDU<code>PduTrCCP_020ms_PDU00_AD</code>，<code>PduTrCCP_020ms_PDU02_AD</code>，<code>NewPduTriggering_a1955a2b08c2a3bb</code>；</p> 
+<p>6、我们查找报文相关的参数就可以通过查找<code>&lt;CONTAINER-I-PDU...&gt;数据片段&lt;/CONTAINER-I-PDU&gt;</code>来获取arxml中的数据片段，再进行更详细的匹配获取其余数据。</p> 
+<ul><li>匹配片段中的<code>&lt;SHORT-NAME&gt;PDU名称&lt;/SHORT-NAME&gt;</code>来获得报文名称；</li><li>匹配片段中的<code>&lt;CONTAINED-PDU-TRIGGERING-REF DEST="PDU-TRIGGERING"&gt;../IPDU名称&lt;/CONTAINED-PDU-TRIGGERING-REF&gt;</code>来获取PDU名称，I-PDU可能存在多个；</li></ul> 
+<pre><code class="prism language-python"><span class="token operator">&lt;</span>CONTAINER<span class="token operator">-</span>I<span class="token operator">-</span>PDU UUID<span class="token operator">=</span><span class="token string">"84de9d07-cf25-4a32-8cc4-92fd8eabcc93"</span><span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>CCP_ADCANFD_020ms_Container11<span class="token operator">&lt;</span><span class="token operator">/</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>LENGTH<span class="token operator">&gt;</span><span class="token number">64</span><span class="token operator">&lt;</span><span class="token operator">/</span>LENGTH<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>CONTAINED<span class="token operator">-</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REFS<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span>CONTAINED<span class="token operator">-</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"PDU-TRIGGERING"</span><span class="token operator">&gt;</span><span class="token operator">/</span>VehicleTopology<span class="token operator">/</span>ADCANFD<span class="token operator">/</span>PhCnADCANFD<span class="token operator">/</span>PduTrCCP_020ms_PDU00_AD<span class="token operator">&lt;</span><span class="token operator">/</span>CONTAINED<span class="token operator">-</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span>CONTAINED<span class="token operator">-</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"PDU-TRIGGERING"</span><span class="token operator">&gt;</span><span class="token operator">/</span>VehicleTopology<span class="token operator">/</span>ADCANFD<span class="token operator">/</span>PhCnADCANFD<span class="token operator">/</span>PduTrCCP_020ms_PDU02_AD<span class="token operator">&lt;</span><span class="token operator">/</span>CONTAINED<span class="token operator">-</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span>CONTAINED<span class="token operator">-</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"PDU-TRIGGERING"</span><span class="token operator">&gt;</span><span class="token operator">/</span>VehicleTopology<span class="token operator">/</span>ADCANFD<span class="token operator">/</span>PhCnADCANFD<span class="token operator">/</span>NewPduTriggering_a1955a2b08c2a3bb<span class="token operator">&lt;</span><span class="token operator">/</span>CONTAINED<span class="token operator">-</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span><span class="token operator">/</span>CONTAINED<span class="token operator">-</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REFS<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>CONTAINER<span class="token operator">-</span>TIMEOUT<span class="token operator">&gt;</span><span class="token number">0</span><span class="token operator">&lt;</span><span class="token operator">/</span>CONTAINER<span class="token operator">-</span>TIMEOUT<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>CONTAINER<span class="token operator">-</span>TRIGGER<span class="token operator">&gt;</span>DEFAULT<span class="token operator">-</span>TRIGGER<span class="token operator">&lt;</span><span class="token operator">/</span>CONTAINER<span class="token operator">-</span>TRIGGER<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>HEADER<span class="token operator">-</span>TYPE<span class="token operator">&gt;</span>SHORT<span class="token operator">-</span>HEADER<span class="token operator">&lt;</span><span class="token operator">/</span>HEADER<span class="token operator">-</span>TYPE<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>RX<span class="token operator">-</span>ACCEPT<span class="token operator">-</span>CONTAINED<span class="token operator">-</span>I<span class="token operator">-</span>PDU<span class="token operator">&gt;</span>ACCEPT<span class="token operator">-</span>CONFIGURED<span class="token operator">&lt;</span><span class="token operator">/</span>RX<span class="token operator">-</span>ACCEPT<span class="token operator">-</span>CONTAINED<span class="token operator">-</span>I<span class="token operator">-</span>PDU<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>THRESHOLD<span class="token operator">-</span>SIZE<span class="token operator">&gt;</span><span class="token number">0</span><span class="token operator">&lt;</span><span class="token operator">/</span>THRESHOLD<span class="token operator">-</span>SIZE<span class="token operator">&gt;</span>
+<span class="token operator">&lt;</span><span class="token operator">/</span>CONTAINER<span class="token operator">-</span>I<span class="token operator">-</span>PDU<span class="token operator">&gt;</span>
+</code></pre> 
+<p><code>python代码</code><br> 匹配CONTAINER-I-PDU中的PDU</p> 
+<pre><code class="prism language-python"><span class="token comment">#============找出CONTAINER-I-PDU中的PDU===========</span>
+Container_PDUS_pattern <span class="token operator">=</span> <span class="token string">r'&lt;CONTAINER-I-PDU(?: UUID="[^"]+")?&gt;(.*?)&lt;/CONTAINER-I-PDU&gt;'</span>
+
+<span class="token comment">#匹配具体参数获得I-PDU参数</span>
+Container_PDUS_match <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>Container_PDUS_pattern<span class="token punctuation">,</span> arxml_data<span class="token punctuation">,</span> re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>  <span class="token comment"># 使用 re.DOTALL 标志使 . 匹配任意字符，包括换行符</span>
+ISignal_PDUS_pattern <span class="token operator">=</span> <span class="token string">r'&lt;SHORT-NAME&gt;(.*?)&lt;/SHORT-NAME&gt;|&lt;CONTAINED-PDU-TRIGGERING-REF DEST="PDU-TRIGGERING"&gt;(.*?)&lt;/CONTAINED-PDU-TRIGGERING-REF&gt;'</span>
+
+Container_PDUS <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+<span class="token keyword">for</span> Container_PDU <span class="token keyword">in</span> Container_PDUS_match<span class="token punctuation">:</span>
+    ISignal_PDUS <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+    ISignal_PDUS_match <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>ISignal_PDUS_pattern<span class="token punctuation">,</span> Container_PDU<span class="token punctuation">,</span> re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+    <span class="token keyword">for</span> ISignal_PDU <span class="token keyword">in</span> ISignal_PDUS_match<span class="token punctuation">:</span>
+        a <span class="token operator">=</span> <span class="token punctuation">[</span>PDU<span class="token punctuation">.</span>split<span class="token punctuation">(</span><span class="token string">"/"</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token keyword">for</span> PDU <span class="token keyword">in</span> ISignal_PDU <span class="token keyword">if</span> PDU <span class="token operator">!=</span><span class="token string">""</span><span class="token punctuation">]</span>
+        ISignal_PDUS<span class="token punctuation">.</span>extend<span class="token punctuation">(</span><span class="token punctuation">[</span>PDU<span class="token punctuation">.</span>split<span class="token punctuation">(</span><span class="token string">"/"</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span> <span class="token keyword">for</span> PDU <span class="token keyword">in</span> ISignal_PDU <span class="token keyword">if</span> PDU <span class="token operator">!=</span><span class="token string">""</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+    Container_PDUS<span class="token punctuation">.</span>append<span class="token punctuation">(</span>ISignal_PDUS<span class="token punctuation">)</span>
+</code></pre> 
+<p>将Container-I-PDU中的iI-PDU成员整合到Frame中</p> 
+<pre><code class="prism language-python"><span class="token comment">#填充CONTAINER-I-PDU数据到字典</span>
+<span class="token keyword">for</span> Frame_Pdus <span class="token keyword">in</span> Frame_Pdus_Data<span class="token punctuation">:</span>
+    <span class="token keyword">for</span> pdname <span class="token keyword">in</span> Frame_Pdus<span class="token punctuation">[</span><span class="token string">'pduname'</span><span class="token punctuation">]</span><span class="token punctuation">:</span>
+        <span class="token keyword">for</span> Container_PDU <span class="token keyword">in</span> Container_PDUS<span class="token punctuation">:</span> 
+            <span class="token keyword">if</span> <span class="token builtin">any</span><span class="token punctuation">(</span> element <span class="token keyword">in</span> pdname <span class="token keyword">for</span> element <span class="token keyword">in</span> Container_PDU<span class="token punctuation">)</span> <span class="token keyword">is</span> <span class="token boolean">True</span><span class="token punctuation">:</span>
+                <span class="token keyword">for</span> Cp <span class="token keyword">in</span> Container_PDU<span class="token punctuation">:</span>
+                    PduData_dict <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token string">"FrameName"</span><span class="token punctuation">:</span><span class="token string">""</span><span class="token punctuation">,</span><span class="token string">"pduname"</span><span class="token punctuation">:</span><span class="token string">""</span><span class="token punctuation">}</span>
+                    PduData_dict<span class="token punctuation">[</span><span class="token string">"FrameName"</span><span class="token punctuation">]</span> <span class="token operator">=</span> Frame_Pdus<span class="token punctuation">[</span><span class="token string">"FrameName"</span><span class="token punctuation">]</span>                       
+                    PduData_dict<span class="token punctuation">[</span><span class="token string">"pduname"</span><span class="token punctuation">]</span> <span class="token operator">=</span> Cp
+                    Pdus_data<span class="token punctuation">.</span>append<span class="token punctuation">(</span>PduData_dict<span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span>Pdus_data<span class="token punctuation">)</span>
+</code></pre> 
+<p><code>打印结果：</code></p> 
+<pre><code class="prism language-python"><span class="token comment">#这里只举例一个结果</span>
+<span class="token punctuation">[</span><span class="token punctuation">{<!-- --></span><span class="token string">'FrameName'</span><span class="token punctuation">:</span> <span class="token string">'CCP_ADCANFD_FrP02'</span><span class="token punctuation">,</span> <span class="token string">'pduname'</span><span class="token punctuation">:</span> <span class="token string">'CCP_ADCANFD_020ms_Container11'</span><span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span><span class="token string">'FrameName'</span><span class="token punctuation">:</span> <span class="token string">'CCP_ADCANFD_FrP02'</span><span class="token punctuation">,</span> <span class="token string">'pduname'</span><span class="token punctuation">:</span> <span class="token string">'PduTrCCP_020ms_PDU00_AD'</span><span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span><span class="token string">'FrameName'</span><span class="token punctuation">:</span> <span class="token string">'CCP_ADCANFD_FrP02'</span><span class="token punctuation">,</span> <span class="token string">'pduname'</span><span class="token punctuation">:</span> <span class="token string">'PduTrCCP_020ms_PDU02_AD'</span><span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span><span class="token string">'FrameName'</span><span class="token punctuation">:</span> <span class="token string">'CCP_ADCANFD_FrP02'</span><span class="token punctuation">,</span> <span class="token string">'pduname'</span><span class="token punctuation">:</span> <span class="token string">'NewPduTriggering_a1955a2b08c2a3bb'</span><span class="token punctuation">}</span><span class="token punctuation">]</span>
+</code></pre> 
+<hr> 
+<p><strong>7、拓展：假设有其他PDU，但是又不经过Container-I-PDU打包传输怎么办？直接在Frame中匹配到N-PDU或者I-Signal-PDUd等等,这种情况也很常见,大家在匹配PDU部分的时候一定要特别注意不要在Frame中匹配Container-I-PDU;</strong></p> 
+<pre><code class="prism language-python"><span class="token operator">&lt;</span>NM<span class="token operator">-</span>PDU UUID<span class="token operator">=</span><span class="token string">"f07d063e-61af-47b8-aee2-5118e0a44392"</span><span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>NmPDU_ADCANFD_DMS<span class="token operator">&lt;</span><span class="token operator">/</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>LENGTH<span class="token operator">&gt;</span><span class="token number">8</span><span class="token operator">&lt;</span><span class="token operator">/</span>LENGTH<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TO<span class="token operator">-</span>I<span class="token operator">-</span>PDU<span class="token operator">-</span>MAPPINGS<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TO<span class="token operator">-</span>I<span class="token operator">-</span>PDU<span class="token operator">-</span>MAPPING UUID<span class="token operator">=</span><span class="token string">"006c991f-1d37-3873-92ab-c3387a927208"</span><span class="token operator">&gt;</span>
+     <span class="token operator">&lt;</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>isDMS_NM_BSMtoRMS_mtx<span class="token operator">&lt;</span><span class="token operator">/</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>
+     <span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"I-SIGNAL"</span><span class="token operator">&gt;</span><span class="token operator">/</span>Communication<span class="token operator">/</span>ISignal<span class="token operator">/</span>isDMS_NM_BSMtoRMS<span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+     <span class="token operator">&lt;</span>PACKING<span class="token operator">-</span>BYTE<span class="token operator">-</span>ORDER<span class="token operator">&gt;</span>MOST<span class="token operator">-</span>SIGNIFICANT<span class="token operator">-</span>BYTE<span class="token operator">-</span>FIRST<span class="token operator">&lt;</span><span class="token operator">/</span>PACKING<span class="token operator">-</span>BYTE<span class="token operator">-</span>ORDER<span class="token operator">&gt;</span>
+     <span class="token operator">&lt;</span>START<span class="token operator">-</span>POSITION<span class="token operator">&gt;</span><span class="token number">16</span><span class="token operator">&lt;</span><span class="token operator">/</span>START<span class="token operator">-</span>POSITION<span class="token operator">&gt;</span>
+     <span class="token operator">&lt;</span>TRANSFER<span class="token operator">-</span>PROPERTY<span class="token operator">&gt;</span>TRIGGERED<span class="token operator">&lt;</span><span class="token operator">/</span>TRANSFER<span class="token operator">-</span>PROPERTY<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TO<span class="token operator">-</span>I<span class="token operator">-</span>PDU<span class="token operator">-</span>MAPPING<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TO<span class="token operator">-</span>I<span class="token operator">-</span>PDU<span class="token operator">-</span>MAPPINGS<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>NM<span class="token operator">-</span>VOTE<span class="token operator">-</span>INFORMATION<span class="token operator">&gt;</span>false<span class="token operator">&lt;</span><span class="token operator">/</span>NM<span class="token operator">-</span>VOTE<span class="token operator">-</span>INFORMATION<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>UNUSED<span class="token operator">-</span>BIT<span class="token operator">-</span>PATTERN<span class="token operator">&gt;</span><span class="token number">255</span><span class="token operator">&lt;</span><span class="token operator">/</span>UNUSED<span class="token operator">-</span>BIT<span class="token operator">-</span>PATTERN<span class="token operator">&gt;</span>
+<span class="token operator">&lt;</span><span class="token operator">/</span>NM<span class="token operator">-</span>PDU<span class="token operator">&gt;</span>
+</code></pre> 
+<p><code>python代码：</code></p> 
+<pre><code class="prism language-python">NM_PDUS_Pattern <span class="token operator">=</span> <span class="token string">r'&lt;NM-PDU(?: UUID="[^"]+")?&gt;.*?&lt;SHORT-NAME&gt;(.*?)&lt;/SHORT-NAME&gt;.*?&lt;/NM-PDU&gt;'</span>
+NM_PDUs <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>N_PDUS_pattern<span class="token punctuation">,</span>arxml_data<span class="token punctuation">,</span>re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+</code></pre> 
+<p><code>打印结果</code></p> 
+<pre><code class="prism language-python"><span class="token comment">#这里只举例一个结果</span>
+NmPDU_ADCANFD_DMS
+</code></pre> 
+<blockquote> 
+ <p>可以直接查找有Frame中的PDU，而且PDU里面直接有signal参数，后面会正式一起匹配Signal的参数。</p> 
+</blockquote> 
+<hr> 
+<h2><a id="PDUSignals_277"></a>五、解析PDU中的Signals</h2> 
+<p>1、匹配Signal名称的mapping关系，因为PDU中的Signal名称只是Mapping Signal name，真正的名称在其他arxml片段,我也不知道autosar为什么需要这么设计，还是按照他的规则办事吧。</p> 
+<p>2、下面是arxml的片段其中就包括了PDU中Signal的名称<code>ISTrisDMSAdoWrnngDspCmd_0</code>，以及真实用到的RealSignal名称<code>isDMSAdoWrnngDspCmd</code>；</p> 
+<p>3、我们查找报文相关的参数就可以通过查找<code>&lt;I-SIGNAL-TRIGGERINGS&gt;数据片段&lt;/I-SIGNAL-TRIGGERING&gt;</code>来获取arxml中的数据片段，再进行更详细的匹配获取其余数据。</p> 
+<ul><li>匹配片段中的<code>&lt;SHORT-NAME&gt;PDU中Signal名称&lt;/SHORT-NAME&gt;</code>来获得PDU中Mapping Signal name名称；</li><li>匹配片段中的<code>&lt;I-SIGNAL-REF DEST="I-SIGNAL"&gt;../RealSignal名称&lt;/I-SIGNAL-REF&gt;</code>来获取Real Signal name名称；</li></ul> 
+<pre><code class="prism language-python"><span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TRIGGERINGS<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TRIGGERING UUID<span class="token operator">=</span><span class="token string">"24208cb2-a384-3cb4-b090-989665b8c45e"</span><span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>ISTrisDMSAdoWrnngDspCmd_0<span class="token operator">&lt;</span><span class="token operator">/</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>PORT<span class="token operator">-</span>REFS<span class="token operator">&gt;</span>
+    <span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>PORT<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"I-SIGNAL-PORT"</span><span class="token operator">&gt;</span><span class="token operator">/</span>ECUSystem<span class="token operator">/</span>DMS<span class="token operator">/</span>DMSC<span class="token operator">/</span>DMSCCfg<span class="token operator">/</span>DMSCCfg<span class="token operator">/</span>ADCANFD<span class="token operator">/</span>SignalPort_Out<span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>PORT<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+    <span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>PORT<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"I-SIGNAL-PORT"</span><span class="token operator">&gt;</span><span class="token operator">/</span>VectorAutosarExplorerGeneratedObjects<span class="token operator">/</span>ECU_INSTANCES<span class="token operator">/</span>OtherNodes<span class="token operator">/</span>Connector_OtherNodes_64e0f3f0db5999fe<span class="token operator">/</span>SP_b097681ed4394b359291806d796936a3_Rx<span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>PORT<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>PORT<span class="token operator">-</span>REFS<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"I-SIGNAL"</span><span class="token operator">&gt;</span><span class="token operator">/</span>Communication<span class="token operator">/</span>ISignal<span class="token operator">/</span>isDMSAdoWrnngDspCmd<span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+<span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TRIGGERING<span class="token operator">&gt;</span>
+</code></pre> 
+<p><code>python代码</code></p> 
+<pre><code class="prism language-python"><span class="token comment">#因为PDU中的部分Signal名称有Mapping关系，所以需要拿到Real signal name名称</span>
+signalTrig_pattern <span class="token operator">=</span> <span class="token string">r'&lt;I-SIGNAL-TRIGGERINGS&gt;(.*?)&lt;/I-SIGNAL-TRIGGERINGS&gt;'</span>
+signalTrig_match <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>signalTrig_pattern<span class="token punctuation">,</span>arxml_data<span class="token punctuation">,</span>re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+signalTrig_str <span class="token operator">=</span> <span class="token string">""</span>
+
+<span class="token comment">#存在&lt;I-SIGNAL-REF DEST="I-SIGNAL"&gt;的&lt;I-SIGNAL-TRIGGERINGS&gt;片段，才具有Mapping属性,仅有一个</span>
+<span class="token keyword">for</span> signalTrig <span class="token keyword">in</span> signalTrig_match<span class="token punctuation">:</span>
+    <span class="token keyword">if</span> <span class="token string">'&lt;I-SIGNAL-REF DEST="I-SIGNAL"&gt;'</span> <span class="token keyword">in</span> signalTrig<span class="token punctuation">:</span>
+        signalTrig_str<span class="token operator">=</span> signalTrig
+
+<span class="token comment">#匹配signal name的Mapping关系</span>
+signalRealName_pattern <span class="token operator">=</span> <span class="token string">r'&lt;SHORT-NAME&gt;(.*?)&lt;/SHORT-NAME&gt;|&lt;I-SIGNAL(?:-GROUP)?-REF DEST="I-SIGNAL(?:-GROUP)?"&gt;(.*?)&lt;/I-SIGNAL(?:-GROUP)?-REF&gt;'</span>
+signalRealName_match <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>signalRealName_pattern<span class="token punctuation">,</span>signalTrig_str<span class="token punctuation">,</span>re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+signalsname_map <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+<span class="token keyword">for</span> num <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token builtin">len</span><span class="token punctuation">(</span>signalRealName_match<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+    signalname_dict <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token string">"MappingName"</span><span class="token punctuation">:</span><span class="token string">""</span><span class="token punctuation">,</span><span class="token string">"RealName"</span><span class="token punctuation">:</span><span class="token string">""</span><span class="token punctuation">}</span>
+    signalRealName <span class="token operator">=</span> signalRealName_match<span class="token punctuation">[</span>num<span class="token punctuation">:</span>num<span class="token operator">+</span><span class="token number">2</span><span class="token punctuation">]</span>
+    signalname_dict<span class="token punctuation">[</span><span class="token string">"MappingName"</span><span class="token punctuation">]</span> <span class="token operator">=</span> signalRealName<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span>
+    signalname_dict<span class="token punctuation">[</span><span class="token string">"RealName"</span><span class="token punctuation">]</span> <span class="token operator">=</span> signalRealName<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>split<span class="token punctuation">(</span><span class="token string">"/"</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span>
+    signalsname_map<span class="token punctuation">.</span>append<span class="token punctuation">(</span>signalname_dict<span class="token punctuation">)</span>
+    
+<span class="token keyword">print</span><span class="token punctuation">(</span>signalsname_map<span class="token punctuation">)</span>
+</code></pre> 
+<p><code>打印结果</code></p> 
+<pre><code class="prism language-python"><span class="token comment">#这里只举例一个结果</span>
+<span class="token punctuation">[</span><span class="token punctuation">{<!-- --></span><span class="token string">'MappingName'</span><span class="token punctuation">:</span> <span class="token string">'ISTrisDMSAdoWrnngDspCmd_0'</span><span class="token punctuation">,</span> <span class="token string">'RealName'</span><span class="token punctuation">:</span> <span class="token string">'isDMSAdoWrnngDspCmd'</span><span class="token punctuation">}</span><span class="token punctuation">]</span>
+</code></pre> 
+<blockquote> 
+ <p>匹配完Signal名称的Mapping关系之后，需要开始匹配PDU中的Mapping Signal name名称，并且替换Mapping Signal name为Real Signal name,因为只能通过真实的Real Signal name才能找到Signal的相关参数。</p> 
+</blockquote> 
+<hr> 
+<p>4、下面是arxml的片段其中就包括了PDU的名称<code>PduTrDMS_050ms_PDU00</code>，以及Mapping Signal name名称<code>ISTrisDMSAdoWrnngDspCmd_0</code>；</p> 
+<p>5、我们查找报文相关的参数就可以通过查找<code>&lt;PDU-TRIGGERING(?: UUID="[^"]+")?&gt;数据片段&lt;/PDU-TRIGGERING&gt;</code>来获取arxml中的数据片段，再进行更详细的匹配获取其余数据。</p> 
+<ul><li>匹配片段中的<code>&lt;SHORT-NAME&gt;PDU名称&lt;/SHORT-NAME&gt;</code>来获得PDU名称；</li><li>匹配片段中的<code>&lt;I-SIGNAL-TRIGGERING-REF DEST="I-SIGNAL-TRIGGERING"&gt;../Mapping Signal name名称&lt;/I-SIGNAL-TRIGGERING-REF&gt;</code>来获取Mapping Signal name名称；</li></ul> 
+<pre><code class="prism language-python"><span class="token operator">&lt;</span>PDU<span class="token operator">-</span>TRIGGERING UUID<span class="token operator">=</span><span class="token string">"64059ffd-36c8-3905-b0e5-8a9a874e2957"</span><span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>PduTrDMS_050ms_PDU00<span class="token operator">&lt;</span><span class="token operator">/</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span>I<span class="token operator">-</span>PDU<span class="token operator">-</span>PORT<span class="token operator">-</span>REFS<span class="token operator">&gt;</span>
+     <span class="token operator">&lt;</span>I<span class="token operator">-</span>PDU<span class="token operator">-</span>PORT<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"I-PDU-PORT"</span><span class="token operator">&gt;</span><span class="token operator">/</span>ECUSystem<span class="token operator">/</span>DMS<span class="token operator">/</span>DMSC<span class="token operator">/</span>DMSCCfg<span class="token operator">/</span>DMSCCfg<span class="token operator">/</span>ADCANFD<span class="token operator">/</span>IPduPort_Out<span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>PDU<span class="token operator">-</span>PORT<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+     <span class="token operator">&lt;</span>I<span class="token operator">-</span>PDU<span class="token operator">-</span>PORT<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"I-PDU-PORT"</span><span class="token operator">&gt;</span><span class="token operator">/</span>VectorAutosarExplorerGeneratedObjects<span class="token operator">/</span>ECU_INSTANCES<span class="token operator">/</span>OtherNodes<span class="token operator">/</span>Connector_OtherNodes_64e0f3f0db5999fe<span class="token operator">/</span>PP_01fa4447d4724b9298c6e01a29830d3a_Rx<span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>PDU<span class="token operator">-</span>PORT<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>PDU<span class="token operator">-</span>PORT<span class="token operator">-</span>REFS<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span>I<span class="token operator">-</span>PDU<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"I-SIGNAL-I-PDU"</span><span class="token operator">&gt;</span><span class="token operator">/</span>Communication<span class="token operator">/</span>Pdu<span class="token operator">/</span>DMS_050ms_PDU00<span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>PDU<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TRIGGERINGS<span class="token operator">&gt;</span>
+     <span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF<span class="token operator">-</span>CONDITIONAL<span class="token operator">&gt;</span>
+       <span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"I-SIGNAL-TRIGGERING"</span><span class="token operator">&gt;</span><span class="token operator">/</span>VehicleTopology<span class="token operator">/</span>ADCANFD<span class="token operator">/</span>PhCnADCANFD<span class="token operator">/</span>ISTrisDMSAdoWrnngDspCmd_0<span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+     <span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TRIGGERING<span class="token operator">-</span>REF<span class="token operator">-</span>CONDITIONAL<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TRIGGERINGS<span class="token operator">&gt;</span>
+<span class="token operator">&lt;</span><span class="token operator">/</span>PDU<span class="token operator">-</span>TRIGGERING<span class="token operator">&gt;</span>
+</code></pre> 
+<p>6、匹配完Mapping Signal Name之后，顺便替换成Real Signal Name;</p> 
+<p><code>python代码</code></p> 
+<pre><code class="prism language-python"> <span class="token comment">#============匹配PDU中的Signal信息==============</span>
+ PDUSignals_pattern <span class="token operator">=</span> <span class="token string">r'&lt;PDU-TRIGGERING(?: UUID="[^"]+")?&gt;(.*?)&lt;/PDU-TRIGGERING&gt;'</span>
+ PDUSignals_match <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>PDUSignals_pattern<span class="token punctuation">,</span> arxml_data<span class="token punctuation">,</span> re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>  <span class="token comment"># 使用 re.DOTALL 标志使 . 匹配任意字符，包括换行符</span>
+
+ <span class="token comment">#============匹配PDU Name和signals name=============</span>
+ signals_pattern <span class="token operator">=</span> <span class="token string">r'&lt;SHORT-NAME&gt;(.*?)&lt;/SHORT-NAME&gt;|&lt;I-SIGNAL-TRIGGERING-REF\b.*?&gt;(.*?)&lt;/I-SIGNAL-TRIGGERING-REF&gt;'</span>
+ PDUSignals_data <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+ <span class="token keyword">for</span> PDUSignals <span class="token keyword">in</span> PDUSignals_match<span class="token punctuation">:</span>
+     PDU_signals <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+     PDU_signals_dict <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token string">'pduname'</span><span class="token punctuation">:</span><span class="token string">''</span><span class="token punctuation">,</span><span class="token string">'signals'</span><span class="token punctuation">:</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">}</span>
+     <span class="token comment">#开始查找signal的信息</span>
+     signals_match <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>signals_pattern<span class="token punctuation">,</span> PDUSignals<span class="token punctuation">,</span> re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>  <span class="token comment"># 使用 re.DOTALL 标志使 . 匹配任意字符，包括换行符</span>
+     <span class="token keyword">for</span> cntr<span class="token punctuation">,</span>signal_match <span class="token keyword">in</span> <span class="token builtin">enumerate</span><span class="token punctuation">(</span>signals_match<span class="token punctuation">)</span><span class="token punctuation">:</span>
+         signalsdata_dict <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token string">"signalname"</span><span class="token punctuation">:</span><span class="token string">""</span><span class="token punctuation">,</span><span class="token string">"signaldata"</span><span class="token punctuation">:</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">}</span>
+         <span class="token keyword">if</span> cntr <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">:</span>
+             PDU_signals_dict<span class="token punctuation">[</span><span class="token string">'pduname'</span><span class="token punctuation">]</span> <span class="token operator">=</span> signal_match<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span>
+         <span class="token keyword">else</span><span class="token punctuation">:</span>
+             signal_name <span class="token operator">=</span> signal_match<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">.</span>split<span class="token punctuation">(</span><span class="token string">"/"</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span>
+             <span class="token keyword">for</span> signalname_map <span class="token keyword">in</span> signalsname_map<span class="token punctuation">:</span>
+                 <span class="token comment">#开始替换signal的名称</span>
+                 <span class="token keyword">if</span> signal_name <span class="token keyword">in</span> signalname_map<span class="token punctuation">[</span><span class="token string">"MappingName"</span><span class="token punctuation">]</span><span class="token punctuation">:</span>
+                     signalsdata_dict<span class="token punctuation">[</span><span class="token string">"signalname"</span><span class="token punctuation">]</span> <span class="token operator">=</span> signalname_map<span class="token punctuation">[</span><span class="token string">"RealName"</span><span class="token punctuation">]</span>
+                     PDU_signals<span class="token punctuation">.</span>append<span class="token punctuation">(</span>signalsdata_dict<span class="token punctuation">)</span>
+
+     PDU_signals_dict<span class="token punctuation">[</span><span class="token string">'signals'</span><span class="token punctuation">]</span> <span class="token operator">=</span> PDU_signals
+     PDUSignals_data<span class="token punctuation">.</span>append<span class="token punctuation">(</span>PDU_signals_dict<span class="token punctuation">)</span>
+     
+ <span class="token keyword">print</span><span class="token punctuation">(</span>PDUSignals_data<span class="token punctuation">)</span>
+</code></pre> 
+<p><code>打印结果</code></p> 
+<pre><code class="prism language-python"><span class="token comment">#这里只举例一个结果</span>
+<span class="token punctuation">[</span><span class="token punctuation">{<!-- --></span><span class="token string">'pduname'</span><span class="token punctuation">:</span> <span class="token string">'PduTrDMS_050ms_PDU00'</span><span class="token punctuation">,</span> <span class="token string">'signals'</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token punctuation">{<!-- --></span><span class="token string">'signalname'</span><span class="token punctuation">:</span> <span class="token string">'isDMSAdoWrnngDspCmd'</span><span class="token punctuation">,</span> <span class="token string">'signaldata'</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">}</span><span class="token punctuation">]</span>
+</code></pre> 
+<hr> 
+<h2><a id="Signal_397"></a>六、解析Signal中的初始值和长度</h2> 
+<p>1、下面是arxml的片段其中就包括了Signal Name<code>isDMSAdoWrnngDspCmd</code>，初始值InitValue<code>2</code>，和长度Length<code>2</code>；</p> 
+<p>2、我们查找报文相关的参数就可以通过查找<code>&lt;I-SIGNAL(?: UUID="[^"]+")?&gt;数据片段&lt;/I-SIGNAL&gt;</code>来获取arxml中的数据片段，再进行更详细的匹配获取其余数据。</p> 
+<ul><li>匹配片段中的<code>&lt;SHORT-NAME&gt;Signal Name名称&lt;/SHORT-NAME&gt;</code>来获得Signal Name；</li><li>匹配片段中的<code>&lt;VALUE&gt;初始值&lt;/VALUE&gt;</code>来获取Signal的初始值InitValue；</li><li>匹配片段中的<code>&lt;LENGTH&gt;长度&lt;/LENGTH&gt;</code>来获取Signal的长度Length；</li></ul> 
+<pre><code class="prism language-python"><span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL UUID<span class="token operator">=</span><span class="token string">"5db6edd8-2ae7-3c89-9d92-3eecde037ea6"</span><span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>isDMSAdoWrnngDspCmd<span class="token operator">&lt;</span><span class="token operator">/</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span>DATA<span class="token operator">-</span>TYPE<span class="token operator">-</span>POLICY<span class="token operator">&gt;</span>OVERRIDE<span class="token operator">&lt;</span><span class="token operator">/</span>DATA<span class="token operator">-</span>TYPE<span class="token operator">-</span>POLICY<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span>INIT<span class="token operator">-</span>VALUE<span class="token operator">&gt;</span>
+    <span class="token operator">&lt;</span>NUMERICAL<span class="token operator">-</span>VALUE<span class="token operator">-</span>SPECIFICATION<span class="token operator">&gt;</span>
+      <span class="token operator">&lt;</span>VALUE<span class="token operator">&gt;</span><span class="token number">2</span><span class="token operator">&lt;</span><span class="token operator">/</span>VALUE<span class="token operator">&gt;</span>
+    <span class="token operator">&lt;</span><span class="token operator">/</span>NUMERICAL<span class="token operator">-</span>VALUE<span class="token operator">-</span>SPECIFICATION<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span><span class="token operator">/</span>INIT<span class="token operator">-</span>VALUE<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span>LENGTH<span class="token operator">&gt;</span><span class="token number">2</span><span class="token operator">&lt;</span><span class="token operator">/</span>LENGTH<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span>NETWORK<span class="token operator">-</span>REPRESENTATION<span class="token operator">-</span>PROPS<span class="token operator">&gt;</span>
+    <span class="token operator">&lt;</span>SW<span class="token operator">-</span>DATA<span class="token operator">-</span>DEF<span class="token operator">-</span>PROPS<span class="token operator">-</span>VARIANTS<span class="token operator">&gt;</span>
+      <span class="token operator">&lt;</span>SW<span class="token operator">-</span>DATA<span class="token operator">-</span>DEF<span class="token operator">-</span>PROPS<span class="token operator">-</span>CONDITIONAL<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span>BASE<span class="token operator">-</span>TYPE<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"SW-BASE-TYPE"</span><span class="token operator">&gt;</span><span class="token operator">/</span>DataType<span class="token operator">/</span>DataTypeSemantics<span class="token operator">/</span>SwBaseTypes<span class="token operator">/</span>UINT2<span class="token operator">&lt;</span><span class="token operator">/</span>BASE<span class="token operator">-</span>TYPE<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>METHOD<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"COMPU-METHOD"</span><span class="token operator">&gt;</span><span class="token operator">/</span>DataType<span class="token operator">/</span>DataTypeSemantics<span class="token operator">/</span>DMSAdoWrnngDspCmd<span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>METHOD<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+      <span class="token operator">&lt;</span><span class="token operator">/</span>SW<span class="token operator">-</span>DATA<span class="token operator">-</span>DEF<span class="token operator">-</span>PROPS<span class="token operator">-</span>CONDITIONAL<span class="token operator">&gt;</span>
+    <span class="token operator">&lt;</span><span class="token operator">/</span>SW<span class="token operator">-</span>DATA<span class="token operator">-</span>DEF<span class="token operator">-</span>PROPS<span class="token operator">-</span>VARIANTS<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span><span class="token operator">/</span>NETWORK<span class="token operator">-</span>REPRESENTATION<span class="token operator">-</span>PROPS<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span>SYSTEM<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"SYSTEM-SIGNAL"</span><span class="token operator">&gt;</span><span class="token operator">/</span>Signal<span class="token operator">/</span>DMSAdoWrnngDspCmd<span class="token operator">&lt;</span><span class="token operator">/</span>SYSTEM<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+<span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">&gt;</span>
+</code></pre> 
+<p><code>python代码</code><br> 有些信号是不存在初始值的，解析的时候要注意</p> 
+<pre><code class="prism language-python"> <span class="token comment">#匹配&lt;I-SIGNAL&gt;&lt;/I-SIGNAL&gt;或者&lt;I-SIGNAL UUID=""&gt;&lt;/I-SIGNAL&gt;中的文本</span>
+ iSignals_pattern <span class="token operator">=</span> <span class="token string">r'&lt;I-SIGNAL(?: UUID="[^"]+")?&gt;(.*?)&lt;/I-SIGNAL&gt;'</span>
+ iSignals_match <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>iSignals_pattern<span class="token punctuation">,</span>arxml_data<span class="token punctuation">,</span>re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+ <span class="token comment">#匹配signal的初始值和长度的数据</span>
+ iSignalsPara_pattern <span class="token operator">=</span> <span class="token string">r'&lt;SHORT-NAME&gt;(.*?)&lt;/SHORT-NAME&gt;|&lt;VALUE&gt;(.*?)&lt;/VALUE&gt;|&lt;LENGTH&gt;(.*?)&lt;/LENGTH&gt;'</span>
+ iSignalsPara_data <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+
+ <span class="token keyword">for</span> iSignals <span class="token keyword">in</span> iSignals_match<span class="token punctuation">:</span>
+     signal_dict <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token string">'signalname'</span><span class="token punctuation">:</span><span class="token string">''</span><span class="token punctuation">,</span><span class="token string">'initvalue'</span><span class="token punctuation">:</span><span class="token boolean">None</span><span class="token punctuation">,</span><span class="token string">'length'</span><span class="token punctuation">:</span><span class="token number">0</span> <span class="token punctuation">}</span>
+     iSignal_match <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>iSignalsPara_pattern<span class="token punctuation">,</span>iSignals<span class="token punctuation">,</span>re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+
+     <span class="token keyword">if</span> <span class="token builtin">len</span><span class="token punctuation">(</span>iSignal_match<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">3</span><span class="token punctuation">:</span>
+
+         signal_dict<span class="token punctuation">[</span><span class="token string">'signalname'</span><span class="token punctuation">]</span> <span class="token operator">=</span> iSignal_match<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span>
+         signal_dict<span class="token punctuation">[</span><span class="token string">'initvalue'</span><span class="token punctuation">]</span> <span class="token operator">=</span> iSignal_match<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span>
+         signal_dict<span class="token punctuation">[</span><span class="token string">'length'</span><span class="token punctuation">]</span> <span class="token operator">=</span> iSignal_match<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span>
+     
+     <span class="token comment">#iSignal_match长度为2，说明没有匹配到initvalue</span>
+     <span class="token keyword">elif</span> <span class="token builtin">len</span><span class="token punctuation">(</span>iSignal_match<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">2</span><span class="token punctuation">:</span>
+
+         signal_dict<span class="token punctuation">[</span><span class="token string">'signalname'</span><span class="token punctuation">]</span> <span class="token operator">=</span> iSignal_match<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span>
+         signal_dict<span class="token punctuation">[</span><span class="token string">'length'</span><span class="token punctuation">]</span> <span class="token operator">=</span> iSignal_match<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span>
+
+     iSignalsPara_data<span class="token punctuation">.</span>append<span class="token punctuation">(</span>signal_dict<span class="token punctuation">)</span>
+     
+<span class="token keyword">print</span><span class="token punctuation">(</span>iSignalsPara_data<span class="token punctuation">)</span>
+</code></pre> 
+<p><code>打印结果</code></p> 
+<pre><code class="prism language-python"><span class="token comment">#这里只举例一个结果</span>
+<span class="token punctuation">[</span><span class="token punctuation">{<!-- --></span><span class="token string">'signalname'</span><span class="token punctuation">:</span> <span class="token string">'isDMSAdoWrnngDspCmd'</span><span class="token punctuation">,</span> <span class="token string">'initvalue'</span><span class="token punctuation">:</span> <span class="token string">'2'</span><span class="token punctuation">,</span> <span class="token string">'length'</span><span class="token punctuation">:</span> <span class="token string">'2'</span><span class="token punctuation">}</span><span class="token punctuation">]</span>
+</code></pre> 
+<hr> 
+<h2><a id="Signal_466"></a>七、解析Signal中的起始位置</h2> 
+<p>1、下面是arxml的片段其中就包括了Signal Name<code>isDMSAdoWrnngDspCmd_mtx</code>，初始值StartPosition<code>63</code>；</p> 
+<p>2、我们查找报文相关的参数就可以通过查找<code>&lt;I-SIGNAL-TO-PDU-MAPPINGS&gt;片段数据&lt;/I-SIGNAL-TO-PDU-MAPPINGS&gt;</code>来获取arxml中的数据片段，再进行更详细的匹配获取其余数据。</p> 
+<ul><li>匹配片段中的<code>&lt;SHORT-NAME&gt;Signal Name名称&lt;/SHORT-NAME&gt;</code>来获得Signal Name；</li><li>匹配片段中的<code>&lt;START-POSITION&gt;起始位&lt;/START-POSITION&gt;</code>来获取Signal的起始位StartPosition；</li></ul> 
+<pre><code class="prism language-python"><span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TO<span class="token operator">-</span>PDU<span class="token operator">-</span>MAPPINGS<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TO<span class="token operator">-</span>I<span class="token operator">-</span>PDU<span class="token operator">-</span>MAPPING UUID<span class="token operator">=</span><span class="token string">"212b6d36-3fbb-3ecc-b3c7-7be45a4c75ff"</span><span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>isDMSAdoWrnngDspCmd_mtx<span class="token operator">&lt;</span><span class="token operator">/</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>REF DEST<span class="token operator">=</span><span class="token string">"I-SIGNAL"</span><span class="token operator">&gt;</span><span class="token operator">/</span>Communication<span class="token operator">/</span>ISignal<span class="token operator">/</span>isDMSAdoWrnngDspCmd<span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>REF<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span>PACKING<span class="token operator">-</span>BYTE<span class="token operator">-</span>ORDER<span class="token operator">&gt;</span>MOST<span class="token operator">-</span>SIGNIFICANT<span class="token operator">-</span>BYTE<span class="token operator">-</span>FIRST<span class="token operator">&lt;</span><span class="token operator">/</span>PACKING<span class="token operator">-</span>BYTE<span class="token operator">-</span>ORDER<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span>START<span class="token operator">-</span>POSITION<span class="token operator">&gt;</span><span class="token number">63</span><span class="token operator">&lt;</span><span class="token operator">/</span>START<span class="token operator">-</span>POSITION<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TO<span class="token operator">-</span>I<span class="token operator">-</span>PDU<span class="token operator">-</span>MAPPING<span class="token operator">&gt;</span>
+<span class="token operator">&lt;</span><span class="token operator">/</span>I<span class="token operator">-</span>SIGNAL<span class="token operator">-</span>TO<span class="token operator">-</span>PDU<span class="token operator">-</span>MAPPINGS<span class="token operator">&gt;</span>
+</code></pre> 
+<p><code>python代码</code></p> 
+<pre><code class="prism language-python"> <span class="token comment">#匹配&lt;I-SIGNAL-TO-PDU-MAPPINGS&gt;&lt;/I-SIGNAL-TO-PDU-MAPPINGS&gt;中的内容，signal的START-POSITION在其中</span>
+ signal2PDUs_pattern <span class="token operator">=</span> <span class="token string">r'&lt;I-SIGNAL-TO-PDU-MAPPINGS&gt;(.*?)&lt;/I-SIGNAL-TO-PDU-MAPPINGS&gt;'</span>
+ signal2PDUs_match <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>signal2PDUs_pattern<span class="token punctuation">,</span>arxml_data<span class="token punctuation">,</span>re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+
+ <span class="token comment">#匹配signal的真实名称和signal的start position</span>
+ startPosition_pattern <span class="token operator">=</span> <span class="token string">r'&lt;I-SIGNAL(?:-GROUP)?-REF DEST="I-SIGNAL(?:-GROUP)?"&gt;(.*?)&lt;/I-SIGNAL(?:-GROUP)?-REF&gt;|&lt;START-POSITION&gt;(.*?)&lt;/START-POSITION&gt;'</span>
+ iSignalSPos_data <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+
+ <span class="token keyword">for</span> signal2PDU <span class="token keyword">in</span> signal2PDUs_match<span class="token punctuation">:</span>
+     <span class="token comment">#开始匹配</span>
+     signalSPos_match <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>startPosition_pattern<span class="token punctuation">,</span>signal2PDU<span class="token punctuation">,</span>re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+     <span class="token comment">#每个signal有2个参数，signal名称，start position</span>
+     <span class="token keyword">for</span> num <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token builtin">len</span><span class="token punctuation">(</span>signalSPos_match<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+         signalSPos_dict <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token string">'signalname'</span><span class="token punctuation">:</span><span class="token string">''</span><span class="token punctuation">,</span><span class="token string">'startposition'</span><span class="token punctuation">:</span> <span class="token number">0</span><span class="token punctuation">}</span>
+         signalPara <span class="token operator">=</span> signalSPos_match<span class="token punctuation">[</span>num<span class="token punctuation">:</span>num<span class="token operator">+</span><span class="token number">2</span><span class="token punctuation">]</span>
+         <span class="token keyword">try</span><span class="token punctuation">:</span>
+             signalname <span class="token operator">=</span> signalPara<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">.</span>split<span class="token punctuation">(</span><span class="token string">"/"</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span>
+             <span class="token keyword">if</span> <span class="token string">"PDU"</span> <span class="token keyword">not</span> <span class="token keyword">in</span> signalname<span class="token punctuation">.</span>upper<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+                 <span class="token comment">#处理signalName,因为signal是路径加名称../signalName</span>
+                 signalSPos_dict<span class="token punctuation">[</span><span class="token string">'signalname'</span><span class="token punctuation">]</span> <span class="token operator">=</span> signalPara<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">.</span>split<span class="token punctuation">(</span><span class="token string">"/"</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">]</span>
+                 signalSPos_dict<span class="token punctuation">[</span><span class="token string">'startposition'</span><span class="token punctuation">]</span> <span class="token operator">=</span> signalPara<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span>
+                 iSignalSPos_data<span class="token punctuation">.</span>append<span class="token punctuation">(</span>signalSPos_dict<span class="token punctuation">)</span>
+         <span class="token keyword">except</span> IndexError<span class="token punctuation">:</span>
+             <span class="token keyword">print</span><span class="token punctuation">(</span><span class="token string">"无法找到参数"</span><span class="token punctuation">)</span>
+
+ <span class="token keyword">print</span><span class="token punctuation">(</span>iSignalSPos_data<span class="token punctuation">)</span>
+</code></pre> 
+<p><code>打印结果</code></p> 
+<pre><code class="prism language-python"><span class="token comment">#这里只举例一个结果</span>
+<span class="token punctuation">[</span><span class="token punctuation">{<!-- --></span><span class="token string">'signalname'</span><span class="token punctuation">:</span> <span class="token string">'isDMSAdoWrnngDspCmd'</span><span class="token punctuation">,</span> <span class="token string">'startposition'</span><span class="token punctuation">:</span> <span class="token string">'63'</span><span class="token punctuation">}</span><span class="token punctuation">]</span>
+</code></pre> 
+<hr> 
+<h2><a id="Signal_522"></a>八、解析Signal中的枚举值或公式</h2> 
+<p>1、每个信号都有Internal-To-phys，有些类型是<code>TEXTTABLE</code>，有些是<code>LINEAR</code>；</p> 
+<p><code>TEXTTABLE:</code><br> <img src="https://images2.imgbox.com/db/8c/TlLG7PxY_o.png" alt="在这里插入图片描述"><br> <code>LINEAR:</code><br> <img src="https://images2.imgbox.com/dd/8b/k3x5FKUi_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>因此匹配方法有两种情况</strong></p> 
+<p><strong>情况一：TEXTTABLE类型</strong></p> 
+<p>2、下面是arxml的片段其中就包括了Signal Name<code>DMSAdoWrnngDspCmd</code>，Internal-To-phys类型<code>TEXTTABLE</code>，值的范围<code>0-0</code>，枚举值<code>DMSAdoWrnngDspCmd_0_Unavailable/DMSAdoWrnngDspCmd_1_Off/DMSAdoWrnngDspCmd_2_On/DMSAdoWrnngDspCmd_3_laststatus</code>；</p> 
+<p>3、我们查找报文相关的参数就可以通过查找<code>&lt;COMPU-METHOD(?: UUID="[^"]+")?&gt;数据片段&lt;/COMPU-METHOD&gt;</code>来获取arxml中的数据片段，再进行更详细的匹配获取其余数据。</p> 
+<ul><li>匹配片段中的<code>&lt;SHORT-NAME&gt;Signal Name名称&lt;/SHORT-NAME&gt;</code>来获得Signal Name；</li><li>匹配片段中的<code>&lt;LOWER-LIMIT(?: INTERVAL-TYPE="CLOSED")?&gt;LIMIT值区域&lt;/LOWER-LIMIT&gt;</code>来获得Signal值得区域范围；</li><li>匹配片段中的<code>&lt;VT&gt;枚举值&lt;/VT&gt;</code>来获取Signal的枚举值；</li></ul> 
+<pre><code class="prism language-python"><span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>METHOD UUID<span class="token operator">=</span><span class="token string">"26578eb7-6133-4ca0-8764-932f674899e2"</span><span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>DMSAdoWrnngDspCmd<span class="token operator">&lt;</span><span class="token operator">/</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span>CATEGORY<span class="token operator">&gt;</span>TEXTTABLE<span class="token operator">&lt;</span><span class="token operator">/</span>CATEGORY<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>INTERNAL<span class="token operator">-</span>TO<span class="token operator">-</span>PHYS<span class="token operator">&gt;</span>
+    <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>SCALES<span class="token operator">&gt;</span>
+      <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>SCALE<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span>LOWER<span class="token operator">-</span>LIMIT INTERVAL<span class="token operator">-</span>TYPE<span class="token operator">=</span><span class="token string">"CLOSED"</span><span class="token operator">&gt;</span><span class="token number">0</span><span class="token operator">&lt;</span><span class="token operator">/</span>LOWER<span class="token operator">-</span>LIMIT<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span>UPPER<span class="token operator">-</span>LIMIT INTERVAL<span class="token operator">-</span>TYPE<span class="token operator">=</span><span class="token string">"CLOSED"</span><span class="token operator">&gt;</span><span class="token number">0</span><span class="token operator">&lt;</span><span class="token operator">/</span>UPPER<span class="token operator">-</span>LIMIT<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>CONST<span class="token operator">&gt;</span>
+          <span class="token operator">&lt;</span>VT<span class="token operator">&gt;</span>DMSAdoWrnngDspCmd_0_Unavailable<span class="token operator">&lt;</span><span class="token operator">/</span>VT<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>CONST<span class="token operator">&gt;</span>
+      <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>SCALE<span class="token operator">&gt;</span>
+      <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>SCALE<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span>LOWER<span class="token operator">-</span>LIMIT INTERVAL<span class="token operator">-</span>TYPE<span class="token operator">=</span><span class="token string">"CLOSED"</span><span class="token operator">&gt;</span><span class="token number">1</span><span class="token operator">&lt;</span><span class="token operator">/</span>LOWER<span class="token operator">-</span>LIMIT<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span>UPPER<span class="token operator">-</span>LIMIT INTERVAL<span class="token operator">-</span>TYPE<span class="token operator">=</span><span class="token string">"CLOSED"</span><span class="token operator">&gt;</span><span class="token number">1</span><span class="token operator">&lt;</span><span class="token operator">/</span>UPPER<span class="token operator">-</span>LIMIT<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>CONST<span class="token operator">&gt;</span>
+          <span class="token operator">&lt;</span>VT<span class="token operator">&gt;</span>DMSAdoWrnngDspCmd_1_Off<span class="token operator">&lt;</span><span class="token operator">/</span>VT<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>CONST<span class="token operator">&gt;</span>
+      <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>SCALE<span class="token operator">&gt;</span>
+      <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>SCALE<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span>LOWER<span class="token operator">-</span>LIMIT INTERVAL<span class="token operator">-</span>TYPE<span class="token operator">=</span><span class="token string">"CLOSED"</span><span class="token operator">&gt;</span><span class="token number">2</span><span class="token operator">&lt;</span><span class="token operator">/</span>LOWER<span class="token operator">-</span>LIMIT<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span>UPPER<span class="token operator">-</span>LIMIT INTERVAL<span class="token operator">-</span>TYPE<span class="token operator">=</span><span class="token string">"CLOSED"</span><span class="token operator">&gt;</span><span class="token number">2</span><span class="token operator">&lt;</span><span class="token operator">/</span>UPPER<span class="token operator">-</span>LIMIT<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>CONST<span class="token operator">&gt;</span>
+          <span class="token operator">&lt;</span>VT<span class="token operator">&gt;</span>DMSAdoWrnngDspCmd_2_On<span class="token operator">&lt;</span><span class="token operator">/</span>VT<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>CONST<span class="token operator">&gt;</span>
+      <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>SCALE<span class="token operator">&gt;</span>
+      <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>SCALE<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span>LOWER<span class="token operator">-</span>LIMIT INTERVAL<span class="token operator">-</span>TYPE<span class="token operator">=</span><span class="token string">"CLOSED"</span><span class="token operator">&gt;</span><span class="token number">3</span><span class="token operator">&lt;</span><span class="token operator">/</span>LOWER<span class="token operator">-</span>LIMIT<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span>UPPER<span class="token operator">-</span>LIMIT INTERVAL<span class="token operator">-</span>TYPE<span class="token operator">=</span><span class="token string">"CLOSED"</span><span class="token operator">&gt;</span><span class="token number">3</span><span class="token operator">&lt;</span><span class="token operator">/</span>UPPER<span class="token operator">-</span>LIMIT<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>CONST<span class="token operator">&gt;</span>
+          <span class="token operator">&lt;</span>VT<span class="token operator">&gt;</span>DMSAdoWrnngDspCmd_3_laststatus<span class="token operator">&lt;</span><span class="token operator">/</span>VT<span class="token operator">&gt;</span>
+        <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>CONST<span class="token operator">&gt;</span>
+      <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>SCALE<span class="token operator">&gt;</span>
+    <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>SCALES<span class="token operator">&gt;</span>
+  <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>INTERNAL<span class="token operator">-</span>TO<span class="token operator">-</span>PHYS<span class="token operator">&gt;</span>
+<span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>METHOD<span class="token operator">&gt;</span>
+</code></pre> 
+<p><strong>情况二：LINEAR类型</strong></p> 
+<p>4、下面是arxml的片段其中就包括了Signal Name<code>VehSpdAvg</code>，Internal-To-phys类型<code>LINEAR</code>，值的范围<code>0-32767</code>，Offset分子<code>0</code>，Factor分子<code>0.015625</code>，Offset和Factor分母<code>1</code>，最终需要组合成<code>(0-32767): (0.015625*raw) / 1</code>；</p> 
+<p>5、我们查找报文相关的参数就可以通过查找<code>&lt;COMPU-METHOD(?: UUID="[^"]+")?&gt;数据片段&lt;/COMPU-METHOD&gt;</code>来获取arxml中的数据片段，再进行更详细的匹配获取其余数据。</p> 
+<ul><li>匹配片段中的<code>&lt;SHORT-NAME&gt;Signal Name名称&lt;/SHORT-NAME&gt;</code>来获得Signal Name；</li><li>匹配片段中的<code>&lt;LOWER-LIMIT(?: INTERVAL-TYPE="CLOSED")?&gt;Signal值区域&lt;/LOWER-LIMIT&gt;</code>来获得Signal值得区域范围；</li><li>匹配片段中的<code> &lt;COMPU-NUMERATOR&gt;&lt;V&gt;Offset分子&lt;/V&gt;&lt;V&gt;Factor分子&lt;/V&gt;&lt;/COMPU-NUMERATOR&gt;</code>来获取分子；</li><li>匹配片段中的<code>&lt;COMPU-DENOMINATOR&gt;&lt;V&gt;分母&lt;/V&gt;&lt;/COMPU-DENOMINATOR&gt;</code>来获得分母；</li><li></ul> 
+<pre><code class="prism language-python"><span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>METHOD UUID<span class="token operator">=</span><span class="token string">"60cf4d04-1640-4e96-a021-f6d2137d0faf"</span><span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>VehSpdAvg<span class="token operator">&lt;</span><span class="token operator">/</span>SHORT<span class="token operator">-</span>NAME<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>CATEGORY<span class="token operator">&gt;</span>LINEAR<span class="token operator">&lt;</span><span class="token operator">/</span>CATEGORY<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>INTERNAL<span class="token operator">-</span>TO<span class="token operator">-</span>PHYS<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>SCALES<span class="token operator">&gt;</span>
+     <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>SCALE<span class="token operator">&gt;</span>
+       <span class="token operator">&lt;</span>LOWER<span class="token operator">-</span>LIMIT INTERVAL<span class="token operator">-</span>TYPE<span class="token operator">=</span><span class="token string">"CLOSED"</span><span class="token operator">&gt;</span><span class="token number">0</span><span class="token operator">&lt;</span><span class="token operator">/</span>LOWER<span class="token operator">-</span>LIMIT<span class="token operator">&gt;</span>
+       <span class="token operator">&lt;</span>UPPER<span class="token operator">-</span>LIMIT INTERVAL<span class="token operator">-</span>TYPE<span class="token operator">=</span><span class="token string">"CLOSED"</span><span class="token operator">&gt;</span><span class="token number">32767</span><span class="token operator">&lt;</span><span class="token operator">/</span>UPPER<span class="token operator">-</span>LIMIT<span class="token operator">&gt;</span>
+       <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>RATIONAL<span class="token operator">-</span>COEFFS<span class="token operator">&gt;</span>
+         <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>NUMERATOR<span class="token operator">&gt;</span>
+           <span class="token operator">&lt;</span>V<span class="token operator">&gt;</span><span class="token number">0</span><span class="token operator">&lt;</span><span class="token operator">/</span>V<span class="token operator">&gt;</span>
+           <span class="token operator">&lt;</span>V<span class="token operator">&gt;</span><span class="token number">0.015625</span><span class="token operator">&lt;</span><span class="token operator">/</span>V<span class="token operator">&gt;</span>
+         <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>NUMERATOR<span class="token operator">&gt;</span>
+         <span class="token operator">&lt;</span>COMPU<span class="token operator">-</span>DENOMINATOR<span class="token operator">&gt;</span>
+           <span class="token operator">&lt;</span>V<span class="token operator">&gt;</span><span class="token number">1</span><span class="token operator">&lt;</span><span class="token operator">/</span>V<span class="token operator">&gt;</span>
+         <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>DENOMINATOR<span class="token operator">&gt;</span>
+       <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>RATIONAL<span class="token operator">-</span>COEFFS<span class="token operator">&gt;</span>
+     <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>SCALE<span class="token operator">&gt;</span>
+   <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>SCALES<span class="token operator">&gt;</span>
+ <span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>INTERNAL<span class="token operator">-</span>TO<span class="token operator">-</span>PHYS<span class="token operator">&gt;</span>
+<span class="token operator">&lt;</span><span class="token operator">/</span>COMPU<span class="token operator">-</span>METHOD<span class="token operator">&gt;</span>
+</code></pre> 
+<p><code>python代码</code></p> 
+<pre><code class="prism language-python"><span class="token comment">#匹配&lt;COMPU-METHOD&gt;&lt;/COMPU-METHOD&gt;或者&lt;COMPU-METHOD UUID=""&gt;&lt;/COMPU-METHOD&gt;中的文本</span>
+compuMethod_pattern <span class="token operator">=</span> <span class="token string">r'&lt;COMPU-METHOD(?: UUID="[^"]+")?&gt;(.*?)&lt;/COMPU-METHOD&gt;'</span>
+compuMethod_match <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>compuMethod_pattern<span class="token punctuation">,</span>arxml_data<span class="token punctuation">,</span>re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+
+<span class="token comment">#匹配信号名和对应的值，有枚举值或者线性值</span>
+compuMethodPara_pattern <span class="token operator">=</span> <span class="token string">r'&lt;SHORT-NAME&gt;(.*?)&lt;/SHORT-NAME&gt;|&lt;CATEGORY&gt;(.*?)&lt;/CATEGORY&gt;|&lt;COMPU-SCALES&gt;(.*?)&lt;/COMPU-SCALES&gt;'</span>
+
+<span class="token comment">#匹配TEXTTABLE中的枚举值&lt;COMPU-SCALE&gt;,每个&lt;COMPU-SCALE&gt;中有一个枚举值和枚举文本</span>
+compuScale_pattern <span class="token operator">=</span> <span class="token string">r'&lt;COMPU-SCALE&gt;(.*?)&lt;/COMPU-SCALE&gt;'</span>
+
+<span class="token comment">#匹配&lt;COMPU-SCALE&gt;中的枚举值和枚举文本</span>
+compuScaleEnum_pattern <span class="token operator">=</span> <span class="token string">r'&lt;LOWER-LIMIT(?: INTERVAL-TYPE="CLOSED")?&gt;(.*?)&lt;/LOWER-LIMIT&gt;.*?&lt;VT&gt;(.*?)&lt;/VT&gt;'</span>
+
+<span class="token comment">#匹配&lt;COMPU-SCALE&gt;值的范围</span>
+compuScaleLimit_pattern <span class="token operator">=</span> <span class="token string">r'&lt;LOWER-LIMIT(?: INTERVAL-TYPE="CLOSED")?&gt;(.*?)&lt;/LOWER-LIMIT&gt;.*?&lt;UPPER-LIMIT(?: INTERVAL-TYPE="CLOSED")?&gt;(.*?)&lt;/UPPER-LIMIT&gt;'</span>
+
+<span class="token comment">#匹配&lt;COMPU-SCALE&gt;值的计算公式</span>
+compuScaleFormula_pattern <span class="token operator">=</span> <span class="token string">r'&lt;V&gt;(.*?)&lt;/V&gt;'</span>
+
+compuMethodPara_data <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+<span class="token keyword">for</span> compuMethod <span class="token keyword">in</span> compuMethod_match<span class="token punctuation">:</span>
+    enumrate <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+    compuMethodPara_dic <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token string">'signalname'</span><span class="token punctuation">:</span><span class="token string">''</span><span class="token punctuation">,</span><span class="token string">'category'</span><span class="token punctuation">:</span><span class="token string">''</span><span class="token punctuation">,</span><span class="token string">'TEXTTABLE'</span><span class="token punctuation">:</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">,</span><span class="token string">'formula'</span><span class="token punctuation">:</span><span class="token string">''</span><span class="token punctuation">}</span>
+    <span class="token comment">#匹配信号名和对应的值，有枚举值或者线性值</span>
+    compuMethodPara_match <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>compuMethodPara_pattern<span class="token punctuation">,</span>compuMethod<span class="token punctuation">,</span>re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+
+    <span class="token keyword">if</span> <span class="token builtin">len</span><span class="token punctuation">(</span>compuMethodPara_match<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">3</span><span class="token punctuation">:</span>
+        <span class="token comment">#signalname</span>
+        compuMethodPara_dic<span class="token punctuation">[</span><span class="token string">'signalname'</span><span class="token punctuation">]</span> <span class="token operator">=</span> compuMethodPara_match<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span>
+
+        <span class="token comment">#值的类型,是TEXTTABLE或者LINEAR</span>
+        category <span class="token operator">=</span> compuMethodPara_match<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span>
+        compuMethodPara_dic<span class="token punctuation">[</span><span class="token string">'category'</span><span class="token punctuation">]</span> <span class="token operator">=</span> category
+
+        <span class="token comment">#compuScales含有多个枚举的值和文本</span>
+        compuScales_text <span class="token operator">=</span> compuMethodPara_match<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span>
+        <span class="token comment">#signal有枚举值</span>
+        <span class="token keyword">if</span> category <span class="token operator">==</span> <span class="token string">"TEXTTABLE"</span><span class="token punctuation">:</span>
+            compuScales <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>compuScale_pattern<span class="token punctuation">,</span>compuScales_text<span class="token punctuation">,</span>re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+
+            <span class="token keyword">for</span> compuScale <span class="token keyword">in</span> compuScales<span class="token punctuation">:</span>
+                <span class="token comment">#查找枚举值和枚举文本</span>
+                compuScalePara <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>compuScaleEnum_pattern<span class="token punctuation">,</span>compuScale<span class="token punctuation">,</span>re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+                <span class="token comment">#字典形式存放枚举值和枚举文本</span>
+                <span class="token keyword">try</span><span class="token punctuation">:</span>
+                    enumrate_dict <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>compuScalePara<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">:</span>compuScalePara<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">}</span>
+                    enumrate<span class="token punctuation">.</span>append<span class="token punctuation">(</span>enumrate_dict<span class="token punctuation">)</span>
+                <span class="token keyword">except</span> IndexError<span class="token punctuation">:</span>
+                    <span class="token keyword">print</span><span class="token punctuation">(</span>compuScalePara<span class="token punctuation">)</span>
+                    
+            compuMethodPara_dic<span class="token punctuation">[</span><span class="token string">'TEXTTABLE'</span><span class="token punctuation">]</span> <span class="token operator">=</span> enumrate
+            
+        <span class="token comment">#信号有factor和offset</span>
+        <span class="token keyword">elif</span> category <span class="token operator">==</span> <span class="token string">"LINEAR"</span><span class="token punctuation">:</span>
+            Limit <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>compuScaleLimit_pattern<span class="token punctuation">,</span>compuMethod<span class="token punctuation">,</span>re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+            formula <span class="token operator">=</span> re<span class="token punctuation">.</span>findall<span class="token punctuation">(</span>compuScaleFormula_pattern<span class="token punctuation">,</span>compuMethod<span class="token punctuation">,</span>re<span class="token punctuation">.</span>DOTALL<span class="token punctuation">)</span>
+            
+            <span class="token keyword">if</span> <span class="token builtin">len</span><span class="token punctuation">(</span>Limit<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">1</span> <span class="token keyword">and</span> <span class="token builtin">len</span><span class="token punctuation">(</span>formula<span class="token punctuation">)</span> <span class="token operator">==</span><span class="token number">3</span><span class="token punctuation">:</span>
+                Limit_str <span class="token operator">=</span> <span class="token string">'('</span><span class="token operator">+</span>Limit<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token operator">+</span><span class="token string">'-'</span><span class="token operator">+</span>Limit<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token operator">+</span><span class="token string">'):'</span>
+                formula_str <span class="token operator">=</span> <span class="token string">'('</span><span class="token operator">+</span><span class="token string">'phys=raw'</span><span class="token operator">+</span><span class="token string">'*'</span><span class="token operator">+</span>formula<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token operator">+</span><span class="token string">'+'</span><span class="token operator">+</span>formula<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token operator">+</span><span class="token string">')'</span><span class="token operator">+</span><span class="token string">'/'</span><span class="token operator">+</span>formula<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span>
+                compuMethodPara_dic<span class="token punctuation">[</span><span class="token string">'formula'</span><span class="token punctuation">]</span> <span class="token operator">=</span> Limit_str <span class="token operator">+</span> formula_str
+
+        compuMethodPara_data<span class="token punctuation">.</span>append<span class="token punctuation">(</span>compuMethodPara_dic<span class="token punctuation">)</span>
+
+<span class="token keyword">print</span><span class="token punctuation">(</span>compuMethodPara_data<span class="token punctuation">)</span>
+</code></pre> 
+<p><code>打印结果</code></p> 
+<pre><code class="prism language-python"><span class="token punctuation">[</span><span class="token punctuation">{<!-- --></span><span class="token string">'signalname'</span><span class="token punctuation">:</span> <span class="token string">'DMSAdoWrnngDspCmd'</span><span class="token punctuation">,</span> <span class="token string">'category'</span><span class="token punctuation">:</span> <span class="token string">'TEXTTABLE'</span><span class="token punctuation">,</span> <span class="token string">'TEXTTABLE'</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token punctuation">{<!-- --></span><span class="token string">'0'</span><span class="token punctuation">:</span> <span class="token string">'DMSAdoWrnngDspCmd_0_Unavailable'</span><span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span><span class="token string">'1'</span><span class="token punctuation">:</span> <span class="token string">'DMSAdoWrnngDspCmd_1_Off'</span><span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span><span class="token string">'2'</span><span class="token punctuation">:</span> <span class="token string">'DMSAdoWrnngDspCmd_2_On'</span><span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token punctuation">{<!-- --></span><span class="token string">'3'</span><span class="token punctuation">:</span> <span class="token string">'DMSAdoWrnngDspCmd_3_laststatus'</span><span class="token punctuation">}</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token string">'formula'</span><span class="token punctuation">:</span> <span class="token string">''</span><span class="token punctuation">}</span><span class="token punctuation">,</span><span class="token punctuation">{<!-- --></span><span class="token string">'signalname'</span><span class="token punctuation">:</span> <span class="token string">'VehSpdAvg'</span><span class="token punctuation">,</span> <span class="token string">'category'</span><span class="token punctuation">:</span> <span class="token string">'LINEAR'</span><span class="token punctuation">,</span> <span class="token string">'TEXTTABLE'</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token string">'formula'</span><span class="token punctuation">:</span> <span class="token string">'(0-32767):(phys=raw*0.015625+0)/1'</span><span class="token punctuation">}</span><span class="token punctuation">]</span>
+</code></pre> 
+<hr> 
+<h2><a id="ARXML_689"></a>九、解析ARXML总结</h2> 
+<p>1、注意这不是完整版的ARXML解析代码，只是提供一种方法给大家参考，还有大量的参数需要大家去学习解读autosar规范，本人也是利用下班时间自己学习，如果有什么问题请大家指出。</p> 
+<p>2、另外正则表达式并不是行业内推荐的方法，大家在操作前可以先看看Python的库<a href="https://editor.csdn.net/md/?articleId=119959304" rel="nofollow">matrix</a>，我更建议使用matrix将ARXML转换成DBC，然后缺少哪些数据再去ARXML拿，拿完之后再匹配到DBC矩阵中去。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/44964f8e9e51219e01ad245e30fe06bb/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【Vue】生命周期一文详解</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7f31925f6d9b65078f7fa2338b00c217/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Flutter开发实践：用一套代码构建多端精美应用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

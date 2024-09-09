@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>虚拟化 之一 详解 jailhouse 架构及原理、软硬件要求、源码文件、基本组件 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/054d1a8b5811f0b02dcf89e351bcc6a9/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="虚拟化 之一 详解 jailhouse 架构及原理、软硬件要求、源码文件、基本组件">
+  <meta property="og:description" content="Jailhouse 是一个基于 Linux 实现的针对创建工业级应用程序的小型 Hypervisor，是由西门子公司的 Jan Kiszka 于 2013 年开发的，并得到了官方 Linux 内核的支持，在开源社区中获得了知名度和吸引力。
+Jailhouse Jailhouse 是一种轻量级的虚拟化技术，可以将多个操作系统（或者裸机程序）同时运行在同一台硬件上。它是一个基于 Linux 的静态分区的 Hypervisor，但本身并不改造 Linux 内核，而是利用 Linux 系统的开放性，增加一个或多个实时操作系统，实现多系统在一个多核处理器上运行。
+Jailhouse 不会模拟不存在的硬件资源，也不包含任何的调度处理，而是利用虚拟化技术将硬件资源划分为多个被称为 Cell 的独立空间，并将每个 Cell 分配给不同的虚拟机。每个 Cell 独占自己的处理器核心、内存、I/O 设备和中断控制器等资源。这样可以确保不同虚拟机之间的资源互相隔离，提高系统的可靠性。
+Root Cell 当 Jailhouse 启动之后，原来的负责启动 Jailhouse 的 Linux 系统所在空间就被称为 Root Cell。对于所有 Jailhouse 虚拟机的管理都是在 Root Cell 中的 Linux 系统中通过 Jailhouse 提供的命令行工具来实现的。
+Non-root Cell 除了 Root Cell 之外的每个独立的 Cell 就是一个 Non-root Cell，每个 Non-root Cell 就对应一个虚拟机。Non-root Cell 通过 Root Cell 进行管理，只要资源够用，Non-root Cell 可以有任意多个。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-13T09:59:07+08:00">
+    <meta property="article:modified_time" content="2024-06-13T09:59:07+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">虚拟化 之一 详解 jailhouse 架构及原理、软硬件要求、源码文件、基本组件</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night-eighties">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>  Jailhouse 是一个基于 Linux 实现的针对创建工业级应用程序的小型 Hypervisor，是由西门子公司的 Jan Kiszka 于 2013 年开发的，并得到了官方 Linux 内核的支持，在开源社区中获得了知名度和吸引力。</p> 
+<h2><a id="Jailhouse_2"></a>Jailhouse</h2> 
+<p>  Jailhouse 是一种轻量级的虚拟化技术，可以将多个操作系统（或者裸机程序）同时运行在同一台硬件上。它是一个基于 Linux 的静态分区的 Hypervisor，但本身并不改造 Linux 内核，而是利用 Linux 系统的开放性，增加一个或多个实时操作系统，实现多系统在一个多核处理器上运行。<br> <img src="https://images2.imgbox.com/f5/22/j3hw773Q_o.png" alt="在这里插入图片描述"><br>   Jailhouse 不会模拟不存在的硬件资源，也不包含任何的调度处理，而是利用虚拟化技术将硬件资源划分为多个被称为 Cell 的独立空间，并将每个 Cell 分配给不同的虚拟机。每个 Cell 独占自己的处理器核心、内存、I/O 设备和中断控制器等资源。这样可以确保不同虚拟机之间的资源互相隔离，提高系统的可靠性。<br> <img src="https://images2.imgbox.com/6c/5f/nhIEzNWM_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="Root_Cell_7"></a>Root Cell</h3> 
+<p>  当 Jailhouse 启动之后，原来的负责启动 Jailhouse 的 Linux 系统所在空间就被称为 Root Cell。对于所有 Jailhouse 虚拟机的管理都是在 Root Cell 中的 Linux 系统中通过 Jailhouse 提供的命令行工具来实现的。</p> 
+<h3><a id="Nonroot_Cell_10"></a>Non-root Cell</h3> 
+<p>  除了 Root Cell 之外的每个独立的 Cell 就是一个 Non-root Cell，每个 Non-root Cell 就对应一个虚拟机。Non-root Cell 通过 Root Cell 进行管理，只要资源够用，Non-root Cell 可以有任意多个。</p> 
+<h3><a id="inmate_13"></a>inmate</h3> 
+<p>  Non-root Cell 虚拟机中运行的系统（也可能是一个裸机程序）被称为 <strong>inmate</strong>，目前可以是 <a href="Documentation/non-root-linux.txt" rel="nofollow">Linux</a>、<a href="https://github.com/siemens/freertos-cell">FreeRTOS</a>、<a href="http://www.erika-enterprise.com/wiki/index.php?title=ERIKA3_on_the_Jailhouse_hypervisor" rel="nofollow">ERIKA3 RTOS</a>、<a href="https://www.zephyrproject.org" rel="nofollow">Zephyr</a> 其中之一。Jailhouse 都是直接将其作为原始二进制文件（不是 ELF 文件），直接加载到其对应的配置文件中指定的内存中去运行。</p> 
+<p>  在 x86 平台下，由于 Jailhouse 只向 Non-root Cell 的 inmate 暴露最小环境，可用的资源不足以在不进行修改的情况下引导标准的 Linux 系统。为此，西门子官方提供了一个<a href="https://git.kiszka.org/?p=linux.git;a=shortlog;h=refs/heads/queues/jailhouse" rel="nofollow">补丁队列</a>，以便在 x86 平台下的 Non-root Cell 中启动 Linux。同时在构建时需要注意以下几点：</p> 
+<ol><li>需要使能 <code>CONFIG_JAILHOUSE_GUEST</code></li><li>禁用 <code>CONFIG_SERIO</code> 和 <code>CONFIG_PM_TRACE_RTC</code></li><li>一般还应该禁用所有不需要的驱动程序和特性，以避免不需要的 probe，并且使镜像大小和内存占用最小化</li></ol> 
+<p>  在 ARM / ARM64 平台上，引导 Linux 内核要比在 x86 平台上简单得多，因此在这种情况下，我们不需要为 Non-root Cell 特别修改 Linux 内核。</p> 
+<h3><a id="_23"></a>内存布局</h3> 
+<p>  Jailhouse 的实现需要使用一块连续内存，这块内存需要在启动 Linux 时保留出来。至于内存具体用哪一块，则取决于自己的设备，如下以 0x100000000 为例的示意图如下所示：<br> <img src="https://images2.imgbox.com/78/c8/tZt5q1V6_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="Cell__27"></a>Cell 间通信</h3> 
+<p>  虽然 Jailhouse 将硬件资源进行了划分到了不同的 Cell 中，通过虚拟机监控器实现了相互隔离，但在实际应用过程中，Cell 间也需进行通信。为此，Jailhouse 通过虚拟 ivshmem（Inter-VM shared memory） PCI 设备在 Cell 之间提供共享内存和信号机制。一个通道将两个分区 1：1 对应地连接起来。</p> 
+<h2><a id="_30"></a>环境要求</h2> 
+<p>  Jailhouse 是一个依托于 Linux Kernel 的开放性从而直接使用硬件平台提供的虚拟化技术来实现的虚拟化解决方案。因此，Jailhouse 需要 Linux Kernel 的支持及硬件平台的虚拟化技术。</p> 
+<h3><a id="_33"></a>硬件要求</h3> 
+<p>  Jailhouse 利用 Intel 的 VT-x、AMD 的 AMD-V 和 ARM 虚拟化扩展等硬件辅助虚拟化技术来划分物理资源和限制虚拟机对这些资源的访问，从而实现对系统资源的隔离控制。</p> 
+<h4><a id="x86__36"></a>x86 架构</h4> 
+<ul><li>针对 Intel 平台，需要 64 位架构以及 VMX（Virtual Machine Extensions，Intel CPU 中使用 <code>vmx</code> 标识 Intel 的 VT-x 虚拟化技术） 技术，具体细节： 
+  <ul><li> <p>具备 EPT（Extended Page Tables，扩展页表）支持。扩展页表是用于内存管理单元（MMU）的 Intel 第二代 x86 虚拟化技术。 直接在实模式下启动逻辑 CPU 就需要 EPT 的支持，这一功能在英特尔的行话中称为无限制访客模式，并在 Westmere 微体系结构中引入。</p> 
+    <blockquote> 
+     <p>Intel 的 Core i3、Core i5、Core i7 和 Core i9 CPU 等均支持 EPT</p> 
+    </blockquote> </li><li> <p>Preemption Timer 是一种可以周期性使 VM 触发 VMEXIT 的一种机制。即设置了 Preemption Timer 之后，可以使得虚拟机在指定的 TSC cycle 之后产生一次 VMEXIT 并设置对应的 exit_reason，trap 到 VMM 中。</p> </li><li> <p>支持中断重映射的 Intel IOMMU（Intel 官方称为 VT-d（Virtualization Technology for Directed I/O））</p> </li></ul> </li><li>针对 AMD 平台，需要 64 位架构以及 SVM（AMD Secure Virtual Machine（这个是 AMD 内部的研发代号，后来统一使用 AMD-V 作为对外名称），AMD CPU 中使用 <code>svm</code> 来表示 AMD 的 AMD-V 虚拟化技术）技术: 
+  <ul><li>必须具备 NPT（Nested Page Tables，嵌套页表）支持。嵌套页表现在称为快速虚拟化索引（Rapid Virtualization Indexing，RVI）是 AMD 第二代处理器内存管理单元（MMU）硬件辅助虚拟化技术。</li><li>推荐具备 Decode Assists 支持</li><li>AMD IOMMU（AMD 官方称为 AMD-Vi（AMD’s I/O Virtualization Technology））目前不被支持，但后续需要</li></ul> </li><li>至少两个逻辑 CPU 核心。注意这里是逻辑 CPU 核心，不是物理 CPU 核心。</li><li>在 x86 平台下，需要在 BIOS 或 UEFI 中开启虚拟化功能！<br> <img src="https://images2.imgbox.com/fc/ce/XOlS4eF4_o.png" alt="在这里插入图片描述"></li></ul> 
+<p>  EPT 和 NPT 是 Intel 和 AMD 两家对于 Second Level Address Translation（SLAT，二级地址转换）在自家 CPU 上的具体实现。SLAT 是一种硬件辅助虚拟化技术，可以避免与软件管理的影子页表相关的开销。此外，IOMMU 也经常被我们称为 PCI 直通。</p> 
+<h4><a id="ARM__53"></a>ARM 架构</h4> 
+<ul><li> <p>ARMv8 架构或者是带有虚拟化扩展的 ARMv7 架构。ARM 的虚拟化扩展支持 SLAT，即由 Stage-2 MMU 提供的 Stage-2 页表。客户机使用 Stage-1 MMU。该支持在 ARMv7ve 架构中作为可选添加，并且在 ARMv8（32 位和 64 位）架构中也受支持。</p> </li><li> <p>至少两个逻辑 CPU 核心</p> </li><li> <p>支持如下 AArch32 架构的开发板</p> 
+  <ul><li>Banana Pi (see more)</li><li>Orange Pi Zero (256 MB version)</li><li>NVIDIA Jetson TK1</li><li>ARM Versatile Express with Cortex-A15 or A7 cores (includes ARM Fast Model)</li><li>emtrion emCON-RZ/G1x series based on Renesas RZ/G (see more)</li></ul> </li><li> <p>支持如下 AArch64 架构的开发板</p> 
+  <ul><li>AMD Seattle / SoftIron Overdrive 3000</li><li>LeMaker HiKey</li><li>NVIDIA Jetson TX1 and TX2</li><li>Xilinx ZCU102 (ZynqMP evaluation board)</li><li>NXP MCIMX8M-EVK</li></ul> </li></ul> 
+<h3><a id="_71"></a>内核要求</h3> 
+<p>  Jailhouse 的构建是依赖于 Linux Kernel 的，因此，必须使用对应的 Linux Kernel。但是，不同版本的 Linux Kernel 对于 Jailhouse 的支持情况不尽相同。在使用比较新的 Linux Kernel 时，需要对 Linux Kernel 进行打补丁，否则将出现各种错误！</p> 
+<h4><a id="x86__74"></a>x86 架构</h4> 
+<ol><li> <p>必须禁用 Linux Kernel 对 VT-d IOMMU 的使用（DMAR）。这个可以通过在 GRUB 配置文件中设置 <code>GRUB_CMDLINE_LINUX = "intel_iommu=off"</code>（IOMMU 硬件有 intel/amd/arm 的等，一般用 intel 的硬件） 这个启动参数来处理。</p> 
+  <blockquote> 
+   <ol><li>kvm 一定要用 intel_iommu=on，DPDK/SPDK 如果绑定 vfio-pci 那也一定要求 intel_iommu=on，如果绑定 uio/igb_uio 那么就不需要intel_iommu=on</li></ol> 
+  </blockquote> 
+  <blockquote> 
+   <ol start="2"><li><code>dmesg | grep -E "DMAR|IOMMU"</code> 查看</li></ol> 
+  </blockquote> </li><li> <p>要利用更快的 x2APIC，需要在内核中打开中断重新映射。这个需要再构建内核时启用 <code>CONFIG_IRQ_REMAP</code> 这个配置项</p> </li><li> <p>Jailhouse 本身和每个 Cell 都需要一块连续的 RAM，这个必须在 Kernel 启动之前配置。通常是使用 <code>memmap</code> 或 <code>mem</code> 这两个启动命令来实现。在 x86 平台上，这通常是在 GRUB 配置文件中通过添加 <code>GRUB_CMDLINE_LINUX="memmap=82M\\\$0x3a000000"</code> 这个启动参数来处理。</p> </li></ol> 
+<h4><a id="ARM__84"></a>ARM 架构</h4> 
+<p>  针对于 AArch32 架构，需要 Linux Kernel 版本大于等于 3.19；而对于 AArch64 架构，则需要 Linux Kernel 版本大于等于 4.7。此外，还需要适当的的引导程序（例如 U-Boot）的支持。</p> 
+<ul><li>Linux Kernel 必须以 HYP 模式启动（工作在 HYP 模式下的 CPU 上，默认是 SVC 模式）。这里就涉及到了 ARM 架构中的不同特权等级，ARMv7 中使用的是 Privilege level 的概念，ARMv8 中则使用 Exception Level 这个概念<br> <img src="https://images2.imgbox.com/9f/bd/Ao27QrAQ_o.png" alt="在这里插入图片描述"> 
+  <ul><li>Supervisor Call（SVC）指令使用户模式程序可以请求操作系统服务。</li><li>Hypervisor Call（HVC）指令使客户操作系统能够请求 Hypervisor 服务。</li><li>Secure monitor Call（SMC）指令使普通世界能够请求安全世界服务。</li></ul> </li><li>PSCI 对 CPU 离线的支持。PSCI（Power State Coordination Interface，电源状态协调接口） 是一个接口，这个接口实现了电源管理用例。The ARM Trusted Firmware 实现了 PSCI(Power State Coordination Interface) 接口作为运行时服务。Normal world software 可以通过 ARM SMC(Secure Monitor Call) 指令来访问 ARM Trusted Firmware 服务</li><li>Jailhouse 本身和每个 Cell 都需要一块连续的 RAM，这个必须在 Kernel 启动之前配置。在 ARM 平台上，这可以通过减少内核看到的内存量（通过 <code>mem = </code> 内核启动参数）或修改 Device Tree（即保留内存节点）来实现。</li></ul> 
+<h2><a id="_94"></a>源码</h2> 
+<p>  Jailhouse 是由西门子的 Jan Kiszka 在 2013年以 GPLv2 协议开源的一个虚拟化解决方案。并很快得到了官方 Linux 内核的支持，在开源社区中获得了知名度和吸引力。本文及后续博文以目前最新提交（<code>e57d1eff6d55aeed5f977fe4e2acfb6ccbdd7560</code>）版作为学习对象。</p> 
+<h3><a id="_97"></a>源码文件</h3> 
+<p>  Jailhouse 作为一个极度精简的虚拟化实现方案，其代码量还是非常小的，几万行代码量就实现了一个功能强大的虚拟机。</p> 
+<ul><li> <p><code>.github</code> 和 <code>ci</code>：这两个目录下是用来持续集成环境中使用的构建 Jailhouse 所需的 Linux Kernel 的相关配置文件，目前仅支持 GitHub Actions。</p> </li><li> <p><code>config</code>：这个目录下就是针对 <code>arm</code>、<code>arm64</code>、<code>x86</code> 架构下用于生成 Jailhouse 的 Cell 的配置文件对应的源文件。在对应架构下构建 Jailhouse 时，对应架构目录下的每个 <code>.c</code> 就会被构建为对应的 <code>.cell</code> 文件。</p> 
+  <ol><li>配置文件的内容其实就是一个 C 语言的结构体变量，因此使用的就是 <code>.c</code> 扩展名</li><li>该目录下的 <code>.c</code> 文件实际上都是一些示例，在真正使用时，我们需要提供自己的配置文件！</li></ol> </li><li> <p><code>Documentation</code>：Jailhouse 的文档对应的源码，它使用的是 Doxygen 文档系统。使用 <code>sudo apt install doxygen</code> 后，使用命令 <code>make docs</code> 就可以在 <code>Documentation/generated/</code> 构建出对应的文档。<br> <img src="https://images2.imgbox.com/9e/da/NA9RFgow_o.png" alt="在这里插入图片描述"></p> </li><li> <p><code>driver</code>：Jailhouse 的驱动源码，最终会被编译为 <code>jailhouse.ko</code>，并被放到 <code>/lib/modules/$(uname -r)/extra/driver/</code> 目录下来使用！</p> 
+  <ul><li><code>cell.c/h</code>：实现 Cell 相关命令的处理</li><li><code>pci.c/h</code>：实现对 PCI 设备的处理。在将 PCI 设备分配给 Non-root Cell 时，我们需要确保 Root Cell 中的 Linux 不再使用这些设备。只要设备被分配给了其他 Cell ，Root Cell 就不得再访问这些设备。不幸的是，我们不能仅仅使用 PCI 热插拔来在运行时删除/重新添加设备，因为，Linux 将重新编程 BAR（Base Address Registers）并定位到我们不希望/不允许的资源位置。<br>   所以，Jailhouse 充当了一个 PCI 虚拟驱动程序，在其他 Cell 使用设备时它会声明这些设备。在创建 Cell 时，设备将从其驱动程序中解绑，并绑定到 Jailhouse。当 Cell 被销毁时，Jailhouse 将释放其设备。当禁用 Jailhouse 时，它将释放所有已分配的设备。<br>   当释放设备时，它们将不再绑定到任何驱动程序，从 Linux 的角度来看，Jailhouse 虚拟驱动程序仍然会被视为有效的驱动程序。将设备重新分配给原始驱动程序必须手动完成。</li><li><code>sysfs.c/h</code>：还通过 sysfs 虚拟文件系统（<code>/sys/devices/jailhouse</code>）向用户空间暴露 Jailhouse 的数据结构。</li><li><code>main.c/h</code>：驱动入口</li></ul> </li><li> <p><code>hypervisor</code>：Jailhouse 用于管理各个虚拟机的工具的源码代码，最终会被编译为 <code>jailhouse*.bin</code>，被放到 <code>/lib/firmware</code> 目录下</p> 
+  <ul><li><code>arch</code>：再实际使用中，架构相关的代码先被执行，其中调用架构无关的代码</li><li>其他：架构无关的代码，其中的接口被 <code>arch</code> 中对应的接口调用</li></ul> </li><li> <p><code>include</code>：Jailhouse 对外提供的各种 C 头文件，其中包含了各种数据结构的定义，例如，<code>cell-config.h</code> 中就定义了各种设备的数据结构、Cell 的描述符 <code>jailhouse_cell_desc</code> 等等<br> <img src="https://images2.imgbox.com/5f/fe/IQ7RbCG3_o.png" alt="在这里插入图片描述"><br>   Jailhouse 允许用户定义一些在编译时启用的特定于平台的设置或者调试配置参数。方法是新增 <code>include/courahouse/config.h</code> 这个文件，然后在该文件中将对应的配置项定义为 1。如下是当前可用的配置项：</p> <pre><code class="prism language-c"><span class="token comment">/* Print error sources with filename and line number to debug console */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">CONFIG_TRACE_ERROR</span> <span class="token expression"><span class="token number">1</span></span></span>
+
+<span class="token comment">/*
+ * Set instruction pointer to 0 if cell CPU has caused an access violation.
+ * Linux inmates will dump a stack trace in this case.
+ */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">CONFIG_CRASH_CELL_ON_PANIC</span> <span class="token expression"><span class="token number">1</span></span></span>
+
+<span class="token comment">/* Enable code coverage data collection (see Documentation/gcov.txt) */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">CONFIG_JAILHOUSE_GCOV</span> <span class="token expression"><span class="token number">1</span></span></span>
+
+<span class="token comment">/*
+ * Link inmates against a custom base address.  Only supported on ARM
+ * architectures.  If this parameter is defined, inmates must be loaded to
+ * the appropriate location.
+ */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">CONFIG_INMATE_BASE</span> <span class="token expression"><span class="token number">0x90000000</span></span></span>
+
+<span class="token comment">/*
+ * Only available on x86. This debugging option that needs to be activated
+ * when running mmio-access tests.
+ */</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">CONFIG_TEST_DEVICE</span> <span class="token expression"><span class="token number">1</span></span></span>
+</code></pre> </li><li> <p><code>inmates</code>：这里面是 Jailhouse 虚拟机本身的固件源码，他们会被编译为 <code>.bin</code> 文件。</p> 
+  <ul><li><code>demos</code>：这里面就是一些 inmate 的源码，编译之后就是一个个的 inmate 镜像（<code>.bin</code> 文件）。其都有一个对应的 <code>.cell</code> 文件，位于 <code>configs/</code> 目录下。</li><li><code>lib</code>：该目录下是一些可以在 inmate 的源码中使用的库函数的实现。</li><li><code>tests</code>：该目录下是一些验证 Jailhouse 的用例</li><li><code>tools</code>：该目录下是一些用来辅助处理 inmate 的工具的源码，每个 <code>.c</code> 文件经过编译之后成为一个 <code>xxx.bin</code>，最终所有的 <code>.bin</code> 会被安装到 <code>/usr/local/libexec/jailhouse</code> 目录下。目前该目录下就只有一个 <code>linux-loader</code> 的源码。</li></ul> </li><li> <p><code>pyjailhouse</code>：这里面是用来处理在 Non-root Cell 中运行 Linux 虚拟机时对 Linux Kernel 进行处理的一个 Python 脚本库。</p> </li><li> <p><code>scripts</code>：编译系统使用的相关脚本</p> </li><li> <p><code>tools</code>：这里面是一些 Jailhouse 实用工具（<code>jailhouse</code> ）的源码（其中有些是 Python 脚本）。其中，Python 脚本会被放到 <code>/usr/local/libexec/jailhouse</code> 目录下；<code>jailhouse</code> 则被放到 <code>/usr/local/sbin</code> 目录下。</p> </li><li> <p><code>Makefile</code>：构建系统的入口</p> </li><li> <p><code>Kbuild</code>：也是个 Makefile 文件</p> </li><li> <p><code>setup.py</code>：用来打包及安装 pyjailhouse 的脚本文件。</p> </li><li> <p><code>其他</code>：其他</p> </li></ul> 
+<h3><a id="_158"></a>构建</h3> 
+<p>  Jailhouse 的构建过程非常简单，但是由于不同的平台下的虚拟化技术的差异，在构建时遇到的问题也不一样，受限于博文篇幅，我们将在后续博文中详细学习在不同平台下的构建及使用。</p> 
+<ol><li><a href="https://itexp.blog.csdn.net/article/details/137662740" rel="nofollow">虚拟化 之二 详解 jailhouse（x86 平台）的构建过程、配置及使用</a></li><li><a href="https://itexp.blog.csdn.net/article/details/137662794" rel="nofollow">虚拟化 之三 详解 jailhouse（ARM 平台）的构建过程、配置及使用</a></li></ol> 
+<h2><a id="_163"></a>基本组件</h2> 
+<p>  完整的 Jailhouse 组件主要由内核模块（<code>jailhouse.ko</code>）、虚拟机管理程序固件（<code>jailhouse*.bin</code>）、管理工具（<code>jailhouse</code> 命令行程序及一些 Python 脚本）以及配置文件（<code>.cell</code>）这四部分组成。用户使用它们来启用虚拟机管理程序、创建 Cell、加载 inmate 二进制文件以及运行和停止它等。<br> <img src="https://images2.imgbox.com/f1/87/xkONfo1f_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="jailhouseko_167"></a><code>jailhouse.ko</code></h3> 
+<p>  <code>jailhouse.ko</code> 由源码根目录中的 <code>driver</code> 目录中源码在构建之后生成，最终会被安装到 <code>/lib/modules/$(uname -r)/extra/driver/</code> 目录下。它就是一个标准的 Linux Driver 程序，实现为一个 <code>struct miscdevice</code> 设备（主设备号 <code>MISC_MAJOR（10）</code>）。使用命令 <code>cat /proc/misc</code> 可以查看各杂项设备。<br> <img src="https://images2.imgbox.com/d6/c4/aN6tlQV2_o.png" alt="在这里插入图片描述"><br>   Linux 中将设备分为字符设备（I2C、USB、SPI等）、块设备（存储器相关的设备如EMMC、SD卡、U盘等）和网络设备（网络相关的设备WIFI等）三大类，其中，杂项设备归属于字符设备。每个设备节点都有主设备号和次设备号 ，杂项设备的主设备号固定为10，次设备号根据设备不同而不同。<br> <img src="https://images2.imgbox.com/fc/01/I6MUd2O9_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="jailhouse_init_173"></a><code>jailhouse_init()</code></h4> 
+<p>  当加载 <code>jailhouse.ko</code> 之后，驱动源码 <code>driver/main.c</code> 中的 <code>static int __init jailhouse_init(void)</code> 函数就会进行各种初始化，主要就干了以下几个事：</p> 
+<ol><li>开头的这一堆的宏定义主要就是为了解决 Jailhouse 用的一些符号 Linux Kernel 没有导出的问题。其核心就是通过 <code>kallsyms_lookup_name</code> 这个内核接口来查找需要的符号。<br> <img src="https://images2.imgbox.com/ae/5b/lkEySgIa_o.png" alt="在这里插入图片描述"><br>   但是，5.7.0 以上版本的内核不再导出 kallsyms_lookup_name，对于在高版本内核不在导出的原因请参考 https://lwn.net/Articles/813350/。实际上，在 5.7.0 以上仍旧可以用 <code>struct kprobe</code> 来获取 <code>kallsyms_lookup_name</code> 函数的地址，然后再进一步获取到想要的符号。</li><li>通过 <code>root_device_register("jailhouse")</code> 创建 <code>/sys/devices/jailhouse</code> 这个设备，然后调用 <code>jailhouse_sysfs_init(jailhouse_dev)</code> 初始化其中的内容，此后，用户空间就可以通过 <code>/sys/devices/jailhouse</code> 访问 Jailhouse 的数据结构。<pre><code class="prism language-c">zcs@zcs<span class="token operator">-</span>MassDatas<span class="token operator">-</span>GXXA203<span class="token operator">:</span><span class="token operator">~</span><span class="token operator">/</span>WORKSPACE<span class="token operator">/</span>Jailhouse<span class="token operator">/</span>jailhouse$ tree <span class="token operator">-</span>L <span class="token number">3</span> <span class="token operator">-</span>p <span class="token operator">/</span>sys<span class="token operator">/</span>devices<span class="token operator">/</span>jailhouse
+<span class="token operator">/</span>sys<span class="token operator">/</span>devices<span class="token operator">/</span>jailhouse
+├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cells									# 这个目录中包含了我们创建的那些 Cell 的信息
+│   ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  <span class="token number">0</span>									# 这个是 Cell 的 ID，Root Cell 的 ID 为 <span class="token number">0</span>，后续每创建一个 Cell ，ID 自动增 <span class="token number">1</span>
+│   │   ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  cpus_assigned					# 这个是我们在 Cell 的配置文件中分配给 Cell 的 CPU 原始的配置参数（按位使用置 <span class="token number">1</span> 表示使用，例如，fffb）
+│   │   ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  cpus_assigned_list			# 这个是分配给 Cell 的 CPU 的方便我们阅读的列表。例如 <span class="token number">0</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token number">3</span><span class="token operator">-</span><span class="token number">15</span>
+│   │   ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  cpus_failed					# 这个是分配给 Cell 的 CPU 中失败的那些
+│   │   ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  cpus_failed_list				# 这个是分配给 Cell 的 CPU 中失败的那些的列表
+│   │   ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  name							# Cell 的名字
+│   │   ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  state							# Cell 的状态。<span class="token string">"running"</span><span class="token punctuation">,</span> <span class="token string">"running/locked"</span><span class="token punctuation">,</span> <span class="token string">"shut down"</span><span class="token punctuation">,</span> 或 <span class="token string">"failed"</span> 之一
+│   │   └── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  statistics					# Cell 的统计数据
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu0						
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu1
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu10
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu11
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu12
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu13
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu14
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu15
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu3
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu4
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu5
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu6
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu7
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu8
+│   │       ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu9						# 以上这些是分配给当前 Cell 使用的所有逻辑 CPU。每个 CPU 节点展开后的内容和下面这些是一样，只不过表示的是单个 CPU 的，下面这些是以上所有 CPU 的汇总
+│   │       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_cpuid
+│   │       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_cr
+│   │       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_exception
+│   │       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_hypercall
+│   │       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_management
+│   │       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_mmio
+│   │       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_msr_other
+│   │       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_msr_x2apic_icr
+│   │       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_pio
+│   │       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_total				# 全部 CPU 上发生的 VM Exits 总次数，其他的 _xxx 则表示由于 xxx 原因产生的 VM Exits 数量。例如，vmexits_xapic 就表示由于 xapic 产生的 VM Exits 次数
+│   │       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_xapic
+│   │       └── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_xsetbv
+│   └── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  <span class="token number">1</span>									# 第二个 Cell，其中的内容与上面的一样
+│       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  cpus_assigned
+│       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  cpus_assigned_list
+│       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  cpus_failed
+│       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  cpus_failed_list
+│       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  name
+│       ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  state
+│       └── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  statistics
+│           ├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  cpu2						# 分配给当前 Cell 使用的所有逻辑 CPU。每个 CPU 节点展开后的内容和下面这些是一样
+│           ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_cpuid
+│           ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_cr
+│           ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_exception
+│           ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_hypercall
+│           ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_management
+│           ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_mmio
+│           ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_msr_other
+│           ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_msr_x2apic_icr
+│           ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_pio
+│           ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_total				# 全部 CPU 上发生的 VM Exits 总次数，其他的 _xxx 则表示由于 xxx 原因产生的 VM Exits 数量
+│           ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_xapic
+│           └── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  vmexits_xsetbv
+├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  console								# 这个是 Jailhouse 的终端，我们可以从中直接读取 Jailhouse 的 Log
+├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token operator">--</span><span class="token punctuation">]</span>  core									# 这里面是 Jailhouse 固件以及配置信息，可以使用 tools<span class="token operator">/</span>jailhouse<span class="token operator">-</span>gcov<span class="token operator">-</span>extract 来解析。访问时，确保是 `jailhouse disable` 状态！
+├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  enabled								# 指示 Jailhouse 是否启用。 <span class="token number">1</span> 表示启用，<span class="token number">0</span> 表示未启用
+├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  mem_pool_size							# 内存池中的页数
+├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  mem_pool_used							# 内存池中已用的页数
+├── <span class="token punctuation">[</span>lrwxrwxrwx<span class="token punctuation">]</span>  module <span class="token operator">-&gt;</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token operator">/</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token operator">/</span>module<span class="token operator">/</span>jailhouse		# 这是一个由内核机制自动创建的符号链接，指向当前目录的所有者（创建者）
+├── <span class="token punctuation">[</span>drwxr<span class="token operator">-</span>xr<span class="token operator">-</span>x<span class="token punctuation">]</span>  power									# 这个是与电源管理相关的内容
+│   ├── <span class="token punctuation">[</span><span class="token operator">-</span>rw<span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  async
+│   ├── <span class="token punctuation">[</span><span class="token operator">-</span>rw<span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  autosuspend_delay_ms
+│   ├── <span class="token punctuation">[</span><span class="token operator">-</span>rw<span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  control
+│   ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  runtime_active_kids
+│   ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  runtime_active_time
+│   ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  runtime_enabled
+│   ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  runtime_status
+│   ├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  runtime_suspended_time
+│   └── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  runtime_usage
+├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  remap_pool_size						# 重映射池中的页数
+├── <span class="token punctuation">[</span><span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  remap_pool_used						# 重映射池中已用的页数
+└── <span class="token punctuation">[</span><span class="token operator">-</span>rw<span class="token operator">-</span>r<span class="token operator">--</span>r<span class="token operator">--</span><span class="token punctuation">]</span>  uevent								# 各种事件
+</code></pre> 
+  <ol><li>Root 设备是一个虚拟设备，以该 Root 设备为父设备调用 <code>kobject_create_and_add</code> 就可以让其他设备可以挂在它的下面</li><li>其中有些节点需要在执行相应的命令后才会有具体的内容</li></ol> </li><li>通过 <code>misc_register(&amp;jailhouse_misc_dev);</code> 注册 <code>struct miscdevice</code> 设备。加载驱动之后，就会创建 <code>/dev/jailhouse</code> 这个设备。用户空间的 Jailhouse 的管理工具使用 <code>ioctl()</code> 系统调用通过 <code>jailhouse.ko</code> 创建的 <code>/dev/jailhouse</code> 这个文件向 <code>jailhouse.ko</code> 发送各种请求。</li><li>调用 <code>jailhouse_pci_register()</code> 将自身注册为一个虚拟的 PCI 设备驱动程序，以便它可以获取分配的设备。</li><li>调用 <code>register_reboot_notifier(&amp;jailhouse_shutdown_nb);</code> 注册重启回调接口，当内核出现 <code>Kernel Halt、Kernel Restart 或 Kernel Power Off</code> 时，就会调用我们注册的回调函数。Jailhouse 注册之后主要用来关闭自身！<br> <img src="https://images2.imgbox.com/04/8a/fWg5SbiI_o.png" alt="在这里插入图片描述"></li></ol> 
+<h4><a id="jailhouse_ioctl_266"></a><code>jailhouse_ioctl()</code></h4> 
+<p>  各种请求通过内核最终到达 <code>driver/main.c</code> 中的 <code>jailhouse_ioctl</code> 这个函数。<code>static long jailhouse_ioctl(struct file *file, unsigned int ioctl, unsigned long arg)</code> 这个函数解析收到的请求，然后调用对应的接口来进一步处理。</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">long</span> <span class="token function">jailhouse_ioctl</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">file</span> <span class="token operator">*</span>file<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">int</span> ioctl<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">long</span> arg<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">long</span> err<span class="token punctuation">;</span>
+
+	<span class="token keyword">switch</span> <span class="token punctuation">(</span>ioctl<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">case</span> JAILHOUSE_ENABLE<span class="token operator">:</span>
+		err <span class="token operator">=</span> <span class="token function">jailhouse_cmd_enable</span><span class="token punctuation">(</span>
+			<span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">jailhouse_system</span> __user <span class="token operator">*</span><span class="token punctuation">)</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">break</span><span class="token punctuation">;</span>
+	<span class="token keyword">case</span> JAILHOUSE_DISABLE<span class="token operator">:</span>
+		err <span class="token operator">=</span> <span class="token function">jailhouse_cmd_disable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">break</span><span class="token punctuation">;</span>
+	<span class="token keyword">case</span> JAILHOUSE_CELL_CREATE<span class="token operator">:</span>
+		err <span class="token operator">=</span> <span class="token function">jailhouse_cmd_cell_create</span><span class="token punctuation">(</span>
+			<span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">jailhouse_cell_create</span> __user <span class="token operator">*</span><span class="token punctuation">)</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">break</span><span class="token punctuation">;</span>
+	<span class="token keyword">case</span> JAILHOUSE_CELL_LOAD<span class="token operator">:</span>
+		err <span class="token operator">=</span> <span class="token function">jailhouse_cmd_cell_load</span><span class="token punctuation">(</span>
+			<span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">jailhouse_cell_load</span> __user <span class="token operator">*</span><span class="token punctuation">)</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">break</span><span class="token punctuation">;</span>
+	<span class="token keyword">case</span> JAILHOUSE_CELL_START<span class="token operator">:</span>
+		err <span class="token operator">=</span> <span class="token function">jailhouse_cmd_cell_start</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">char</span> __user <span class="token operator">*</span><span class="token punctuation">)</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">break</span><span class="token punctuation">;</span>
+	<span class="token keyword">case</span> JAILHOUSE_CELL_DESTROY<span class="token operator">:</span>
+		err <span class="token operator">=</span> <span class="token function">jailhouse_cmd_cell_destroy</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">char</span> __user <span class="token operator">*</span><span class="token punctuation">)</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">break</span><span class="token punctuation">;</span>
+	<span class="token keyword">default</span><span class="token operator">:</span>
+		err <span class="token operator">=</span> <span class="token operator">-</span>EINVAL<span class="token punctuation">;</span>
+		<span class="token keyword">break</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">return</span> err<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="jailhousebin_304"></a><code>jailhouse*.bin</code></h3> 
+<p>  <code>jailhouse*.bin</code> 是由源码根目录中的 <code>hypervisor</code> 目录中的源码在构建之后会生成，针对不同的架构名字会有些区别（它最终会被安装到 <code>/lib/firmware</code> 目录下）。<code>jailhouse*.bin</code> 接收 <code>jailhouse.ko</code> 发来的超级调用，用于硬件资源的分配。<br> <img src="https://images2.imgbox.com/cb/45/WLcRBkHk_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_308"></a>内存布局</h4> 
+<p>  <code>jailhouse*.bin</code> 是一个具体特定结构的二进制文件，在 <code>jailhouse*.bin</code> 的开头是一个 <code>struct jailhouse_header</code> 结构。这个 BIN 文件中的部分内容是在构建时就填充好的，还有一部分是在驱动加载它时有驱动程序动态填充的。如下是 <code>jailhouse*.bin</code> 在内存中的布局：<br> <img src="https://images2.imgbox.com/e7/74/iUAstx3T_o.png" alt="在这里插入图片描述"><br>   <code>.header</code> 定义于 <code>hypervisor/setup.c</code> 中，并被链接文件强制放到了 BIN 的开头。链接脚本文件 <code>hypervisor.lds</code> 会再构建时被构建系统根据<code>hypervisor/hypervisor.lds.S</code> 自动创建生成（就是简单的展开各种宏（架构不同，宏值不同））。</p> 
+<h5><a id="JAILHOUSE_BASE_313"></a>JAILHOUSE_BASE</h5> 
+<p>  <code>JAILHOUSE_BASE</code> 是 <code>jailhouse*.bin</code> 的链接地址，它的具体值被定义到了 <code>hypervisor/arch</code> 中不同架构的 <code>jailhouse_header.h</code> 中。针对同一架构，它一个固定的虚拟地址。<br> <img src="https://images2.imgbox.com/35/ed/U3kA6FoB_o.png" alt="在这里插入图片描述"></p> 
+<ol><li> <p>x86平台反汇编 <code>objdump --source --all-headers --demangle --line-numbers --wide hypervisor/hypervisor-intel.o &gt; hypervisor/hypervisor-intel.lst</code> 查看<br> <img src="https://images2.imgbox.com/2f/f9/pB3iSKui_o.png" alt="在这里插入图片描述"></p> </li><li> <p>ARM64 平台反汇编 <code>aarch64-none-linux-gnu-objdump --source --all-headers --demangle --line-numbers --wide hypervisor/hypervisor.o &gt; hypervisor/hypervisor.lst</code> 查看<br> <img src="https://images2.imgbox.com/1d/33/o6DdvtM9_o.png" alt="在这里插入图片描述"></p> </li></ol> 
+<h4><a id="_322"></a>入口点</h4> 
+<p>  <code>jailhouse*.bin</code> 本身不是一个可以直接运行的程序，所以它没有显示定义入口点。作为虚拟机管理程序，它本身来处理虚拟化相关的问题。无论何种架构，都是通过特定架构 <code>hypervisor/arch/*/entry.S</code> 中的 <code>int arch_entry(unsigned int cpu_id)</code> 这个接口来开启虚拟化配置。</p> 
+<h5><a id="arch_entry_325"></a><code>arch_entry()</code></h5> 
+<p>  <code>arch_entry()</code> 函数必须在每个在线的 CPU 上被调用，以便将系统控制权交给 Jailhouse。Jailhouse 将等待指定数量（由 <code>struct jailhouse_header</code> 中的 <code>.online_cpus</code> 指定）的 CPU 都完成初始化，并且在所有启动初始化的 CPU 都完成之前，该函数不会返回。在虚拟机监控程序激活期间未初始化的 CPU 在 Jailhouse 再次停用之前不能被任何单元使用。</p> 
+<ul><li>函数原型： <code>int arch_entry(unsigned int cpu_id)</code></li><li>参数： 
+  <ul><li>cpu_id：调用方 CPU 的唯一逻辑 ID</li></ul> </li><li>返回值：0 表示成功；其他值表示失败，通常取值如下： 
+  <ul><li><code>-EIO (-5)</code>：lacking hardware capabilities or unsupported hardware state (as configured by Linux)</li><li><code>-ENOMEM (-12)</code>： insufficient hypervisor-internal memory</li><li><code>-EBUSY (-16)</code>： a required hardware resource is already in use</li><li><code>-ENODEV (-19)</code>： CPU or I/O virtualization unit missing</li><li><code>-EINVAL (-22)</code>： invalid system configuration</li><li><code>-ERANGE (-34)</code>： a resource ID is out of supported range</li></ul> </li></ul> 
+<p>  对于一次初始化尝试，初始化函数将始终在所有 CPU 上返回相同的代码。</p> 
+<h5><a id="entry_340"></a><code>entry()</code></h5> 
+<p>  <code>arch_entry()</code> 内部最终通过调用定义于 <code>hypervisor/setup.c</code> 中的架构无关的 <code>int entry(unsigned int cpu_id, struct per_cpu *cpu_data)</code> 函数最终实现启动虚拟化功能。</p> 
+<h4><a id="Hypervisor__Cell__343"></a>Hypervisor 与 Cell 间接口</h4> 
+<p>  Jailhouse 虚拟机管理程序在运行时提供了三种与 Cell 交互的接口。第一种是只读检测接口。第二种是一组超调用，Cell 可以通过执行特定于体系结构的指令来同步调用这些超调用，从而切换到 Hypervisor 模式。第三种接口由位于每个 Cell 内存区域中的变量组成，该内存区域在 Hypervisor 和特定 Cell 之间共享。</p> 
+<h5><a id="_346"></a>只读检测接口</h5> 
+<p>  这种接口对于那些不仅仅在 Jailhouse 的 Cell 内部工作的 Cell 代码非常有用。该 ABI 是特定于体系结构的，到目前为止，它仅适用于 x86 架构。在 x8 6架构上，Jailhouse 在执行 <code>cpuid</code> 指令时修改返回的寄存器值如下所示：<br> <img src="https://images2.imgbox.com/ee/49/v10UZJ4H_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="Hypercalls_350"></a>Hypercalls</h5> 
+<p>  超调用通常通过指定的指令发出，该指令会导致从客户模式切换到虚拟机管理程序模式。在引起模式切换之前，Cell 必须在预定义的寄存器或已知的内存位置准备好调用的参数。完成的超调用的返回码通过类似的通道传递。超调用 ABI 的详细信息是特定于体系结构的，将在以下部分中定义。<br> <img src="https://images2.imgbox.com/15/4a/C0dfYzKd_o.png" alt="在这里插入图片描述"><br>   这些调用会由定义于 <code>hypervisor/control.c</code> 中的 <code>long hypercall(unsigned long code, unsigned long arg1, unsigned long arg2)</code> 来进行分发然后进一步来处理。</p> 
+<pre><code class="prism language-c"><span class="token keyword">long</span> <span class="token function">hypercall</span><span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">long</span> code<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">long</span> arg1<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">long</span> arg2<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> <span class="token class-name">per_cpu</span> <span class="token operator">*</span>cpu_data <span class="token operator">=</span> <span class="token function">this_cpu_data</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	cpu_data<span class="token operator">-&gt;</span>public<span class="token punctuation">.</span>stats<span class="token punctuation">[</span>JAILHOUSE_CPU_STAT_VMEXITS_HYPERCALL<span class="token punctuation">]</span><span class="token operator">++</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">switch</span> <span class="token punctuation">(</span>code<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">case</span> JAILHOUSE_HC_DISABLE<span class="token operator">:</span>
+		<span class="token keyword">return</span> <span class="token function">hypervisor_disable</span><span class="token punctuation">(</span>cpu_data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">case</span> JAILHOUSE_HC_CELL_CREATE<span class="token operator">:</span>
+		<span class="token keyword">return</span> <span class="token function">cell_create</span><span class="token punctuation">(</span>cpu_data<span class="token punctuation">,</span> arg1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">case</span> JAILHOUSE_HC_CELL_START<span class="token operator">:</span>
+		<span class="token keyword">return</span> <span class="token function">cell_start</span><span class="token punctuation">(</span>cpu_data<span class="token punctuation">,</span> arg1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">case</span> JAILHOUSE_HC_CELL_SET_LOADABLE<span class="token operator">:</span>
+		<span class="token keyword">return</span> <span class="token function">cell_set_loadable</span><span class="token punctuation">(</span>cpu_data<span class="token punctuation">,</span> arg1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">case</span> JAILHOUSE_HC_CELL_DESTROY<span class="token operator">:</span>
+		<span class="token keyword">return</span> <span class="token function">cell_destroy</span><span class="token punctuation">(</span>cpu_data<span class="token punctuation">,</span> arg1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">case</span> JAILHOUSE_HC_HYPERVISOR_GET_INFO<span class="token operator">:</span>
+		<span class="token keyword">return</span> <span class="token function">hypervisor_get_info</span><span class="token punctuation">(</span>cpu_data<span class="token punctuation">,</span> arg1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">case</span> JAILHOUSE_HC_CELL_GET_STATE<span class="token operator">:</span>
+		<span class="token keyword">return</span> <span class="token function">cell_get_state</span><span class="token punctuation">(</span>cpu_data<span class="token punctuation">,</span> arg1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">case</span> JAILHOUSE_HC_CPU_GET_INFO<span class="token operator">:</span>
+		<span class="token keyword">return</span> <span class="token function">cpu_get_info</span><span class="token punctuation">(</span>cpu_data<span class="token punctuation">,</span> arg1<span class="token punctuation">,</span> arg2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">case</span> JAILHOUSE_HC_DEBUG_CONSOLE_PUTC<span class="token operator">:</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">CELL_FLAGS_VIRTUAL_CONSOLE_PERMITTED</span><span class="token punctuation">(</span>
+			cpu_data<span class="token operator">-&gt;</span>public<span class="token punctuation">.</span>cell<span class="token operator">-&gt;</span>config<span class="token operator">-&gt;</span>flags<span class="token punctuation">)</span><span class="token punctuation">)</span>
+			<span class="token keyword">return</span> <span class="token function">trace_error</span><span class="token punctuation">(</span><span class="token operator">-</span>EPERM<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">printk</span><span class="token punctuation">(</span><span class="token string">"%c"</span><span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">char</span><span class="token punctuation">)</span>arg1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	<span class="token keyword">default</span><span class="token operator">:</span>
+		<span class="token keyword">return</span> <span class="token operator">-</span>ENOSYS<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="_390"></a>通信区域</h5> 
+<p>  通信区域是一个每个单元内的内存区域，默认情况下，虚拟机管理程序和特定单元都可以对其进行读写。这是一种可选的通信机制。如果某个单元需要使用该区域，则必须通过其配置将该区域映射到单元的地址空间。如果单元配置为在通信区域方面是被动的（单元标志 <code>JAILHOUSE_CELL_PASSIVE_COMMREG</code>）并且该区域已被映射，那么必须在单元配置中将其声明为只读。<br> <img src="https://images2.imgbox.com/b3/3f/PI56QdWA_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_394"></a>管理工具</h3> 
+<p>  管理工具主要由源码 <code>tools</code> 目录下的 <code>jailhouse.c</code> 在构建之后生成的 <code>jailhouse</code> 可执行程序以及该目录下的一些 Python 脚本 <code>jailhouse-*</code> 组成。<code>jailhouse</code> 会被放到 <code>/usr/local/sbin/jailhouse</code> 目录下，而那些 Python 脚本最终会被安装到 <code>usr/local/libexec/jailhouse</code> 目录下。<br> <img src="https://images2.imgbox.com/6a/cf/Go5CP0VA_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_jailhouse_398"></a>可执行程序 <code>jailhouse</code></h4> 
+<p>  <code>jailhouse</code> 这个可执行程序就是所有管理命令的入口，它就是一个标准的用户空间 Linux C 程序。当我们执行 Jailhouse 命令时，命令首先来到了 <code>tools/jailhouse.c</code> 的 <code>int main(int argc, char *argv[])</code>函数，它负责解析传入的各个选项及参数，然后调用相应的接口进一步处理。</p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span>argv<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">int</span> fd<span class="token punctuation">;</span>
+	<span class="token keyword">int</span> err<span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>argc <span class="token operator">&lt;</span> <span class="token number">2</span><span class="token punctuation">)</span>
+		<span class="token function">help</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token string">"enable"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		err <span class="token operator">=</span> <span class="token function">enable</span><span class="token punctuation">(</span>argc<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token string">"disable"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		fd <span class="token operator">=</span> <span class="token function">open_dev</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		err <span class="token operator">=</span> <span class="token function">ioctl</span><span class="token punctuation">(</span>fd<span class="token punctuation">,</span> JAILHOUSE_DISABLE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>err<span class="token punctuation">)</span>
+			<span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"JAILHOUSE_DISABLE"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">close</span><span class="token punctuation">(</span>fd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token string">"cell"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		err <span class="token operator">=</span> <span class="token function">cell_management</span><span class="token punctuation">(</span>argc<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token string">"console"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		err <span class="token operator">=</span> <span class="token function">console</span><span class="token punctuation">(</span>argc<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token string">"config"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span> <span class="token operator">||</span>
+		   <span class="token function">strcmp</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token string">"hardware"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">call_extension_script</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> argc<span class="token punctuation">,</span> argv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">help</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token string">"--version"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"Jailhouse management tool %s\n"</span><span class="token punctuation">,</span> JAILHOUSE_VERSION<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token string">"--help"</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">help</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">help</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">return</span> err <span class="token operator">?</span> <span class="token number">1</span> <span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="Python__jailhouse_438"></a>Python 脚本 <code>jailhouse-*</code></h4> 
+<p>  对于那些 Python 脚本，我们也不直接使用，而是则由 <code>jailhouse</code> 来帮我们调用的。具体就在 <code>tools/jailhouse.c</code> 中的 <code>static void call_extension_script(const char *cmd, int argc, char *argv[])</code> 函数中通过 Linux 系统的进程调用函数 <code>execvp</code> 来实现。</p> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">call_extension_script</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">char</span> <span class="token operator">*</span>cmd<span class="token punctuation">,</span> <span class="token keyword">int</span> argc<span class="token punctuation">,</span> <span class="token keyword">char</span> <span class="token operator">*</span>argv<span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">const</span> <span class="token keyword">struct</span> <span class="token class-name">extension</span> <span class="token operator">*</span>ext<span class="token punctuation">;</span>
+	<span class="token keyword">char</span> new_path<span class="token punctuation">[</span>PATH_MAX<span class="token punctuation">]</span><span class="token punctuation">;</span>
+	<span class="token keyword">char</span> script<span class="token punctuation">[</span><span class="token number">64</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>argc <span class="token operator">&lt;</span> <span class="token number">3</span><span class="token punctuation">)</span>
+		<span class="token keyword">return</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">for</span> <span class="token punctuation">(</span>ext <span class="token operator">=</span> extensions<span class="token punctuation">;</span> ext<span class="token operator">-&gt;</span>cmd<span class="token punctuation">;</span> ext<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">strcmp</span><span class="token punctuation">(</span>ext<span class="token operator">-&gt;</span>cmd<span class="token punctuation">,</span> cmd<span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span> <span class="token operator">||</span>
+		    <span class="token function">strcmp</span><span class="token punctuation">(</span>ext<span class="token operator">-&gt;</span>subcmd<span class="token punctuation">,</span> argv<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span>
+			<span class="token keyword">continue</span><span class="token punctuation">;</span>
+
+		<span class="token function">snprintf</span><span class="token punctuation">(</span>new_path<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>new_path<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">"PATH=%s:%s:%s"</span><span class="token punctuation">,</span>
+			<span class="token function">dirname</span><span class="token punctuation">(</span>argv<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">,</span> JAILHOUSE_EXEC_DIR<span class="token punctuation">,</span>
+			<span class="token function">getenv</span><span class="token punctuation">(</span><span class="token string">"PATH"</span><span class="token punctuation">)</span> <span class="token operator">?</span> <span class="token operator">:</span> <span class="token string">""</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">putenv</span><span class="token punctuation">(</span>new_path<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token function">snprintf</span><span class="token punctuation">(</span>script<span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>script<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">"jailhouse-%s-%s"</span><span class="token punctuation">,</span>
+			 cmd<span class="token punctuation">,</span> ext<span class="token operator">-&gt;</span>subcmd<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">execvp</span><span class="token punctuation">(</span>script<span class="token punctuation">,</span> <span class="token operator">&amp;</span>argv<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token function">perror</span><span class="token punctuation">(</span><span class="token string">"execvp"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">exit</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="jailhousegcovextract_470"></a><code>jailhouse-gcov-extract</code></h4> 
+<p>  Jailhouse 支持在运行时收集代码覆盖率信息（gcov）。gcov（GNU Coverage） 是一个测试代码覆盖率的工具，工作原理是基于代码插桩（code instrumentation）技术。在编译源代码时，通过添加 <code>-ftest-coverage</code> 和 <code>-fprofile-arcs</code> 选项这两个 GCC 编译器选项，编译器会在生成的可执行文件中插入特殊的监控代码。这些监控代码将跟踪源代码中的每个执行路径，并记录下来它们被执行的次数。</p> 
+<ol><li>为了使用该特性，必须新建 <code>include/jailhouse/config.h</code> 文件，并在文件中将 <code>CONFIG_JAILHOUSE_GCOV</code> 定义为 1</li><li>首先正常运行一个 Jailhouse 虚拟机，最后 <code>sudo jailhouse disable</code> 禁用 Jailhouse，但是不要卸载 <code>jailhouse.ko</code></li><li>执行 <code>./tools/jailhouse-gcov-extract</code> 提取数据生成 <code>*.gcda</code> 文件</li><li>使用其他上层工具（例如，<code>lcov</code>）来处理生成 <code>*.gcda</code> 文件即可</li></ol> 
+<h3><a id="_477"></a>配置文件</h3> 
+<p>  在 Jailhouse 中，所有的 Cell 的硬件资源必须是静态分配的。因此，在启动 Cell 之前，我们必须要有一个配置文件，这个配置文件告诉 Jailhouse 每个 Cell 可以使用哪些硬件资源。</p> 
+<p>  Jailhouse 采用以 <code>.cell</code> 为扩展名的二进制文件作为配置文件，而 <code>.cell</code> 文件是由一个包含一个 C 语言结构体变量来描述硬件资源的 <code>.c</code> 文件生成的。而我们需要根据 Jailhouse 给出的一些示例（<code>configs</code>）目录下书写自己的 <code>.c</code> 文件，并进一步编译为 <code>.cell</code> 文件来使用。</p> 
+<ol><li>使用命令 <code>jailhouse config check [-h] SYSCONFIG [CELLCONFIG [CELLCONFIG ...]]</code> 可以检查我们的配置文件<br> <img src="https://images2.imgbox.com/aa/9b/eoi7S5sl_o.png" alt="在这里插入图片描述"></li></ol> 
+<h4><a id="SYSCONFIG_484"></a>SYSCONFIG</h4> 
+<p>  SYSCONFIG（全局配置文件）就是 Root Cell 对应的配置文件，它告诉 Jailhouse 当前系统下所有可用的资源有哪些。当我们执行 <code>jailhouse enable SYSCONFIG</code> 时，Jailhouse 就会将 SYSCONFIG 中描述符的资源放到 Root Cell 中。</p> 
+<ol><li>对于 x86 架构，Jailhouse 提供了 <code>sudo jailhouse hardware check</code> 命令来自动检测当前系统配置，并提供了 <code>sudo jailhouse config create sysconfig.c</code>（<code>sysconfig.c</code> 名字可自定义） 来自动生成针对当前系统的配置文件。</li><li>注意，通过以上命令生成的 <code>sysconfig.c</code> 文件的用户是 root，我们可以使用命令 <code>sudo chown zcs:zcs sysconfig.c</code> 更改为自己的用户名和用户组，这样再后续编辑是比较方便。</li></ol> 
+<p>  我们需要将生成的 <code>sysconfig.c</code> 文件放在 Jailhouse 源码的 <code>configs/x86/</code> 目录中，重新构建 Jailhouse 时，构建系统会将自动为其中的 <code>.c</code> 生成一个相应的 <code>.cell</code> 文件。</p> 
+<h4><a id="CELLCONFIG_492"></a>CELLCONFIG</h4> 
+<p>  CELLCONFIG（CELL 配置文件）就是 Non-root Cell 使用的配置文件，定义了 Non-root Cell 可以使用的物理资源，当我们创建 Non-root Cell 时，Jailhouse 就会根据 Non-root Cell 的配置文件，从全局配置文件（Root Cell）中分离出指定的资源。</p> 
+<p>  对于 Non-root Cell 的配置文件需要参考 <code>configs</code> 目录下对应架构下的 <code>.c</code> 文件来手动创建。同样，写好的 <code>.c</code> 文件需要放到 <code>configs/x86/</code> 目录中，重新构建 Jailhouse 时，构建系统会将自动为其中的 <code>.c</code> 生成一个相应的 <code>.cell</code> 文件。</p> 
+<h3><a id="_497"></a>虚拟机固件</h3> 
+<p>  Jailhouse 虚拟机中运行的系统镜像或者是一个裸机程序固件被称为 inmate，目前可以是 Linux、FreeRTOS、ERIKA3 RTOS、Zephyr 其中之一。对于 Linux，Jailhouse 无法运行未经修改的 Linux 内核！</p> 
+<h2><a id="_500"></a>参考</h2> 
+<ol><li>https://software-dl.ti.com/processor-sdk-linux/esd/docs/06_03_00_106/linux/Foundational_Components/Virtualization/Jailhouse.html</li><li>https://www.elecfans.com/d/2338769.html</li><li>https://variwiki.com/index.php?title=Jailhouse_Guide</li><li>https://blog.csdn.net/v6543210/article/details/113890847</li><li>https://www.21ic.com/a/933932.html</li><li>https://blog.csdn.net/v6543210/article/details/118031563</li><li>https://www.21ic.com/a/933932.html</li></ol>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/dd957d9aa17941067e82931a66f4dad1/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">快手「可灵」爆火：海外AI圈巨震，中国版Sora一号难求</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/5acadc69904ae0f88273f3b42769c56f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">aspose-words去水印自用资源</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,556 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【C&#43;&#43;】STL之空间配置器 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/11228a6add861c4ea255b5e0c8e01f03/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【C&#43;&#43;】STL之空间配置器">
+  <meta property="og:description" content="STL之空间配置器 1. 什么是空间配置器2. 为什么需要空间配置器3. SGI-STL空间配置器实现原理3.1 一级空间配置器3.2 二级空间配置器3.2.1 内存池3.2.2 SGI-STL中二级空间配置器设计 3.3 SGI-STL二级空间配置器之空间申请3.4 SGI-STL二级空间配置器之空间回收3.3 空间配置器的默认选择3.4 空间配置器的再次封装3.5 对象的构造与释放 4. 与容器结合5.复习 点赞👍👍收藏🌟🌟关注💖💖
+你的支持是对我最大的鼓励，我们一起努力吧!😃😃
+1. 什么是空间配置器 空间配置器，顾名思义就是为各个容器高效的管理空间(空间的申请与回收)的，在默默地工作。虽然在常规使用STL时，可能用不到它，但站在学习研究的角度，学习它的实现原理对我们有很大的帮助。
+2. 为什么需要空间配置器 前面在模拟实现vector、list、map、unordered_map等容器时，所有需要空间的地方都是通过new申请的，虽然代码可以正常运行，但是有以下不足之处：
+空间申请与释放需要用户自己管理，容易造成内存泄漏频繁向系统申请小块内存块，容易造成内存碎片频繁向系统申请小块内存，影响程序运行效率直接使用malloc与new进行申请，每块空间前有额外空间浪费申请空间失败怎么应对代码结构比较混乱，代码复用率不高未考虑线程安全问题 因此需要设计一块高效的内存管理机制
+3. SGI-STL空间配置器实现原理 以上提到的几点不足之处，最主要还是：频繁向系统申请小块内存造成的。那什么才算是小块内存？SGI-STL以128作为小块内存与大块内存的分界线，将空间配置器其分为两级结构，一级空间配置器处理大块内存，二级空间配置器处理小块内存。
+3.1 一级空间配置器 一级空间配置器原理非常简单，直接对malloc与free进行了封装，并增加了C&#43;&#43;中
+set_new_handle思想。
+template &lt;int inst&gt; class __malloc_alloc_template { private: static void *oom_malloc(size_t); public: // 对malloc的封装 static void * allocate(size_t n) { // 申请空间成功，直接返回，失败交由oom_malloc处理 void *result = malloc(n); if (0 == result) result = oom_malloc(n); return result; } // 对free的封装 static void deallocate(void *p, size_t /* n */) { free(p);} // 模拟set_new_handle // 该函数的参数为函数指针，返回值类型也为函数指针 // void (* set_malloc_handler( void (*f)() ) )() static void (* set_malloc_handler(void (*f)()))() { void (* old)() = __malloc_alloc_oom_handler; __malloc_alloc_oom_handler = f; return(old); } }; // malloc申请空间失败时代用该函数 template &lt;int inst&gt; void * __malloc_alloc_template&lt;inst&gt;::oom_malloc(size_t n) { void (* my_malloc_handler)(); void *result; for (;;) { // 检测用户是否设置空间不足应对措施，如果没有设置，抛异常，模式new的方式 my_malloc_handler = __malloc_alloc_oom_handler; if (0 == my_malloc_handler) { __THROW_BAD_ALLOC; } // 如果设置，执行用户提供的空间不足应对措施 (*my_malloc_handler)(); // 继续申请空间，可能就会申请成功 result = malloc(n); if (result) return(result); } } typedef __malloc_alloc_template&lt;0&gt; malloc_alloc; 3.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-20T16:22:28+08:00">
+    <meta property="article:modified_time" content="2024-07-20T16:22:28+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【C&#43;&#43;】STL之空间配置器</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>STL之空间配置器</h4> 
+ <ul><li><a href="#1__8" rel="nofollow">1. 什么是空间配置器</a></li><li><a href="#2__16" rel="nofollow">2. 为什么需要空间配置器</a></li><li><a href="#3_SGISTL_30" rel="nofollow">3. SGI-STL空间配置器实现原理</a></li><li><ul><li><a href="#31__34" rel="nofollow">3.1 一级空间配置器</a></li><li><a href="#32__98" rel="nofollow">3.2 二级空间配置器</a></li><li><ul><li><a href="#321__101" rel="nofollow">3.2.1 内存池</a></li><li><a href="#322_SGISTL_111" rel="nofollow">3.2.2 SGI-STL中二级空间配置器设计</a></li></ul> 
+   </li><li><a href="#33_SGISTL_115" rel="nofollow">3.3 SGI-STL二级空间配置器之空间申请</a></li><li><a href="#34_SGISTL_325" rel="nofollow">3.4 SGI-STL二级空间配置器之空间回收</a></li><li><a href="#33__347" rel="nofollow">3.3 空间配置器的默认选择</a></li><li><a href="#34__362" rel="nofollow">3.4 空间配置器的再次封装</a></li><li><a href="#35__397" rel="nofollow">3.5 对象的构造与释放</a></li></ul> 
+  </li><li><a href="#4__423" rel="nofollow">4. 与容器结合</a></li><li><a href="#5_482" rel="nofollow">5.复习</a></li></ul> 
+</div> 
+<p></p> 
+<p><img src="https://images2.imgbox.com/a1/c7/NVMx880U_o.jpg" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p><strong>点赞</strong>👍👍<strong>收藏</strong>🌟🌟<strong>关注</strong>💖💖<br> <font color="red"><strong>你的支持是对我最大的鼓励，我们一起努力吧!😃😃</strong></font></p> 
+</blockquote> 
+<h2><a id="1__8"></a>1. 什么是空间配置器</h2> 
+<p>空间配置器，顾名思义就是<strong>为各个容器高效的管理空间(空间的申请与回收)的</strong>，在默默地工作。虽然在常规使用STL时，可能用不到它，但站在学习研究的角度，学习它的实现原理对我们有很大的帮助。</p> 
+<p><img src="https://images2.imgbox.com/ed/20/IVOxU2ZB_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="2__16"></a>2. 为什么需要空间配置器</h2> 
+<p>前面在模拟实现vector、list、map、unordered_map等容器时，所有需要空间的地方都是通过new申请的，虽然代码可以正常运行，但是有以下不足之处：</p> 
+<ul><li>空间申请与释放需要用户自己管理，容易造成内存泄漏</li><li><strong>频繁向系统申请小块内存块，容易造成内存碎片</strong></li><li><strong>频繁向系统申请小块内存，影响程序运行效率</strong></li><li><strong>直接使用malloc与new进行申请，每块空间前有额外空间浪费</strong></li><li><strong>申请空间失败怎么应对</strong></li><li>代码结构比较混乱，代码复用率不高</li><li>未考虑线程安全问题</li></ul> 
+<p>因此需要设计一块高效的内存管理机制</p> 
+<h2><a id="3_SGISTL_30"></a>3. SGI-STL空间配置器实现原理</h2> 
+<p>以上提到的几点不足之处，最主要还是：<strong>频繁向系统申请小块内存造成的</strong>。那什么才算是小块内存？<strong>SGI-STL以128作为小块内存与大块内存的分界线，将空间配置器其分为两级结构，一级空间配置器处理大块内存，二级空间配置器处理小块内存。</strong></p> 
+<h3><a id="31__34"></a>3.1 一级空间配置器</h3> 
+<p>一级空间配置器原理非常简单，直接对malloc与free进行了封装，并增加了C++中<br> set_new_handle思想。</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">template</span> <span class="token operator">&lt;</span><span class="token keyword">int</span> inst<span class="token operator">&gt;</span>
+<span class="token keyword">class</span> <span class="token class-name">__malloc_alloc_template</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">private</span><span class="token operator">:</span>
+	<span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token operator">*</span><span class="token function">oom_malloc</span><span class="token punctuation">(</span>size_t<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+	<span class="token comment">// 对malloc的封装</span>
+	<span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token operator">*</span> <span class="token function">allocate</span><span class="token punctuation">(</span>size_t n<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+	   <span class="token comment">// 申请空间成功，直接返回，失败交由oom_malloc处理</span>
+		<span class="token keyword">void</span> <span class="token operator">*</span>result <span class="token operator">=</span> <span class="token function">malloc</span><span class="token punctuation">(</span>n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token number">0</span> <span class="token operator">==</span> result<span class="token punctuation">)</span> 
+	   		result <span class="token operator">=</span> <span class="token function">oom_malloc</span><span class="token punctuation">(</span>n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	 	<span class="token keyword">return</span> result<span class="token punctuation">;</span>
+ 	<span class="token punctuation">}</span>
+ 	
+	<span class="token comment">// 对free的封装</span>
+	 <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">deallocate</span><span class="token punctuation">(</span><span class="token keyword">void</span> <span class="token operator">*</span>p<span class="token punctuation">,</span> size_t <span class="token comment">/* n */</span><span class="token punctuation">)</span>
+	 <span class="token punctuation">{<!-- --></span> <span class="token function">free</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token punctuation">}</span>
+	 
+	 <span class="token comment">// 模拟set_new_handle</span>
+	 <span class="token comment">// 该函数的参数为函数指针，返回值类型也为函数指针</span>
+	 <span class="token comment">// void (*   set_malloc_handler( void (*f)() ) )()</span>
+	 <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token punctuation">(</span><span class="token operator">*</span> <span class="token function">set_malloc_handler</span><span class="token punctuation">(</span><span class="token keyword">void</span> <span class="token punctuation">(</span><span class="token operator">*</span>f<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	 <span class="token punctuation">{<!-- --></span>
+		 <span class="token keyword">void</span> <span class="token punctuation">(</span><span class="token operator">*</span> old<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">=</span> __malloc_alloc_oom_handler<span class="token punctuation">;</span>
+		 __malloc_alloc_oom_handler <span class="token operator">=</span> f<span class="token punctuation">;</span>
+		 <span class="token keyword">return</span><span class="token punctuation">(</span>old<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">// malloc申请空间失败时代用该函数</span>
+<span class="token keyword">template</span> <span class="token operator">&lt;</span><span class="token keyword">int</span> inst<span class="token operator">&gt;</span>
+<span class="token keyword">void</span> <span class="token operator">*</span> <span class="token class-name">__malloc_alloc_template</span><span class="token operator">&lt;</span>inst<span class="token operator">&gt;</span><span class="token double-colon punctuation">::</span><span class="token function">oom_malloc</span><span class="token punctuation">(</span>size_t n<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">void</span> <span class="token punctuation">(</span><span class="token operator">*</span> my_malloc_handler<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token operator">*</span>result<span class="token punctuation">;</span>
+<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token punctuation">;</span><span class="token punctuation">;</span><span class="token punctuation">)</span> 
+<span class="token punctuation">{<!-- --></span>
+   <span class="token comment">// 检测用户是否设置空间不足应对措施，如果没有设置，抛异常，模式new的方式</span>
+   my_malloc_handler <span class="token operator">=</span> __malloc_alloc_oom_handler<span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token number">0</span> <span class="token operator">==</span> my_malloc_handler<span class="token punctuation">)</span>
+   <span class="token punctuation">{<!-- --></span>
+       __THROW_BAD_ALLOC<span class="token punctuation">;</span> 
+   <span class="token punctuation">}</span>
+   
+   <span class="token comment">// 如果设置，执行用户提供的空间不足应对措施</span>
+   <span class="token punctuation">(</span><span class="token operator">*</span>my_malloc_handler<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   
+   <span class="token comment">// 继续申请空间，可能就会申请成功</span>
+   result <span class="token operator">=</span> <span class="token function">malloc</span><span class="token punctuation">(</span>n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token keyword">if</span> <span class="token punctuation">(</span>result<span class="token punctuation">)</span>
+       <span class="token keyword">return</span><span class="token punctuation">(</span>result<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">typedef</span> __malloc_alloc_template<span class="token operator">&lt;</span><span class="token number">0</span><span class="token operator">&gt;</span> malloc_alloc<span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="32__98"></a>3.2 二级空间配置器</h3> 
+<p><strong>二级空间配置器专门负责处理小于128字节的小块内存。如何才能提升小块内存的申请与释放的方式呢？SGI-STL采用了内存池的技术来提高申请空间的速度以及减少额外空间的浪费，采用哈希桶的方式来提高用户获取空间的速度与高效管理。</strong></p> 
+<h4><a id="321__101"></a>3.2.1 内存池</h4> 
+<p>内存池就是：先申请一块比较大的内存块已做备用，当需要内存时，直接到内存池中去去，当池中空间不够时，再向内存中去取，当用户不用时，直接还回内存池即可。避免了频繁向系统申请小块内存所造成的效率低、内存碎片以及额外浪费的问题。</p> 
+<p><img src="https://images2.imgbox.com/b8/fc/Abu6EAqg_o.png" alt="在这里插入图片描述"><br> 请大家思考一下几个问题：</p> 
+<ol><li>当用户需要空间时，能否直接从内存池中大块空间中直接截取？为什么？</li><li>对用户归还的空间能否直接拼接在大块内存前？</li><li>对用户归还的空间如何进行管理？</li><li>不断切割会有什么后果？</li></ol> 
+<h4><a id="322_SGISTL_111"></a>3.2.2 SGI-STL中二级空间配置器设计</h4> 
+<p><strong>SGI-STL中的二级空间配置器使用了内存池技术</strong>，但没有采用链表的方式对用户已经归还的空间进行管理(因为用户申请空间时在查找合适的小块内存时效率比较低)，而是采用了<strong>哈希桶的方式进行管理</strong>。那是否需要128桶个空间来管理用户已经归还的内存块呢？答案是不需要，<strong>因为用户申请的空间基本都是4的整数倍，其他大小的空间几乎很少用到。因此：SGI-STL将用户申请的内存块向上对齐到了8的整数倍</strong>(思考为什么是8的整数倍，而不是4)。</p> 
+<p><img src="https://images2.imgbox.com/b4/1a/eYB4Tn5Z_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="33_SGISTL_115"></a>3.3 SGI-STL二级空间配置器之空间申请</h3> 
+<blockquote> 
+ <p>1.前期的准备</p> 
+</blockquote> 
+<pre><code class="prism language-cpp"><span class="token keyword">template</span> <span class="token operator">&lt;</span><span class="token keyword">int</span> inst<span class="token operator">&gt;</span>
+<span class="token keyword">class</span> <span class="token class-name">__default_alloc_template</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">private</span><span class="token operator">:</span>
+    <span class="token keyword">enum</span> <span class="token punctuation">{<!-- --></span>__ALIGN <span class="token operator">=</span> <span class="token number">8</span><span class="token punctuation">}</span><span class="token punctuation">;</span>     <span class="token comment">// 如果用户所需内存不是8的整数倍，向上对齐到8的整数</span>
+倍
+    <span class="token keyword">enum</span> <span class="token punctuation">{<!-- --></span>__MAX_BYTES <span class="token operator">=</span> <span class="token number">128</span><span class="token punctuation">}</span><span class="token punctuation">;</span>   <span class="token comment">// 大小内存块的分界线</span>
+    <span class="token keyword">enum</span> <span class="token punctuation">{<!-- --></span>__NFREELISTS <span class="token operator">=</span> __MAX_BYTES<span class="token operator">/</span>__ALIGN<span class="token punctuation">}</span><span class="token punctuation">;</span>  <span class="token comment">// 采用哈希桶保存小块内存时</span>
+所需桶的个数
+    
+  <span class="token comment">// 如果用户所需内存块不是8的整数倍，向上对齐到8的整数倍</span>
+  <span class="token keyword">static</span> size_t <span class="token function">ROUND_UP</span><span class="token punctuation">(</span>size_t bytes<span class="token punctuation">)</span>
+ <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>bytes<span class="token punctuation">)</span> <span class="token operator">+</span> __ALIGN<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">&amp;</span> <span class="token operator">~</span><span class="token punctuation">(</span>__ALIGN <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+ <span class="token punctuation">}</span>
+  
+<span class="token keyword">private</span><span class="token operator">:</span>
+  <span class="token comment">// 用联合体来维护链表结构----可以思考下此处为什么没有使用结构体</span>
+  <span class="token keyword">union</span> obj
+ <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">union</span> obj <span class="token operator">*</span> free_list_link<span class="token punctuation">;</span>
+        <span class="token keyword">char</span> client_data<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">;</span>    <span class="token comment">/* The client sees this.       */</span>
+ <span class="token punctuation">}</span><span class="token punctuation">;</span>
+    
+<span class="token keyword">private</span><span class="token operator">:</span>
+    <span class="token keyword">static</span> obj <span class="token operator">*</span>  free_list<span class="token punctuation">[</span>__NFREELISTS<span class="token punctuation">]</span><span class="token punctuation">;</span> 
+  
+    <span class="token comment">// 哈希函数，根据用户提供字节数找到对应的桶号</span>
+    <span class="token keyword">static</span>  size_t <span class="token function">FREELIST_INDEX</span><span class="token punctuation">(</span>size_t bytes<span class="token punctuation">)</span>
+   <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>bytes<span class="token punctuation">)</span> <span class="token operator">+</span> __ALIGN<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">/</span>__ALIGN <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+    
+    <span class="token comment">// start_free与end_free用来标记内存池中大块内存的起始与末尾位置</span>
+    <span class="token keyword">static</span> <span class="token keyword">char</span> <span class="token operator">*</span>start_free<span class="token punctuation">;</span>
+    <span class="token keyword">static</span> <span class="token keyword">char</span> <span class="token operator">*</span>end_free<span class="token punctuation">;</span>
+    
+    <span class="token comment">// 用来记录该空间配置器已经想系统索要了多少的内存块</span>
+    <span class="token keyword">static</span> size_t heap_size<span class="token punctuation">;</span>
+    
+    <span class="token comment">// ...</span>
+<span class="token punctuation">}</span> <span class="token punctuation">;</span>
+</code></pre> 
+<blockquote> 
+ <p>2.申请空间</p> 
+</blockquote> 
+<pre><code class="prism language-cpp"><span class="token comment">// 函数功能：向空间配置器索要空间</span>
+<span class="token comment">// 参数n: 用户所需空间字节数</span>
+<span class="token comment">// 返回值：返回空间的首地址</span>
+<span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token operator">*</span> <span class="token function">allocate</span><span class="token punctuation">(</span>size_t n<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    obj <span class="token operator">*</span> __VOLATILE <span class="token operator">*</span> my_free_list<span class="token punctuation">;</span>
+    obj <span class="token operator">*</span> __RESTRICT result<span class="token punctuation">;</span>
+    <span class="token comment">// 检测用户所需空间释放超过128(即是否为小块内存)</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>n <span class="token operator">&gt;</span> <span class="token punctuation">(</span>size_t<span class="token punctuation">)</span> __MAX_BYTES<span class="token punctuation">)</span> 
+   <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 不是小块内存交由一级空间配置器处理</span>
+        <span class="token keyword">return</span> <span class="token punctuation">(</span>malloc_alloc<span class="token double-colon punctuation">::</span><span class="token function">allocate</span><span class="token punctuation">(</span>n<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+    
+    <span class="token comment">// 根据用户所需字节找到对应的桶号</span>
+    my_free_list <span class="token operator">=</span> free_list <span class="token operator">+</span> <span class="token function">FREELIST_INDEX</span><span class="token punctuation">(</span>n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    result <span class="token operator">=</span> <span class="token operator">*</span>my_free_list<span class="token punctuation">;</span>
+    
+    <span class="token comment">// 如果该桶中没有内存块时，向该桶中补充空间</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>result <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+   <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 将n向上对齐到8的整数被，保证向桶中补充内存块时，内存块一定是8的整数倍</span>
+        <span class="token keyword">void</span> <span class="token operator">*</span>r <span class="token operator">=</span> <span class="token function">refill</span><span class="token punctuation">(</span><span class="token function">ROUND_UP</span><span class="token punctuation">(</span>n<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> r<span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+    
+    <span class="token comment">// 维护桶中剩余内存块的链式关系</span>
+    <span class="token operator">*</span>my_free_list <span class="token operator">=</span> result <span class="token operator">-&gt;</span> free_list_link<span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token punctuation">(</span>result<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<blockquote> 
+ <ol start="3"><li>填充内存块</li></ol> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/67/87/KEXw4yFK_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-cpp"><span class="token comment">// 函数功能：向哈希桶中补充空间</span>
+<span class="token comment">// 参数n：小块内存字节数</span>
+<span class="token comment">// 返回值：首个小块内存的首地址</span>
+<span class="token keyword">template</span> <span class="token operator">&lt;</span><span class="token keyword">int</span> inst<span class="token operator">&gt;</span>
+<span class="token keyword">void</span><span class="token operator">*</span> <span class="token class-name">__default_alloc_template</span><span class="token operator">&lt;</span>inst<span class="token operator">&gt;</span><span class="token double-colon punctuation">::</span><span class="token function">refill</span><span class="token punctuation">(</span>size_t n<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 一次性向内存池索要20个n字节的小块内存</span>
+    <span class="token keyword">int</span> nobjs <span class="token operator">=</span> <span class="token number">20</span><span class="token punctuation">;</span>
+    <span class="token keyword">char</span> <span class="token operator">*</span> chunk <span class="token operator">=</span> <span class="token function">chunk_alloc</span><span class="token punctuation">(</span>n<span class="token punctuation">,</span> nobjs<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    obj <span class="token operator">*</span><span class="token operator">*</span> my_free_list<span class="token punctuation">;</span>
+    obj <span class="token operator">*</span>result<span class="token punctuation">;</span>
+    obj <span class="token operator">*</span>current_obj<span class="token punctuation">,</span> <span class="token operator">*</span>next_obj<span class="token punctuation">;</span>
+    <span class="token keyword">int</span> i<span class="token punctuation">;</span>
+    <span class="token comment">// 如果只要了一块，直接返回给用户使用</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">==</span> nobjs<span class="token punctuation">)</span> 
+        <span class="token keyword">return</span><span class="token punctuation">(</span>chunk<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    <span class="token comment">// 找到对应的桶号</span>
+    my_free_list <span class="token operator">=</span> free_list <span class="token operator">+</span> <span class="token function">FREELIST_INDEX</span><span class="token punctuation">(</span>n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 将第一块返回值用户，其他块连接在对应的桶中</span>
+    <span class="token comment">// 注：此处代码逻辑比较简单，但标准库实现稍微有点复杂，可以自己实现</span>
+      result <span class="token operator">=</span> <span class="token punctuation">(</span>obj <span class="token operator">*</span><span class="token punctuation">)</span>chunk<span class="token punctuation">;</span>
+      <span class="token operator">*</span>my_free_list <span class="token operator">=</span> next_obj <span class="token operator">=</span> <span class="token punctuation">(</span>obj <span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span>chunk <span class="token operator">+</span> n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span> <span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> 
+      <span class="token punctuation">{<!-- --></span>
+         current_obj <span class="token operator">=</span> next_obj<span class="token punctuation">;</span>
+         next_obj <span class="token operator">=</span> <span class="token punctuation">(</span>obj <span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span><span class="token punctuation">)</span>next_obj <span class="token operator">+</span> n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+         <span class="token keyword">if</span> <span class="token punctuation">(</span>nobjs <span class="token operator">-</span> <span class="token number">1</span> <span class="token operator">==</span> i<span class="token punctuation">)</span> 
+         <span class="token punctuation">{<!-- --></span>
+             current_obj <span class="token operator">-&gt;</span> free_list_link <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+             <span class="token keyword">break</span><span class="token punctuation">;</span>
+         <span class="token punctuation">}</span> 
+         <span class="token keyword">else</span>
+         <span class="token punctuation">{<!-- --></span>
+            current_obj <span class="token operator">-&gt;</span> free_list_link <span class="token operator">=</span> next_obj<span class="token punctuation">;</span>
+         <span class="token punctuation">}</span>
+      <span class="token punctuation">}</span>   
+     <span class="token keyword">return</span><span class="token punctuation">(</span>result<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<blockquote> 
+ <p>4.向内存池中索要空间</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/29/6b/BBqWfKZB_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-cpp"><span class="token keyword">template</span> <span class="token operator">&lt;</span><span class="token keyword">int</span> inst<span class="token operator">&gt;</span>
+<span class="token keyword">char</span><span class="token operator">*</span> <span class="token class-name">__default_alloc_template</span><span class="token operator">&lt;</span>inst<span class="token operator">&gt;</span><span class="token double-colon punctuation">::</span><span class="token function">chunk_alloc</span><span class="token punctuation">(</span>size_t size<span class="token punctuation">,</span> <span class="token keyword">int</span><span class="token operator">&amp;</span>
+nobjs<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 计算nobjs个size字节内存块的总大小以及内存池中剩余空间总大小</span>
+    <span class="token keyword">char</span> <span class="token operator">*</span> result<span class="token punctuation">;</span>
+    size_t total_bytes <span class="token operator">=</span> size <span class="token operator">*</span> nobjs<span class="token punctuation">;</span>
+    size_t bytes_left <span class="token operator">=</span> end_free <span class="token operator">-</span> start_free<span class="token punctuation">;</span>
+    <span class="token comment">// 如果内存池可以提供total_bytes字节，返回</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>bytes_left <span class="token operator">&gt;=</span> total_bytes<span class="token punctuation">)</span> 
+   <span class="token punctuation">{<!-- --></span>
+        result <span class="token operator">=</span> start_free<span class="token punctuation">;</span>
+        start_free <span class="token operator">+=</span> total_bytes<span class="token punctuation">;</span>
+        <span class="token keyword">return</span><span class="token punctuation">(</span>result<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span> 
+    <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>bytes_left <span class="token operator">&gt;=</span> size<span class="token punctuation">)</span>
+   <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// nobjs块无法提供，但是至少可以提供1块size字节内存块，提供后返回</span>
+        nobjs <span class="token operator">=</span> bytes_left<span class="token operator">/</span>size<span class="token punctuation">;</span>
+        total_bytes <span class="token operator">=</span> size <span class="token operator">*</span> nobjs<span class="token punctuation">;</span>
+        result <span class="token operator">=</span> start_free<span class="token punctuation">;</span>
+        start_free <span class="token operator">+=</span> total_bytes<span class="token punctuation">;</span>
+        <span class="token keyword">return</span><span class="token punctuation">(</span>result<span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span> 
+    <span class="token keyword">else</span>
+   <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 内存池空间不足，连一块小块村内都不能提供</span>
+ 		<span class="token comment">// 向系统堆求助，往内存池中补充空间</span>
+        <span class="token comment">// 计算向内存中补充空间大小：本次空间总大小两倍 + 向系统申请总大小/16</span>
+        size_t bytes_to_get <span class="token operator">=</span> <span class="token number">2</span> <span class="token operator">*</span> total_bytes <span class="token operator">+</span> <span class="token function">ROUND_UP</span><span class="token punctuation">(</span>heap_size <span class="token operator">&gt;&gt;</span>
+<span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        
+        <span class="token comment">// 如果内存池有剩余空间(该空间一定是8的整数倍)，将该空间挂到对应哈希桶中</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>bytes_left <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span> 
+       <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 找对用哈希桶，将剩余空间挂在其上</span>
+            obj <span class="token operator">*</span><span class="token operator">*</span> my_free_list <span class="token operator">=</span> free_list <span class="token operator">+</span>
+<span class="token function">FREELIST_INDEX</span><span class="token punctuation">(</span>bytes_left<span class="token punctuation">)</span><span class="token punctuation">;</span>
+           <span class="token punctuation">(</span><span class="token punctuation">(</span>obj <span class="token operator">*</span><span class="token punctuation">)</span>start_free<span class="token punctuation">)</span> <span class="token operator">-&gt;</span> free_list_link <span class="token operator">=</span> <span class="token operator">*</span>my_free_list<span class="token punctuation">;</span>
+            <span class="token operator">*</span>my_ree_list <span class="token operator">=</span> <span class="token punctuation">(</span>obj <span class="token operator">*</span><span class="token punctuation">)</span>start_free<span class="token punctuation">;</span>
+       <span class="token punctuation">}</span>
+        
+        <span class="token comment">// 通过系统堆向内存池补充空间，如果补充成功，递归继续分配</span>
+        start_free <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span><span class="token punctuation">)</span><span class="token function">malloc</span><span class="token punctuation">(</span>bytes_to_get<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token number">0</span> <span class="token operator">==</span> start_free<span class="token punctuation">)</span> 
+       <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 通过系统堆补充空间失败，在哈希桶中找是否有没有使用的较大的内存块</span>
+            <span class="token keyword">int</span> i<span class="token punctuation">;</span>
+            obj <span class="token operator">*</span><span class="token operator">*</span> my_free_list<span class="token punctuation">,</span> <span class="token operator">*</span>p<span class="token punctuation">;</span>
+            <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> size<span class="token punctuation">;</span> i <span class="token operator">&lt;=</span> __MAX_BYTES<span class="token punctuation">;</span> i <span class="token operator">+=</span> __ALIGN<span class="token punctuation">)</span>
+           <span class="token punctuation">{<!-- --></span>
+                my_free_list <span class="token operator">=</span> free_list <span class="token operator">+</span> <span class="token function">FREELIST_INDEX</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                p <span class="token operator">=</span> <span class="token operator">*</span>my_free_list<span class="token punctuation">;</span>
+                
+                <span class="token comment">// 如果有，将该内存块补充进内存池，递归继续分配</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token number">0</span> <span class="token operator">!=</span> p<span class="token punctuation">)</span>
+               <span class="token punctuation">{<!-- --></span>
+                    <span class="token operator">*</span>my_free_list <span class="token operator">=</span> p <span class="token operator">-&gt;</span> free_list_link<span class="token punctuation">;</span>
+                    start_free <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span><span class="token punctuation">)</span>p<span class="token punctuation">;</span>
+                    end_free <span class="token operator">=</span> start_free <span class="token operator">+</span> i<span class="token punctuation">;</span>
+                    <span class="token keyword">return</span><span class="token punctuation">(</span><span class="token function">chunk_alloc</span><span class="token punctuation">(</span>size<span class="token punctuation">,</span> nobjs<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+               <span class="token punctuation">}</span>
+           <span class="token punctuation">}</span>
+            
+            <span class="token comment">// 山穷水尽，只能向一级空间配置器求助</span>
+        <span class="token comment">// 注意：此处一定要将end_free置空，因为一级空间配置器一旦抛异常就会出</span>
+问题
+            end_free <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+            start_free <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span><span class="token punctuation">)</span>malloc_alloc<span class="token double-colon punctuation">::</span><span class="token function">allocate</span><span class="token punctuation">(</span>bytes_to_get<span class="token punctuation">)</span><span class="token punctuation">;</span>
+       <span class="token punctuation">}</span>
+        
+        <span class="token comment">// 通过系统堆向内存池补充空间成功，更新信息并继续分配</span>
+        heap_size <span class="token operator">+=</span> bytes_to_get<span class="token punctuation">;</span>
+        end_free <span class="token operator">=</span> start_free <span class="token operator">+</span> bytes_to_get<span class="token punctuation">;</span>
+        <span class="token keyword">return</span><span class="token punctuation">(</span><span class="token function">chunk_alloc</span><span class="token punctuation">(</span>size<span class="token punctuation">,</span> nobjs<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+   <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="34_SGISTL_325"></a>3.4 SGI-STL二级空间配置器之空间回收</h3> 
+<p><img src="https://images2.imgbox.com/79/a9/556AEFAE_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-cpp"><span class="token comment">// 函数功能：用户将空间归还给空间配置器</span>
+<span class="token comment">// 参数：p空间首地址   n空间总大小</span>
+<span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">deallocate</span><span class="token punctuation">(</span><span class="token keyword">void</span> <span class="token operator">*</span>p<span class="token punctuation">,</span> size_t n<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	obj <span class="token operator">*</span>q <span class="token operator">=</span> <span class="token punctuation">(</span>obj <span class="token operator">*</span><span class="token punctuation">)</span>p<span class="token punctuation">;</span>
+	obj <span class="token operator">*</span><span class="token operator">*</span> my_free_list<span class="token punctuation">;</span>
+	<span class="token comment">// 如果空间不是小块内存，交给一级空间配置器回收</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>n <span class="token operator">&gt;</span> <span class="token punctuation">(</span>size_t<span class="token punctuation">)</span> __MAX_BYTES<span class="token punctuation">)</span>
+	 <span class="token punctuation">{<!-- --></span>
+	     malloc_alloc<span class="token double-colon punctuation">::</span><span class="token function">deallocate</span><span class="token punctuation">(</span>p<span class="token punctuation">,</span> n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	     <span class="token keyword">return</span><span class="token punctuation">;</span>
+	 <span class="token punctuation">}</span>
+	<span class="token comment">// 找到对应的哈希桶，将内存挂在哈希桶中</span>
+	my_free_list <span class="token operator">=</span> free_list <span class="token operator">+</span> <span class="token function">FREELIST_INDEX</span><span class="token punctuation">(</span>n<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	q <span class="token operator">-&gt;</span> free_list_link <span class="token operator">=</span> <span class="token operator">*</span>my_free_list<span class="token punctuation">;</span>
+	<span class="token operator">*</span>my_free_list <span class="token operator">=</span> q<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="33__347"></a>3.3 空间配置器的默认选择</h3> 
+<p>SGI-STL默认使用一级还是二级空间配置器，通过USE_MALLOC宏进行控制：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">ifdef</span> <span class="token expression">__USE_MALLOC</span></span>
+
+<span class="token keyword">typedef</span> malloc_alloc alloc<span class="token punctuation">;</span>
+<span class="token keyword">typedef</span> malloc_alloc single_client_alloc<span class="token punctuation">;</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+<span class="token comment">// 二级空间配置器定义</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+</code></pre> 
+<p>在SGI_STL中该宏没有定义，因此：<strong>默认情况下SGI_STL使用二级空间配置器</strong></p> 
+<h3><a id="34__362"></a>3.4 空间配置器的再次封装</h3> 
+<p>在C++中，用户所需空间可能是任意类型的，有单个对象空间，有连续空间，每次让用户自己计算所需空间总大小不是很友好，因此SGI-STL将空间配置器重新再封装了一层：</p> 
+<pre><code class="prism language-cpp"><span class="token comment">// T: 元素类型</span>
+<span class="token comment">// Alloc: 空间配置器</span>
+<span class="token comment">// 注意：该类只负责申请与归还对象的空间，不否则空间中对象的构造与析构</span>
+<span class="token keyword">template</span><span class="token operator">&lt;</span><span class="token keyword">class</span> <span class="token class-name">T</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">Alloc</span><span class="token operator">&gt;</span>
+<span class="token keyword">class</span> <span class="token class-name">simple_alloc</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+	<span class="token comment">// 申请n个T类型对象大小的空间</span>
+	<span class="token keyword">static</span> T <span class="token operator">*</span><span class="token function">allocate</span><span class="token punctuation">(</span>size_t n<span class="token punctuation">)</span>
+	 <span class="token punctuation">{<!-- --></span> 
+	     <span class="token keyword">return</span> <span class="token number">0</span> <span class="token operator">==</span> n<span class="token operator">?</span> <span class="token number">0</span> <span class="token operator">:</span> <span class="token punctuation">(</span>T<span class="token operator">*</span><span class="token punctuation">)</span> <span class="token class-name">Alloc</span><span class="token double-colon punctuation">::</span><span class="token function">allocate</span><span class="token punctuation">(</span>n <span class="token operator">*</span> <span class="token keyword">sizeof</span> <span class="token punctuation">(</span>T<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span> 
+	 <span class="token punctuation">}</span>
+	<span class="token comment">// 申请一个T类型对象大小的空间</span>
+	<span class="token keyword">static</span> T <span class="token operator">*</span><span class="token function">allocate</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token punctuation">)</span>
+	 <span class="token punctuation">{<!-- --></span> 
+	     <span class="token keyword">return</span> <span class="token punctuation">(</span>T<span class="token operator">*</span><span class="token punctuation">)</span> <span class="token class-name">Alloc</span><span class="token double-colon punctuation">::</span><span class="token function">allocate</span><span class="token punctuation">(</span><span class="token keyword">sizeof</span> <span class="token punctuation">(</span>T<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	 <span class="token punctuation">}</span>
+	<span class="token comment">// 释放n个T类型对象大小的空间</span>
+	<span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">deallocate</span><span class="token punctuation">(</span>T <span class="token operator">*</span>p<span class="token punctuation">,</span> size_t n<span class="token punctuation">)</span>
+	 <span class="token punctuation">{<!-- --></span> 
+	     <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token number">0</span> <span class="token operator">!=</span> n<span class="token punctuation">)</span> 
+	         <span class="token class-name">Alloc</span><span class="token double-colon punctuation">::</span><span class="token function">deallocate</span><span class="token punctuation">(</span>p<span class="token punctuation">,</span> n <span class="token operator">*</span> <span class="token keyword">sizeof</span> <span class="token punctuation">(</span>T<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	 <span class="token punctuation">}</span>
+	<span class="token comment">// 释放一个T类型对象大小的空间</span>
+	<span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">deallocate</span><span class="token punctuation">(</span>T <span class="token operator">*</span>p<span class="token punctuation">)</span>
+	 <span class="token punctuation">{<!-- --></span> 
+	     <span class="token class-name">Alloc</span><span class="token double-colon punctuation">::</span><span class="token function">deallocate</span><span class="token punctuation">(</span>p<span class="token punctuation">,</span> <span class="token keyword">sizeof</span> <span class="token punctuation">(</span>T<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span> 
+	 <span class="token punctuation">}</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="35__397"></a>3.5 对象的构造与释放</h3> 
+<p>一切为了效率考虑，SGI-STL决定将空间申请释放和对象的构造析构两个过程分离开，因为有些对象的构造不需要调用构造函数，销毁时不需要调用析构函数，将该过程分离开可以提高程序的性能：</p> 
+<pre><code class="prism language-cpp"><span class="token comment">// 归还空间时，先先调用该函数将对象中资源清理掉</span>
+<span class="token keyword">template</span> <span class="token operator">&lt;</span><span class="token keyword">class</span> <span class="token class-name">T</span><span class="token operator">&gt;</span>
+<span class="token keyword">inline</span> <span class="token keyword">void</span> <span class="token function">destroy</span><span class="token punctuation">(</span>T<span class="token operator">*</span> pointer<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+	pointer<span class="token operator">-&gt;</span><span class="token operator">~</span><span class="token function">T</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token comment">// 空间申请好后调用该函数：利用placement-new完成对象的构造</span>
+<span class="token keyword">template</span> <span class="token operator">&lt;</span><span class="token keyword">class</span> <span class="token class-name">T1</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">T2</span><span class="token operator">&gt;</span>
+<span class="token keyword">inline</span> <span class="token keyword">void</span> <span class="token function">construct</span><span class="token punctuation">(</span>T1<span class="token operator">*</span> p<span class="token punctuation">,</span> <span class="token keyword">const</span> T2<span class="token operator">&amp;</span> value<span class="token punctuation">)</span> 
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">new</span> <span class="token punctuation">(</span>p<span class="token punctuation">)</span> <span class="token function">T1</span><span class="token punctuation">(</span>value<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>注意：</p> 
+<ol><li>在释放对象时，需要根据对象的类型确定是否调用析构函数(类型萃取)</li><li>对象的类型可以通过迭代器获萃取到</li></ol> 
+<p>以上两步在实现时稍微有点复杂，有兴趣的可参考STL源码</p> 
+<p><img src="https://images2.imgbox.com/f2/a7/UGMfrfoS_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="4__423"></a>4. 与容器结合</h2> 
+<p>本例子给出list与空间配置器是如何结合的，大家参考可给出vector的实现。</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">template</span> <span class="token operator">&lt;</span><span class="token keyword">class</span> <span class="token class-name">T</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">Alloc</span> <span class="token operator">=</span> alloc<span class="token operator">&gt;</span>
+<span class="token keyword">class</span> <span class="token class-name">list</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// ...</span>
+	<span class="token comment">// 实例化空间配置器</span>
+	<span class="token keyword">typedef</span> simple_alloc<span class="token operator">&lt;</span>list_node<span class="token punctuation">,</span> Alloc<span class="token operator">&gt;</span> list_node_allocator<span class="token punctuation">;</span>
+	<span class="token comment">// ...</span>
+	<span class="token keyword">protected</span><span class="token operator">:</span>
+	link_type <span class="token function">get_node</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+	   <span class="token comment">// 调用空间配置器接口先申请节点的空间</span>
+	   <span class="token keyword">return</span> list_node_allocator<span class="token double-colon punctuation">::</span><span class="token function">allocate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> 
+	<span class="token punctuation">}</span>
+	<span class="token comment">// 将节点归还给空间配置器</span>
+	<span class="token keyword">void</span> <span class="token function">put_node</span><span class="token punctuation">(</span>link_type p<span class="token punctuation">)</span> 
+	<span class="token punctuation">{<!-- --></span>
+	   list_node_allocator<span class="token double-colon punctuation">::</span><span class="token function">deallocate</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">// 创建节点：1. 申请空间 2. 完成节点构造</span>
+	link_type <span class="token function">create_node</span><span class="token punctuation">(</span><span class="token keyword">const</span> T<span class="token operator">&amp;</span> x<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+	   link_type p <span class="token operator">=</span> <span class="token function">get_node</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	   <span class="token function">construct</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>p<span class="token operator">-&gt;</span>data<span class="token punctuation">,</span> x<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	   <span class="token keyword">return</span> p<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">// 销毁节点： 1. 调用析构函数清理节点中资源 2. 将节点空间归还给空间配置器</span>
+	<span class="token keyword">void</span> <span class="token function">destroy_node</span><span class="token punctuation">(</span>link_type p<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token function">destroy</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>p<span class="token operator">-&gt;</span>data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token function">put_node</span><span class="token punctuation">(</span>p<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">// ...</span>
+	iterator <span class="token function">insert</span><span class="token punctuation">(</span>iterator position<span class="token punctuation">,</span> <span class="token keyword">const</span> T<span class="token operator">&amp;</span> x<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		link_type tmp <span class="token operator">=</span> <span class="token function">create_node</span><span class="token punctuation">(</span>x<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		tmp<span class="token operator">-&gt;</span>next <span class="token operator">=</span> position<span class="token punctuation">.</span>node<span class="token punctuation">;</span>
+		tmp<span class="token operator">-&gt;</span>prev <span class="token operator">=</span> position<span class="token punctuation">.</span>node<span class="token operator">-&gt;</span>prev<span class="token punctuation">;</span>
+		 <span class="token punctuation">(</span><span class="token function">link_type</span><span class="token punctuation">(</span>position<span class="token punctuation">.</span>node<span class="token operator">-&gt;</span>prev<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token operator">-&gt;</span>next <span class="token operator">=</span> tmp<span class="token punctuation">;</span>
+		position<span class="token punctuation">.</span>node<span class="token operator">-&gt;</span>prev <span class="token operator">=</span> tmp<span class="token punctuation">;</span>
+		<span class="token keyword">return</span> tmp<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	
+	iterator <span class="token function">erase</span><span class="token punctuation">(</span>iterator position<span class="token punctuation">)</span> 
+	<span class="token punctuation">{<!-- --></span>
+		link_type next_node <span class="token operator">=</span> <span class="token function">link_type</span><span class="token punctuation">(</span>position<span class="token punctuation">.</span>node<span class="token operator">-&gt;</span>next<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		link_type prev_node <span class="token operator">=</span> <span class="token function">link_type</span><span class="token punctuation">(</span>position<span class="token punctuation">.</span>node<span class="token operator">-&gt;</span>prev<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		prev_node<span class="token operator">-&gt;</span>next <span class="token operator">=</span> next_node<span class="token punctuation">;</span>
+		next_node<span class="token operator">-&gt;</span>prev <span class="token operator">=</span> prev_node<span class="token punctuation">;</span>
+		<span class="token function">destroy_node</span><span class="token punctuation">(</span>position<span class="token punctuation">.</span>node<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token function">iterator</span><span class="token punctuation">(</span>next_node<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	<span class="token comment">// ...</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/cf/04/jlKoKtd1_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="5_482"></a>5.复习</h2> 
+<p><img src="https://images2.imgbox.com/5b/f9/Pwub4qxM_o.png" alt="在这里插入图片描述"><br> 六大组件间的关系是什么？<br> 六大组件有容器、算法、空间配置器、迭代器、仿函数、适配器。首先<strong>空间配置器</strong>是一个简单的内存池为容器提供小内存，<strong>容器</strong>就是一些常见的数据结构，<strong>算法</strong>是解决对数据结构中的数据进行各种处理比如查找、去重、排序等等。还有容器的底层各不一样(数组、链表、堆、数、哈希…)，容器内部结构是私有的外部访问不了。按理说我们要学习它们各种结构，才知道如何去访问它们，但是<strong>迭代器</strong>封装，不需要暴露容器底层复杂的结构。迭代器封装，提高了统一简单的方式访问容器。而且迭代器又把算法和容器联合起来，算法通过迭代器，访问各种容器，但是如果不符合算法要求又可以直接报错。比如sort算法要求随机迭代器，传一个单向或者双向，直接就报错了。算法的实现，脱离了具体存储结构，直接通过迭代器实现。体现出设计角度的复用。<strong>适配器</strong>有容器适配器stack/queue/priority_queu，反向迭代器也是适配器，封装正向迭代器实现了反向迭代器。体现了封装复用。<strong>仿函数</strong>其实是一个类的对象，也可以说是函数对象，因为这个类的对象可以像函数一样使用。它内部重载了operator()，可以用来支持比较大小，把key转成整型，sort排序比较规则。。。</p> 
+<p><img src="https://images2.imgbox.com/1a/03/bWLFdgzb_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/015b874ad4d440e99e105c851b5b4683/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">python实现发送邮件</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f40a4ecfb15a4b7f716014e6e1eff0a0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【C&#43;&#43;】类和对象（二）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,876 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink协调器Coordinator及自定义Operator - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/e086a8b241feba4da3bbb8278ce6e8ad/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Flink协调器Coordinator及自定义Operator">
+  <meta property="og:description" content="Flink协调器Coordinator及自定义Operator 最近的项目开发过程中，使用到了Flink中的协调器以及自定义算子相关的内容，本篇文章主要介绍Flink中的协调器是什么，如何用，以及协调器与算子间的交互。
+协调器Coordinator Flink中的协调器是用来协调运行时的算子，运行在JobManager中，通过事件的方式与算子通信。例如Source和Sink算子中的协调器是用来发现和分配工作或者聚合和提交元数据。
+线程模型 所有协调器方法都由作业管理器的主线程（邮箱线程）调用。这意味着这些方法在任何情况下都不得执行阻塞操作（如 I/ O 或等待锁或或Futures）。这很有可能使整个 JobManager 瘫痪。
+因此，涉及更复杂操作的协调器应生成线程来处理 I/ O 工作。上 OperatorCoordinator. Context 的方法可以安全地从另一个线程调用，而不是从调用协调器方法的线程调用。
+一致性 与调度程序的视图相比，协调器对任务执行的视图高度简化，但允许与在并行子任务上运行的操作员进行一致的交互。具体而言，保证严格按顺序调用以下方法：
+executionAttemptReady(int, int, OperatorCoordinator.SubtaskGateway)：在子任务就绪的时候调用一次。SubtaskGateway是用来与子任务交互的网关。这是与子任务尝试交互的开始。
+executionAttemptFailed(int, int, Throwable)：在尝试失败或取消后立即调用每个子任务。此时，应停止与子任务尝试的交互。subtaskReset(int, long) 或 resetToCheckpoint(long, byte[])：一旦调度程序确定了要还原的检查点，这些方法就会通知协调器。前一种方法在发生区域故障/ 恢复（可能影响子任务的子集）时调用，后一种方法在全局故障/ 恢复的情况下调用。此方法应用于确定要恢复的操作，因为它会告诉要回退到哪个检查点。协调器实现需要恢复自还原的检查点以来与相关任务的交互。只有在子任务的所有尝试被调用后 executionAttemptFailed(int, int, Throwable) ，才会调用它。executionAttemptReady(int, int, OperatorCoordinator. SubtaskGateway)：在恢复的任务（新尝试）准备就绪后再次调用。这晚于 subtaskReset(int, long)，因为在这些方法之间，会计划和部署新的尝试。 接口方法说明 实现自定义的协调器需要实现OperatorCoordinator接口方法，各方法说明如下所示：
+public interface OperatorCoordinator extends CheckpointListener, AutoCloseable { // ------------------------------------------------------------------------ /** * 启动协调器，启动时调用一次当前方法在所有方法之前 * 此方法抛出的异常都会导致当前作业失败 */ void start() throws Exception; /** * 释放协调器时调用当前方法，此方法应当释放持有的资源 * 此方法抛出的异常不会导致作业失败 */ @Override void close() throws Exception; // ------------------------------------------------------------------------ /** * 处理来自并行算子实例的事件 * 此方法抛出的异常会导致作业失败并恢复 */ void handleEventFromOperator(int subtask, int attemptNumber, OperatorEvent event) throws Exception; // ------------------------------------------------------------------------ /** * 为协调器做checkpoint，将当前协调器中的状态序列化到checkpoint中，执行成功需要调用CompletableFuture的complete方法，失败需要调用CompletableFuture的completeExceptionally方法 */ void checkpointCoordinator(long checkpointId, CompletableFuture&lt;byte[]&gt; resultFuture) throws Exception; /** * We override the method here to remove the checked exception.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-06T17:57:49+08:00">
+    <meta property="article:modified_time" content="2024-06-06T17:57:49+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink协调器Coordinator及自定义Operator</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="FlinkCoordinatorOperator_0"></a>Flink协调器Coordinator及自定义Operator</h2> 
+<blockquote> 
+ <p>最近的项目开发过程中，使用到了Flink中的协调器以及自定义算子相关的内容，本篇文章主要介绍Flink中的协调器是什么，如何用，以及协调器与算子间的交互。</p> 
+</blockquote> 
+<h2><a id="Coordinator_4"></a>协调器Coordinator</h2> 
+<p>Flink中的协调器是用来协调运行时的算子，运行在JobManager中，通过事件的方式与算子通信。例如Source和Sink算子中的协调器是用来发现和分配工作或者聚合和提交元数据。</p> 
+<h4><a id="_8"></a>线程模型</h4> 
+<p>所有协调器方法都由作业管理器的主线程（邮箱线程）调用。这意味着这些方法在任何情况下都不得执行阻塞操作（如 I/ O 或等待锁或或Futures）。这很有可能使整个 JobManager 瘫痪。<br> 因此，涉及更复杂操作的协调器应生成线程来处理 I/ O 工作。上 OperatorCoordinator. Context 的方法可以安全地从另一个线程调用，而不是从调用协调器方法的线程调用。</p> 
+<h4><a id="_13"></a>一致性</h4> 
+<p>与调度程序的视图相比，协调器对任务执行的视图高度简化，但允许与在并行子任务上运行的操作员进行一致的交互。具体而言，保证严格按顺序调用以下方法：</p> 
+<ol><li>executionAttemptReady(int, int, OperatorCoordinator.SubtaskGateway)：在子任务就绪的时候调用一次。SubtaskGateway是用来与子任务交互的网关。这是与子任务尝试交互的开始。<br> executionAttemptFailed(int, int, Throwable)：在尝试失败或取消后立即调用每个子任务。此时，应停止与子任务尝试的交互。</li><li>subtaskReset(int, long) 或 resetToCheckpoint(long, byte[])：一旦调度程序确定了要还原的检查点，这些方法就会通知协调器。前一种方法在发生区域故障/ 恢复（可能影响子任务的子集）时调用，后一种方法在全局故障/ 恢复的情况下调用。此方法应用于确定要恢复的操作，因为它会告诉要回退到哪个检查点。协调器实现需要恢复自还原的检查点以来与相关任务的交互。只有在子任务的所有尝试被调用后 executionAttemptFailed(int, int, Throwable) ，才会调用它。</li><li>executionAttemptReady(int, int, OperatorCoordinator. SubtaskGateway)：在恢复的任务（新尝试）准备就绪后再次调用。这晚于 subtaskReset(int, long)，因为在这些方法之间，会计划和部署新的尝试。</li></ol> 
+<h4><a id="_22"></a>接口方法说明</h4> 
+<p>实现自定义的协调器需要实现OperatorCoordinator接口方法，各方法说明如下所示：</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">interface</span> <span class="token class-name">OperatorCoordinator</span> <span class="token keyword">extends</span> <span class="token class-name">CheckpointListener</span><span class="token punctuation">,</span> <span class="token class-name">AutoCloseable</span> <span class="token punctuation">{<!-- --></span>
+
+
+    <span class="token comment">// ------------------------------------------------------------------------</span>
+
+    <span class="token comment">/**
+     * 启动协调器，启动时调用一次当前方法在所有方法之前
+     * 此方法抛出的异常都会导致当前作业失败
+     */</span>
+    <span class="token keyword">void</span> <span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * 释放协调器时调用当前方法，此方法应当释放持有的资源
+     * 此方法抛出的异常不会导致作业失败
+     */</span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">void</span> <span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// ------------------------------------------------------------------------</span>
+
+    <span class="token comment">/**
+     * 处理来自并行算子实例的事件
+     * 此方法抛出的异常会导致作业失败并恢复
+     */</span>
+    <span class="token keyword">void</span> <span class="token function">handleEventFromOperator</span><span class="token punctuation">(</span><span class="token keyword">int</span> subtask<span class="token punctuation">,</span> <span class="token keyword">int</span> attemptNumber<span class="token punctuation">,</span> <span class="token class-name">OperatorEvent</span> event<span class="token punctuation">)</span>
+            <span class="token keyword">throws</span> <span class="token class-name">Exception</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// ------------------------------------------------------------------------</span>
+
+    <span class="token comment">/**
+     * 为协调器做checkpoint，将当前协调器中的状态序列化到checkpoint中，执行成功需要调用CompletableFuture的complete方法，失败需要调用CompletableFuture的completeExceptionally方法
+     */</span>
+    <span class="token keyword">void</span> <span class="token function">checkpointCoordinator</span><span class="token punctuation">(</span><span class="token keyword">long</span> checkpointId<span class="token punctuation">,</span> <span class="token class-name">CompletableFuture</span><span class="token operator">&lt;</span><span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token operator">&gt;</span> resultFuture<span class="token punctuation">)</span>
+            <span class="token keyword">throws</span> <span class="token class-name">Exception</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * We override the method here to remove the checked exception. Please check the Java docs of
+     * {@link CheckpointListener#notifyCheckpointComplete(long)} for more detail semantic of the
+     * method.
+     */</span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">void</span> <span class="token function">notifyCheckpointComplete</span><span class="token punctuation">(</span><span class="token keyword">long</span> checkpointId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * We override the method here to remove the checked exception. Please check the Java docs of
+     * {@link CheckpointListener#notifyCheckpointAborted(long)} for more detail semantic of the
+     * method.
+     */</span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">default</span> <span class="token keyword">void</span> <span class="token function">notifyCheckpointAborted</span><span class="token punctuation">(</span><span class="token keyword">long</span> checkpointId<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+
+    <span class="token comment">/**
+     * 从checkpoint重置当前的协调器
+     */</span>
+    <span class="token keyword">void</span> <span class="token function">resetToCheckpoint</span><span class="token punctuation">(</span><span class="token keyword">long</span> checkpointId<span class="token punctuation">,</span> <span class="token annotation punctuation">@Nullable</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> checkpointData<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// ------------------------------------------------------------------------</span>
+
+    <span class="token comment">/**
+     * 子任务重置时调用此方法
+     */</span>
+    <span class="token keyword">void</span> <span class="token function">subtaskReset</span><span class="token punctuation">(</span><span class="token keyword">int</span> subtask<span class="token punctuation">,</span> <span class="token keyword">long</span> checkpointId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * 子任务失败时调用此方法 
+     */</span>
+    <span class="token keyword">void</span> <span class="token function">executionAttemptFailed</span><span class="token punctuation">(</span><span class="token keyword">int</span> subtask<span class="token punctuation">,</span> <span class="token keyword">int</span> attemptNumber<span class="token punctuation">,</span> <span class="token annotation punctuation">@Nullable</span> <span class="token class-name">Throwable</span> reason<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * 子任务就绪时调用此方法
+     */</span>
+    <span class="token keyword">void</span> <span class="token function">executionAttemptReady</span><span class="token punctuation">(</span><span class="token keyword">int</span> subtask<span class="token punctuation">,</span> <span class="token keyword">int</span> attemptNumber<span class="token punctuation">,</span> <span class="token class-name">SubtaskGateway</span> gateway<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="Operator_102"></a>算子Operator</h2> 
+<p>Flink中执行计算任务的算子，像使用DataStream API时调用的map、flatmap、process传入的自定义函数最终都会封装为一个一个的算子。使用UDF已经能够满足大多数的开发场景，但涉及到与协调器打交道时需要自定义算子，自定义算子相对比较好简单，具体可以参考org.apache.flink.streaming.api.operators.KeyedProcessOperator的实现。</p> 
+<p>自定义算子需要实现AbstractStreamOperator和OneInputStreamOperator接口方法</p> 
+<p>实现定时器功能，需要实现Triggerable接口方法</p> 
+<p>实现处理协调器的事件功能，需要实现OperatorEventHandler接口方法</p> 
+<h2><a id="_114"></a>示例</h2> 
+<h3><a id="_116"></a>自定义算子</h3> 
+<p>这里实现一个自定义的算子，用来处理KeyedStream的数据，它能够接受来自协调器的事件，并且能够给协调器发送事件。</p> 
+<p>MyKeyedProcessOperator实现代码如下：</p> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>examples<span class="token punctuation">.</span>operator</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>examples<span class="token punctuation">.</span>event<span class="token punctuation">.</span></span><span class="token class-name">MyEvent</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>operators<span class="token punctuation">.</span>coordination<span class="token punctuation">.</span></span><span class="token class-name">OperatorEvent</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>operators<span class="token punctuation">.</span>coordination<span class="token punctuation">.</span></span><span class="token class-name">OperatorEventGateway</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>operators<span class="token punctuation">.</span>coordination<span class="token punctuation">.</span></span><span class="token class-name">OperatorEventHandler</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>state<span class="token punctuation">.</span></span><span class="token class-name">VoidNamespace</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>state<span class="token punctuation">.</span></span><span class="token class-name">VoidNamespaceSerializer</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>api<span class="token punctuation">.</span></span><span class="token class-name">SimpleTimerService</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>api<span class="token punctuation">.</span></span><span class="token class-name">TimerService</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>api<span class="token punctuation">.</span>operators<span class="token punctuation">.</span></span><span class="token operator">*</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>streamrecord<span class="token punctuation">.</span></span><span class="token class-name">StreamRecord</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>tasks<span class="token punctuation">.</span></span><span class="token class-name">ProcessingTimeService</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>slf4j<span class="token punctuation">.</span></span><span class="token class-name">Logger</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>slf4j<span class="token punctuation">.</span></span><span class="token class-name">LoggerFactory</span></span><span class="token punctuation">;</span>
+
+
+<span class="token comment">/**
+ * 自定义的KeyedProcessOperator
+ * @author shirukai
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">MyKeyedProcessOperator</span><span class="token generics"><span class="token punctuation">&lt;</span>KEY<span class="token punctuation">,</span> IN<span class="token punctuation">,</span> OUT<span class="token punctuation">&gt;</span></span> <span class="token keyword">extends</span> <span class="token class-name">AbstractStreamOperator</span><span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">&gt;</span></span>
+        <span class="token keyword">implements</span> <span class="token class-name">OneInputStreamOperator</span><span class="token generics"><span class="token punctuation">&lt;</span>IN<span class="token punctuation">,</span> OUT<span class="token punctuation">&gt;</span></span><span class="token punctuation">,</span>
+        <span class="token class-name">Triggerable</span><span class="token generics"><span class="token punctuation">&lt;</span>KEY<span class="token punctuation">,</span> <span class="token class-name">VoidNamespace</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">,</span>
+        <span class="token class-name">OperatorEventHandler</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">private</span> <span class="token keyword">static</span> <span class="token keyword">final</span> <span class="token keyword">long</span> serialVersionUID <span class="token operator">=</span> <span class="token number">1L</span><span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token keyword">static</span> <span class="token keyword">final</span> <span class="token class-name">Logger</span> <span class="token constant">LOG</span> <span class="token operator">=</span> <span class="token class-name">LoggerFactory</span><span class="token punctuation">.</span><span class="token function">getLogger</span><span class="token punctuation">(</span><span class="token class-name">MyKeyedProcessOperator</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token keyword">transient</span> <span class="token class-name">TimestampedCollector</span><span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">&gt;</span></span> collector<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token keyword">transient</span> <span class="token class-name">TimerService</span> timerService<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">OperatorEventGateway</span> operatorEventGateway<span class="token punctuation">;</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">MyKeyedProcessOperator</span><span class="token punctuation">(</span><span class="token class-name">ProcessingTimeService</span> processingTimeService<span class="token punctuation">,</span> <span class="token class-name">OperatorEventGateway</span> operatorEventGateway<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>processingTimeService <span class="token operator">=</span> processingTimeService<span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>operatorEventGateway <span class="token operator">=</span> operatorEventGateway<span class="token punctuation">;</span>
+
+
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token keyword">open</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">super</span><span class="token punctuation">.</span><span class="token keyword">open</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        collector <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">TimestampedCollector</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>output<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">InternalTimerService</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">VoidNamespace</span><span class="token punctuation">&gt;</span></span> internalTimerService <span class="token operator">=</span>
+                <span class="token function">getInternalTimerService</span><span class="token punctuation">(</span><span class="token string">"user-timers"</span><span class="token punctuation">,</span> <span class="token class-name">VoidNamespaceSerializer</span><span class="token punctuation">.</span><span class="token constant">INSTANCE</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        timerService <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">SimpleTimerService</span><span class="token punctuation">(</span>internalTimerService<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">processElement</span><span class="token punctuation">(</span><span class="token class-name">StreamRecord</span><span class="token generics"><span class="token punctuation">&lt;</span>IN<span class="token punctuation">&gt;</span></span> element<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"processElement: {}"</span><span class="token punctuation">,</span> element<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        collector<span class="token punctuation">.</span><span class="token function">setTimestamp</span><span class="token punctuation">(</span>element<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 注册事件时间定时器</span>
+        timerService<span class="token punctuation">.</span><span class="token function">registerEventTimeTimer</span><span class="token punctuation">(</span>element<span class="token punctuation">.</span><span class="token function">getTimestamp</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 注册处理时间定时器</span>
+        timerService<span class="token punctuation">.</span><span class="token function">registerProcessingTimeTimer</span><span class="token punctuation">(</span>element<span class="token punctuation">.</span><span class="token function">getTimestamp</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token number">100</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 给协调器发送消息</span>
+        operatorEventGateway<span class="token punctuation">.</span><span class="token function">sendEventToCoordinator</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">MyEvent</span><span class="token punctuation">(</span><span class="token string">"hello,I'm from operator"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 不做任何处理直接发送到下游</span>
+        collector<span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token constant">OUT</span><span class="token punctuation">)</span> element<span class="token punctuation">.</span><span class="token function">getValue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">onEventTime</span><span class="token punctuation">(</span><span class="token class-name">InternalTimer</span><span class="token generics"><span class="token punctuation">&lt;</span>KEY<span class="token punctuation">,</span> <span class="token class-name">VoidNamespace</span><span class="token punctuation">&gt;</span></span> timer<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"onEventTime: {}"</span><span class="token punctuation">,</span> timer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">onProcessingTime</span><span class="token punctuation">(</span><span class="token class-name">InternalTimer</span><span class="token generics"><span class="token punctuation">&lt;</span>KEY<span class="token punctuation">,</span> <span class="token class-name">VoidNamespace</span><span class="token punctuation">&gt;</span></span> timer<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"onProcessingTime: {}"</span><span class="token punctuation">,</span> timer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">handleOperatorEvent</span><span class="token punctuation">(</span><span class="token class-name">OperatorEvent</span> evt<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"handleOperatorEvent: {}"</span><span class="token punctuation">,</span> evt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>算子工厂类MyKeyedProcessOperatorFactory：</p> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>examples<span class="token punctuation">.</span>operator</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>examples<span class="token punctuation">.</span>coordinator<span class="token punctuation">.</span></span><span class="token class-name">MyKeyedProcessCoordinatorProvider</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>jobgraph<span class="token punctuation">.</span></span><span class="token class-name">OperatorID</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>operators<span class="token punctuation">.</span>coordination<span class="token punctuation">.</span></span><span class="token class-name">OperatorCoordinator</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>operators<span class="token punctuation">.</span>coordination<span class="token punctuation">.</span></span><span class="token class-name">OperatorEventGateway</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>api<span class="token punctuation">.</span>operators<span class="token punctuation">.</span></span><span class="token operator">*</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>tasks<span class="token punctuation">.</span></span><span class="token class-name">ProcessingTimeServiceAware</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * 自定义算子工厂类
+ * @author shirukai
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">MyKeyedProcessOperatorFactory</span><span class="token generics"><span class="token punctuation">&lt;</span>IN<span class="token punctuation">&gt;</span></span> <span class="token keyword">extends</span> <span class="token class-name">AbstractStreamOperatorFactory</span><span class="token generics"><span class="token punctuation">&lt;</span>IN<span class="token punctuation">&gt;</span></span>
+        <span class="token keyword">implements</span> <span class="token class-name">OneInputStreamOperatorFactory</span><span class="token generics"><span class="token punctuation">&lt;</span>IN<span class="token punctuation">,</span> IN<span class="token punctuation">&gt;</span></span><span class="token punctuation">,</span>
+        <span class="token class-name">CoordinatedOperatorFactory</span><span class="token generics"><span class="token punctuation">&lt;</span>IN<span class="token punctuation">&gt;</span></span><span class="token punctuation">,</span>
+        <span class="token class-name">ProcessingTimeServiceAware</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token class-name">OperatorCoordinator<span class="token punctuation">.</span>Provider</span> <span class="token function">getCoordinatorProvider</span><span class="token punctuation">(</span><span class="token class-name">String</span> operatorName<span class="token punctuation">,</span> <span class="token class-name">OperatorID</span> operatorID<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">MyKeyedProcessCoordinatorProvider</span><span class="token punctuation">(</span>operatorName<span class="token punctuation">,</span> operatorID<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span> <span class="token keyword">extends</span> <span class="token class-name">StreamOperator</span><span class="token punctuation">&lt;</span>IN<span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> <span class="token class-name">T</span> <span class="token function">createStreamOperator</span><span class="token punctuation">(</span><span class="token class-name">StreamOperatorParameters</span><span class="token generics"><span class="token punctuation">&lt;</span>IN<span class="token punctuation">&gt;</span></span> parameters<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">final</span> <span class="token class-name">OperatorID</span> operatorId <span class="token operator">=</span> parameters<span class="token punctuation">.</span><span class="token function">getStreamConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getOperatorID</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">final</span> <span class="token class-name">OperatorEventGateway</span> gateway <span class="token operator">=</span>
+                parameters<span class="token punctuation">.</span><span class="token function">getOperatorEventDispatcher</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getOperatorEventGateway</span><span class="token punctuation">(</span>operatorId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">final</span> <span class="token class-name">MyKeyedProcessOperator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">,</span> IN<span class="token punctuation">,</span> IN<span class="token punctuation">&gt;</span></span> operator <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">MyKeyedProcessOperator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>processingTimeService<span class="token punctuation">,</span> gateway<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            operator<span class="token punctuation">.</span><span class="token function">setup</span><span class="token punctuation">(</span>
+                    parameters<span class="token punctuation">.</span><span class="token function">getContainingTask</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                    parameters<span class="token punctuation">.</span><span class="token function">getStreamConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                    parameters<span class="token punctuation">.</span><span class="token function">getOutput</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            parameters
+                    <span class="token punctuation">.</span><span class="token function">getOperatorEventDispatcher</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                    <span class="token punctuation">.</span><span class="token function">registerEventHandler</span><span class="token punctuation">(</span>operatorId<span class="token punctuation">,</span> operator<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">return</span> <span class="token punctuation">(</span><span class="token class-name">T</span><span class="token punctuation">)</span> operator<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">IllegalStateException</span><span class="token punctuation">(</span>
+                    <span class="token string">"Cannot create operator for "</span>
+                            <span class="token operator">+</span> parameters<span class="token punctuation">.</span><span class="token function">getStreamConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getOperatorName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                    e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token class-name">Class</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span> <span class="token keyword">extends</span> <span class="token class-name">StreamOperator</span><span class="token punctuation">&gt;</span></span> <span class="token function">getStreamOperatorClass</span><span class="token punctuation">(</span><span class="token class-name">ClassLoader</span> classLoader<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token class-name">MyKeyedProcessOperator</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h3><a id="_265"></a>自定义协调器</h3> 
+<p>协调器执行器线程工厂类CoordinatorExecutorThreadFactory，当前类可以通用，用来创建协调器线程。</p> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>examples<span class="token punctuation">.</span>coordinator</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">VisibleForTesting</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">FatalExitExceptionHandler</span></span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">javax<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">Nullable</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span>concurrent<span class="token punctuation">.</span></span><span class="token class-name">ThreadFactory</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * A thread factory class that provides some helper methods.
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">CoordinatorExecutorThreadFactory</span>
+        <span class="token keyword">implements</span> <span class="token class-name">ThreadFactory</span><span class="token punctuation">,</span> <span class="token class-name">Thread<span class="token punctuation">.</span>UncaughtExceptionHandler</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">String</span> coordinatorThreadName<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">ClassLoader</span> classLoader<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">Thread<span class="token punctuation">.</span>UncaughtExceptionHandler</span> errorHandler<span class="token punctuation">;</span>
+
+    <span class="token annotation punctuation">@Nullable</span>
+    <span class="token keyword">private</span> <span class="token class-name">Thread</span> thread<span class="token punctuation">;</span>
+
+    <span class="token comment">// TODO discuss if we should fail the job(JM may restart the job later) or directly kill JM</span>
+    <span class="token comment">// process</span>
+    <span class="token comment">// Currently we choose to directly kill JM process</span>
+    <span class="token class-name">CoordinatorExecutorThreadFactory</span><span class="token punctuation">(</span>
+            <span class="token keyword">final</span> <span class="token class-name">String</span> coordinatorThreadName<span class="token punctuation">,</span> <span class="token keyword">final</span> <span class="token class-name">ClassLoader</span> contextClassLoader<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">(</span>coordinatorThreadName<span class="token punctuation">,</span> contextClassLoader<span class="token punctuation">,</span> <span class="token class-name">FatalExitExceptionHandler</span><span class="token punctuation">.</span><span class="token constant">INSTANCE</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@VisibleForTesting</span>
+    <span class="token class-name">CoordinatorExecutorThreadFactory</span><span class="token punctuation">(</span>
+            <span class="token keyword">final</span> <span class="token class-name">String</span> coordinatorThreadName<span class="token punctuation">,</span>
+            <span class="token keyword">final</span> <span class="token class-name">ClassLoader</span> contextClassLoader<span class="token punctuation">,</span>
+            <span class="token keyword">final</span> <span class="token class-name">Thread<span class="token punctuation">.</span>UncaughtExceptionHandler</span> errorHandler<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>coordinatorThreadName <span class="token operator">=</span> coordinatorThreadName<span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>classLoader <span class="token operator">=</span> contextClassLoader<span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>errorHandler <span class="token operator">=</span> errorHandler<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">synchronized</span> <span class="token class-name">Thread</span> <span class="token function">newThread</span><span class="token punctuation">(</span><span class="token class-name">Runnable</span> r<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        thread <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Thread</span><span class="token punctuation">(</span>r<span class="token punctuation">,</span> coordinatorThreadName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        thread<span class="token punctuation">.</span><span class="token function">setContextClassLoader</span><span class="token punctuation">(</span>classLoader<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        thread<span class="token punctuation">.</span><span class="token function">setUncaughtExceptionHandler</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> thread<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">synchronized</span> <span class="token keyword">void</span> <span class="token function">uncaughtException</span><span class="token punctuation">(</span><span class="token class-name">Thread</span> t<span class="token punctuation">,</span> <span class="token class-name">Throwable</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        errorHandler<span class="token punctuation">.</span><span class="token function">uncaughtException</span><span class="token punctuation">(</span>t<span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">getCoordinatorThreadName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> coordinatorThreadName<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">boolean</span> <span class="token function">isCurrentThreadCoordinatorThread</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token class-name">Thread</span><span class="token punctuation">.</span><span class="token function">currentThread</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> thread<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>协调器上下文CoordinatorContext，当前类可以通用。</p> 
+<pre><code class="prism language-java"><span class="token comment">/*
+ * Licensed to the Apache Software Foundation (ASF) under one
+ * or more contributor license agreements.  See the NOTICE file
+ * distributed with this work for additional information
+ * regarding copyright ownership.  The ASF licenses this file
+ * to you under the Apache License, Version 2.0 (the
+ * "License"); you may not use this file except in compliance
+ * with the License.  You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */</span>
+
+<span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>examples<span class="token punctuation">.</span>coordinator</span><span class="token punctuation">;</span>
+
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">Internal</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>operators<span class="token punctuation">.</span>coordination<span class="token punctuation">.</span></span><span class="token class-name">ComponentClosingUtils</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>operators<span class="token punctuation">.</span>coordination<span class="token punctuation">.</span></span><span class="token class-name">OperatorCoordinator</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>operators<span class="token punctuation">.</span>coordination<span class="token punctuation">.</span></span><span class="token class-name">OperatorEvent</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">ExceptionUtils</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">FlinkRuntimeException</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>util<span class="token punctuation">.</span>concurrent<span class="token punctuation">.</span></span><span class="token class-name">ExecutorThreadFactory</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>slf4j<span class="token punctuation">.</span></span><span class="token class-name">Logger</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>slf4j<span class="token punctuation">.</span></span><span class="token class-name">LoggerFactory</span></span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>time<span class="token punctuation">.</span></span><span class="token class-name">Duration</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">HashMap</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">Map</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">Set</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span>concurrent<span class="token punctuation">.</span></span><span class="token class-name">Callable</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span>concurrent<span class="token punctuation">.</span></span><span class="token class-name">ExecutionException</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span>concurrent<span class="token punctuation">.</span></span><span class="token class-name">Executors</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span>concurrent<span class="token punctuation">.</span></span><span class="token class-name">ScheduledExecutorService</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * A context class for the {@link OperatorCoordinator}.
+ *
+ * &lt;p&gt;The context serves a few purposes:
+ *
+ * &lt;ul&gt;
+ *   &lt;li&gt;Thread model enforcement - The context ensures that all the manipulations to the
+ *       coordinator state are handled by the same thread.
+ * &lt;/ul&gt;
+ */</span>
+<span class="token annotation punctuation">@Internal</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">CoordinatorContext</span> <span class="token keyword">implements</span> <span class="token class-name">AutoCloseable</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">private</span> <span class="token keyword">static</span> <span class="token keyword">final</span> <span class="token class-name">Logger</span> <span class="token constant">LOG</span> <span class="token operator">=</span>
+            <span class="token class-name">LoggerFactory</span><span class="token punctuation">.</span><span class="token function">getLogger</span><span class="token punctuation">(</span><span class="token class-name">CoordinatorContext</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">ScheduledExecutorService</span> coordinatorExecutor<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">ScheduledExecutorService</span> workerExecutor<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">CoordinatorExecutorThreadFactory</span> coordinatorThreadFactory<span class="token punctuation">;</span>
+
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">OperatorCoordinator<span class="token punctuation">.</span>Context</span> operatorCoordinatorContext<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">,</span> <span class="token class-name">OperatorCoordinator<span class="token punctuation">.</span>SubtaskGateway</span><span class="token punctuation">&gt;</span></span> subtaskGateways<span class="token punctuation">;</span>
+
+
+    <span class="token keyword">public</span> <span class="token class-name">CoordinatorContext</span><span class="token punctuation">(</span>
+            <span class="token class-name">CoordinatorExecutorThreadFactory</span> coordinatorThreadFactory<span class="token punctuation">,</span>
+            <span class="token class-name">OperatorCoordinator<span class="token punctuation">.</span>Context</span> operatorCoordinatorContext<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">(</span>
+                <span class="token class-name">Executors</span><span class="token punctuation">.</span><span class="token function">newScheduledThreadPool</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> coordinatorThreadFactory<span class="token punctuation">)</span><span class="token punctuation">,</span>
+                <span class="token class-name">Executors</span><span class="token punctuation">.</span><span class="token function">newScheduledThreadPool</span><span class="token punctuation">(</span>
+                        <span class="token number">1</span><span class="token punctuation">,</span>
+                        <span class="token keyword">new</span> <span class="token class-name">ExecutorThreadFactory</span><span class="token punctuation">(</span>
+                                coordinatorThreadFactory<span class="token punctuation">.</span><span class="token function">getCoordinatorThreadName</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">"-worker"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                coordinatorThreadFactory<span class="token punctuation">,</span>
+                operatorCoordinatorContext<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">CoordinatorContext</span><span class="token punctuation">(</span>
+            <span class="token class-name">ScheduledExecutorService</span> coordinatorExecutor<span class="token punctuation">,</span>
+            <span class="token class-name">ScheduledExecutorService</span> workerExecutor<span class="token punctuation">,</span>
+            <span class="token class-name">CoordinatorExecutorThreadFactory</span> coordinatorThreadFactory<span class="token punctuation">,</span>
+            <span class="token class-name">OperatorCoordinator<span class="token punctuation">.</span>Context</span> operatorCoordinatorContext<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>coordinatorExecutor <span class="token operator">=</span> coordinatorExecutor<span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>workerExecutor <span class="token operator">=</span> workerExecutor<span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>coordinatorThreadFactory <span class="token operator">=</span> coordinatorThreadFactory<span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>operatorCoordinatorContext <span class="token operator">=</span> operatorCoordinatorContext<span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>subtaskGateways <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>operatorCoordinatorContext<span class="token punctuation">.</span><span class="token function">currentParallelism</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">InterruptedException</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Close quietly so the closing sequence will be executed completely.</span>
+        <span class="token class-name">ComponentClosingUtils</span><span class="token punctuation">.</span><span class="token function">shutdownExecutorForcefully</span><span class="token punctuation">(</span>
+                workerExecutor<span class="token punctuation">,</span> <span class="token class-name">Duration</span><span class="token punctuation">.</span><span class="token function">ofNanos</span><span class="token punctuation">(</span><span class="token class-name">Long</span><span class="token punctuation">.</span><span class="token constant">MAX_VALUE</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">ComponentClosingUtils</span><span class="token punctuation">.</span><span class="token function">shutdownExecutorForcefully</span><span class="token punctuation">(</span>
+                coordinatorExecutor<span class="token punctuation">,</span> <span class="token class-name">Duration</span><span class="token punctuation">.</span><span class="token function">ofNanos</span><span class="token punctuation">(</span><span class="token class-name">Long</span><span class="token punctuation">.</span><span class="token constant">MAX_VALUE</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">runInCoordinatorThread</span><span class="token punctuation">(</span><span class="token class-name">Runnable</span> runnable<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        coordinatorExecutor<span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span>runnable<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// --------- Package private methods for the DynamicCepOperatorCoordinator ------------</span>
+    <span class="token class-name">ClassLoader</span> <span class="token function">getUserCodeClassloader</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span>operatorCoordinatorContext<span class="token punctuation">.</span><span class="token function">getUserCodeClassloader</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">void</span> <span class="token function">subtaskReady</span><span class="token punctuation">(</span><span class="token class-name">OperatorCoordinator<span class="token punctuation">.</span>SubtaskGateway</span> gateway<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">final</span> <span class="token keyword">int</span> subtask <span class="token operator">=</span> gateway<span class="token punctuation">.</span><span class="token function">getSubtask</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>subtaskGateways<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>subtask<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            subtaskGateways<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>subtask<span class="token punctuation">,</span> gateway<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">IllegalStateException</span><span class="token punctuation">(</span><span class="token string">"Already have a subtask gateway for "</span> <span class="token operator">+</span> subtask<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">void</span> <span class="token function">subtaskNotReady</span><span class="token punctuation">(</span><span class="token keyword">int</span> subtaskIndex<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        subtaskGateways<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>subtaskIndex<span class="token punctuation">,</span> <span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token class-name">Set</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> <span class="token function">getSubtasks</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> subtaskGateways<span class="token punctuation">.</span><span class="token function">keySet</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">sendEventToOperator</span><span class="token punctuation">(</span><span class="token keyword">int</span> subtaskId<span class="token punctuation">,</span> <span class="token class-name">OperatorEvent</span> event<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">callInCoordinatorThread</span><span class="token punctuation">(</span>
+                <span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">final</span> <span class="token class-name">OperatorCoordinator<span class="token punctuation">.</span>SubtaskGateway</span> gateway <span class="token operator">=</span>
+                            subtaskGateways<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>subtaskId<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>gateway <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">warn</span><span class="token punctuation">(</span>
+                                <span class="token class-name">String</span><span class="token punctuation">.</span><span class="token function">format</span><span class="token punctuation">(</span>
+                                        <span class="token string">"Subtask %d is not ready yet to receive events."</span><span class="token punctuation">,</span>
+                                        subtaskId<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                        gateway<span class="token punctuation">.</span><span class="token function">sendEvent</span><span class="token punctuation">(</span>event<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                    <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span><span class="token punctuation">,</span>
+                <span class="token class-name">String</span><span class="token punctuation">.</span><span class="token function">format</span><span class="token punctuation">(</span><span class="token string">"Failed to send event %s to subtask %d"</span><span class="token punctuation">,</span> event<span class="token punctuation">,</span> subtaskId<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">/**
+     * Fail the job with the given cause.
+     *
+     * @param cause the cause of the job failure.
+     */</span>
+    <span class="token keyword">void</span> <span class="token function">failJob</span><span class="token punctuation">(</span><span class="token class-name">Throwable</span> cause<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        operatorCoordinatorContext<span class="token punctuation">.</span><span class="token function">failJob</span><span class="token punctuation">(</span>cause<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// ---------------- private helper methods -----------------</span>
+
+    <span class="token comment">/**
+     * A helper method that delegates the callable to the coordinator thread if the current thread
+     * is not the coordinator thread, otherwise call the callable right away.
+     *
+     * @param callable the callable to delegate.
+     */</span>
+    <span class="token keyword">private</span> <span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">V</span><span class="token punctuation">&gt;</span></span> <span class="token class-name">V</span> <span class="token function">callInCoordinatorThread</span><span class="token punctuation">(</span><span class="token class-name">Callable</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">V</span><span class="token punctuation">&gt;</span></span> callable<span class="token punctuation">,</span> <span class="token class-name">String</span> errorMessage<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Ensure the split assignment is done by the coordinator executor.</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>coordinatorThreadFactory<span class="token punctuation">.</span><span class="token function">isCurrentThreadCoordinatorThread</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>coordinatorExecutor<span class="token punctuation">.</span><span class="token function">isShutdown</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">final</span> <span class="token class-name">Callable</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">V</span><span class="token punctuation">&gt;</span></span> guardedCallable <span class="token operator">=</span>
+                        <span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                                <span class="token keyword">return</span> callable<span class="token punctuation">.</span><span class="token function">call</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                            <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> t<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                                <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span>
+                                        <span class="token string">"Uncaught Exception in Coordinator Executor"</span><span class="token punctuation">,</span>
+                                        t<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                <span class="token class-name">ExceptionUtils</span><span class="token punctuation">.</span><span class="token function">rethrowException</span><span class="token punctuation">(</span>t<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                                <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+                            <span class="token punctuation">}</span>
+                        <span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+                <span class="token keyword">return</span> coordinatorExecutor<span class="token punctuation">.</span><span class="token function">submit</span><span class="token punctuation">(</span>guardedCallable<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">InterruptedException</span> <span class="token operator">|</span> <span class="token class-name">ExecutionException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">FlinkRuntimeException</span><span class="token punctuation">(</span>errorMessage<span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> callable<span class="token punctuation">.</span><span class="token function">call</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> t<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">"Uncaught Exception in Source Coordinator Executor"</span><span class="token punctuation">,</span> t<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">FlinkRuntimeException</span><span class="token punctuation">(</span>errorMessage<span class="token punctuation">,</span> t<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>自定义协调器</p> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>examples<span class="token punctuation">.</span>coordinator</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>examples<span class="token punctuation">.</span>event<span class="token punctuation">.</span></span><span class="token class-name">MyEvent</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>operators<span class="token punctuation">.</span>coordination<span class="token punctuation">.</span></span><span class="token class-name">OperatorCoordinator</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>operators<span class="token punctuation">.</span>coordination<span class="token punctuation">.</span></span><span class="token class-name">OperatorEvent</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">ExceptionUtils</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>util<span class="token punctuation">.</span>function<span class="token punctuation">.</span></span><span class="token class-name">ThrowingRunnable</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>slf4j<span class="token punctuation">.</span></span><span class="token class-name">Logger</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>slf4j<span class="token punctuation">.</span></span><span class="token class-name">LoggerFactory</span></span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">javax<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">Nullable</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span>concurrent<span class="token punctuation">.</span></span><span class="token class-name">CompletableFuture</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * 自定义协调器
+ * 需要实现 OperatorCoordinator 接口
+ * @author shirukai
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">MyKeyedProcessCoordinator</span> <span class="token keyword">implements</span> <span class="token class-name">OperatorCoordinator</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">private</span> <span class="token keyword">static</span> <span class="token keyword">final</span> <span class="token class-name">Logger</span> <span class="token constant">LOG</span> <span class="token operator">=</span> <span class="token class-name">LoggerFactory</span><span class="token punctuation">.</span><span class="token function">getLogger</span><span class="token punctuation">(</span><span class="token class-name">MyKeyedProcessCoordinator</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * The name of the operator this RuleDistributorCoordinator is associated with.
+     */</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">String</span> operatorName<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">CoordinatorContext</span> context<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token keyword">boolean</span> started<span class="token punctuation">;</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">MyKeyedProcessCoordinator</span><span class="token punctuation">(</span><span class="token class-name">String</span> operatorName<span class="token punctuation">,</span> <span class="token class-name">CoordinatorContext</span> context<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>operatorName <span class="token operator">=</span> operatorName<span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>context <span class="token operator">=</span> context<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span>
+                <span class="token string">"Starting Coordinator for {}: {}."</span><span class="token punctuation">,</span>
+                <span class="token keyword">this</span><span class="token punctuation">.</span><span class="token function">getClass</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getSimpleName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                operatorName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// we mark this as started first, so that we can later distinguish the cases where 'start()'</span>
+        <span class="token comment">// wasn't called and where 'start()' failed.</span>
+        started <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+
+        <span class="token function">runInEventLoop</span><span class="token punctuation">(</span>
+                <span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"Coordinator started."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span><span class="token punctuation">,</span>
+                <span class="token string">"do something for coordinator."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">handleEventFromOperator</span><span class="token punctuation">(</span><span class="token keyword">int</span> subtask<span class="token punctuation">,</span> <span class="token keyword">int</span> attemptNumber<span class="token punctuation">,</span> <span class="token class-name">OperatorEvent</span> event<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"Received event {} from operator {}."</span><span class="token punctuation">,</span> event<span class="token punctuation">,</span> subtask<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">checkpointCoordinator</span><span class="token punctuation">(</span><span class="token keyword">long</span> checkpointId<span class="token punctuation">,</span> <span class="token class-name">CompletableFuture</span><span class="token operator">&lt;</span><span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token operator">&gt;</span> resultFuture<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">notifyCheckpointComplete</span><span class="token punctuation">(</span><span class="token keyword">long</span> checkpointId<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">resetToCheckpoint</span><span class="token punctuation">(</span><span class="token keyword">long</span> checkpointId<span class="token punctuation">,</span> <span class="token annotation punctuation">@Nullable</span> <span class="token keyword">byte</span><span class="token punctuation">[</span><span class="token punctuation">]</span> checkpointData<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">subtaskReset</span><span class="token punctuation">(</span><span class="token keyword">int</span> subtask<span class="token punctuation">,</span> <span class="token keyword">long</span> checkpointId<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span>
+                <span class="token string">"Recovering subtask {} to checkpoint {} for operator {} to checkpoint."</span><span class="token punctuation">,</span>
+                subtask<span class="token punctuation">,</span>
+                checkpointId<span class="token punctuation">,</span>
+                operatorName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">runInEventLoop</span><span class="token punctuation">(</span>
+                <span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+
+                <span class="token punctuation">}</span><span class="token punctuation">,</span>
+                <span class="token string">"making event gateway to subtask %d available"</span><span class="token punctuation">,</span>
+                subtask<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">executionAttemptFailed</span><span class="token punctuation">(</span><span class="token keyword">int</span> subtask<span class="token punctuation">,</span> <span class="token keyword">int</span> attemptNumber<span class="token punctuation">,</span> <span class="token annotation punctuation">@Nullable</span> <span class="token class-name">Throwable</span> reason<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">runInEventLoop</span><span class="token punctuation">(</span>
+                <span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span>
+                            <span class="token string">"Removing itself after failure for subtask {} of operator {}."</span><span class="token punctuation">,</span>
+                            subtask<span class="token punctuation">,</span>
+                            operatorName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    context<span class="token punctuation">.</span><span class="token function">subtaskNotReady</span><span class="token punctuation">(</span>subtask<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span><span class="token punctuation">,</span>
+                <span class="token string">"handling subtask %d failure"</span><span class="token punctuation">,</span>
+                subtask<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">executionAttemptReady</span><span class="token punctuation">(</span><span class="token keyword">int</span> subtask<span class="token punctuation">,</span> <span class="token keyword">int</span> attemptNumber<span class="token punctuation">,</span> <span class="token class-name">SubtaskGateway</span> gateway<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">assert</span> subtask <span class="token operator">==</span> gateway<span class="token punctuation">.</span><span class="token function">getSubtask</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"Subtask {} of operator {} is ready."</span><span class="token punctuation">,</span> subtask<span class="token punctuation">,</span> operatorName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">runInEventLoop</span><span class="token punctuation">(</span>
+                <span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+                    context<span class="token punctuation">.</span><span class="token function">subtaskReady</span><span class="token punctuation">(</span>gateway<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token function">sendEventToOperator</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">MyEvent</span><span class="token punctuation">(</span><span class="token string">"hello,I'm from coordinator"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span><span class="token punctuation">,</span>
+                <span class="token string">"making event gateway to subtask %d available"</span><span class="token punctuation">,</span>
+                subtask<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">sendEventToOperator</span><span class="token punctuation">(</span><span class="token class-name">OperatorEvent</span> event<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">Integer</span> subtask <span class="token operator">:</span> context<span class="token punctuation">.</span><span class="token function">getSubtasks</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                context<span class="token punctuation">.</span><span class="token function">sendEventToOperator</span><span class="token punctuation">(</span>subtask<span class="token punctuation">,</span> event<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Exception</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span>
+                        <span class="token string">"Failed to send OperatorEvent to operator {}"</span><span class="token punctuation">,</span>
+                        operatorName<span class="token punctuation">,</span>
+                        e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                context<span class="token punctuation">.</span><span class="token function">failJob</span><span class="token punctuation">(</span>e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">runInEventLoop</span><span class="token punctuation">(</span>
+            <span class="token keyword">final</span> <span class="token class-name">ThrowingRunnable</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Throwable</span><span class="token punctuation">&gt;</span></span> action<span class="token punctuation">,</span>
+            <span class="token keyword">final</span> <span class="token class-name">String</span> actionName<span class="token punctuation">,</span>
+            <span class="token keyword">final</span> <span class="token class-name">Object</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> actionNameFormatParameters<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">ensureStarted</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        context<span class="token punctuation">.</span><span class="token function">runInCoordinatorThread</span><span class="token punctuation">(</span>
+                <span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                        action<span class="token punctuation">.</span><span class="token function">run</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> t<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token comment">// If we have a JVM critical error, promote it immediately, there is a good</span>
+                        <span class="token comment">// chance the logging or job failing will not succeed any more</span>
+                        <span class="token class-name">ExceptionUtils</span><span class="token punctuation">.</span><span class="token function">rethrowIfFatalErrorOrOOM</span><span class="token punctuation">(</span>t<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">final</span> <span class="token class-name">String</span> actionString <span class="token operator">=</span>
+                                <span class="token class-name">String</span><span class="token punctuation">.</span><span class="token function">format</span><span class="token punctuation">(</span>actionName<span class="token punctuation">,</span> actionNameFormatParameters<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token constant">LOG</span><span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span>
+                                <span class="token string">"Uncaught exception in the coordinator for {} while {}. Triggering job failover."</span><span class="token punctuation">,</span>
+                                operatorName<span class="token punctuation">,</span>
+                                actionString<span class="token punctuation">,</span>
+                                t<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        context<span class="token punctuation">.</span><span class="token function">failJob</span><span class="token punctuation">(</span>t<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">ensureStarted</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>started<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">IllegalStateException</span><span class="token punctuation">(</span><span class="token string">"The coordinator has not started yet."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>自定义协调器提供器</p> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>examples<span class="token punctuation">.</span>coordinator</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>jobgraph<span class="token punctuation">.</span></span><span class="token class-name">OperatorID</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>operators<span class="token punctuation">.</span>coordination<span class="token punctuation">.</span></span><span class="token class-name">OperatorCoordinator</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>runtime<span class="token punctuation">.</span>operators<span class="token punctuation">.</span>coordination<span class="token punctuation">.</span></span><span class="token class-name">RecreateOnResetOperatorCoordinator</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * 自定义协调器的提供者
+ *
+ * @author shirukai
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">MyKeyedProcessCoordinatorProvider</span> <span class="token keyword">extends</span> <span class="token class-name">RecreateOnResetOperatorCoordinator<span class="token punctuation">.</span>Provider</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">private</span> <span class="token keyword">static</span> <span class="token keyword">final</span> <span class="token keyword">long</span> serialVersionUID <span class="token operator">=</span> <span class="token number">1L</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">String</span> operatorName<span class="token punctuation">;</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">MyKeyedProcessCoordinatorProvider</span><span class="token punctuation">(</span><span class="token class-name">String</span> operatorName<span class="token punctuation">,</span> <span class="token class-name">OperatorID</span> operatorID<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">super</span><span class="token punctuation">(</span>operatorID<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>operatorName <span class="token operator">=</span> operatorName<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">protected</span> <span class="token class-name">OperatorCoordinator</span> <span class="token function">getCoordinator</span><span class="token punctuation">(</span><span class="token class-name">OperatorCoordinator<span class="token punctuation">.</span>Context</span> context<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">final</span> <span class="token class-name">String</span> coordinatorThreadName <span class="token operator">=</span> <span class="token string">" MyKeyedProcessCoordinator-"</span> <span class="token operator">+</span> operatorName<span class="token punctuation">;</span>
+        <span class="token class-name">CoordinatorExecutorThreadFactory</span> coordinatorThreadFactory <span class="token operator">=</span>
+                <span class="token keyword">new</span> <span class="token class-name">CoordinatorExecutorThreadFactory</span><span class="token punctuation">(</span>
+                        coordinatorThreadName<span class="token punctuation">,</span> context<span class="token punctuation">.</span><span class="token function">getUserCodeClassloader</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">CoordinatorContext</span> coordinatorContext <span class="token operator">=</span>
+                <span class="token keyword">new</span> <span class="token class-name">CoordinatorContext</span><span class="token punctuation">(</span>coordinatorThreadFactory<span class="token punctuation">,</span> context<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">MyKeyedProcessCoordinator</span><span class="token punctuation">(</span>
+                operatorName<span class="token punctuation">,</span> coordinatorContext<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h3><a id="_748"></a>执行测试</h3> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>examples</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>examples<span class="token punctuation">.</span>operator<span class="token punctuation">.</span></span><span class="token class-name">MyKeyedProcessOperatorFactory</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>api<span class="token punctuation">.</span>common<span class="token punctuation">.</span>typeinfo<span class="token punctuation">.</span></span><span class="token class-name">TypeInformation</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>api<span class="token punctuation">.</span>java<span class="token punctuation">.</span>functions<span class="token punctuation">.</span></span><span class="token class-name">KeySelector</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>api<span class="token punctuation">.</span>datastream<span class="token punctuation">.</span></span><span class="token class-name">DataStreamSource</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>flink<span class="token punctuation">.</span>streaming<span class="token punctuation">.</span>api<span class="token punctuation">.</span>environment<span class="token punctuation">.</span></span><span class="token class-name">StreamExecutionEnvironment</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * @author shirukai
+ */</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">CoordinatorExamples</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">StreamExecutionEnvironment</span> env <span class="token operator">=</span> <span class="token class-name">StreamExecutionEnvironment</span><span class="token punctuation">.</span><span class="token function">getExecutionEnvironment</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        env<span class="token punctuation">.</span><span class="token function">setParallelism</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">DataStreamSource</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">MyData</span><span class="token punctuation">&gt;</span></span> source <span class="token operator">=</span> env
+                <span class="token punctuation">.</span><span class="token function">fromElements</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">MyData</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">1.0</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token class-name">MyData</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2.0</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token class-name">MyData</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">3.0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">MyKeyedProcessOperatorFactory</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">MyData</span><span class="token punctuation">&gt;</span></span> operatorFactory <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">MyKeyedProcessOperatorFactory</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        source
+                <span class="token punctuation">.</span><span class="token function">keyBy</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">KeySelector</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">MyData</span><span class="token punctuation">,</span> <span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">)</span> <span class="token class-name">MyData</span><span class="token operator">::</span><span class="token function">getId</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">transform</span><span class="token punctuation">(</span><span class="token string">"MyKeyedProcess"</span><span class="token punctuation">,</span> <span class="token class-name">TypeInformation</span><span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span><span class="token class-name">MyData</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">,</span> operatorFactory<span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">print</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        env<span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">class</span> <span class="token class-name">MyData</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">private</span> <span class="token class-name">Integer</span> id<span class="token punctuation">;</span>
+        <span class="token keyword">private</span> <span class="token class-name">Double</span> value<span class="token punctuation">;</span>
+
+        <span class="token keyword">public</span> <span class="token class-name">MyData</span><span class="token punctuation">(</span><span class="token class-name">Integer</span> id<span class="token punctuation">,</span> <span class="token class-name">Double</span> value<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>id <span class="token operator">=</span> id<span class="token punctuation">;</span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>value <span class="token operator">=</span> value<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">public</span> <span class="token class-name">Integer</span> <span class="token function">getId</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> id<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setId</span><span class="token punctuation">(</span><span class="token class-name">Integer</span> id<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>id <span class="token operator">=</span> id<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">public</span> <span class="token class-name">Double</span> <span class="token function">getValue</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> value<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setValue</span><span class="token punctuation">(</span><span class="token class-name">Double</span> value<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">this</span><span class="token punctuation">.</span>value <span class="token operator">=</span> value<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token annotation punctuation">@Override</span>
+        <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token string">"MyData{"</span> <span class="token operator">+</span>
+                    <span class="token string">"id="</span> <span class="token operator">+</span> id <span class="token operator">+</span>
+                    <span class="token string">", value="</span> <span class="token operator">+</span> value <span class="token operator">+</span>
+                    <span class="token char">'}'</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c3d85008a7b970356323c086c969b97b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">黑客团伙利用Python、Golang和Rust恶意软件袭击印国防部门；OpenAI揭秘，AI模型如何被用于全球虚假信息传播？ | 安全周报0531</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/38e129fa372812c94d2cde7f9998c74a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【数据集划分】oracle数据集划分（总结版）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

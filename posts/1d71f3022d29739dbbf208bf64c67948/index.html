@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ZGC在三色指针中的应用 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/1d71f3022d29739dbbf208bf64c67948/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="ZGC在三色指针中的应用">
+  <meta property="og:description" content="ZGC基于颜色指针的并发处理算法 ZGC初始化之后，整个内存空间的地址视图被设置为Remapped，当进入标记阶段时的视图转变为Marked0（也称为M0）或者Marked1（也称为M1），从标记阶段结束进入转移阶段时的视图再次设置为Remapped。ZGC通过视图的切换加上SATB算法实现并发处理。具体算法如下。
+1．初始化阶段
+在ZGC初始化之后，此时地址视图为Remapped，程序正常运行，在内存中分配对象，满足一定条件后垃圾回收启动
+2．标记阶段
+第一次进入标记阶段时视图为M0，在标记阶段，应用程序和标记线程并发执行，那么对象的访问可能来自标记线程和应用程序线程。
+标记线程：它从根集合开始标记对象，在标记前先判断对象的地址视图，如果发现对象的地址视图是M0，说明对象是在进入标记阶段之后新分配的对象或者对象已经完成了标记（对象活跃），无须处理。如果发现对象的地址视图是Remapped，说明对象是前一阶段分配的，而且通过根集合可达，所以把对象的地址视图从Remapped调整为M0。（M0表示活跃）应用程序线程如果创建新的对象，则对象的地址视图为M0。
+如果应用程序线程访问对象并且对象的地址视图是Remapped，说明对象是前一阶段分配的，按照SATB的算法，只要把该对象的视图调整为M0就能防止对象漏标。只标记应用线程访问到的对象还不够，实际上还需要把对象的成员变量所引用的对象都进行递归标记。如果应用线程访问对象地址视图是M0，说明对象是在进入标记阶段之后新分配的对象或者对象已经完成了标记，无须额外处理，直接访问。 所以，在标记阶段结束之后，对象的地址视图要么是M0（活跃），要么是Remapped（垃圾）。这里的虚拟地址虽然不一样，但是指向的是物理内存的同一个区域
+所有标记为M0的对象放入活跃信息表
+3．并发转移阶段
+标记结束后就进入转移阶段，此时地址视图再次被设置为Remapped。
+转移阶段会把活跃对象转移到新的内存中，并回收对象转移前的内存空间。在转移阶段，应用程序和标记线程并发执行，那么对象的访问可能来自转移线程和应用程序线程。
+转移线程：转移线程仅仅根据活跃对象进行转移。当转移线程访问对象时：
+如果对象在对象活跃信息表中并且视图为M0，则转移对象，并且视图从M0调整为Remapped。
+如果对象在对象活跃信息表中并且视图Remapped，说明对象已经被转移，无须处理。
+应用程序线程如果创建新的对象，则对象的地址视图为Remapped。
+如果应用线程访问对象且不在活跃信息表中，则说明是新创建的或者对象无须转移，无须处理。
+如果应用线程访问对象且在活跃信息表中且视图为Remapped，说明对象已经被转移，无须处理。
+如果应用程序线程访问在对象活跃信息表中，且视图为M0，说明对象是标记阶段标记的活跃对象，所以需要转移对象
+在对象转移以后，对象的地址视图从M0调整为Remapped；
+注意，只把应用线程读到的对象进行转移还不够，实际上还需要把对象的成员变量所引用的对象都进行转移，ZGC对这一实现做了优化，由转移线程完成对象成员变量的转移。
+至此，ZGC的一个垃圾回收周期中，并发标记和并发转移就结束了。
+我们提到在标记阶段存在两个地址视图M0和M1，上面的算法过程显示只用到了一个地址视图，为什么设计成两个？简单地说是为了区别前一次标记和当前标记。
+第一次垃圾回收时地址视图为M0，假设标记了两个对象ObjA和ObjB，说明ObjA和ObjB都是活跃的，它们的地址视图都是M0。在转移阶段，ZGC是按照页面进行部分内存垃圾回收的，也就是说当对象所在的页面需要回收时，页面里面的对象需要被转移，如果页面不需要转移，页面里面的对象也就不需要转移。
+假设ObjA所在的页面被回收，ObjB所在的页面在这一次垃圾回收中不会被回收。ObjA被转移后，它的地址视图从M0调整为Remapped，ObjB不会被转移，ObjB的地址视图仍然为M0。
+那么下一次垃圾回收标记阶段开始的时候，存在两种地址视图的对象
+地址视图为Remapped的对象，说明该对象在并发转移阶段被转移或者被访问过；地址视图为M0的对象，说明该对象在前一次垃圾回收的标记阶段已经被标记。 如果本次垃圾回收标记阶段仍然使用M0这个地址视图，那么就不能区分出对象是活跃的，还是上一次垃圾回收标记过的。
+所以新标记阶段使用了另外一个地址视图M1，则标记结束后所有活跃对象的地址视图都为M1。
+此时这3个地址视图代表的含义是：
+M1：本次垃圾回收中识别的活跃对象。M0：前一次垃圾回收的标记阶段被标记过的活跃对象，对象在转移阶段未被转移，但是在本次垃圾回收中被识别为不活跃对象。Remapped：前一次垃圾回收的转移阶段发生转移的对象或者是被应用程序线程访问的对象，但是在本次垃圾回收中被识别为不活跃对象。 上述过程算法演示 image.png
+image.png
+image.png
+作者：西部小笼包
+链接：https://www.jianshu.com/p/664e4da05b2c
+这个介绍比较详细
+ZGC 详解 - 简书">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-08T16:08:13+08:00">
+    <meta property="article:modified_time" content="2024-07-08T16:08:13+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">ZGC在三色指针中的应用</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h4></h4> 
+<h4>ZGC基于颜色指针的并发处理算法</h4> 
+<p>ZGC初始化之后，整个内存空间的地址视图被设置为Remapped，当进入标记阶段时的视图转变为Marked0（也称为M0）或者Marked1（也称为M1），从标记阶段结束进入转移阶段时的视图再次设置为Remapped。ZGC通过视图的切换加上SATB算法实现并发处理。具体算法如下。<br> 1．初始化阶段<br> 在ZGC初始化之后，此时地址视图为Remapped，程序正常运行，在内存中分配对象，满足一定条件后垃圾回收启动<br> 2．标记阶段<br> 第一次进入标记阶段时视图为M0，在标记阶段，应用程序和标记线程并发执行，那么对象的访问可能来自标记线程和应用程序线程。</p> 
+<ul><li>标记线程：它从根集合开始标记对象，在标记前先判断对象的地址视图，如果发现对象的地址视图是M0，说明对象是在进入标记阶段之后新分配的对象或者对象已经完成了标记（对象活跃），无须处理。如果发现对象的地址视图是Remapped，说明对象是前一阶段分配的，而且通过根集合可达，所以把对象的地址视图从Remapped调整为M0。<strong>（M0表示活跃）</strong></li><li>应用程序线程如果创建新的对象，则对象的地址视图为M0。<br> 如果应用程序线程访问对象并且对象的地址视图是Remapped，说明对象是前一阶段分配的，按照SATB的算法，只要把该对象的视图调整为M0就能防止对象漏标。<strong>只标记应用线程访问到的对象还不够，实际上还需要把对象的成员变量所引用的对象都进行递归标记</strong>。如果应用线程访问对象地址视图是M0，说明对象是在进入标记阶段之后新分配的对象或者对象已经完成了标记，无须额外处理，直接访问。</li></ul> 
+<p>所以，在标记阶段结束之后，对象的地址视图要么是M0（活跃），要么是Remapped（垃圾）。<strong>这里的虚拟地址虽然不一样，但是指向的是物理内存的同一个区域</strong><br> 所有标记为M0的对象放入活跃信息表</p> 
+<p>3．并发转移阶段<br> 标记结束后就进入转移阶段，此时地址视图再次被设置为Remapped。</p> 
+<p>转移阶段会把活跃对象转移到新的内存中，并回收对象转移前的内存空间。在转移阶段，应用程序和标记线程并发执行，那么对象的访问可能来自转移线程和应用程序线程。</p> 
+<ul><li> <p>转移线程：转移线程仅仅根据活跃对象进行转移。当转移线程访问对象时：<br> 如果对象在对象活跃信息表中并且视图为M0，则转移对象，并且视图从M0调整为Remapped。<br> 如果对象在对象活跃信息表中并且视图Remapped，说明对象已经被转移，无须处理。</p> </li><li> <p>应用程序线程如果创建新的对象，则对象的地址视图为Remapped。<br> 如果应用线程访问对象且不在活跃信息表中，则说明是新创建的或者对象无须转移，无须处理。<br> 如果应用线程访问对象且在活跃信息表中且视图为Remapped，说明对象已经被转移，无须处理。<br> 如果应用程序线程访问在对象活跃信息表中，且视图为M0，说明对象是标记阶段标记的活跃对象，所以需要转移对象<br> 在对象转移以后，对象的地址视图从M0调整为Remapped；<br><strong>注意，只把应用线程读到的对象进行转移还不够，实际上还需要把对象的成员变量所引用的对象都进行转移，ZGC对这一实现做了优化，由转移线程完成对象成员变量的转移。</strong><br> 至此，ZGC的一个垃圾回收周期中，并发标记和并发转移就结束了。</p> </li></ul> 
+<p>我们提到在标记阶段存在两个地址视图M0和M1，上面的算法过程显示只用到了一个地址视图，为什么设计成两个？简单地说是为了区别前一次标记和当前标记。</p> 
+<p>第一次垃圾回收时地址视图为M0，假设标记了两个对象ObjA和ObjB，说明ObjA和ObjB都是活跃的，它们的地址视图都是M0。在转移阶段，ZGC是按照页面进行部分内存垃圾回收的，也就是说当对象所在的页面需要回收时，页面里面的对象需要被转移，如果页面不需要转移，页面里面的对象也就不需要转移。</p> 
+<p>假设ObjA所在的页面被回收，ObjB所在的页面在这一次垃圾回收中不会被回收。ObjA被转移后，它的地址视图从M0调整为Remapped，ObjB不会被转移，ObjB的地址视图仍然为M0。</p> 
+<p>那么下一次垃圾回收标记阶段开始的时候，存在两种地址视图的对象</p> 
+<ol><li>地址视图为Remapped的对象，说明该对象在并发转移阶段被转移或者被访问过；</li><li>地址视图为M0的对象，说明该对象在前一次垃圾回收的标记阶段已经被标记。</li></ol> 
+<p><strong>如果本次垃圾回收标记阶段仍然使用M0这个地址视图，那么就不能区分出对象是活跃的，还是上一次垃圾回收标记过的。</strong></p> 
+<p>所以新标记阶段使用了另外一个地址视图M1，则标记结束后所有活跃对象的地址视图都为M1。<br> 此时这3个地址视图代表的含义是：</p> 
+<ul><li>M1：本次垃圾回收中识别的活跃对象。</li><li>M0：前一次垃圾回收的标记阶段被标记过的活跃对象，对象在转移阶段未被转移，但是在本次垃圾回收中被识别为不活跃对象。</li><li>Remapped：前一次垃圾回收的转移阶段发生转移的对象或者是被应用程序线程访问的对象，但是在本次垃圾回收中被识别为不活跃对象。</li></ul> 
+<h4>上述过程算法演示</h4> 
+<p><img alt="" height="258" src="https://images2.imgbox.com/82/16/acaOI649_o.png" width="908"></p> 
+<p>image.png</p> 
+<p><img alt="" height="269" src="https://images2.imgbox.com/79/e9/goDD365H_o.png" width="813"></p> 
+<p></p> 
+<p></p> 
+<p><img alt="" height="278" src="https://images2.imgbox.com/93/50/5WcO97oX_o.png" width="892"></p> 
+<p>image.png</p> 
+<p></p> 
+<p><img alt="" height="369" src="https://images2.imgbox.com/fd/57/hHPmEjOm_o.png" width="810"></p> 
+<p>image.png</p> 
+<p><br><br> 作者：西部小笼包<br> 链接：https://www.jianshu.com/p/664e4da05b2c<br>  </p> 
+<p></p> 
+<p>这个介绍比较详细</p> 
+<p><a href="https://www.jianshu.com/p/664e4da05b2c" rel="nofollow" title="ZGC 详解 - 简书">ZGC 详解 - 简书</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/339f1d9a0f7bbee7dcae1c2a9b76322f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【C语言小知识】ctype.h系列的字符函数</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8ba26338c9a42c565f9ad3aeb686dd00/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">3款自己电脑就可以运行AI LLM的项目</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>大数据计算-SQL优化手段(CBO)-以Flink为例 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/6ec620becc4404ad88186c36f7a2b35c/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="大数据计算-SQL优化手段(CBO)-以Flink为例">
+  <meta property="og:description" content="文章目录 背景理论知识示例结果展示结果解释 背景 大数据计算中，SQL生成的执行计划第一轮会经过固定规则的优化，第二轮会根据原计划，生成多条结合成本的的执行计划，根据cost 进行排序，选出最优的执行计划。
+理论知识 原始计划如左图，
+有三种执行方案
+方案1，scan表1，scan表2，然后hash ，再join
+方案2，scan表1，scan表2，然后broadcast 表1 ，再join
+方案2，scan表1，scan表2，然后broadcast 表2 ，再join
+从成本(只看行数)来看，如果表aa_user 行数远小于bb_order ,那 方案2得出来的成本就是最优的。
+下面是示意图
+示例 aa_user 的表行数远小于bb_order
+public static void main(String[] args) { EnvironmentSettings settings = EnvironmentSettings.inBatchMode(); TableEnvironment tableEnvironment = TableEnvironment.create(settings); Schema schema = Schema.newBuilder().column(&#34;count&#34;, DataTypes.INT()).column(&#34;word&#34;, DataTypes.STRING()).build(); Schema schema1 = Schema.newBuilder().column(&#34;id&#34;, DataTypes.INT()).column(&#34;name&#34;, DataTypes.STRING()).build(); tableEnvironment.createTemporaryTable(&#34;aa_user&#34;, TableDescriptor.forConnector(&#34;filesystem&#34;).schema(schema) .option(&#34;path&#34;,&#34;/Users/xx/IdeaProjects/flink-demo/data/order.csv&#34;).format(&#34;csv&#34;).build()); tableEnvironment.createTemporaryTable(&#34;bb_order&#34;, TableDescriptor.forConnector(&#34;filesystem&#34;).schema(schema1) .option(&#34;path&#34;,&#34;/Users/xx/IdeaProjects/flink-demo/data/user.csv&#34;).format(&#34;csv&#34;).build()); // tableEnvironment.executeSql(&#34;select * from aa_user&#34;).print(); //tableEnvironment.executeSql(&#34;select * from aa_user inner join bb_order on `aa_user`.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-08-26T22:40:26+08:00">
+    <meta property="article:modified_time" content="2024-08-26T22:40:26+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">大数据计算-SQL优化手段(CBO)-以Flink为例</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><ul><li><a href="#_5" rel="nofollow">背景</a></li><li><a href="#_8" rel="nofollow">理论知识</a></li><li><a href="#_21" rel="nofollow">示例</a></li><li><a href="#_55" rel="nofollow">结果展示</a></li><li><ul><li><a href="#_76" rel="nofollow">结果解释</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h4><a id="_5"></a>背景</h4> 
+<p>大数据计算中，SQL生成的执行计划第一轮会经过固定规则的优化，第二轮会根据原计划，生成多条结合成本的的执行计划，根据cost 进行排序，选出最优的执行计划。</p> 
+<h4><a id="_8"></a>理论知识</h4> 
+<p>原始计划如左图，<br> 有三种执行方案<br> 方案1，scan表1，scan表2，然后hash ，再join<br> 方案2，scan表1，scan表2，然后broadcast 表1 ，再join<br> 方案2，scan表1，scan表2，然后broadcast 表2 ，再join</p> 
+<p>从成本(只看行数)来看，如果表aa_user 行数远小于bb_order ,那 方案2得出来的成本就是最优的。<br> 下面是示意图<br> <img src="https://images2.imgbox.com/1b/f0/EFrDC4bJ_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_21"></a>示例</h4> 
+<p>aa_user 的表行数远小于bb_order</p> 
+<pre><code class="prism language-bash">
+ public static void main<span class="token punctuation">(</span>String<span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        EnvironmentSettings settings <span class="token operator">=</span> EnvironmentSettings.inBatchMode<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        TableEnvironment tableEnvironment <span class="token operator">=</span> TableEnvironment.create<span class="token punctuation">(</span>settings<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        Schema schema <span class="token operator">=</span> Schema.newBuilder<span class="token punctuation">(</span><span class="token punctuation">)</span>.column<span class="token punctuation">(</span><span class="token string">"count"</span>, DataTypes.INT<span class="token punctuation">(</span><span class="token punctuation">))</span>.column<span class="token punctuation">(</span><span class="token string">"word"</span>, DataTypes.STRING<span class="token punctuation">(</span><span class="token punctuation">))</span>.build<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        Schema schema1 <span class="token operator">=</span> Schema.newBuilder<span class="token punctuation">(</span><span class="token punctuation">)</span>.column<span class="token punctuation">(</span><span class="token string">"id"</span>, DataTypes.INT<span class="token punctuation">(</span><span class="token punctuation">))</span>.column<span class="token punctuation">(</span><span class="token string">"name"</span>, DataTypes.STRING<span class="token punctuation">(</span><span class="token punctuation">))</span>.build<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+        tableEnvironment.createTemporaryTable<span class="token punctuation">(</span><span class="token string">"aa_user"</span>, TableDescriptor.forConnector<span class="token punctuation">(</span><span class="token string">"filesystem"</span><span class="token punctuation">)</span>.schema<span class="token punctuation">(</span>schema<span class="token punctuation">)</span>
+                .option<span class="token punctuation">(</span><span class="token string">"path"</span>,<span class="token string">"/Users/xx/IdeaProjects/flink-demo/data/order.csv"</span><span class="token punctuation">)</span>.format<span class="token punctuation">(</span><span class="token string">"csv"</span><span class="token punctuation">)</span>.build<span class="token punctuation">(</span><span class="token punctuation">))</span><span class="token punctuation">;</span>
+
+
+        tableEnvironment.createTemporaryTable<span class="token punctuation">(</span><span class="token string">"bb_order"</span>, TableDescriptor.forConnector<span class="token punctuation">(</span><span class="token string">"filesystem"</span><span class="token punctuation">)</span>.schema<span class="token punctuation">(</span>schema1<span class="token punctuation">)</span>
+                .option<span class="token punctuation">(</span><span class="token string">"path"</span>,<span class="token string">"/Users/xx/IdeaProjects/flink-demo/data/user.csv"</span><span class="token punctuation">)</span>.format<span class="token punctuation">(</span><span class="token string">"csv"</span><span class="token punctuation">)</span>.build<span class="token punctuation">(</span><span class="token punctuation">))</span><span class="token punctuation">;</span>
+
+
+
+      //  tableEnvironment.executeSql<span class="token punctuation">(</span><span class="token string">"select * from aa_user"</span><span class="token punctuation">)</span>.print<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        //tableEnvironment.executeSql<span class="token punctuation">(</span><span class="token string">"select * from aa_user inner join bb_order on <span class="token variable"><span class="token variable">`</span>aa_user<span class="token variable">`</span></span>.<span class="token variable"><span class="token variable">`</span>count<span class="token variable">`</span></span>=<span class="token variable"><span class="token variable">`</span>bb_order<span class="token variable">`</span></span>.<span class="token variable"><span class="token variable">`</span><span class="token function">id</span><span class="token variable">`</span></span>"</span><span class="token punctuation">)</span>.print<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+    String <span class="token assign-left variable">cost</span><span class="token operator">=</span>    tableEnvironment.explainSql<span class="token punctuation">(</span><span class="token string">"select * from aa_user inner join bb_order on <span class="token variable"><span class="token variable">`</span>aa_user<span class="token variable">`</span></span>.<span class="token variable"><span class="token variable">`</span>count<span class="token variable">`</span></span>=<span class="token variable"><span class="token variable">`</span>bb_order<span class="token variable">`</span></span>.<span class="token variable"><span class="token variable">`</span><span class="token function">id</span><span class="token variable">`</span></span>"</span>, ExplainDetail.ESTIMATED_COST<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        System.out.println<span class="token punctuation">(</span>cost<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="_55"></a>结果展示</h4> 
+<pre><code class="prism language-bash"><span class="token operator">==</span> Abstract Syntax Tree <span class="token operator">==</span>
+LogicalProject<span class="token punctuation">(</span>count<span class="token operator">=</span><span class="token punctuation">[</span><span class="token variable">$0</span><span class="token punctuation">]</span>, <span class="token assign-left variable">word</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token variable">$1</span><span class="token punctuation">]</span>, <span class="token assign-left variable">id</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token variable">$2</span><span class="token punctuation">]</span>, <span class="token assign-left variable">name</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token variable">$3</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
++- LogicalJoin<span class="token punctuation">(</span>condition<span class="token operator">=</span><span class="token punctuation">[</span><span class="token operator">=</span><span class="token punctuation">(</span><span class="token variable">$0</span>, <span class="token variable">$2</span><span class="token punctuation">)</span><span class="token punctuation">]</span>, <span class="token assign-left variable">joinType</span><span class="token operator">=</span><span class="token punctuation">[</span>inner<span class="token punctuation">]</span><span class="token punctuation">)</span>
+   :- LogicalTableScan<span class="token punctuation">(</span>table<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">[</span>default_catalog, default_database, aa_user<span class="token punctuation">]</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+   +- LogicalTableScan<span class="token punctuation">(</span>table<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">[</span>default_catalog, default_database, bb_order<span class="token punctuation">]</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+
+<span class="token operator">==</span> Optimized Physical Plan <span class="token operator">==</span>
+NestedLoopJoin<span class="token punctuation">(</span>joinType<span class="token operator">=</span><span class="token punctuation">[</span>InnerJoin<span class="token punctuation">]</span>, <span class="token assign-left variable">where</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token operator">=</span><span class="token punctuation">(</span>count, <span class="token function">id</span><span class="token punctuation">)</span><span class="token punctuation">]</span>, <span class="token assign-left variable">select</span><span class="token operator">=</span><span class="token punctuation">[</span>count, word, id, name<span class="token punctuation">]</span>, <span class="token assign-left variable">build</span><span class="token operator">=</span><span class="token punctuation">[</span>left<span class="token punctuation">]</span><span class="token punctuation">)</span>: rowcount <span class="token operator">=</span> <span class="token number">87.6</span>, cumulative cost <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">673.6</span> rows, <span class="token number">1484.0</span> cpu, <span class="token number">9344.0</span> io, <span class="token number">32.0</span> network, <span class="token number">40.0</span> memory<span class="token punctuation">}</span>
+:- Exchange<span class="token punctuation">(</span>distribution<span class="token operator">=</span><span class="token punctuation">[</span>broadcast<span class="token punctuation">]</span><span class="token punctuation">)</span>: rowcount <span class="token operator">=</span> <span class="token number">2.0</span>, cumulative cost <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">4.0</span> rows, <span class="token number">320.0</span> cpu, <span class="token number">32.0</span> io, <span class="token number">32.0</span> network, <span class="token number">0.0</span> memory<span class="token punctuation">}</span>
+<span class="token builtin class-name">:</span>  +- TableSourceScan<span class="token punctuation">(</span>table<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">[</span>default_catalog, default_database, aa_user<span class="token punctuation">]</span><span class="token punctuation">]</span>, <span class="token assign-left variable">fields</span><span class="token operator">=</span><span class="token punctuation">[</span>count, word<span class="token punctuation">]</span><span class="token punctuation">)</span>: rowcount <span class="token operator">=</span> <span class="token number">2.0</span>, cumulative cost <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">2.0</span> rows, <span class="token number">0.0</span> cpu, <span class="token number">32.0</span> io, <span class="token number">0.0</span> network, <span class="token number">0.0</span> memory<span class="token punctuation">}</span>
++- TableSourceScan<span class="token punctuation">(</span>table<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">[</span>default_catalog, default_database, bb_order<span class="token punctuation">]</span><span class="token punctuation">]</span>, <span class="token assign-left variable">fields</span><span class="token operator">=</span><span class="token punctuation">[</span>id, name<span class="token punctuation">]</span><span class="token punctuation">)</span>: rowcount <span class="token operator">=</span> <span class="token number">582.0</span>, cumulative cost <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span><span class="token number">582.0</span> rows, <span class="token number">0.0</span> cpu, <span class="token number">9312.0</span> io, <span class="token number">0.0</span> network, <span class="token number">0.0</span> memory<span class="token punctuation">}</span>
+
+<span class="token operator">==</span> Optimized Execution Plan <span class="token operator">==</span>
+MultipleInput<span class="token punctuation">(</span>readOrder<span class="token operator">=</span><span class="token punctuation">[</span><span class="token number">0,1</span><span class="token punctuation">]</span>, <span class="token assign-left variable">members</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">\</span>nNestedLoopJoin<span class="token punctuation">(</span>joinType<span class="token operator">=</span><span class="token punctuation">[</span>InnerJoin<span class="token punctuation">]</span>, <span class="token assign-left variable">where</span><span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">(</span>count <span class="token operator">=</span> <span class="token function">id</span><span class="token punctuation">)</span><span class="token punctuation">]</span>, <span class="token assign-left variable">select</span><span class="token operator">=</span><span class="token punctuation">[</span>count, word, id, name<span class="token punctuation">]</span>, <span class="token assign-left variable">build</span><span class="token operator">=</span><span class="token punctuation">[</span>left<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">\</span>n:- <span class="token punctuation">[</span><span class="token comment">#1] Exchange(distribution=[broadcast])\n+- [#2] TableSourceScan(table=[[default_catalog, default_database, bb_order]], fields=[id, name])\n])</span>
+:- Exchange<span class="token punctuation">(</span>distribution<span class="token operator">=</span><span class="token punctuation">[</span>broadcast<span class="token punctuation">]</span><span class="token punctuation">)</span>
+<span class="token builtin class-name">:</span>  +- TableSourceScan<span class="token punctuation">(</span>table<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">[</span>default_catalog, default_database, aa_user<span class="token punctuation">]</span><span class="token punctuation">]</span>, <span class="token assign-left variable">fields</span><span class="token operator">=</span><span class="token punctuation">[</span>count, word<span class="token punctuation">]</span><span class="token punctuation">)</span>
++- TableSourceScan<span class="token punctuation">(</span>table<span class="token operator">=</span><span class="token punctuation">[</span><span class="token punctuation">[</span>default_catalog, default_database, bb_order<span class="token punctuation">]</span><span class="token punctuation">]</span>, <span class="token assign-left variable">fields</span><span class="token operator">=</span><span class="token punctuation">[</span>id, name<span class="token punctuation">]</span><span class="token punctuation">)</span>
+</code></pre> 
+<h5><a id="_76"></a>结果解释</h5> 
+<p>NestedLoopJoin：Flink 选择了嵌套循环连接（Nested Loop Join）作为执行 JOIN 的策略，使用 count = id 作为连接条件。<br> Exchange(distribution=[broadcast])：表示将 aa_user 表的数据广播分发，以减少数据移动的开销，rowcount = 2.0 表示预估的行数。<br> TableSourceScan：直接扫描表 aa_user 和 bb_order，并读取相应的字段。表 aa_user 预估有 2 行，表 bb_order 预估有 582 行</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/99444f30275a97b7f255373e8991c414/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">网络安全-安全渗透简介和安全渗透环境准备</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4f2324c5a8ac5d54a099129c5c7a16a9/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">牛客笔试训练</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

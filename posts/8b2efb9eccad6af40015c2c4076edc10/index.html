@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>数据仓库内容分享(七)：Flink CDC 实现海量数据实时同步转换 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/8b2efb9eccad6af40015c2c4076edc10/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="数据仓库内容分享(七)：Flink CDC 实现海量数据实时同步转换">
+  <meta property="og:description" content="目录
+CDC 概念回顾
+对比常见的开源 CDC 方案
+传统 CDC ETL
+Flink CDC
+Flink CDC ETL
+CDC 概念回顾 CDC 的全称是 Change Data Capture ，在广义的概念上，只要是能捕获数据变更的技术，我们都可以称之为 CDC 。目前通常描述的 CDC 技术主要面向数据库的变更，是一种用于捕获数据库中数据变更的技术。CDC 技术的应用场景非常广泛：
+数据同步：用于备份，容灾； 数据分发：一个数据源分发给多个下游系统； 数据采集：面向数据仓库 / 数据湖的 ETL 数据集成，是非常重要的数据源。 CDC 的技术方案非常多，目前业界主流的实现机制可以分为两种：
+基于查询的 CDC：离线调度查询作业，批处理。把一张表同步到其他系统，每次通过查询去获取表中最新的数据；无法保障数据一致性，查的过程中有可能数据已经发生了多次变更；不保障实时性，基于离线调度存在天然的延迟。
+基于日志的 CDC：实时消费日志，流处理，例如 MySQL 的 binlog 日志完整记录了数据库中的变更，可以把 binlog 文件当作流的数据源；保障数据一致性，因为 binlog 文件包含了所有历史变更明细；保障实时性，因为类似 binlog 的日志文件是可以流式消费的，提供的是实时数据。
+对比常见的开源 CDC 方案 对比增量同步能力，基于日志的方式，可以很好的做到增量同步；而基于查询的方式是很难做到增量同步的。
+对比全量同步能力，基于查询或者日志的 CDC 方案基本都支持，除了 Canal。
+而对比全量 &#43; 增量同步的能力，只有 Flink CDC、Debezium、Oracle Goldengate 支持较好。
+从架构角度去看，该表将架构分为单机和分布式，这里的分布式架构不单纯体现在数据读取能力的水平扩展上，更重要的是在大数据场景下分布式系统接入能力。例如 Flink CDC 的数据入湖或者入仓的时候，下游通常是分布式的系统，如 Hive、HDFS、Iceberg、Hudi 等，那么从对接入分布式系统能力上看，Flink CDC 的架构能够很好地接入此类系统。 在数据转换 / 数据清洗能力上，当数据进入到 CDC 工具的时候是否能较方便的对数据做一些过滤或者清洗，甚至聚合？在 Flink CDC 上操作相当简单，可以通过 Flink SQL 去操作这些数据；但是像 DataX、Debezium 等则需要通过脚本或者模板去做，所以用户的使用门槛会比较高。 另外，在生态方面，这里指的是下游的一些数据库或者数据源的支持。Flink CDC 下游有丰富的 Connector，例如写入到 TiDB、MySQL、Pg、HBase、Kafka、ClickHouse 等常见的一些系统，也支持各种自定义 connector。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-01-28T19:56:52+08:00">
+    <meta property="article:modified_time" content="2024-01-28T19:56:52+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">数据仓库内容分享(七)：Flink CDC 实现海量数据实时同步转换</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="CDC%20%E6%A6%82%E5%BF%B5%E5%9B%9E%E9%A1%BE-toc" style="margin-left:40px;"><a href="#CDC%20%E6%A6%82%E5%BF%B5%E5%9B%9E%E9%A1%BE" rel="nofollow">CDC 概念回顾</a></p> 
+<p id="%E5%AF%B9%E6%AF%94%E5%B8%B8%E8%A7%81%E7%9A%84%E5%BC%80%E6%BA%90%20CDC%20%E6%96%B9%E6%A1%88-toc" style="margin-left:40px;"><a href="#%E5%AF%B9%E6%AF%94%E5%B8%B8%E8%A7%81%E7%9A%84%E5%BC%80%E6%BA%90%20CDC%20%E6%96%B9%E6%A1%88" rel="nofollow">对比常见的开源 CDC 方案</a></p> 
+<p id="%E4%BC%A0%E7%BB%9F%20CDC%20ETL-toc" style="margin-left:40px;"><a href="#%E4%BC%A0%E7%BB%9F%20CDC%20ETL" rel="nofollow">传统 CDC ETL</a></p> 
+<p id="Flink%20CDC-toc" style="margin-left:40px;"><a href="#Flink%20CDC" rel="nofollow">Flink CDC</a></p> 
+<p id="Flink%20CDC%20ETL-toc" style="margin-left:40px;"><a href="#Flink%20CDC%20ETL" rel="nofollow">Flink CDC ETL</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h3 style="background-color:transparent;">CDC 概念回顾</h3> 
+<p>CDC 的全称是 Change Data Capture ，在广义的概念上，只要是能捕获数据变更的技术，我们都可以称之为 CDC 。目前通常描述的 CDC 技术主要面向数据库的变更，是一种用于捕获数据库中数据变更的技术。CDC 技术的应用场景非常广泛：</p> 
+<p>数据同步：用于备份，容灾； 数据分发：一个数据源分发给多个下游系统； 数据采集：面向数据仓库 / 数据湖的 ETL 数据集成，是非常重要的数据源。 CDC 的技术方案非常多，目前业界主流的实现机制可以分为两种：</p> 
+<p>基于查询的 CDC：离线调度查询作业，批处理。把一张表同步到其他系统，每次通过查询去获取表中最新的数据；无法保障数据一致性，查的过程中有可能数据已经发生了多次变更；不保障实时性，基于离线调度存在天然的延迟。</p> 
+<p>基于日志的 CDC：实时消费日志，流处理，例如 MySQL 的 binlog 日志完整记录了数据库中的变更，可以把 binlog 文件当作流的数据源；保障数据一致性，因为 binlog 文件包含了所有历史变更明细；保障实时性，因为类似 binlog 的日志文件是可以流式消费的，提供的是实时数据。</p> 
+<h3 id="%E5%AF%B9%E6%AF%94%E5%B8%B8%E8%A7%81%E7%9A%84%E5%BC%80%E6%BA%90%20CDC%20%E6%96%B9%E6%A1%88">对比常见的开源 CDC 方案</h3> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="360" src="https://images2.imgbox.com/f9/8d/cCq99U6Y_o.jpg" width="640"></p> 
+<p>对比增量同步能力，基于日志的方式，可以很好的做到增量同步；而基于查询的方式是很难做到增量同步的。</p> 
+<p>对比全量同步能力，基于查询或者日志的 CDC 方案基本都支持，除了 Canal。</p> 
+<p>而对比全量 + 增量同步的能力，只有 Flink CDC、Debezium、Oracle Goldengate 支持较好。</p> 
+<p>从架构角度去看，该表将架构分为单机和分布式，这里的分布式架构不单纯体现在数据读取能力的水平扩展上，更重要的是在大数据场景下分布式系统接入能力。例如 Flink CDC 的数据入湖或者入仓的时候，下游通常是分布式的系统，如 Hive、HDFS、Iceberg、Hudi 等，那么从对接入分布式系统能力上看，Flink CDC 的架构能够很好地接入此类系统。 在数据转换 / 数据清洗能力上，当数据进入到 CDC 工具的时候是否能较方便的对数据做一些过滤或者清洗，甚至聚合？在 Flink CDC 上操作相当简单，可以通过 Flink SQL 去操作这些数据；但是像 DataX、Debezium 等则需要通过脚本或者模板去做，所以用户的使用门槛会比较高。 另外，在生态方面，这里指的是下游的一些数据库或者数据源的支持。Flink CDC 下游有丰富的 Connector，例如写入到 TiDB、MySQL、Pg、HBase、Kafka、ClickHouse 等常见的一些系统，也支持各种自定义 connector。</p> 
+<p>可以看到 Flink CDC 的机制以及在增量同步、断点续传、全量同步的表现都很好，也支持全增量一体化同步，而很多其他开源方案无法支持全增量一体化同步。Flink CDC 是分布式架构，可以满足海量数据同步的业务场景。依靠 Flink 的生态优势，它提供了 DataStream API 以及 SQL API，这些 API 提供了非常强大的 transformation 能力。</p> 
+<h3 id="%E4%BC%A0%E7%BB%9F%20CDC%20ETL">传统 CDC ETL</h3> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="540" src="https://images2.imgbox.com/32/80/R6fpx6ev_o.jpg" width="960"></p> 
+<p>传统数据入仓架构 1.0，主要使用 DataX 或 Sqoop 全量同步到 HDFS，再围绕 Hive 做数仓。</p> 
+<p>此方案存在诸多缺陷：容易影响业务稳定性，因为每天都需要从业务表里查询数据；天级别的产出导致时效性差，延迟高；如果将调度间隔调成几分钟一次，则会对源库造成非常大的压力；扩展性差，业务规模扩大后极易出现性能瓶颈。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="540" src="https://images2.imgbox.com/25/dc/GAsAA6HE_o.jpg" width="960"></p> 
+<p>传统数据入仓 2.0 架构。分为实时和离线两条链路，实时链路做增量同步，比如通过 Canal 同步到 Kafka 后再做实时回流；全量同步一般只做一次，与每天的增量在 HDFS 上做定时合并，最后导入到 Hive 数仓里。</p> 
+<p>此方式只做一次全量同步，因此基本不影响业务稳定性，但是增量同步有定时回流，一般只能保持在小时和天级别，因此它的时效性也比较低。同时，全量与增量两条链路是割裂的，意味着链路多，需要维护的组件也多，系统的可维护性会比较差。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="360" src="https://images2.imgbox.com/b7/d2/qt5TglgK_o.jpg" width="640"></p> 
+<p>传统 CDC ETL 分析架构 ，国外用户常用 Debezium，国内用户常用阿里开源的 Canal，采集工具负责采集数据库的增量数据，一些采集工具也支持同步全量数据。采集到的数据一般输出到消息中间件如 Kafka，然后 Flink 计算引擎再去消费这一部分数据写入到目的端，目的端可以是各种 DB，数据湖，实时数仓和离线数仓。</p> 
+<blockquote>
+  ❝ 
+ <p>Flink 提供了 changelog-json format，可以将 changelog 数据写入离线数仓如 Hive / HDFS；对于实时数仓，Flink 支持将 changelog 通过 upsert-kafka connector 直接写入 Kafka。</p> ❞ 
+</blockquote> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="540" src="https://images2.imgbox.com/51/d8/Z0B2x5Bu_o.jpg" width="960"></p> 
+<h3 id="Flink%20CDC">Flink CDC</h3> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="540" src="https://images2.imgbox.com/16/14/rh2wJFHh_o.jpg" width="960"></p> 
+<p>Flink CDC 支持全增量一体化同步，为用户提供实时一致性快照。比如一张表里有历史的全量数据，也有新增的实时变更数据，增量数据不断地往 Binlog 日志文件里写，Flink CDC 会先同步全量历史数据，再无缝切换到同步增量数据，增量同步时，如果是新增的插入数据（上图中蓝色小块），会追加到实时一致性快照中；如果是更新的数据（上图中黄色小块），则会在已有历史数据里做更新。</p> 
+<p>Flink CDC 相当于提供了实时物化视图，为用户提供数据库中表的实时一致性快照，用于可以对这些数据做进一步加工，比如清洗、聚合、过滤等，然后再写入下游。</p> 
+<p><strong>「Dynamic Table &amp; ChangeLog Stream」</strong></p> 
+<p>Flink 的两个基础概念：Dynamic Table 和 Changelog Stream。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="360" src="https://images2.imgbox.com/07/f1/EcNJSaVL_o.jpg" width="640"></p> 
+<p><code>Dynamic Table</code> 是 Flink SQL 定义的动态表，动态表和流的概念是对等的。流可以转换成动态表，动态表也可以转换成流。 在 Flink SQL中，数据在从一个算子流向另外一个算子时都是以 Changelog Stream 的形式，任意时刻的 Changelog Stream 可以翻译为一个表，也可以翻译为一个流。</p> 
+<p>例如 MySQL 中的表和 binlog 日志。MySQL 数据库的一张表所有的变更都记录在 binlog 日志中，如果一直对表进行更新，binlog 日志流也一直会追加，数据库中的表就相当于 binlog 日志流在某个时刻点物化的结果；日志流就是将表的变更数据持续捕获的结果。这说明 Flink SQL 的 Dynamic Table 是可以非常自然地表示一张不断变化的 MySQL 数据库表。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="360" src="https://images2.imgbox.com/a3/c0/ScuVKXht_o.jpg" width="640"></p> 
+<h3 id="Flink%20CDC%20ETL">Flink CDC ETL</h3> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="360" src="https://images2.imgbox.com/c8/26/bYnhHJsO_o.jpg" width="640"></p> 
+<p>Flink CDC 除了组件更少，维护更方便外，另一个优势是通过 Flink SQL 极大地降低了用户使用门槛。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="540" src="https://images2.imgbox.com/c3/24/xYhhmmn1_o.jpg" width="960"></p> 
+<p>Flink CDC 在 MySQL CDC 上实现了增量快照读取算法，Flink CDC 社区将增量快照算法抽象成框架，使得其他数据源也能复用增量快照算法。</p> 
+<p>增量快照算法解决了全增量一体化同步里的一些痛点。比如 Debezium 早期版本在实现全增量一体化同步时会使用锁，并且且是单并发模型，失败重做机制，无法在全量阶段实现断点续传。增量快照算法使用了无锁算法，对业务库非常友好；支持了并发读取，解决了海量数据的处理问题；支持了断点续传，避免失败重做，能够极大地提高数据同步的效率与用户体验。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="540" src="https://images2.imgbox.com/df/e9/TgPy3BYD_o.jpg" width="960"></p> 
+<p>全增量一体化的框架。整个框架简单来讲就是将数据库里的表按 PK 或 UK 切分成 一个个 chunk ，然后分给多个 task 做并行读取，即在全量阶段实现了并行读取。全量和增量能够自动切换，切换时通过无锁算法来做无锁一致性的切换。切换到增量阶段后，只需要单独的 task 去负责增量部分的数据解析，以此实现了全增量一体化读取。进入增量阶段后，作业不再需要的资源，用户可以修改作业并发将其释放。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="540" src="https://images2.imgbox.com/b3/ff/Yq4JA0bz_o.jpg" width="960"></p> 
+<p>与 Debezium 1.6 版本做简单的 TPC-DS 读取测试对比，customer 单表数据量 6500 万，在 Flink CDC 用 8 个并发的情况下，吞吐提升了 6.8 倍，耗时仅 13 分钟，得益于并发读取的支持，如果用户需要更快的读取速度，用户可以增加并发实现。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="540" src="https://images2.imgbox.com/65/66/RWPS7c1j_o.jpg" width="960"></p> 
+<p>Flink CDC 在设计时，也考虑了面向存储友好的写入设计。在 Flink CDC 1.x 版本中，如果想实现 exactly-once 同步，需要配合 Flink 提供的 checkpoint 机制,全量阶段没有做切片，则只能在一个 checkpoint 里完成，这会导致一个问题：每个 checkpoint 中间要将这张表的全量数据吐给下游的 writer，writer 会将这张表的全量数据混存在内存中，会对其内存造成非常大的压力，作业稳定性也特别差。</p> 
+<p>Flink CDC 2.0 提出了增量快照算法后，通过切片能够将 checkpoint 粒度降至 chunk， 并且 chunk 大小是用户可配置的，默认是 8096 条，用户可以将其调至更小，减轻 writer 的压力，减少内存资源的使用，提升下游写入存储时的稳定性。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="540" src="https://images2.imgbox.com/aa/c8/2pqG2eA5_o.jpg" width="960"></p> 
+<p>全增量一体化之后， Flink CDC 的入湖架构变得非常简单，且不会影响业务的稳定性；能够做到分钟级的产出，也就意味着可以实现近实时或实时分析；并发读取实现了更高的吞吐，在海量数据场景下有着不俗的表现；链路短，组件少，运维友好。</p> 
+<p>有了 Flink CDC 之后，传统 CDC ETL 分析的痛点也得到了极大改善，不再需要 Canal、Kafka 消息队列等组件，只需要依赖 Flink，实现了全增量一体化同步和实时 ETL 加工的能力，且支持并发读取，整个架构链路短，组件少，易于维护。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="540" src="https://images2.imgbox.com/f5/af/DHXD2mmQ_o.jpg" width="960"></p> 
+<p>依托于 Flink DataStream API 以及易用的 SQL API ，Flink CDC 还提供了非常强大完善的 transformation 能力，且在 transformation 过程中能够保证 changelog 语义。在传统方案里，在 changelog 上做 transformation 并保证 changelog 语义是非常难以实现的。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="608" src="https://images2.imgbox.com/ac/1d/tQIYotf7_o.jpg" width="1080"></p> 
+<p>这个业务场景是业务表比如产品表和订单表在 MySQL 数据库里，物流表存在 PG 数据库里，要实现异构数据源的集成，并且在集成过程做打宽。需要将产品表、订单表与物流表做 Streaming Join 之后再将结果表写入库里。借助 Flink CDC，整个过程只需要用 5 行 Flink SQL 就能够实现。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="608" src="https://images2.imgbox.com/e6/1c/T557nucC_o.jpg" width="1080"></p> 
+<p>Flink CDC 对分库分表做了非常完善的支持，在声明 CDC 表时支持使用正则表达式匹配库名和表名，正则表达式意味着可以匹配多个库以及这多个库下的多张表。同时提供了 metadata column 的支持，可以知道数据来自于哪个 数据库、来自于哪张表，写入下游 Hudi 时，可以带上 metadata 声明的两个列，将 database_name、table_name 以及原始表中的 主键（例子中为 id 列）作为新的主键，只需三行 Flink SQL 即可实现分库分表数据的实时集成，非常简单。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="540" src="https://images2.imgbox.com/e4/cc/7gH5T8SA_o.jpg" width="960"></p> 
+<p>依托于 Flink 丰富的生态，能够实现很多上下游的扩展，Flink 自身就有丰富的 connector 生态。 Flink CDC 加入之后，上游有了更丰富的源可以摄取，下游也有丰富的目的端可以写入。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2a590be10b858c2c6a82bc82fd2fcff4/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">数学建模入门笔记(2) 聚类分析</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7f8c73f22f46e0c5d317b5504e0bd34d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">解密人工智能：探索机器学习奥秘</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

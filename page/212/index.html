@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta name="generator" content="Hugo 0.133.1">
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="编程大咖的博客">
+		<meta property="og:url" content="https://bcdaka.github.io/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="编程大咖">
+  <meta property="og:description" content="编程大咖的博客">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="website">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+	<link rel="alternate" type="application/rss+xml" href="/index.xml" title="编程大咖">
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main list" role="main">
+	<article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/93aeafa18a31bdc6425d8f7265b6eecd/" rel="bookmark">
+			Spark Core内核调度机制详解(第5天）
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		系列文章目录 如何构建DAG执行流程图 (掌握)如何划分Stage阶段 (掌握)Driver底层是如何运转 (掌握)确定需要构建多少分区(线程) (掌握) 文章目录 系列文章目录引言一、Spark内核调度（掌握）1.1、内容概述1.2、RDD的依赖1.3、DAG和Stage1.4、Spark Shuffle1.5、Job调度流程1.6、Spark RDD并行度 二. 常见面试题1.简单介绍下RDD宽依赖和窄依赖的区别2.简单介绍下DAG有向无环图如何划分Stage阶段的3.请描述下rdd中job的整个调度流程 引言 本文主要介绍了
+1.RDD的依赖
+2.DAG和Stage
+3.Spark Shuffle
+4.job调度流程(掌握)
+5.Spark RDD并行度
+帮助读者更好地理解其工作原理和优化方法。
+一、Spark内核调度（掌握） 1.1、内容概述 Spark内核调度的任务：
+如何构建DAG执行流程图如何划分Stage阶段Driver底层是如何运转确定需要构建多少分区（线程） Spark内核调度的目的：尽可能用最少的资源高效地完成任务计算。
+1.2、RDD的依赖 RDD依赖：一个RDD的形成可能是由一个或者多个RDD得到的，此时这个RDD和之前的RDD之间产生依赖关系。
+在Spark中，RDD之间的依赖关系，主要有二种类型：
+窄依赖 作用: 能够让Spark程序并行计算。也就是一个分区数据计算出现问题以后，其他的分区计算不受到任何影响。特点: 父RDD的分区和子RDD的分区关系是一对一的关系。也就是父RDD分区的数据会整个被下游子RDD的分区接收。 宽依赖 作用: 划分Stage的重要依据。宽依赖也叫做Shuffle依赖。特点: 父RDD的分区和子RDD的分区关系是一对多的关系，也就是父RDD的分区数据会被分成多份给到下游子RDD的多个分区所接收。注意:为了避免数据不完整，如果有宽依赖，shuffle下游的其他操作，必须等待shuffle执行完成以后才能够继续执行。 说明 在实际使用中，不需要纠结哪些算子会存在shuffle，以需求为目标。虽然shuffle的存在会影响一定的效率, 但是以完成任务为准则，该用那个算子，就使用那个算子即可，不要过分纠结。算子中一般以ByKey结尾的会发生shuffle另外是重分区算子也会发生shuffle。 1.3、DAG和Stage DAG：有向无环图，主要描述一段执行任务，从开始一直往下走，不允许出现回调操作,Spark应用程序中，遇到一个Action算子，就会触发形成一个Job任务的产生。
+思考：对于每一个Job的任务，都会产生一个DAG执行流程图，那么这个流程图是如何形成的呢?
+层级关系： 1- 一个application应用程序 -&gt; 遇到一个Action算子，就会触发形成一个Job任务 2- 一个Job任务只有一个DAG有向无环图 3- 一个DAG有向无环图 -&gt; 有多个Stage 4- 一个Stage -&gt; 有多个Task线程 5- 一个RDD -&gt; 有多个分区 6- 一个分区会被一个Task线程所处理 DAG执行流程图形成和Stage划分
+1- Spark应用程序遇到Action算子后，就会触发一个Job任务的产生。Job任务会将它所依赖的所有算子全部加载进来，形成一个Stage。 2- 接着从Action算子从后往前进行回溯，遇到窄依赖就将算子放在同一个Stage当中；如果遇到宽依赖，就划分形成新的Stage，最后一直回溯完成。 细化剖析Stage内部的流程
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/93aeafa18a31bdc6425d8f7265b6eecd/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/dbffa28cffcb75ede73e7cf6b339b5f7/" rel="bookmark">
+			Spark SQL函数详解：案例解析(第8天)
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		系列文章目录 1- Spark SQL函数定义（掌握）
+2- Spark 原生自定义UDF函数案例解析（掌握）
+3- Pandas自定义函数案例解析（熟悉）
+4- Apache Arrow框架案例解析（熟悉）
+5- spark常见面试题
+文章目录 系列文章目录前言一、Spark SQL函数定义（掌握）1. 窗口函数2. 自定义函数背景2.1 回顾函数分类标准2.2 自定义函数背景 二、Spark原生自定义UDF函数1. 自定义函数流程1.1 自定义演示一1.2 自定义演示二1.3 自定义演示三 三、Pandas的自定义函数1. Apache Arrow框架2. 基于Arrow完成Pandas和Spark的DataFrame互转3. 基于Pandas自定义函数3.1 自定义函数流程3.2 自定义UDF函数3.3 自定义UDAF函数 四、Spark常见面试题1. Spark client 和Spark cluster的区别？2. Spark常用端口号3. Repartitons和Coalesce区别 前言 本文主要通过案例解析工作中常用的Spark SQL函数，以及应用场景
+一、Spark SQL函数定义（掌握） 1. 窗口函数 回顾之前学习过的窗口函数：
+分析函数 over(partition by xxx order by xxx [asc|desc] [rows between xxx and xxx]) 分析函数可以大致分成如下3类： 1- 第一类: 聚合函数 sum() count() avg() max() min() 2- 第二类: 排序函数 row_number() rank() dense_rank() 3- 第三类: 其他函数 ntile() first_value() last_value() lead() lag() 三个排序函数的区别?
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/dbffa28cffcb75ede73e7cf6b339b5f7/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/70f1c6cbff7c05fe8c028f02a77d8572/" rel="bookmark">
+			hive架构详解：HQL案例解析(第15天)
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		系列文章目录 一、Hive基础架构（重点）
+二、Hive数据库,表操作（重点）
+三、Hadoop架构详解(hdfs)（补充）
+四、Hive环境准备（操作）(补充)
+文章目录 系列文章目录前言一、Hive基础架构1、Hive和MapReduce的关系2、Hive架构（熟悉）3、MetaStore元数据管理服务4、数据仓库和数据库（熟悉）4.1 数据仓库和数据库的区别4.2 数据仓库基础三层架构4.3 ETL和ELT 二、Hive数据库操作1、基本操作（掌握）2、其他操作（了解） 三、Hive官网介绍（了解）四、Hive表操作（掌握）1、建表语法2、数据类型3、表分类4、默认分隔符5、内部表6、外部表7、查看和修改表8、快速映射表 五、Hadoop（补充）1、分布式和集群2、Hadoop框架2.1 概述2.2 版本更新2.3 Hadoop架构详解（掌握）2.4 官方示例（体验下）2.4.1 圆周率练习2.4.2 词频统计 3、Hadoop的HDFS（掌握）3.1 特点3.2 架构3.3 副本3.4 shell命令 六、Hive环境准备（操作）1、shell脚本执行方式2、配置Hive环境变量3、启动和停止Hive服务4、连接Hive服务5、DataGrip连接Hive服务5.1 创建DataGrip项目5.2 连接Hive5.3 配置驱动jar包 6、DataGrip连接MySQL 前言 本文主要详解
+一、Hive基础架构（重点）
+二、Hive数据库,表操作（重点）
+三、Hadoop架构详解(hdfs)（补充）
+四、Hive环境准备（操作）(补充)
+一、Hive基础架构 1、Hive和MapReduce的关系 1- 用户在Hive上编写数据分析的SQL语句，然后再通过Hive将SQL语句翻译成MapReduce程序代码，最后提交到Yarn集群上进行运行 2- 大家可以将Hive理解成有道词典，帮助你翻译英文 2、Hive架构（熟悉） 用户接口: 包括 CLI、JDBC/ODBC、WebGUI。其中，CLI(command line interface)为shell命令行；Hive中的Thrift服务器允许外部客户端通过网络与Hive进行交互，类似于JDBC或ODBC协议。WebGUI是通过浏览器访问Hive。Hive提供了 Hive Shell、 ThriftServer等服务进程向用户提供操作接口 Hiveserver2(Driver): 包括了语法、词法检查、计划编译器、优化器、执行器。核心作用是完成对HiveSQL(HQL)语句从词法、语法检查，并且进行编译、优化以及查询计划的生成。生成的查询计划存储在HDFS中，并在随后由MapReduce进行执行。 注意: 这部分内容不是具体的进程，而是封装在Hive所依赖的jar中通过Java代码实现。 元数据信息: 包含用Hive创建的Database、table，以及表里面的字段等详细信息 元数据存储: 存储在关系型数据库（RDBMS relation database manager system）中。例如：Hive中有一个默认的关系型数据库是Derby，但是一般会改成MySQL。 Metastore: 是一个进程（服务），用来管理元数据信息。 作用: 客户端连接到Metastore中，Metastore再去关系型数据库中查找具体的元数据信息，然后将结果返回给客户端。 特点: 有了Metastore服务以后，就可以有多个客户端（工作中一般使用的就是DataGrip）同时连接。而且这些客户端都不需要知道元数据存储在什么地方，你只需要连接到Metastore服务里面就行。 3、MetaStore元数据管理服务 metastore服务配置有3种模式: 内嵌模式、本地模式、远程模式
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/70f1c6cbff7c05fe8c028f02a77d8572/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/0d9161a61e993d528f1bda3e5a0816ef/" rel="bookmark">
+			树的直径求解方法
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		目录 1 介绍2 训练 1 介绍 树的直径是指树中任意两个节点之间的最长路径长度。通常可以通过两次广度优先搜索（BFS）或深度优先搜索（DFS）来求树的直径：
+第一次从任意一点出发，找到离它最远的节点 A。第二次从节点 A 出发，找到离它最远的节点 B，A 和 B 之间的路径长度就是树的直径。 2 训练 题目1：100318. 合并两棵树后的最小直径
+解题思路：分别求出两棵树的直径，然后比较大小max(d1, d2, r1 + r2 + 1)即可。
+python3代码如下，
+from collections import deque class Solution: def minimumDiameterAfterMerge(self, edges1: List[List[int]], edges2: List[List[int]]) -&gt; int: def bfs(graph, start): n = len(graph) dist = [-1] * n queue = deque([start]) dist[start] = 0 while queue: node = queue.popleft() for neighbor in graph[node]: if dist[neighbor] == -1: dist[neighbor] = dist[node] + 1 queue.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/0d9161a61e993d528f1bda3e5a0816ef/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/92a14ce0784323d37f7deddccd3e77c1/" rel="bookmark">
+			玩转springboot之springboot定制嵌入式的servlet
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		springboot定制嵌入式的servlet容器 修改容器配置 有两种方式可以修改容器的配置
+可以直接在配置文件中修改和server有关的配置 server.port=8081 server.tomcat.uri-encoding=UTF-8 //通用的Servlet容器设置 server.xxx //指定Tomcat的设置 server.tomcat.xxx 编写一个EmbeddedServletContainerCustomizer组件来进行嵌入式的Servlet容器的定制器，来修改Servlet容器的配置 @Bean
+public EmbeddedServletContainerCustomizer embeddedServletContainerCustomizer(){
+return new EmbeddedServletContainerCustomizer() {
+//定制嵌入式的Servlet容器相关的规则
+@Override
+public void customize(ConfigurableEmbeddedServletContainer container) {
+container.setPort(8081);
+}
+};
+}
+其实对于server的配置所采用的ServerProperties也是一个EmbeddedServletContainerCustomizer
+@ConfigurationProperties(prefix = "server", ignoreUnknownFields = true)
+public class ServerProperties
+implements EmbeddedServletContainerCustomizer, EnvironmentAware, Ordered {
+替换为其他的servlet容器 默认springboot使用的是tomcat作为servlet容器，可以将servlet容器替换为jetty
+&lt;!-- 排除tomcat --&gt;
+&lt;dependency&gt;
+&lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+&lt;artifactId&gt;spring-boot-starter-web&lt;/artifactId&gt;
+&lt;exclusions&gt;
+&lt;exclusion&gt;
+&lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+&lt;artifactId&gt;spring-boot-starter-tomcat&lt;/artifactId&gt;
+&lt;/exclusion&gt;
+&lt;/exclusions&gt;
+&lt;/dependency&gt;
+&lt;!-- 引入jetty --&gt;
+&lt;dependency&gt;
+&lt;groupId&gt;org.springframework.boot&lt;/groupId&gt;
+&lt;artifactId&gt;spring-boot-starter-jetty&lt;/artifactId&gt;
+&lt;/dependency&gt;
+https://zhhll.icu/2021/框架/springboot/基础/6.定制嵌入式的servlet容器/
+本文由 mdnice 多平台发布
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/ca269a5ddc5282049ac4b7fde5ad943b/" rel="bookmark">
+			【Rust】——所有的模式语法
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		💻博主现有专栏：
+C51单片机（STC89C516），c语言，c++，离散数学，算法设计与分析，数据结构，Python，Java基础，MySQL，linux，基于HTML5的网页设计及应用，Rust（官方文档重点总结），jQuery，前端vue.js，Javaweb开发，Python机器学习等
+🥏主页链接：
+Y小夜-CSDN博客
+目录
+🎯匹配字面值
+🎯匹配命名变量
+🎯多个模式
+🎯通过..-=匹配值的范围
+🎯解构并分解值
+🎃解构结构体
+🎃解构枚举
+🎃解构嵌套的结构体和枚举
+🎃解构结构体和元组
+🎯忽略模式中的值
+🎃使用_使用忽略整个值
+🎃使用嵌套的_忽略部分值
+🎃通过在名字前以一个_开头来忽略未使用的变量
+🎃用..忽略剩余值
+🎯匹配守卫提供的额外条件
+🎯@绑定
+🎯匹配字面值 可以直接匹配字面值模式。
+let x = 1; match x { 1 =&gt; println!("one"), 2 =&gt; println!("two"), 3 =&gt; println!("three"), _ =&gt; println!("anything"), } 这段代码会打印 one 因为 x 的值是 1。如果希望代码获得特定的具体值，则该语法很有用。
+🎯匹配命名变量 命名变量是匹配任何值的不可反驳模式，这在之前已经使用过数次。然而当其用于 match 表达式时情况会有些复杂。因为 match 会开始一个新作用域，match 表达式中作为模式的一部分声明的变量会覆盖 match 结构之外的同名变量，与所有变量一样。
+let x = Some(5); let y = 10; match x { Some(50) =&gt; println!
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/ca269a5ddc5282049ac4b7fde5ad943b/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/3a3037b546154ff2afa8861f963ddd5c/" rel="bookmark">
+			Python 学习之标准库（二）
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		Python标准库是指Python编程语言自带的一组模块和包，它们是Python语言的核心组成部分，为开发者提供了丰富的功能和工具，帮助快速实现各种功能需求。以下是对Python标准库的一些主要内容和模块的归纳：
+1. 数学计算：
+a. math：提供了各种数学函数，如三角函数、对数函数等。
+b. random：用于生成随机数。
+c. statistics：提供了统计计算的功能，如平均值、中位数等。
+2. 文件操作：
+a. os：与操作系统交互，提供了文件和目录的操作功能，如文件读写、目录遍历等。
+b. shutil：提供了高级的文件和目录操作功能，如复制、移动、删除文件和目录。
+c. glob：用于在目录中使用通配符搜索创建文件列表。
+3. 网络通信：
+a. socket：提供了底层的网络通信功能，用于构建客户端和服务器。
+b. smtplib、poplib、imaplib：分别用于发送和接收电子邮件。
+4. 图形界面：
+a. tkinter：Python的官方图形用户界面库，可用于开发跨平台的桌面应用程序。
+b. PyQt、wxPython：其他流行的第三方图形界面库。
+5. 数据库连接：
+a. sqlite3：提供了SQLite数据库的连接和操作功能。
+b. 其他数据库的连接模块，如psycopg2（PostgreSQL）、pymysql（MySQL）等。
+6. 日期时间处理：
+a. datetime：提供了日期和时间的处理功能，如日期时间的获取、格式化、计算等。
+b. calendar：提供了日历相关的功能，如生成日历表格等。
+7. 其他常用模块：
+a. re：正则表达式模块，用于字符串的匹配和查找。
+b. json：用于处理JSON数据格式。
+c. argparse：用于处理命令行参数。
+d. logging：提供了灵活的日志记录功能。
+8. 网络爬虫和解析：
+a. urllib、http.client：用于发送HTTP请求和接收响应。
+b. xml.etree.ElementTree、lxml：用于解析XML数据。
+c. BeautifulSoup（虽然是第三方库，但常与标准库一起使用）：用于解析HTML文档。
+Python标准库涵盖了Python编程中常用的各个领域，开发者可以方便地使用这些模块和函数来实现各种功能需求。此外，Python还有大量的第三方库可供选择，这些库提供了更丰富的功能和更好的性能，可以根据具体需求进行安装和使用。
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/e3e92e311d37ab7dfab9b40da51ca597/" rel="bookmark">
+			spring-security安全框架（超精细版附带流程讲解图）
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		目录
+一、回顾一下
+二、security使用
+2.1 覆盖掉默认配置「自定义配置」
+2.2 如何自定义认证
+2.3 纯纯自定义
+2.4 jwt
+2.5 官网认证流程
+2.6 RBAC模型
+4.1. 创建表结构
+2.7 如何实现权限流程
+一、回顾一下 security干啥的?
+认证和授权
+使用方式
+引入依赖, 基于spring boot的下的使用.
+spring-boot-starter-security, 直接可以使用了.
+观察一下
+姿源分类
+受保护的资源, 需要认证
+公共方式, 不需要认证.
+当我们把security引入到项目当中的时候,我们去访问一下受保护的资源,会弹出一个默认的一个登录界面.用户名称默认的是: user, 密码随机生成的.通过uuid生成的.如果认证成功,则直接跳转到要访问的接口.
+基本原理
+SecurityAutoConfiguration, spring security自动配置类.默认配置.如果我们啥也不干,则直接走默认配置.界面了,用户名称和密码都是默认生成的.
+如果想要覆盖掉默认配置,则我们用两种方案.
+继承一个类WebSecurityConfigurerAdapter, 重写方法.
+将SecurityFilterChain放到容器当中.
+/** * {@link Condition} for * {@link ConditionalOnDefaultWebSecurity @ConditionalOnDefaultWebSecurity}. * * @author Phillip Webb */ class DefaultWebSecurityCondition extends AllNestedConditions { ​ DefaultWebSecurityCondition() { super(ConfigurationPhase.REGISTER_BEAN); } ​ @ConditionalOnClass({ SecurityFilterChain.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/e3e92e311d37ab7dfab9b40da51ca597/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/3a5de64cf9729de04529b8ba8c90abc9/" rel="bookmark">
+			工信部教育与考试中心《AIGC提示工程师》常见问题解答
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		一、什么是AIGC提示工程师？ 未来智能世界的领航者。 AIGC提示工程师（AI-Generated Content，生成式人工智能），是未来智能世界的领航者，是以创新思维和精湛技术设计智能提示语，引领AI创作出令人惊叹的内容，为用户提供卓越个性化体验的专业人才。
+AIGC技术作为新型内容生产方式，将以内容生产模式变革催动生产力革新，引领数实融合浪潮下的产业变革，对人们生产生活方式带来深远的影响，开辟人类生产交互新纪元。AIGC提示工程师在人工智能生成内容领域发挥着重要作用，通过精心设计的提示语，帮助AI模型更好地理解和解决复杂问题，从而提高模型的性能和准确性。他们的工作涉及到与大型语言模型如ChatGPT进行对话，并设计出能够触发模型最佳表现的提示词。与传统程序员不同，提示词工程师使用自然语言编程来指导AI系统执行实际工作。AIGC提示工程师需要具备一定水平的语言能力、语法技能、数据分析、批判性思维以及对AI大模型调试的能力，以确保生成的回答符合用户的意图和需求。
+二、AIGC提示工程师的职业发展前景如何？
+AIGC提示工程师是在政策支持和行业快速发展的双重推动下，职业前景广阔，薪资待遇不断提升，是人工智能生成内容领域紧缺人才。
+政策：国务院在《新一代人工智能发展规划》中提出，2030年前我国要在人工智能理论、技术与应用总体达到世界领先水平，成为世界主要人工智能创新中心。2024年3月国务院发文：用好“人工智能＋”赋能产业升级。
+行业：2023年中国AIGC产业规模约为143亿元，市场规模呈指数级增长，即将突万亿产业价值。
+薪资：2023年AIGC领域整体新发职位增长近140%，人才缺口100万人，平均年薪41.09万元。
+更多内容：猎聘《AIGC及其产业链人才需求大数据报告2023》
+三、《AIGC提示工程师》认证培训项目的发证单位是哪里？
+工业和信息化部教育与考试中心（www.miiteec.org.cn），始建于1993年，是国家工业和信息化部直属事业单位。中心聚焦主责主业，锚定“两个强国”建设重点领域，以“人才链”赋能“产业链”，建立建强人才培养体系。是技术领域人才培养的主力军、国家队，在人才标准制定、考试组织实施、培训资源建设、证书质量管理等方面具有明显的竞争优势和领先地位。
+四、为什么要参加《AIGC提示工程师》认证培训？
+1、科学完善的培训体系，专业、实用。
+专业能力提升：随着生成式人工智能（AIGC）技术的发展，企业对于专业人才的需求也在不断增长。《AIGC提示工程师》培训项目涵盖最新的AIGC技术知识、场景案例和实操应用，帮助学员掌握专业技能。
+掌握行业动态：通过培训学习，及时了解行业动态，包括最新的技术进展、市场需求等，这对于职业发展非常重要。
+案例分析与实操：培训项目提供丰富的案例分析，以及实际操作的机会，让学员达到“真学、真练、真会”。
+2、获取权威的评价认证。
+工信部教育考试中心是技术领域人才培养的主力军、国家队，中心认证的证书更具有权威性和普适性，受行业内外认可，是企业聘用、选拔人才的重要依据，是个人职业发展和竞争力的提升，晋升、转型的重要背书。
+3、链接更多圈内资源。
+《AIGC提示工程师》项目组致力于打造一个互动交流的学习社区。优秀学员在这个平台上，不仅可以获取专业的课程和实操技能，还可以与其他学习者分享学习心得、交流经验，有助于其提升学习效果、链接行业资源。所有持证学员可作为AIGC储备人才，享有推荐就业、技能提升、创业辅导等权利。
+五、项目设置和报考条件
+《AIGC提示工程师》认证培训项目共设有三个级别，其报考条件为：
+AIGC提示工程技术（初级），具备以下条件之一者即可：
+1、连续从事人工智能相关行业工作一年及以上。
+2、取得人工智能相关专业中专及以上学历。
+3、取得国家统招大专及以上学历。
+AIGC提示工程师（中级），具备以下条件之一者即可：
+1、连续从事人工智能相关行业工作四年及以上。
+2、取得人工智能相关专业大学专科及以上学历。
+3、具有非人工智能相关专业大学专科及以上学历证书，连续从事人工智能相关行业工作两年以上。
+4、取得AIGC提示工程技术（初级），连续从事人工智能相关行业工作两年以上。
+AIGC提示工程师（高级），具备以下条件之一者即可：
+1、连续从事人工智能相关行业工作十年及以上。
+2、具有人工智能相关专业本科及以上学历，连续从事人工智能相关行业工作两年以上。
+3、具有人工智能相关专业大学专科及以上学历，连续从事人工智能相关行业工作五年以上。
+4、具有非人工智能相关专业本科及以上学历，连续从事人工智能相关行业工作五年以上。
+5、取得AIGC提示工程师（中级），连续从事人工智能相关行业工作五年以上。
+六、如何报名参加培训学习，如何参加考试？
+学员须在工信部教考中心《AIGC提示工程师》项目组授权的培训机构完成规定培训学习后，通过培训机构申请考试，不接受个人报考。项目组会在每年的3月，6月，9月，12月份安排全国统一上机考试，考点覆盖全国大部分城市，学员可就近参加考试。
+七、考试如何设置，多久颁发证书，考不过怎么办？
+考试分为理论和实操，各100分。理论和实操均达到60分以上为及格。
+考试结束后一个月内公布成绩，考试合格的三个月下发证书至培训机构。考试未通过者，可参加下期补考，缴纳150元补考费用。考试资格两年内有效。
+八、证书查询及有效期？
+查询网址：www.miiteec.org.cn
+证书终身有效。
+九、AIGC提示工程师的就业方向有哪些？
+AI就像20年前的互联网，将以“AI＋”的方式赋能各个行业。AIGC技术作为新型内容生产方式，将以内容生产模式变革催动生产力革新，引领数实融合浪潮下的产业变革，推动一场新的生产力与创造力革命，开辟人类生产交互新纪元。
+AIGC提示工程师作为此次革命关键人才，在各行业中需求迫切，其就业方向包括但不限于以下几个领域：
+1、人工智能研发公司：在这些公司中，AIGC提示工程师可以参与到人工智能产品的开发和优化工作中，提升AI生成内容的质量和多样性。
+2、科技企业：如微软、百度、科大讯飞等科技公司，它们在AI领域有着广泛的应用和研究，需要AIGC提示工程师来提升其智能产品的用户体验。
+3、创意产业：包括广告公司、媒体机构、内容创作平台等，这些行业越来越多地使用AI来生成创意内容，AIGC提示工程师可以帮助指导AI创作出符合市场需求的内容。
+4、教育行业：在线教育平台和智能教育软件开发商会利用AI生成个性化的教育内容，AIGC提示工程师可以确保这些内容既准确又具有教育价值。
+5、客户服务行业：在智能客服和聊天机器人领域，AIGC提示工程师可以优化机器人的应答，提供更自然、更有效的用户交互体验。
+6、游戏开发公司：利用AI生成游戏剧情、角色对话等内容，AIGC提示工程师可以确保游戏体验的连贯性和趣味性。
+7、自主创业：有创业精神的AIGC提示工程师也可以创建自己的公司，提供专业的AI内容生成服务或开发相关产品。
+8、研究机构：在大学或研究机构中从事AIGC相关的研究工作，推动人工智能生成内容技术的发展和创新。
+随着AI技术的不断进步和应用领域的扩展，AIGC提示工程师的就业方向会进一步增加和多样化。
+推荐阅读：工信部教育与考试中心《AIGC提示工程师》认证培训项目介绍
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/e44916546d77b98677c09e19d8871ada/" rel="bookmark">
+			windows 本地ES 7.11.0 版本集群搭建
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		1.先下载JDK ，建议下载JDK11.
+2.下载ES Windows安装包
+7.11.0下载
+3.下载完成后，在本地解压三份，分别取名 node1,node2,node3
+4.若启动一直报端口占用，这修改 每个文件夹下bin/elasticsearch.bat文件，没有则跳过
+在大概85行添加
+set ES_PATH_CONF=E:\software\ES\elasticsearch-7.11.0-node2\config 具体文件位置按需修改
+5.修改每个节点conf下的elasticsearch.yml文件
+cluster.name: my-application node.name: node-3 path.data: E:\software\ES\elasticsearch-7.11.0-node3\data path.logs: E:\software\ES\elasticsearch-7.11.0-node3\logs network.host: 127.0.0.1 http.port: 9203 transport.tcp.port: 9303 #允许跨域请求 http.cors.enabled: true http.cors.allow-origin: "*" discovery.zen.ping.unicast.hosts: ["127.0.0.1:9300","127.0.0.1:9302","127.0.0.1:9303"] cluster.initial_master_nodes: ["node-1","node-2","node-3"] gateway.recover_after_nodes: 2 其中 只需修改 node.name,http.port,transport.tcp.port 即可
+6.分别启动每个节点
+7. 在head插件上即可看见集群有3台机器
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/eab88a9e89dfcde5170c41feb5829c46/" rel="bookmark">
+			Python基础之模块和包
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		文章目录 1 模块和包1.1 模块和包1.1.1 模块1.1.2 包1.1.3 简单使用 1.2 import 语句1.2.1 import1.2.2 from … import 语句1.2.3 from … import * 语句 1.4 深入模块1.4.1 模块符号表1.4.2 __name__属性1.4.3 dir() 函数1.4.4 作用域 1.5 常用内置模块 1 模块和包 1.1 模块和包 1.1.1 模块 在计算机程序的开发过程中，随着程序代码越写越多，在一个文件里代码就会越来越长，越来越不容易维护。
+为了编写可维护的代码，我们把很多函数分组，分别放到不同的文件里，这样，每个文件包含的代码就相对较少，很多编程语言都采用这种组织代码的方式。在Python中，一个.py文件就称之为一个模块（Module）。
+模块是一个包含所有定义的函数和变量的文件，其后缀名是.py。模块可以被别的程序引入，以使用该模块中的函数等功能。
+1.1.2 包 最大的好处是大大提高了代码的可维护性。其次，编写代码不必从零开始。当一个模块编写完毕，就可以被其他地方引用。我们在编写程序的时候，也经常引用其他模块，包括Python内置的模块和来自第三方的模块。
+使用模块还可以避免函数名和变量名冲突。相同名字的函数和变量完全可以分别存在不同的模块中，因此，我们自己在编写模块时，不必考虑名字会与其他模块冲突。但是也要注意，尽量不要与内置函数名字冲突
+但是如果不同的人编写的模块名相同怎么办，为了避免模块名冲突，Python 又引入了按目录来组织模块的方法，称为包（Packag）。
+包是一种管理 Python 模块命名空间的形式，采用点模块名称。比如一个模块的名称是 A.B， 那么表示一个包 A中的子模块 B 。就好像使用模块的时候，不用担心不同模块之间的全局变量相互影响一样，采用点模块名称这种形式也不用担心不同库之间的模块重名的情况。
+举个例子，一个abc.py的文件就是一个名字叫abc的模块，一个xyz.py的文件就是一个名字叫xyz的模块。
+现在，假设我们的abc和xyz这两个模块名字与其他模块冲突了，于是我们可以通过包来组织模块，避免冲突。方法是选择一个顶层包名，比如mycompany，按照如下目录存放：
+mycompany __init__.py abc.py xyz.ph 引入了包以后，只要顶层的包名不与别人冲突，那所有模块都不会与别人冲突。现在，abc.py模块的名字就变成了mycompany.abc，类似的，xyz.py的模块名变成了mycompany.xyz。
+注意，每一个包目录下面都会有一个__init__.py的文件，这个文件是必须存在的，否则，Python就把这个目录当成普通目录，而不是一个包。__init__.py可以是空文件，也可以有Python代码，因为__init__.py本身就是一个模块，而它的模块名就是mycompany。
+在导入一个包的时候，Python 会根据 sys.path 中的目录来寻找这个包中包含的子目录。
+默认情况下，Python解释器会搜索当前目录、所有已安装的内置模块和第三方模块，搜索路径存放在sys模块的path变量中。
+目录只有包含一个叫做 __init__.py 的文件才会被认作是一个包，主要是为了避免一些滥俗的名字（比如叫做 string）不小心的影响搜索路径中的有效模块。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/eab88a9e89dfcde5170c41feb5829c46/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/c2b39715a6663b1b55f17c54d12df4ff/" rel="bookmark">
+			机器学习课程设计，人工智能课程设计，深度学习课程设计--基于Transformer的家庭暴力情绪检测系统（欢迎私）
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		文章目录 摘要第一章 背景与意义1.1 背景1.1.1 家庭暴力发展现状1.1.2 家庭暴力的危害 1.2 意义与目的 第二章 关键技术与方法2.1 文本模态特征提取法2.2 视频模态特征提取法2.3 音频模态特征提取法2.4 注意力机制（Attention）2.5 多头注意力机制（Multi-Attention）2.6 Transformer 第三章 系统的设计与实现3.1 文本特征提取3.2 音频特征提取3.3 视频特征提取3.4 深度学习算法实现3.4.1 特征编码3.4.2 特征融合3.4.3 结果预测 3.5 深度学习算法训练3.6 深度学习算法性能测试3.7 系统测试 第四章 总结 以下链接包含本文相关资源： 。需要文件可发邮件到3307320866@qq.com
+完整报告链接：https://download.csdn.net/download/m0_48932261/89432061
+数据集下载链接：https://download.csdn.net/download/m0_48932261/89421590?spm=1001.2014.3001.5501
+摘要 家庭暴力在现今社会屡见不鲜，成为威胁社会和谐与稳定的重要问题之一。家庭暴力不仅包括身体上的虐待，还涉及情感、心理和经济上的虐待，给受害者尤其是女性和儿童带来深远的负面影响。有效预防和处理家庭暴力事件，及时感知和理解伴侣的情感显得尤为重要。为了帮助社会稳定，提高居民生活幸福指数，本系统选取了CMU-MOSI、IEMOCAP数据集，利用Transformer、Adam优化器等多种深度学习算法，构建起情感检测系统。用户可以将信息输入到情感检测系统中，系统能够帮助识别检测对象的情感状态，提供预警，保护受害者的权益，并避免矛盾的进一步激化。本系统选取了MOSi、IEMOCAP数据集，并利用transformer技术构建了一个情绪检测系统。MOSi、IEMOCAP数据集是一个多模态情感分析数据集，包含视频、音频和文本三种模式的数据，非常适合用于情感分析和情绪检测研究。其多样性和丰富性，使其成为情感检测系统开发的理想选择。通过构建和应用情感检测系统，可以在家庭暴力问题发生前提供预警，减少暴力事件的发生频率和严重程度。该系统不仅有助于保护受害者的权益，改善家庭关系，还有助于构建一个更加和谐和安全的社会环境。利用MOSi、IEMOCAP数据集和transformer技术构建情感检测系统，是应对家庭暴力问题的一项重要创新和实践，能够在保护家庭暴力受害者、预防暴力事件方面发挥重要作用，推动社会和谐和进步。
+第一章 背景与意义 1.1 背景 家庭暴力是一个普遍存在的社会问题，它不仅侵蚀着个体的尊严和权利，也对社会的道德和法律秩序构成挑战。深入了解家庭暴力的发展现状、认识其严重危害，并明确预防和干预项目的意义与目的，对于构建和谐社会至关重要。
+1.1.1 家庭暴力发展现状 家庭暴力作为一种严重的社会问题，其发生率在全球范围内一直居高不下。尽管各国政府、国际组织和民间社会已经采取了包括立法、教育、公共宣传和支持服务在内的多种措施来应对和减少家庭暴力事件，但这一问题仍然普遍存在。家庭暴力的隐蔽性和复杂性，加之受文化、宗教和社会观念的影响，使得许多案例难以被及时发现和处理，从而成为一个难以根除的社会顽疾。
+1.1.2 家庭暴力的危害 家庭暴力的危害性是广泛而深远的，它的影响不仅限于受害者个体，还会波及整个家庭系统，乃至更广泛的社会层面。受害者遭受的身体伤害往往是显而易见的，但家庭暴力所带来的心理创伤却可能是隐蔽而持久的。受害者可能会经历深刻的心理痛苦，包括羞耻、内疚、无助感和持续的恐惧，这些感受可能会长期影响他们的心理健康和社会功能。
+1.2 意义与目的 本项目通过构建和应用情感检测系统，旨在成为预防家庭暴力的第一道防线。该系统利用MOSi、IEMOCAP数据集和前沿的Transformer技术，能够深入分析家庭成员的情感状态，及时捕捉到潜在的冲突信号。通过提前预警，我们不仅可以减少家庭暴力的发生频率，还能降低其严重程度，从而避免对受害者造成不可逆转的伤害。本项目的意义不仅在于技术层面的创新，更在于它对促进社会正义、保护人权、维护社会秩序的深远影响。通过这一系统，我们期望能够为每一个家庭带来和平与安宁，为社会带来和谐与进步。
+第二章 关键技术与方法 2.1 文本模态特征提取法 BERT（Bidirectional Encoder Representations from Transformers）是由Google在2018年提出的一种预训练语言模型，它在自然语言处理（NLP）任务中取得了显著的成果。BERT的核心优势在于其双向训练机制，这使得模型在处理每个词汇时都能考虑到整个句子的上下文信息，从而更精准地理解语言的细微差别。
+2.2 视频模态特征提取法 OpenFace 2.0 由卡内基梅隆大学开发的先进开源工具包，专门用于面部行为分析。OpenFace 2.0集成了一系列尖端功能，包括高精度面部标记点检测、实时头部姿态估计、面部动作单元识别，以及眼动估计。这些功能使得工具包在情感分析、用户身份验证和社交媒体行为分析等多个领域具有广泛的应用潜力。
+2.3 音频模态特征提取法 Librosa是一个专为音乐和音频分析设计的Python库，它为音乐信息检索（MIR）领域提供了一套全面而强大的工具集。该库特别适合于音乐探索性数据分析，并且已经变得在音乐学、音频信号处理和机器学习等学科领域中不可或缺。Librosa的核心能力在于其对音频信号的处理和音乐特征的提取。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/c2b39715a6663b1b55f17c54d12df4ff/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/b4ca26aaea3e13213e4fb808ce19eb0c/" rel="bookmark">
+			前端 Vite 项目使用 vite-plugin-dts 打包输出.d.ts文件，分析处理踩坑：Cannot find module ‘vue‘. Did you mean to set ...
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		最近在尝试做一个自己的前端组件库，build 打包构建的时候要输出 .d.ts类型文件，用到 vite-plugin-dts 这个 vite 插件，这里记录自己的使用和踩坑记录，会逐步分析解决问题，跟着思路相信会比较清晰。
+安装 vite-plugin-dts pnpm i vite-plugin-dts -D 简单使用 先 import 导入一下，然后直接作为插件引入即可，例如：
+import { resolve } from "path"; import { defineConfig } from "vite"; import dts from "vite-plugin-dts"; export default defineConfig({ build: { lib: { entry: resolve(__dirname, "src/index.ts"), name: "MyLib", formats: ["es"], fileName: "my-lib" } }, plugins: [dts()] //在这里作为插件引入 }); 处理踩坑 引入插件之前 build 是正常的，引入之后 build 报错如下：
+src/index.ts:1:26 - error TS2792: Cannot find module 'vue'. Did you mean to set the 'moduleResolution' option to 'nodenext', or to add aliases to the 'paths' option?
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/b4ca26aaea3e13213e4fb808ce19eb0c/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/6d4a6f9d8e15faed81136fbd6d4cf640/" rel="bookmark">
+			【数据结构|C语言版】四大排序（算法）
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		前言1. 插入排序1.1 直接插入排序1.2 希尔排序 2. 选择排序2.1 选择排序2.2 堆排序 3. 交换排序3.1 冒泡排序冒泡排序的步骤 3.2 快速排序快速排序的步骤 4. 归并排序归并排序的步骤：代码解释：归并排序的性能： 上期回顾: 【数据结构|C语言版】栈和队列
+个人主页：C_GUIQU
+归属专栏：【数据结构（C语言版）学习】
+前言 各位小伙伴大家好！上次小编给大家讲解了数据结构中的树、二叉树和堆，接下来我们讲解一下排序算法中的四大排序！
+1. 插入排序 1.1 直接插入排序 直接插入排序（Straight Insertion Sort）是一种简单的排序算法，其主要思想是通过构建有序序列，对于未排序的数据，在已排序序列中从后向前扫描，找到相应位置并插入。该算法通常适用于少量数据的排序，时间复杂度为 (O(n^2))。
+以下是直接插入排序的详细步骤：
+初始化：
+将数组的第一个元素视为一个有序序列，剩余的元素视为未排序序列。 从第一个未排序元素开始：
+选择下一个未排序的元素。将这个元素插入到前面已经排序的序列中的适当位置。 寻找插入位置：
+从已排序的序列中，从后向前扫描，找到第一个比当前元素小的元素的位置。如果遇到比当前元素大的元素，将该元素向后移动一位。 插入：
+将当前元素插入到找到的位置。 重复步骤2-4：
+对剩余的未排序元素重复上述过程，直到所有元素都被排序。 以下是直接插入排序的伪代码：
+InsertionSort(A): for i = 1 to length(A) - 1: key = A[i] j = i - 1 while j &gt;= 0 and A[j] &gt; key: A[j + 1] = A[j] j = j - 1 A[j + 1] = key 通过一个具体的例子来说明：
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/6d4a6f9d8e15faed81136fbd6d4cf640/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/e4c170cb7db65222214270d490f8eb3d/" rel="bookmark">
+			【小沐学AI】Python实现语音识别（faster-whisper-webui）
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		文章目录 1、简介1.1 whisper1.2 faster-whisper 2、安装3、测试结语 1、简介 1.1 whisper https://github.com/openai/whisper
+Whisper 是一种通用语音识别模型。它是在各种音频的大型数据集上训练的，也是一个多任务模型，可以执行多语言语音识别、语音翻译和语言识别。
+OpenAI 的开源模型 whisper，可以执行 99 种语言的语音识别和文字转写。但是 whisper 模型占用计算资源多，命令行使用门槛高。whisper 模型本身还存在一些问题，例如 模型幻听问题。
+Whisper是可以理解多种语言的自动语音识别（）系统。它已经接受了从网络收集的 680,000 小时监督数据的训练。
+Transformer 序列到序列模型针对各种语音处理任务进行训练，包括多语言语音识别、语音翻译、口语识别和语音活动检测。这些任务共同表示为解码器要预测的一系列标记，从而允许单个模型取代传统语音处理管道的许多阶段。多任务训练格式使用一组特殊标记作为任务说明符或分类目标。
+pip install -U openai-whisper # pip install git+https://github.com/openai/whisper.git # pip install --upgrade --no-deps --force-reinstall git+https://github.com/openai/whisper.git 1.2 faster-whisper https://github.com/SYSTRAN/faster-whisper
+faster-whisper是基于OpenAI的Whisper模型的高效实现，它利用CTranslate2，一个专为Transformer模型设计的快速推理引擎。这种实现不仅提高了语音识别的速度，还优化了内存使用效率。faster-whisper的核心优势在于其能够在保持原有模型准确度的同时，大幅提升处理速度，这使得它在处理大规模语音数据时更加高效。
+2、安装 git clone https://github.com/ycyy/faster-whisper-webui.git # 进入项目的目录 cd faster-whisper-webui # 安装项目依赖 pip3 install -r requirements.txt # 装一下faster-whisper依赖 pip3 install -r requirements-fasterWhisper.txt 您可以选择使用 或 .Faster Whisper 作为 默认 Whisper 可实现高达 4 倍的加速和 2 倍的内存使用量减少。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/e4c170cb7db65222214270d490f8eb3d/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/78c67fb0d7a522cb7d9a768e90c651b1/" rel="bookmark">
+			算法训练营第七十三天 | Bellman_ford算法、SPFA算法、Bellman_ford之判断负权回路
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		算法训练营第七十三天 | Bellman_ford算法、SPFA算法、Bellman_ford之判断负权回路 Bellman_ford算法 题目链接：
+https://kamacoder.com/problempage.php?pid=1152
+对所有边松弛一次，相当于计算 起点到达 与起点一条边相连的节点 的最短距离，这里 说的是 一条边相连的节点。
+与起点（节点1）一条边相邻的节点，到达节点2 最短距离是 1，到达节点3 最短距离是5。
+而 节点1 -&gt; 节点2 -&gt; 节点5 -&gt; 节点3 这条路线 是 与起点 三条边相连的路线了。
+所以对所有边松弛一次 能得到 与起点 一条边相连的节点最短距离。
+那对所有边松弛两次 可以得到与起点 两条边相连的节点的最短距离。
+那对所有边松弛三次 可以得到与起点 三条边相连的节点的最短距离，这个时候，我们就能得到到达节点3真正的最短距离，也就是 节点1 -&gt; 节点2 -&gt; 节点5 -&gt; 节点3 这条路线。
+#include &lt;iostream&gt; #include &lt;vector&gt; #include &lt;list&gt; #include &lt;climits&gt; using namespace std; int main() { int n, m, p1, p2, val; cin &gt;&gt; n &gt;&gt; m; vector&lt;vector&lt;int&gt;&gt; grid; // 将所有边保存起来 for(int i = 0; i &lt; m; i++){ cin &gt;&gt; p1 &gt;&gt; p2 &gt;&gt; val; // p1 指向 p2，权值为 val grid.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/78c67fb0d7a522cb7d9a768e90c651b1/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/d102c79d98e61106f58862da50900058/" rel="bookmark">
+			【面试干货】一个Java源文件中可以包含多个类吗？（不包括内部类）
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		 【面试干货】一个Java源文件中可以包含多个类吗？（不包括内部类） 💖The Begin💖点点关注，收藏不迷路💖 在Java编程语言中，一个.java源文件确实可以包含多个类，但有几个重要的规则和限制需要了解。
+1、首先，每个.java文件都应该有一个与文件名相同的公共类（public class）。这是Java编译器的一个基本要求。
+例如，如果有一个名为MyClass.java的文件，那么这个文件必须包含一个名为MyClass的公共类。
+2、但是，除了这个公共类之外，还可以在同一个.java文件中定义其他非公共类（non-public classes）。 这些非公共类可以是普通的类（class），也可以是接口（interface），枚举（enum）等。
+下面是一个简单的例子：
+// 文件名: Example.java // 公共类，必须与文件名相同 public class Example { // 类的定义... } // 非公共类，可以在同一个文件中定义多个 class NonPublicClass1 { // 类的定义... } class NonPublicClass2 { // 类的定义... } // 注意：不能有第二个公共类 // public class AnotherPublicClass { // 这会导致编译错误 // // 类的定义... // } 重要提示：
+1、每个.java文件只能有一个公共类。
+2、公共类的名称必须与文件名相同。
+3、可以在同一个.java文件中定义多个非公共类。
+💖The End💖点点关注，收藏不迷路💖 
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/5d0fdeec678ba39995e4334d6f0bff08/" rel="bookmark">
+			【MySQL基础篇】SQL指令：DQL及DCL
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		1、DQL · DQL - 介绍 DQL英文全称是Data Query Language(数据查询语言)，数据查询语言，用来查询数据表中的记录。（在MySQL中应用是最为广泛的）
+查询关键字：SELECT
+· DQL - 语法 SELECT
+字段列表
+FROM
+表名列表
+WHERE
+条件列表
+GROUP UP
+分组字段列表
+HAVING
+分组后条件列表
+ORDER BY
+排序字段列表
+LIMIT
+分页参数 · DQL - 基础查询 1、查询多个字段
+SELECT 字段1，字段2，字段3，... FROM 表名; SELECT * FROM 表名; 2、设置别名（增强字段可读性）
+SELECT 字段1 [AS 别名1]，字段2[AS 别名2] .... 表名; 3、去除重复记录
+SELECT DISTINCT 字段列表 FROM 表名; insert into staff_table values(1,001,'张无忌','男','123456789000000000','大理','2000-12-31'), (2,002,'赵敏','女','123456789000000001','北京','2000-01-01'), (3,003,'韦小宝','男','123456789000000002','上海','2001-03-04'), (4,004,'郭峰','男','123456789000000003','天津','2004-02-19'), (5,005,'黄蓉','女','123456789000000004','广东','2006-11-12'), (6,006,'杨过','男','123456789000000005','佛山','2004-02-14'), (7,007,'狗蛋','男','','上海','2011-01-01'); #1、查询指定字段name，worknumber，dress，返回 select name,worknumber,dress from staff_table; #2、查询返回所有字段 select * from staff_table; #尽量不要去写*第一不直观，第二会影响效率，遵循开发规范 #也可以这样写 select id,worknumber,name,gender,idcard,dress,staff_date from staff_table; #3、查询所有员工的工作地址，起别名 select dress as '工作地址' from staff_table; #4、查询员工的上班地址（不要重复） select distinct dress '工作地址' from staff_table; · DQL - 条件查询 1、语法
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/5d0fdeec678ba39995e4334d6f0bff08/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/2f8dc4e8f9238b9d6eb836fe257d2948/" rel="bookmark">
+			深入分析 Android Service (六)(完)
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		文章目录 深入分析 Android Service (完)1. Service 的生命周期管理2. Service 的生命周期方法2.1 onCreate()2.2 onStartCommand(Intent intent, int flags, int startId)2.3 onBind(Intent intent)2.4 onUnbind(Intent intent)2.5 onRebind(Intent intent)2.6 onDestroy() 3. Service 重启策略4. 使用 Service 进行前台任务5. 实现前台服务示例5.1 创建前台服务5.2 启动前台服务 6. Service 的优化和调试6.1 使用 JobScheduler 替代传统 Service6.2 使用 WorkManager 处理后台任务6.3 调试和监控 7. 示例代码汇总7.1 服务端代码（Messenger）7.2 客户端代码（Messenger）7.3 服务端代码（AIDL）7.4 客户端代码（AIDL） 8. 总结 深入分析 Android Service (完) 1. Service 的生命周期管理 Service 的生命周期管理是确保 Service 能够正确启动、运行、停止和清理资源的关键。理解 Service 的生命周期方法可以帮助开发者更好地管理和优化 Service。
+2. Service 的生命周期方法 Service 的主要生命周期方法包括：
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/2f8dc4e8f9238b9d6eb836fe257d2948/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/8b8ea4f31ce681619ebcf312a966a3f8/" rel="bookmark">
+			【小沐学AI】Python实现语音识别（faster-whisper）
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		文章目录 1、简介1.1 CTranslate21.2 Intel MKL1.3 cuDNN1.4 Transformer 2、下载和安装2.1 命令行2.2 代码 3、模型下载3.1 在线测试3.1.1 tiny3.1.2 large-v2 3.2 离线测试3.2.1 tiny3.2.1 large-v2 结语 1、简介 https://github.com/SYSTRAN/faster-whisper
+https://pypi.org/project/faster-whisper/
+Faster-Whisper是Whisper开源后的第三方进化版本，它对原始的 Whisper 模型结构进行了改进和优化。
+faster-whisper 是使用 CTranslate2 重新实现 OpenAI 的 Whisper 模型，CTranslate2 是 Transformer 模型的快速推理引擎。
+此实现比 openai/whisper 快 4 倍，同时使用更少的内存实现相同的准确性。通过对 CPU 和 GPU 进行 8 位量化，可以进一步提高效率。
+1.1 CTranslate2 https://github.com/OpenNMT/CTranslate2/
+CTranslate2 是一个 C++ 和 Python 库，用于使用 Transformer 模型进行高效推理。
+该项目实现了一个自定义运行时，该运行时应用了许多性能优化技术，例如权重量化、层融合、批量重新排序等，以加速和减少 Transformer 模型在 CPU 和 GPU 上的内存使用。
+CTranslate2 可以用 pip 安装：
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/8b8ea4f31ce681619ebcf312a966a3f8/">Read more…</a>
+	</div>
+</article>
+</main>
+
+<div class="pagination">
+	<a class="pagination__item pagination__item--prev btn" href="/page/211/">«</a>
+	<span class="pagination__item pagination__item--current">212/621</span>
+	<a class="pagination__item pagination__item--next btn" href="/page/213/">»</a>
+</div>
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

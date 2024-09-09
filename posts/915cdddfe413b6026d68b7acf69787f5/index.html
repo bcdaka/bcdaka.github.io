@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>代码规范 —— Redis 开发规范 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/915cdddfe413b6026d68b7acf69787f5/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="代码规范 —— Redis 开发规范">
+  <meta property="og:description" content="优质博文：IT-BLOG-CN
+一、开发规范 【1】弱依赖检查与线下确认：Redis必须是弱依赖，即Redis宕机不影响业务。包括超时检查。
+【2】是否当存储使用检查：Redis不能作为存储设备来使用，只能作为缓存或状态等场景来使用。存储优先使用本地缓存。
+【3】超时时间检查与线下确认：Redis使用需要设置超时时间。如果超时，对应的策略和方案是什么。
+【4】无状态检查：Redis同一个Key不能被不同的应用，不同的场景使用。谁生产，谁消费的原则。
+【5】同步锁检查：优先使用集团框架提供的分布式锁。
+【6】Key检查：Key的唯一性是否存在明显问题，与其他场景和应用的重名的可能。Key的长度，尽可能的小于128字节，禁止超过1024简洁性
+保证语义的前提下，控制key的长度，当key较多时，内存占用也不容忽视可读性和可管理性 以业务名(或数据库名)为前缀(防止key冲突)，用冒号分隔，比如业务名:表名:id不要包含特殊字符，反例：包含空格、换行、单双引号以及其他转义字符需要规范（car&#43;应用名&#43;业务名&#43;具体id）
+【7】审批记录检查：是否已经在审批记录conf完整记录，包括审批人。
+二、场景使用 合理使用数据结构： Redis支持的数据库结构类型较多：字符串String，哈希Hash，列表List，集合Set，有序集合Sorted Set, Bitmap, HyperLogLog和地理空间索引geospatial redis命令
+需要根据业务场景选择合适的类型，常见的如：
+【1】String可以用作普通的K-V、计数类；
+【2】Hash可以用作对象如商品、经纪人等，包含较多属性的信息；
+【3】List可以用作消息队列(不推荐)、粉丝/关注列表等；
+【4】Set可以用于推荐；
+【5】Sorted Set可以用于排行榜等；
+三、键值设计 key设计：
+【1】可读性和可管理性【建议】
+☑️ 以业务名(或数据库名)为前缀(防止key冲突)，用冒号分隔。
+☑️ 应用名:表名:id。
+【2】简洁性，key长度适中【建议】
+☑️ 保证语义的前提下，控制key的长度，当key较多时，内存占用也不容忽视。
+eg：user:{uid}:friends:messages:{mid}简化为u:{uid}:fr:m:{mid}。
+【3】不要包含特殊字符【强制】
+☑️ 禁止包含特殊字符如空格，换行，单双引号，其他转义字符。
+【4】Key个数限制【强制】
+☑️ 由于Redis Rehash机制，实例Key数量达到一定值rehash操作时，需要有一定量空闲内存资源，如key达到134217728，rehash需要有2gb空闲内存资源，达到268435456时，rehash需要有4gb空闲内存资源。如果没有组够的内存资源rehash时会发生Key剔除（数据丢失/程序超时/甚至引起切换）。
+单实例key个数达到134217728已经很大了，实例元素过大对于后续分析rdb遍历大key时会非常耗时。
+四、value设计 【1】拒绝bigkey(防止网卡流量、慢查询)
+☑️ 防止网卡流量、慢查询，string类型控制在10KB以内，hash、list、set、zset元素个数不要超过5000。
+☑️ 非字符串的bigkey，不要使用del删除，使用hscan、sscan、zscan方式渐进式删除，同时要注意防止bigkey过期时间自动删除问题(例如一个200万的zset设置1小时过期，会触发del操作，造成阻塞，而且该操作不会出现在慢查询中(latency可查))
+☑️ credis页面，群集所有者可以通过unlink异步清理或小批量迭代清理（或提事件给DBA来处理)
+【2】一定要设置过期时间，当实例写满，根据volatile-lru淘汰老的数据
+☑️ redis只是缓存，不能当成数据库来用。不设置过期时间，redis实例大小会一直无限增长，会出现机器内存耗尽、故障恢复耗时特别长等问题。
+☑️ 建议使用expire设置过期时间(条件允许可以打散过期时间，防止集中过期)，不过期的数据重点关注idletime(该命令返回的是当前键从上一次访问到现在经过的时间（单位，秒）)
+☑️ DBA会定期对redis集群中过期时间超过1年的数据做告警处理。
+五、命令使用 【1】禁用KEYS正则匹配，可用SCAN代替
+☑️ 禁止线上使用keys、flushall、flushdb等，通过redis的rename机制禁掉命令，或者使用scan的方式渐进式处理。
+【2】O(N)命令关注N，控制集合元素尽可能小
+☑️ hgetall/lrange/smembers/zrange等在集合包含元素个数较少的情况下使用。
+☑️ 若规模较大，有遍历需求，可用HSCAN/SSCAN/ZSCAN渐进式遍历。
+【3】合理使用select">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-08-13T05:30:00+08:00">
+    <meta property="article:modified_time" content="2024-08-13T05:30:00+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">代码规范 —— Redis 开发规范</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>优质博文：<a href="https://it-blog-cn.com/blogs/java/code_specifications.html" rel="nofollow">IT-BLOG-CN</a><br> <img src="https://images2.imgbox.com/16/43/7sZMUVBM_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_3"></a>一、开发规范</h3> 
+<p>【1】弱依赖检查与线下确认：<code>Redis</code>必须是弱依赖，即<code>Redis</code>宕机不影响业务。包括超时检查。<br> 【2】是否当存储使用检查：<code>Redis</code>不能作为存储设备来使用，只能作为缓存或状态等场景来使用。存储优先使用本地缓存。<br> 【3】超时时间检查与线下确认：<code>Redis</code>使用需要设置超时时间。如果超时，对应的策略和方案是什么。<br> 【4】无状态检查：<code>Redis</code>同一个<code>Key</code>不能被不同的应用，不同的场景使用。谁生产，谁消费的原则。<br> 【5】同步锁检查：优先使用集团框架提供的分布式锁。<br> 【6】<code>Key</code>检查：<code>Key</code>的唯一性是否存在明显问题，与其他场景和应用的重名的可能。<code>Key</code>的长度，尽可能的小于<code>128</code>字节，禁止超过<code>1024</code>简洁性<br> 保证语义的前提下，控制<code>key</code>的长度，当<code>key</code>较多时，内存占用也不容忽视可读性和可管理性 以业务名(或数据库名)为前缀(防止key冲突)，用冒号分隔，比如业务名:表名:<code>id</code>不要包含特殊字符，反例：包含空格、换行、单双引号以及其他转义字符需要规范（<code>car</code>+应用名+业务名+具体<code>id</code>）<br> 【7】审批记录检查：是否已经在审批记录<code>conf</code>完整记录，包括审批人。</p> 
+<h3><a id="_13"></a>二、场景使用</h3> 
+<p><strong>合理使用数据结构：</strong> <code>Redis</code>支持的数据库结构类型较多：字符串<code>String</code>，哈希<code>Hash</code>，列表<code>List</code>，集合<code>Set</code>，有序集合<code>Sorted Set</code>, <code>Bitmap</code>, <code>HyperLogLog</code>和地理空间索引<code>geospatial</code> <a href="http://doc.redisfans.com/" rel="nofollow"><code>redis</code>命令</a></p> 
+<p>需要根据业务场景选择合适的类型，常见的如：<br> 【1】<code>String</code>可以用作普通的<code>K-V</code>、计数类；<br> 【2】<code>Hash</code>可以用作对象如商品、经纪人等，包含较多属性的信息；<br> 【3】<code>List</code>可以用作消息队列(不推荐)、粉丝/关注列表等；<br> 【4】<code>Set</code>可以用于推荐；<br> 【5】<code>Sorted Set</code>可以用于排行榜等；</p> 
+<h3><a id="_23"></a>三、键值设计</h3> 
+<p><strong><code>key</code>设计：</strong><br> 【1】可读性和可管理性【建议】<br>    ☑️ 以业务名(或数据库名)为前缀(防止<code>key</code>冲突)，用冒号分隔。<br>    ☑️ 应用名:表名:<code>id</code>。<br> 【2】简洁性，<code>key</code>长度适中【建议】<br>    ☑️ 保证语义的前提下，控制<code>key</code>的长度，当<code>key</code>较多时，内存占用也不容忽视。<br>     <code>eg：user:{uid}:friends:messages:{mid}</code>简化为<code>u:{uid}:fr:m:{mid}</code>。<br> 【3】不要包含特殊字符【强制】<br>    ☑️ 禁止包含特殊字符如空格，换行，单双引号，其他转义字符。<br> 【4】<code>Key</code>个数限制【强制】<br>    ☑️ 由于<code>Redis Rehash</code>机制，实例<code>Key</code>数量达到一定值<code>rehash</code>操作时，需要有一定量空闲内存资源，如<code>key</code>达到<code>134217728</code>，<code>rehash</code>需要有<code>2gb</code>空闲内存资源，达到<code>268435456</code>时，<code>rehash</code>需要有<code>4gb</code>空闲内存资源。如果没有组够的内存资源<code>rehash</code>时会发生<code>Key</code>剔除（数据丢失/程序超时/甚至引起切换）。<br>     单实例<code>key</code>个数达到<code>134217728</code>已经很大了，实例元素过大对于后续分析<code>rdb</code>遍历大<code>key</code>时会非常耗时。</p> 
+<h3><a id="value_37"></a>四、<code>value</code>设计</h3> 
+<p>【1】拒绝<code>bigkey</code>(防止网卡流量、慢查询)<br>    ☑️ 防止网卡流量、慢查询，<code>string</code>类型控制在<code>10KB</code>以内，<code>hash</code>、<code>list</code>、<code>set</code>、<code>zset</code>元素个数不要超过<code>5000</code>。<br>    ☑️ 非字符串的<code>bigkey</code>，不要使用<code>del</code>删除，使用<code>hscan</code>、<code>sscan</code>、<code>zscan</code>方式渐进式删除，同时要注意防止<code>bigkey</code>过期时间自动删除问题(例如一个<code>200</code>万的<code>zset</code>设置<code>1</code>小时过期，会触发<code>del</code>操作，造成阻塞，而且该操作不会出现在慢查询中(<code>latency</code>可查))<br>    ☑️ <code>credis</code>页面，群集所有者可以通过<code>unlink</code>异步清理或小批量迭代清理（或提事件给<code>DBA</code>来处理)</p> 
+<p>【2】一定要设置过期时间，当实例写满，根据<code>volatile-lru</code>淘汰老的数据<br>    ☑️ <code>redis</code>只是缓存，不能当成数据库来用。不设置过期时间，<code>redis</code>实例大小会一直无限增长，会出现机器内存耗尽、故障恢复耗时特别长等问题。<br>    ☑️ 建议使用<code>expire</code>设置过期时间(条件允许可以打散过期时间，防止集中过期)，不过期的数据重点关注<code>idletime</code>(该命令返回的是当前键从上一次访问到现在经过的时间（单位，秒）)<br>    ☑️ <code>DBA</code>会定期对<code>redis</code>集群中过期时间超过<code>1</code>年的数据做告警处理。</p> 
+<h3><a id="_48"></a>五、命令使用</h3> 
+<p>【1】禁用<code>KEYS</code>正则匹配，可用<code>SCAN</code>代替<br>    ☑️ 禁止线上使用<code>keys</code>、<code>flushall</code>、<code>flushdb</code>等，通过<code>redis</code>的<code>rename</code>机制禁掉命令，或者使用<code>scan</code>的方式渐进式处理。<br> 【2】<code>O(N)</code>命令关注<code>N</code>，控制集合元素尽可能小<br>    ☑️ <code>hgetall/lrange/smembers/zrange</code>等在集合包含元素个数较少的情况下使用。<br>    ☑️ 若规模较大，有遍历需求，可用<code>HSCAN/SSCAN/ZSCAN</code>渐进式遍历。<br> 【3】合理使用<code>select</code><br>    ☑️ <code>redis</code>的多数据库较弱，使用数字进行区分，很多客户端支持较差，同时多业务用多数据库实际还是单线程处理，会有干扰。<br> 【4】<code>Redis</code>事务支持较弱，不建议过多使用<br>    ☑️ <code>redis</code>的事务功能较弱(不支持回滚)，而且集群版本(自研和官方)要求一次事务操作的<code>key</code>必须在一个<code>slot</code>上(可以使用<code>hashtag</code>功能解决)<br> 【5】线上禁止使用<code>monitor</code>命令<br>    ☑️ 禁止生产环境使用<code>monitor</code>命令，<code>monitor</code>命令在高并发条件下，会存在内存暴增和影响<code>Redis</code>性能的隐患。<br> 【6】使用批量操作提高效率<br>    ☑️ 原生命令：例如<code>mget</code>、<code>mset</code>。<br>    ☑️ 非原生命令：可以使用<code>pipeline</code>提高效率。<br>    ☑️ 但要注意控制一次批量操作的元素个数(例如<code>500</code>以内，实际也和元素字节数有关)。<br> <strong>注意两者不同：</strong><br>      1、原生是原子操作，<code>pipeline</code>是非原子操作。<br>      2、<code>pipeline</code>可以打包不同的命令，原生做不到。<br>      3、<code>pipeline</code>需要客户端和服务端同时支持。</p> 
+<h3><a id="_69"></a>六、数据保存</h3> 
+<p>【1】容量合理评估<br>    ☑️ 在系统设计阶段，需要考虑当前<code>redis</code>集群的容量是否足够，设置合理的大小和过期时间<br>      1、内存使用率保持在<code>[50%~85%]</code>之间。<br>      2、使用率<code>&lt;50%</code>需要考虑缩容。<br>      3、使用率<code>&gt;85%</code>需要考虑扩容。</p> 
+<p>【2】冷热数据分离<br>    ☑️ 虽然<code>Redis</code>支持持久化，但是<code>Redis</code>的数据存储全部都是在内存中的，成本昂贵。<br>    ☑️ 建议根据业务只将高频热数据存储到<code>Redis</code>中【<code>QPS</code>大于<code>5000</code>】，对于低频冷数据可以使用<code>MySQL</code>/<code>ElasticSearch</code>/<code>MongoDB</code>等基于磁盘的存储方式，不仅节省内存成本，而且数据量小在操作时速度更快、效率更高。</p> 
+<p>【3】不同的业务数据要分开存储<br>    ☑️ 不要将不相关的业务数据都放到一个<code>Redis</code>实例中，建议新业务申请新的单独实例。<br>    ☑️ 因为<code>Redis</code>为单线程处理，独立存储会减少不同业务相互操作的影响，提高请求响应速度；同时也避免单个实例内存数据量膨胀过大，在出现异常情况时可以更快恢复服务。</p> 
+<p>【4】必须要存储的大文本数据一定要压缩后存储<br>    ☑️ 对于大文本【一般超过<code>500</code>字节】写入到<code>Redis</code>时，建议要压缩后存储。<br>    ☑️ 大文本数据存入<code>Redis</code>，除了带来极大的内存占用外，在访问量高时，很容易就会将网卡流量占满，进而造成整个服务器上的所有服务不可用，并引发雪崩效应，造成各个系统瘫痪</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/dd8b7ece7b709ca38b581e25018cf79d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【微服务】Spring Cloud Alibaba 的介绍以及和主要功能</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ce99c4e7434922dc349310ac7f5b9746/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">学习C语言第十五天</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

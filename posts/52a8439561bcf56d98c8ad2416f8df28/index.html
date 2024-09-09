@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Elasticsearch 通过索引阻塞实现数据保护深入解析 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/52a8439561bcf56d98c8ad2416f8df28/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Elasticsearch 通过索引阻塞实现数据保护深入解析">
+  <meta property="og:description" content="《一本书讲透Elasticsearch：原理、进阶与工程实践 杨昌玉 著》 🎉🎉🎉🎉🎉 **重磅福利** 🎉🎉🎉🎉🎉 🎉本次送2套书 ，评论区抽2位小伙伴送书 🎉活动时间：截止到 2024-03-3010:00:00 🎉抽奖方式：评论区随机抽奖。 🎉参与方式：关注博主、点赞、收藏，评论。 ❗注意：一定要关注博主，不然中奖后将无效！ 🎉通知方式：通过私信联系中奖粉丝。 Elasticsearch 是一种强大的搜索和分析引擎，被广泛用于各种应用中，以其强大的全文搜索能力而著称。
+不过，在日常管理 Elasticsearch 时，我们经常需要对索引进行保护，以防止数据被意外修改或删除，特别是在进行系统维护或者需要优化资源使用时。
+Elasticsearch提供了一种名为“索引阻塞（Index blocks）”的功能，让我们能够限制对某个索引的操作类型。 Elasticsearch的索引阻塞功能在早期版本中就已存在，用于管理对索引的访问和操作。随着 Elasticsearch 版本的更新，该功能也在不断得到改进和扩展。
+大白话——&#34;索引阻塞&#34;就是给我们的索引加把锁，防止别人随意修改。
+1、索引阻塞的种类 Elasticsearch中的索引阻塞可以根据需要，限制对索引的读取、写入或元数据操作。
+所谓的元数据，可以理解为索引的基本信息和设置，比如索引包含哪些字段，这些字段是什么类型的等等。
+这些阻塞可以通过动态索引设置添加或移除，也可以通过专门的API来添加，这样做的好处是能确保在添加写入阻塞后，所有索引的分片都正确地应用了阻塞，比如确保在添加写入阻塞后，所有正在进行的写入操作都已完成。
+以下是一些动态索引设置，用于确定索引上存在的阻塞类型：
+index.blocks.read_only：设置为 true 使索引及索引元数据只读，设置为false则允许写入和元数据更改。 index.blocks.read_only_allow_delete：类似于index.blocks.read_only，但也允许删除索引以释放更多资源。 index.blocks.read：设置为 true 以禁用对索引的读取操作。 index.blocks.write：设置为 true 以禁用对索引的数据写入操作。与read_only不同，这个设置不影响元数据。例如，你可以调整带有写入阻塞的索引的设置，但不能调整带有read_only阻塞的索引的设置。 index.blocks.metadata：设置为true以禁用索引元数据的读写操作。 设置名称 描述 index.blocks.read_only 设置为true使索引及索引元数据只读，设置为false则允许写入和元数据更改。 index.blocks.read_only_allow_delete 类似于index.blocks.write，但也允许删除索引以释放更多资源。磁盘基础的分片分配器可能会自动添加和移除这个阻塞。 index.blocks.read 设置为true以禁用对索引的读取操作。 index.blocks.write 设置为true以禁用对索引的数据写入操作。与read_only不同，这个设置不影响元数据。例如，你可以调整带有写入阻塞的索引的设置，但不能调整带有read_only阻塞的索引的设置。 index.blocks.metadata 设置为true以禁用索引元数据的读写操作。 解释一下：index.blocks.read_only 和 index.blocks.write 区别？
+如下设置了禁止写入，但是可以修改索引的设置，比如：副本数的调整，这个是允许的。
+PUT test-001/_settings {&lt;!-- --&gt; &#34;blocks.write&#34;: true } PUT test-001/_settings {&lt;!-- --&gt; &#34;">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-03-15T20:29:37+08:00">
+    <meta property="article:modified_time" content="2024-03-15T20:29:37+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Elasticsearch 通过索引阻塞实现数据保护深入解析</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-dracula">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h5>《一本书讲透Elasticsearch：原理、进阶与工程实践 杨昌玉 著》</h5> 
+<p><img src="https://images2.imgbox.com/41/b8/jtqNMZFi_o.png" alt="在这里插入图片描述"></p> 
+<hr> 🎉🎉🎉🎉🎉 **重磅福利** 🎉🎉🎉🎉🎉 🎉本次送2套书 ，评论区抽2位小伙伴送书 🎉活动时间：截止到 2024-03-3010:00:00 🎉抽奖方式：评论区随机抽奖。 🎉参与方式：关注博主、点赞、收藏，评论。 ❗注意：一定要关注博主，不然中奖后将无效！ 🎉通知方式：通过私信联系中奖粉丝。 
+<hr> 
+<p>Elasticsearch 是一种强大的搜索和分析引擎，被广泛用于各种应用中，以其强大的全文搜索能力而著称。</p> 
+<p>不过，在日常管理 Elasticsearch 时，我们经常需要对索引进行保护，以防止数据被意外修改或删除，特别是在进行系统维护或者需要优化资源使用时。</p> 
+<p>Elasticsearch提供了一种名为“索引阻塞（Index blocks）”的功能，让我们能够限制对某个索引的操作类型。 <img src="https://images2.imgbox.com/ca/d6/IiXFM7AE_o.png" alt="在这里插入图片描述"> Elasticsearch的索引阻塞功能在早期版本中就已存在，用于管理对索引的访问和操作。随着 Elasticsearch 版本的更新，该功能也在不断得到改进和扩展。</p> 
+<p>大白话——"索引阻塞"就是给我们的索引加把锁，防止别人随意修改。</p> 
+<p><strong>1、索引阻塞的种类</strong> Elasticsearch中的索引阻塞可以根据需要，限制对索引的读取、写入或元数据操作。</p> 
+<p>所谓的元数据，可以理解为索引的基本信息和设置，比如索引包含哪些字段，这些字段是什么类型的等等。</p> 
+<p>这些阻塞可以通过动态索引设置添加或移除，也可以通过专门的API来添加，这样做的好处是能确保在添加写入阻塞后，所有索引的分片都正确地应用了阻塞，比如确保在添加写入阻塞后，所有正在进行的写入操作都已完成。</p> 
+<p>以下是一些动态索引设置，用于确定索引上存在的阻塞类型：</p> 
+<p>index.blocks.read_only：设置为 true 使索引及索引元数据只读，设置为false则允许写入和元数据更改。 index.blocks.read_only_allow_delete：类似于index.blocks.read_only，但也允许删除索引以释放更多资源。 index.blocks.read：设置为 true 以禁用对索引的读取操作。 index.blocks.write：设置为 true 以禁用对索引的数据写入操作。与read_only不同，这个设置不影响元数据。例如，你可以调整带有写入阻塞的索引的设置，但不能调整带有read_only阻塞的索引的设置。 index.blocks.metadata：设置为true以禁用索引元数据的读写操作。 设置名称 描述 index.blocks.read_only 设置为true使索引及索引元数据只读，设置为false则允许写入和元数据更改。 index.blocks.read_only_allow_delete 类似于index.blocks.write，但也允许删除索引以释放更多资源。磁盘基础的分片分配器可能会自动添加和移除这个阻塞。 index.blocks.read 设置为true以禁用对索引的读取操作。 index.blocks.write 设置为true以禁用对索引的数据写入操作。与read_only不同，这个设置不影响元数据。例如，你可以调整带有写入阻塞的索引的设置，但不能调整带有read_only阻塞的索引的设置。 index.blocks.metadata 设置为true以禁用索引元数据的读写操作。 解释一下：index.blocks.read_only 和 index.blocks.write 区别？</p> 
+<p>如下设置了禁止写入，但是可以修改索引的设置，比如：副本数的调整，这个是允许的。</p> 
+<pre><code class="prism language-Java">PUT test-001/_settings
+{&lt;!-- --&gt;
+  "blocks.write": true
+}
+
+PUT test-001/_settings
+{&lt;!-- --&gt;
+  "number_of_replicas": 2
+}
+
+</code></pre> 
+<p>但是换成这样：</p> 
+<pre><code class="prism language-Java">PUT test-002
+PUT test-002/_settings
+{&lt;!-- --&gt;
+  "blocks.read_only": true
+}
+
+PUT test-002/_settings
+{&lt;!-- --&gt;
+  "number_of_replicas": 2
+}
+
+</code></pre> 
+<p>如上的 read_only 设置后，如果再进行修改索引设置的设置就会报错。</p> 
+<pre><code class="prism language-Java">{&lt;!-- --&gt;
+  "error": {&lt;!-- --&gt;
+    "root_cause": [
+      {&lt;!-- --&gt;
+        "type": "cluster_block_exception",
+        "reason": "index [test-002] blocked by: [FORBIDDEN/5/index read-only (api)];"
+      }
+    ],
+    "type": "cluster_block_exception",
+    "reason": "index [test-002] blocked by: [FORBIDDEN/5/index read-only (api)];"
+  },
+  "status": 403
+}
+
+</code></pre> 
+<p>简而言之，index.blocks.write 允许你保护索引内容的稳定性，同时仍然可以调整索引的配置来应对不同的需求或进行优化。而 index.blocks.read_only 则是一种更为严格的保护，确保索引在某段时间内完全不被更改。</p> 
+<p><strong>2、什么时候使用阻塞？</strong> 场景1：进行系统维护场景。 比如，当你需要升级系统或者做一些关键的维护工作时，可能不希望在这期间有任何索引结构的变化。</p> 
+<p>通过阻止别人修改索引的元数据，确保索引的设置保持不变，维护索引设置的稳定性。</p> 
+<p>场景2：保护数据不被随意更改场景。 举例：如果咱们的业务数据是非常关键的，比如已经归档的日志或者历史记录，这些数据通常是不允许被更改的。</p> 
+<p>防止关键数据被随意更改或删除，确保数据的完整性和准确性。</p> 
+<p>场景3：优化资源使用的场景。 举例：有时候某个索引可能占用了太多资源，你可能暂时不想让它继续增长。</p> 
+<p>通过控制索引的读写操作，帮助管理系统资源，避免因为资源过度使用而导致系统变慢或崩溃。</p> 
+<p>场景4：遵守安全规则场景。 举例：对于一些敏感数据，可能要求严格的访问控制，不希望随便被读取或更改。</p> 
+<p>对于需要严格控制的敏感数据，通过设置阻塞来限制数据的访问和修改，保障数据安全。</p> 
+<p><strong>3、添加索引阻塞API</strong> 使用范例参考：</p> 
+<pre><code class="prism language-Java">PUT /&amp;lt;index&amp;gt;/_block/&amp;lt;block&amp;gt;
+
+
+&amp;lt;index&amp;gt;：（可选，字符串）逗号分隔的索引名列表或通配符表达式，用于限制请求。
+
+
+&amp;lt;block&amp;gt;：（必需，字符串）要添加到索引的阻塞类型。
+
+</code></pre> 
+<p>举例，如下 API 用于给索引添加一个阻塞写入。</p> 
+<pre><code class="prism language-Java">PUT /my-index-000001/_block/write
+
+</code></pre> 
+<p>设置禁止写入后，如果再写入就会报错。</p> 
+<pre><code class="prism language-Java">"reason": "index [my-index-000001] blocked by: [FORBIDDEN/8/index write (api)];"
+
+</code></pre> 
+<p>通过执行 PUT /my-index-000001/_block/write命令，我们可以向名为my-index-000001的索引添加一个写入阻塞。成功执行此命令后，任何试图写入该索引的操作都将被阻止，直到该阻塞被显式移除。</p> 
+<p>除此之外，最常用的一个锁叫做 blocks.metadata。当我们把这个设置开启（设置为true）后，别人就不能修改索引的元数据了。</p> 
+<p>举个例子，如果你在管理一个多租户的SaaS应用，每个租户都有自己独特的索引设置和映射。你肯定不希望有一天突然有人改变了这些设置，导致系统运行不正常。这时候，就可以使用 blocks.metadata 这个锁来防止索引的元数据被修改。</p> 
+<pre><code class="prism language-Java">PUT test
+
+
+PUT test/_settings
+{&lt;!-- --&gt;
+  "blocks.metadata": true
+}
+如下的所有操作都会报错：
+
+GET  test
+GET  test/_settings
+GET  test/_mapping
+
+PUT test/_doc/1
+{&lt;!-- --&gt;
+  "title": "1111"
+}
+
+</code></pre> 
+<p>但是，如下检索是可以正常进行的。</p> 
+<pre><code class="prism language-Java">GET test/_search
+{&lt;!-- --&gt;
+  "query": {&lt;!-- --&gt;
+    "match_all": {&lt;!-- --&gt;}
+  }
+}
+
+</code></pre> 
+<p><strong>4、解除设置 API</strong> 要解除已经设置的索引阻塞，可以将相应的阻塞设置修改为false或使用 null来移除特定的阻塞。例如，要移除索引的 read_only阻塞，可以使用以下命令：</p> 
+<pre><code class="prism language-Java">PUT /&amp;lt;index&amp;gt;/_settings 
+{&lt;!-- --&gt; "index.blocks.read_only": false }
+
+</code></pre> 
+<p>请注意，在进行此操作之前，确保已经解决了导致设置阻塞的原因，如磁盘空间不足等。</p> 
+<p><strong>5、小结</strong> Elasticsearch的索引阻塞功能为数据提供了一层额外的保护，确保数据能够按照预期安全、正确地被处理和访问。</p> 
+<p>这套功能在系统维护、数据保护、资源优化和安全增强等方面特别有用。</p> 
+<p>通过熟悉Elasticsearch提供的各种索引阻塞设置，可以有效管理对索引的访问，保障数据完整性，高效利用资源，并加强数据的安全性。正确使用这些强大的工具需要深入理解它们的作用和应用场景。</p> 
+<img src="https://images2.imgbox.com/2a/5e/oXsPEHwz_o.png" alt="在这里插入图片描述">
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/daf825a119b67d169e71470453d86bba/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">城乡居民基本医疗信息管理系统|基于Springboot的城乡居民基本医疗信息管理系统设计与实现(源码&#43;数据库&#43;文档)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d00d89d530c429002adcdec70d6c1be3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Llama_index利用本地大模型工具ollama（CPU）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Stable Diffusion原理详解（附代码实现） - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/8ddfdd560bebc52e6cec5c8fd17c333a/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Stable Diffusion原理详解（附代码实现）">
+  <meta property="og:description" content="一、前言 回顾AI绘画的历史，GAN（Generative Adversarial Nets）是比较出众的一个。GAN的出现让AI绘画成为可能，当时GAN给AI绘画提供了一种新的思路，现在回顾当时的绘画可以算是相当粗糙。
+gan-results.jpg
+初代GAN出现后，出现了大量GAN的变种，比如StyleGAN、CycleGAN、DCGAN等。而StyleGAN已经可以生成非常逼真的图像了，下面是StyleGAN的一些结果。
+stylegan-results.jpg
+GAN提出已经过去十年，AI绘画也得到了颠覆性的进步。Diffusion Model（DM）逐渐取代了GAN在AI绘画领域的地位。在此基础上，AI绘画领域还融合了其它深度学习方法，比如Controlnet、LoRA等。如今，AI绘画达到了以假乱真的地步，同时给与用户极高的可控性，对资源的要求也逐步降低，每个人都可以在自己的电脑上运行AI绘画模型。
+今天我们的主角是Stable Diffusion，它是如今最流行的开源DM。基于Stable Diffusion，开源社区涌现了繁多的开源项目和模型。比如Stable Diffusion Webui、Comfyui、Fooocus等集成应用；分享模型的Civitai网站；HuggingFace提供的Diffusers模块。
+今天我们将介绍Stable Diffusion的整体架构，分解每个部件，最后借助Diffusers模块实现AI绘画。
+二、网络结构 Stable Diffusion由多个子网络组成，包括文本编码器、UNet和VAE三大部分。组合在一起可以看做一个接收文本输入，输出图像的模型。下面我们将从整体出发，而后拆分每个部件。
+2.1 整体架构 Stable Diffusion的架构如图所示：
+stable-diffusion-structure.jpg
+整体上看是一个接收文本输入，并输出图像的模型。Stable Diffusion处理的过程如下：
+输入文本，使用CLIP模型对文本进行编码，获得文本Embedding
+从潜空间生成噪声Latent
+将文本Embedding和Latent输入UNet模型，预测Latent中的噪声
+将去除Latent中的噪声，去除噪声后的结果重新赋值为Latent
+重复步骤3、4
+将Latent传入VAE解码器，得到最终图片
+模型的核心是一个UNet噪声预测网络。不同于GAN直接从噪声中生成图片，Stable Diffusion会进行多次预测噪声并降噪，最终生成图片。
+2.2 文本编码器 Stable Diffusion是一种带条件的图像生成模型，可以根据输入的文本生成与文本相符的图片。我们可以直接使用训练良好的Bert模型作为文本编码器，但是这样生成的文本向量和图像的关系不太密切，为了图像生成能更遵循文本条件，Stable Diffusion使用了CLIP模型。
+CLIP模型的提出是为了更好的解决视觉任务，CLIP可以在zero-shot的情况下在ImageNet上与ResNet50有同等的表现。
+下面是OpenAI提供的CLIP工作图：
+clip-training-steps.jpg
+从结构上来看，CLIP模型由两个Encoder构成，分别是用来编码文本的TextEncoder和用来编码图片的ImageEncoder。CLIP的训练数据是一堆“图片-文本”对形式，其工作模式如下：
+训练TextEncoder和ImageEncoder，最大化ItTt（图片向量与响应的文本向量相似度）
+利用分类标签生成句子，“a photo of a {object}”
+输入图片获得It，找到最相似的句子向量Tk，改句子对应的标签就是图片标签 在完成训练后就可以得到比较出色的文本编码器，而后两步则是为图像分类做准备。
+2.3 VAE模型 VAE模型在Diffusion Model里面并非必要的，VAE在Stable Diffusion中作为一种有效利用资源的方法，减少了图片生成的资源需求。下图是VAE的结构，其中c是一个可选的条件。
+vae-structure.png
+VAE由Encoder和Decoder两个部分组成，首先需要输入x，经过Encoder编码后，得到（μ，σ），分别表示均值和方差，这两个变量可以确定一个分布，然后在当前分布中采样出样本z。z通常是一个比x维度更低的向量。
+采样出来的z输入Decoder，我们希望Decoder的输出与输入的x越接近越好。这样我们就达到了图像压缩的效果。
+在训练Stable Diffusion时，我们会把图片输入VAE的Encoder，然后再拿来训练UNet，这样我们就可以在更低的维度空间训练图像生成模型，这样就可以减少资源的消耗。
+2.4 UNet模型 UNet模型结构与VAE非常相似，也是Encoder-Decoder架构。在Stable Diffusion中，UNet作为一个噪声预测网络，在绘画过程中需要多次推理。我们先不考虑VAE的介入，来看看UNet在Stable Diffusion中的作用。
+实际上UNet在Stable Diffusion中充当噪声预测的功能。UNet接收一张带有噪声的图片，输出图片中的噪声，根据带噪声的图片和噪声我们可以得到加噪前的图片。这个降噪的过程通常会重复数十遍。
+知道UNet的作用后，我们就需要创建数据集了。我们只需要图片即可，拿到图片对该图片进行n次加噪，直到原图变成完全噪声。而加噪前的图片可以作为输入，加噪后的数据可以作为输出。如图所示：">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-02-05T09:19:43+08:00">
+    <meta property="article:modified_time" content="2024-02-05T09:19:43+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Stable Diffusion原理详解（附代码实现）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>一、前言</h2> 
+<p>回顾AI绘画的历史，GAN（Generative Adversarial Nets）是比较出众的一个。GAN的出现让AI绘画成为可能，当时GAN给AI绘画提供了一种新的思路，现在回顾当时的绘画可以算是相当粗糙。</p> 
+<p><img src="https://images2.imgbox.com/03/dd/qygiv3dY_o.jpg" alt=""></p> 
+<p>gan-results.jpg</p> 
+<p>初代GAN出现后，出现了大量GAN的变种，比如StyleGAN、CycleGAN、DCGAN等。而StyleGAN已经可以生成非常逼真的图像了，下面是StyleGAN的一些结果。</p> 
+<p><img src="https://images2.imgbox.com/bd/1d/8k85EszT_o.jpg" alt=""></p> 
+<p>stylegan-results.jpg</p> 
+<p>GAN提出已经过去十年，AI绘画也得到了颠覆性的进步。Diffusion Model（DM）逐渐取代了GAN在AI绘画领域的地位。在此基础上，AI绘画领域还融合了其它深度学习方法，比如Controlnet、LoRA等。如今，AI绘画达到了以假乱真的地步，同时给与用户极高的可控性，对资源的要求也逐步降低，每个人都可以在自己的电脑上运行AI绘画模型。</p> 
+<p>今天我们的主角是Stable Diffusion，它是如今最流行的开源DM。基于Stable Diffusion，开源社区涌现了繁多的开源项目和模型。比如Stable Diffusion Webui、Comfyui、Fooocus等集成应用；分享模型的Civitai网站；HuggingFace提供的Diffusers模块。</p> 
+<p>今天我们将介绍Stable Diffusion的整体架构，分解每个部件，最后借助Diffusers模块实现AI绘画。</p> 
+<h2><a id="_21"></a>二、网络结构</h2> 
+<p>Stable Diffusion由多个子网络组成，包括文本编码器、UNet和VAE三大部分。组合在一起可以看做一个接收文本输入，输出图像的模型。下面我们将从整体出发，而后拆分每个部件。</p> 
+<h3><a id="21__26"></a>2.1 整体架构</h3> 
+<p>Stable Diffusion的架构如图所示：</p> 
+<p><img src="https://images2.imgbox.com/40/ce/vRcgcRgP_o.jpg" alt=""></p> 
+<p>stable-diffusion-structure.jpg</p> 
+<p>整体上看是一个接收文本输入，并输出图像的模型。Stable Diffusion处理的过程如下：</p> 
+<ol><li> <p>输入文本，使用CLIP模型对文本进行编码，获得文本Embedding</p> </li><li> <p>从潜空间生成噪声Latent</p> </li><li> <p>将文本Embedding和Latent输入UNet模型，预测Latent中的噪声</p> </li><li> <p>将去除Latent中的噪声，去除噪声后的结果重新赋值为Latent</p> </li><li> <p>重复步骤3、4</p> </li><li> <p>将Latent传入VAE解码器，得到最终图片</p> </li></ol> 
+<p>模型的核心是一个UNet噪声预测网络。不同于GAN直接从噪声中生成图片，Stable Diffusion会进行多次预测噪声并降噪，最终生成图片。</p> 
+<h3><a id="22__52"></a>2.2 文本编码器</h3> 
+<p>Stable Diffusion是一种带条件的图像生成模型，可以根据输入的文本生成与文本相符的图片。我们可以直接使用训练良好的Bert模型作为文本编码器，但是这样生成的文本向量和图像的关系不太密切，为了图像生成能更遵循文本条件，Stable Diffusion使用了CLIP模型。</p> 
+<p>CLIP模型的提出是为了更好的解决视觉任务，CLIP可以在zero-shot的情况下在ImageNet上与ResNet50有同等的表现。</p> 
+<p>下面是OpenAI提供的CLIP工作图：</p> 
+<p><img src="https://images2.imgbox.com/5f/df/WTCMaVoI_o.jpg" alt=""></p> 
+<p>clip-training-steps.jpg</p> 
+<p>从结构上来看，CLIP模型由两个Encoder构成，分别是用来编码文本的TextEncoder和用来编码图片的ImageEncoder。CLIP的训练数据是一堆“图片-文本”对形式，其工作模式如下：</p> 
+<ol><li> <p>训练TextEncoder和ImageEncoder，最大化ItTt（图片向量与响应的文本向量相似度）</p> </li><li> <p>利用分类标签生成句子，“a photo of a {object}”</p> </li><li> <p>输入图片获得It，找到最相似的句子向量Tk，改句子对应的标签就是图片标签 在完成训练后就可以得到比较出色的文本编码器，而后两步则是为图像分类做准备。</p> </li></ol> 
+<h3><a id="23_VAE_74"></a>2.3 VAE模型</h3> 
+<p>VAE模型在Diffusion Model里面并非必要的，VAE在Stable Diffusion中作为一种有效利用资源的方法，减少了图片生成的资源需求。下图是VAE的结构，其中c是一个可选的条件。</p> 
+<p><img src="https://images2.imgbox.com/8e/33/jMe89tK4_o.png" alt=""></p> 
+<p>vae-structure.png</p> 
+<p>VAE由Encoder和Decoder两个部分组成，首先需要输入x，经过Encoder编码后，得到（μ，σ），分别表示均值和方差，这两个变量可以确定一个分布，然后在当前分布中采样出样本z。z通常是一个比x维度更低的向量。</p> 
+<p>采样出来的z输入Decoder，我们希望Decoder的输出与输入的x越接近越好。这样我们就达到了图像压缩的效果。</p> 
+<p>在训练Stable Diffusion时，我们会把图片输入VAE的Encoder，然后再拿来训练UNet，这样我们就可以在更低的维度空间训练图像生成模型，这样就可以减少资源的消耗。</p> 
+<h3><a id="24_UNet_89"></a>2.4 UNet模型</h3> 
+<p>UNet模型结构与VAE非常相似，也是Encoder-Decoder架构。在Stable Diffusion中，UNet作为一个噪声预测网络，在绘画过程中需要多次推理。我们先不考虑VAE的介入，来看看UNet在Stable Diffusion中的作用。</p> 
+<p>实际上UNet在Stable Diffusion中充当噪声预测的功能。UNet接收一张带有噪声的图片，输出图片中的噪声，根据带噪声的图片和噪声我们可以得到加噪前的图片。这个降噪的过程通常会重复数十遍。</p> 
+<p>知道UNet的作用后，我们就需要创建数据集了。我们只需要图片即可，拿到图片对该图片进行n次加噪，直到原图变成完全噪声。而加噪前的图片可以作为输入，加噪后的数据可以作为输出。如图所示：</p> 
+<p><img src="https://images2.imgbox.com/1a/77/bnFmtb09_o.jpg" alt=""></p> 
+<p>noising_step.jpg</p> 
+<p>在加噪的过程中，噪声逐步增大。因此在降噪的过程中，我们需要有噪声图片，以及当前加噪的step。下图是噪声预测部分的结构：</p> 
+<p><img src="https://images2.imgbox.com/58/87/Yn4nkJW5_o.jpg" alt=""></p> 
+<p>noise-predicter.jpg</p> 
+<p>最后图像生成的步骤就是不停降噪的步骤：</p> 
+<p><img src="https://images2.imgbox.com/c1/d5/AYOruR8H_o.jpg" alt=""></p> 
+<p>denoising-step.jpg</p> 
+<p>最后，我们再加入VAE。我们加噪和预测噪声的步骤不再是作用在原图上，而是作用在VAE Encoder的输出上面，这样我们就可以在较小的图像上完成UNet的训练，极大减少资源的消耗。</p> 
+<p><img src="https://images2.imgbox.com/49/e5/ha2FY4Hm_o.png" alt=""></p> 
+<p>unet-vae.png</p> 
+<p>现在只需要在UNet的输入中再加入文本变量就是完整的Stable Diffusion了。</p> 
+<h2><a id="Diffusers_122"></a>三、Diffusers模块</h2> 
+<p>现在我们已经知道Stable Diffusion的原理，为了加深理解，下面使用Diffusers模块实现Stable Diffusion的全过程。下面的代码需要使用到pytorch、transformers和diffusers模块。</p> 
+<h3><a id="31_pipeline_127"></a>3.1 使用pipeline</h3> 
+<p>HuggingFace中的模块提供了许多pipeline用于各种任务，而Stable Diffusion则是Text-to-image类型的任务，我们可以使用下面几句代码完成文生图：</p> 
+<pre><code class="prism language-bash">from diffusers <span class="token function">import</span> AutoPipelineForText2Image
+<span class="token function">import</span> torch
+
+pipeline <span class="token operator">=</span> AutoPipelineForText2Image.from_pretrained<span class="token punctuation">(</span>
+ <span class="token string">"runwayml/stable-diffusion-v1-5"</span>, <span class="token assign-left variable">torch_dtype</span><span class="token operator">=</span>torch.float16, <span class="token assign-left variable">variant</span><span class="token operator">=</span><span class="token string">"fp16"</span>
+<span class="token punctuation">)</span>.to<span class="token punctuation">(</span><span class="token string">"cuda"</span><span class="token punctuation">)</span>
+image <span class="token operator">=</span> pipeline<span class="token punctuation">(</span>
+ <span class="token string">"stained glass of darth vader, backlight, centered composition, masterpiece, photorealistic, 8k"</span>
+<span class="token punctuation">)</span>.images<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span>
+image
+</code></pre> 
+<p>生成图像如下：</p> 
+<p><img src="https://images2.imgbox.com/df/50/OQ1vyBlG_o.png" alt=""></p> 
+<p>generated01.PNG</p> 
+<p>上面是一种简单的调用方式，下面我们加载各个部件，手动完成图像生成的过程。</p> 
+<h3><a id="32__153"></a>3.2 加载各个部件</h3> 
+<p>除了pipeline直接加载，我们还可以分部件加载，分别加载CLIP、UNet和VAE，代码如下：</p> 
+<pre><code class="prism language-bash">from tqdm.auto <span class="token function">import</span> tqdm
+from PIL <span class="token function">import</span> Image  
+<span class="token function">import</span> torch  
+from transformers <span class="token function">import</span> CLIPTextModel, CLIPTokenizer  
+from diffusers <span class="token function">import</span> AutoencoderKL, UNet2DConditionModel, DDPMScheduler  
+  
+<span class="token comment"># 加载模型  </span>
+model_path <span class="token operator">=</span> <span class="token string">"runwayml/stable-diffusion-v1-5"</span>  
+vae <span class="token operator">=</span> AutoencoderKL.from_pretrained<span class="token punctuation">(</span>model_path, <span class="token assign-left variable">subfolder</span><span class="token operator">=</span><span class="token string">"vae"</span><span class="token punctuation">)</span>  
+tokenizer <span class="token operator">=</span> CLIPTokenizer.from_pretrained<span class="token punctuation">(</span>model_path, <span class="token assign-left variable">subfolder</span><span class="token operator">=</span><span class="token string">"tokenizer"</span><span class="token punctuation">)</span>  
+text_encoder <span class="token operator">=</span> CLIPTextModel.from_pretrained<span class="token punctuation">(</span>  
+ model_path, <span class="token assign-left variable">subfolder</span><span class="token operator">=</span><span class="token string">"text_encoder"</span>  
+<span class="token punctuation">)</span>  
+unet <span class="token operator">=</span> UNet2DConditionModel.from_pretrained<span class="token punctuation">(</span>  
+ model_path, <span class="token assign-left variable">subfolder</span><span class="token operator">=</span><span class="token string">"unet"</span>  
+<span class="token punctuation">)</span>  
+scheduler <span class="token operator">=</span> DDPMScheduler.from_pretrained<span class="token punctuation">(</span>model_path, <span class="token assign-left variable">subfolder</span><span class="token operator">=</span><span class="token string">"scheduler"</span><span class="token punctuation">)</span>
+<span class="token comment"># 使用gpu加速  </span>
+torch_device <span class="token operator">=</span> <span class="token string">"cuda"</span>  
+vae.to<span class="token punctuation">(</span>torch_device<span class="token punctuation">)</span>  
+text_encoder.to<span class="token punctuation">(</span>torch_device<span class="token punctuation">)</span>  
+unet.to<span class="token punctuation">(</span>torch_device<span class="token punctuation">)</span>
+</code></pre> 
+<p>在这里我们还加载了Scheduler，后续会使用Scheduler管理降噪的步骤。</p> 
+<h3><a id="33__185"></a>3.3 对文本进行编码</h3> 
+<p>下面我们使用CLIP模型对文本进行编码，这里要使用到tokenizer和text_encoder：</p> 
+<pre><code class="prism language-bash"><span class="token comment"># 对文本进行编码  </span>
+prompt <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token string">"a photograph of an astronaut riding a horse"</span><span class="token punctuation">]</span>  
+height <span class="token operator">=</span> <span class="token number">512</span> <span class="token comment"># default height of Stable Diffusion  </span>
+width <span class="token operator">=</span> <span class="token number">512</span> <span class="token comment"># default width of Stable Diffusion  </span>
+num_inference_steps <span class="token operator">=</span> <span class="token number">25</span> <span class="token comment"># Number of denoising steps  </span>
+guidance_scale <span class="token operator">=</span> <span class="token number">7.5</span> <span class="token comment"># Scale for classifier-free guidance  </span>
+batch_size <span class="token operator">=</span> len<span class="token punctuation">(</span>prompt<span class="token punctuation">)</span>  
+text_input <span class="token operator">=</span> tokenizer<span class="token punctuation">(</span>  
+ prompt, <span class="token assign-left variable">padding</span><span class="token operator">=</span><span class="token string">"max_length"</span>, <span class="token assign-left variable">max_length</span><span class="token operator">=</span>tokenizer.model_max_length, <span class="token assign-left variable">truncation</span><span class="token operator">=</span>True, <span class="token assign-left variable">return_tensors</span><span class="token operator">=</span><span class="token string">"pt"</span>  
+<span class="token punctuation">)</span>  
+with torch.no_grad<span class="token punctuation">(</span><span class="token punctuation">)</span>:  
+ text_embeddings <span class="token operator">=</span> text_encoder<span class="token punctuation">(</span>text_input.input_ids.to<span class="token punctuation">(</span>torch_device<span class="token punctuation">))</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span>
+</code></pre> 
+<p>其中text_embeddings就是文本编码结果。</p> 
+<h3><a id="34__207"></a>3.4 获取潜变量</h3> 
+<p>在训练过程中潜变量Latent是由VAE的Encoder得到的，而在生成过程中，Latent则是符合一定分别的随机噪声。代码如下：</p> 
+<pre><code class="prism language-bash"><span class="token comment"># 获取latent  </span>
+latents <span class="token operator">=</span> torch.randn<span class="token punctuation">(</span>  
+ <span class="token punctuation">(</span>batch_size, unet.config.in_channels, height // <span class="token number">8</span>, width // <span class="token number">8</span><span class="token punctuation">)</span>,  
+ <span class="token assign-left variable">device</span><span class="token operator">=</span>torch_device,  
+<span class="token punctuation">)</span>  
+latents <span class="token operator">=</span> latents * scheduler.init_noise_sigma
+</code></pre> 
+<p>torch.randn可以得到方差为1的噪声，而latents * scheduler.init_noise_sigma则把方差修改为scheduler.init_noise_sigma。</p> 
+<h3><a id="35__223"></a>3.5 降噪</h3> 
+<p>接下来就是重复多次UNet推理，得到降噪后的Latent：</p> 
+<pre><code class="prism language-bash"><span class="token comment"># 降噪  </span>
+scheduler.set_timesteps<span class="token punctuation">(</span>num_inference_steps<span class="token punctuation">)</span>  
+<span class="token keyword">for</span> <span class="token for-or-select variable">t</span> <span class="token keyword">in</span> tqdm<span class="token punctuation">(</span>scheduler.timesteps<span class="token punctuation">)</span>:  
+ latent_model_input <span class="token operator">=</span> latents  
+ latent_model_input <span class="token operator">=</span> scheduler.scale_model_input<span class="token punctuation">(</span>latent_model_input, <span class="token assign-left variable">timestep</span><span class="token operator">=</span>t<span class="token punctuation">)</span>  
+ with torch.no_grad<span class="token punctuation">(</span><span class="token punctuation">)</span>:  
+  <span class="token comment"># 预测噪声</span>
+  noise_pred <span class="token operator">=</span> unet<span class="token punctuation">(</span>
+   latent_model_input, 
+   t, 
+   <span class="token assign-left variable">encoder_hidden_states</span><span class="token operator">=</span>text_embeddings
+  <span class="token punctuation">)</span>.sample 
+ <span class="token comment"># 降噪 </span>
+ latents <span class="token operator">=</span> scheduler.step<span class="token punctuation">(</span>noise_pred, t, latents<span class="token punctuation">)</span>.prev_sample
+</code></pre> 
+<p>最后得到的latents变量就是降噪后的结果，在训练过程中对应VAE Encoder的输出，因此我们还需要使用VAE Decoder还原出图片。</p> 
+<h3><a id="36_VAE_247"></a>3.6 VAE解码</h3> 
+<p>下面就是使用VAE Decoder解码出原图：</p> 
+<pre><code class="prism language-bash"><span class="token comment"># 使用vae解码  </span>
+latents <span class="token operator">=</span> <span class="token number">1</span> / <span class="token number">0.18215</span> * latents  
+with torch.no_grad<span class="token punctuation">(</span><span class="token punctuation">)</span>:  
+ image <span class="token operator">=</span> vae.decode<span class="token punctuation">(</span>latents<span class="token punctuation">)</span>.sample  
+ image <span class="token operator">=</span> <span class="token punctuation">(</span>image / <span class="token number">2</span> + <span class="token number">0.5</span><span class="token punctuation">)</span>.clamp<span class="token punctuation">(</span><span class="token number">0</span>, <span class="token number">1</span><span class="token punctuation">)</span>.squeeze<span class="token punctuation">(</span><span class="token punctuation">)</span>  
+ image <span class="token operator">=</span> <span class="token punctuation">(</span>image.permute<span class="token punctuation">(</span><span class="token number">1</span>, <span class="token number">2</span>, <span class="token number">0</span><span class="token punctuation">)</span> * <span class="token number">255</span><span class="token punctuation">)</span>.to<span class="token punctuation">(</span>torch.uint8<span class="token punctuation">)</span>.cpu<span class="token punctuation">(</span><span class="token punctuation">)</span>.numpy<span class="token punctuation">(</span><span class="token punctuation">)</span>  
+ images <span class="token operator">=</span> <span class="token punctuation">(</span>image * <span class="token number">255</span><span class="token punctuation">)</span>.round<span class="token punctuation">(</span><span class="token punctuation">)</span>.astype<span class="token punctuation">(</span><span class="token string">"uint8"</span><span class="token punctuation">)</span>  
+ image <span class="token operator">=</span> Image.fromarray<span class="token punctuation">(</span>image<span class="token punctuation">)</span>  
+ image.show<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>最后生成如下图片：</p> 
+<p><img src="https://images2.imgbox.com/5b/ad/PX4hh11a_o.png" alt=""></p> 
+<p>generated02.PNG</p> 
+<h2><a id="_270"></a>四、总结</h2> 
+<p>今天我们以GAN开始，介绍了AI绘画领域的一些模型，并把Stable Diffusion作为今天的主角，详解介绍了Stable Diffusion的实现原理。</p> 
+<p>我们还使用Diffusers模块实现了Stable Diffusion生成图像的代码。在Stable Diffusion中，还有诸如LoRA、Controlnet等相关技术，在本文没有详细提到。而这些东西在AI绘画中却非常重要，也让AI绘画可以应用在更多领域。</p> 
+<p>我们可以使用Stable Diffusion Webui等工具使用LoRA和Controlnet等工具，我们还可以在Diffusers中使用这些根据。后续我们将介绍Diffusers模块如何加载LoRA等附加网络。</p> 
+<p><font face="幼圆" size="4" color="red">感兴趣的小伙伴，赠送全套AIGC学习资料，包含AI绘画、AI人工智能等前沿科技教程和软件工具，具体看这里。<br> </font><br> <img src="https://images2.imgbox.com/8c/c7/IJiafA8K_o.png"></p> 
+<p>AIGC技术的未来发展前景广阔，随着人工智能技术的不断发展，AIGC技术也将不断提高。未来，AIGC技术将在游戏和计算领域得到更广泛的应用，使游戏和计算系统具有更高效、更智能、更灵活的特性。同时，AIGC技术也将与人工智能技术紧密结合，在更多的领域得到广泛应用，对程序员来说影响至关重要。未来，AIGC技术将继续得到提高，同时也将与人工智能技术紧密结合，在更多的领域得到广泛应用。<br>  <br> <img src="https://images2.imgbox.com/43/88/JgOIhEUF_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>一、AIGC所有方向的学习路线</strong></p> 
+<p>AIGC所有方向的技术点做的整理，形成各个领域的知识点汇总，它的用处就在于，你可以按照下面的知识点去找对应的学习资源，保证自己学得较为全面。</p> 
+<p><img src="https://images2.imgbox.com/72/87/rIrw89Or_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/bb/dc/WXOrjPo0_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>二、AIGC必备工具</strong></p> 
+<p>工具都帮大家整理好了，安装就可直接上手！<br> <img src="https://images2.imgbox.com/af/a1/HZSk3Lxw_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>三、最新AIGC学习笔记</strong></p> 
+<p>当我学到一定基础，有自己的理解能力的时候，会去阅读一些前辈整理的书籍或者手写的笔记资料，这些笔记详细记载了他们对一些技术点的理解，这些理解是比较独到，可以学到不一样的思路。<br> <img src="https://images2.imgbox.com/0b/11/MNnX6ae1_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/44/89/2vnY8Ynu_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>四、AIGC视频教程合集</strong></p> 
+<p>观看全面零基础学习视频，看视频学习是最快捷也是最有效果的方式，跟着视频中老师的思路，从基础到深入，还是很容易入门的。</p> 
+<p><img src="https://images2.imgbox.com/66/e8/ZdSwiZJg_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>五、实战案例</strong></p> 
+<p>纸上得来终觉浅，要学会跟着视频一起敲，要动手实操，才能将自己的所学运用到实际当中去，这时候可以搞点实战案例来学习。<br> <img src="https://images2.imgbox.com/3a/46/jPMq7fz1_o.png" alt="在这里插入图片描述"></p> 
+<img src="https://images2.imgbox.com/9e/24/nPDWPllF_o.png"> 若有侵权，请联系删除
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ff33797385e22bfdc06af36990f287a5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【动态规划】【状态压缩】【2次选择】【广度搜索】1494. 并行课程 II</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b2dfb4d897491155a6ae16e9e8bd789a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Python以及Pycharm安装超详细教程(附带网盘资源）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,380 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>数据同步的艺术：探索PostgreSQL和Redis的一致性策略 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/dfbbf9a668b5efd3bde0a7c1da88fb10/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="数据同步的艺术：探索PostgreSQL和Redis的一致性策略">
+  <meta property="og:description" content="作者：后端小肥肠
+🍇 我写过的文章中的相关代码放到了gitee，地址：xfc-fdw-cloud: 公共解决方案
+🍊 有疑问可私信或评论区联系我。
+🥑 创作不易未经允许严禁转载。
+1. 前言 在当今高度数字化的世界中,应用程序需要处理海量数据并提供快速响应。为了应对这一挑战,使用Redis作为缓存来减少对数据库的直接访问已经成为一种广泛采用的策略。这种方法不仅能够显著提升应用性能,还能有效降低数据库负载。然而,当我们将PostgreSQL作为主数据库,Redis作为缓存层时,一个关键问题随之而来:如何确保这两个系统之间的数据保持一致?
+本文将深入探讨PostgreSQL和Redis之间的数据同步策略,旨在帮助开发者和架构师构建既高效又可靠的数据架构。本文将:
+分析导致数据不一致的根本原因探讨各种同步策略的优缺点提供实际可行的解决方案 通过本文,读者将获得设计和实现健壮的数据同步机制所需的相关知识,从而在高并发环境中构建更可靠的应用系统。
+2. 数据为什么会不一致？ 在现代高并发应用中，确保数据的一致性是一个复杂而关键的挑战。让我们深入探讨导致数据不一致的主要原因，以及为什么在PostgreSQL和Redis之间同步数据如此重要。
+2.1 数据库：并发访问的瓶颈 在高并发的业务场景下，数据库往往成为系统中最薄弱的环节：
+连接限制：数据库能够同时处理的连接数是有限的，高并发下很容易达到这个限制。锁竞争：并发写操作可能导致严重的锁竞争，大幅降低系统吞吐量。资源消耗：每个数据库操作都消耗CPU和I/O资源，并发请求增加会导致资源迅速耗尽。查询性能：复杂查询在高并发下可能导致数据库响应时间显著增加。 这些因素综合导致数据库在高并发场景下性能急剧下降，成为整个系统的瓶颈。
+2.2 Redis：缓解数据库压力的关键 为了应对数据库的局限性，引入Redis作为缓存层成为一种普遍策略：
+减轻数据库负载：将热点数据存储在Redis中，大幅减少对数据库的直接访问。提高响应速度：Redis的内存存储特性使得数据访问速度远快于传统数据库。支持高并发：Redis的单线程模型和非阻塞I/O使其能够高效处理大量并发请求。数据结构多样性：Redis提供了多种数据结构，适用于不同的缓存场景。 使用Redis作为缓冲层，让请求首先访问Redis而不是直接访问PostgreSQL等数据库，可以显著提升系统的整体性能和并发处理能力。
+2.3 数据一致性挑战 虽然引入Redis缓存解决了许多性能问题，但也带来了新的挑战，特别是在数据更新方面：
+读取操作：从Redis缓存读取数据通常不会引发严重的一致性问题，因为它只涉及单一数据源。写入操作：当需要更新数据时，问题变得复杂。我们需要同时更新数据库（PostgreSQL）和缓存（Redis），这个过程中很容易出现数据不一致： 更新时序：数据库和缓存的更新顺序会影响数据一致性。部分失败：如果更新过程中发生错误，可能导致数据库和缓存状态不一致。并发更新：多个客户端同时更新同一数据可能导致意外的结果。缓存失效：决定何时使缓存中的数据失效也是一个挑战，过早失效会降低缓存效果，过晚失效则可能导致数据不一致。 2.4 典型的数据读取流程 为了更好地理解这个问题，让我们看一下典型的数据读取流程：
+应用程序接收到数据读取请求。首先检查Redis缓存中是否存在所需数据。如果Redis中存在数据（缓存命中），直接返回缓存数据。如果Redis中不存在数据（缓存未命中），则从PostgreSQL数据库读取数据。将从数据库读取的数据写入Redis缓存，以便后续访问。返回数据给应用程序。 这个流程在处理读取操作时通常运作良好，但一旦涉及数据更新，就需要额外的机制来确保PostgreSQL和Redis之间的数据一致性。
+在接下来的章节中，我们将深入探讨各种同步策略，以及如何在保证数据一致性的同时，维持系统的高性能和可扩展性。
+3. redis与Postgres数据同步策略介绍 3.1 先删除缓存后更新数据库 在这种策略中，系统首先删除Redis中的缓存，然后更新数据库。这种方法可能引起如下问题：
+读取过程中的数据不一致：如果在缓存被删除后、数据库更新之前，另一个线程尝试读取数据，它会发现缓存为空。此时，它可能会从数据库中读取旧数据并将其写回缓存，导致所谓的脏缓存。数据更新后的不一致性：当数据库最终更新后，缓存中的数据已经是旧数据，从而导致缓存与数据库之间的不一致。 3.2 先更新数据库后删除缓存 这种策略先对数据库进行更新，然后再删除缓存。这样做的潜在问题包括：
+事务失败导致的缓存未删除：如果在数据库更新后、删除缓存之前，执行更新的线程出现故障，这会导致缓存未被及时删除。并发导致的数据不一致：由于数据库的写入和缓存的删除是两个独立操作，无法保证它们之间的执行顺序，可能会导致读取操作在缓存删除前读到旧缓存，进而出现数据不一致。 3.3 延时双删策略 为了解决上述提到的同步问题，可以采用延时双删策略：
+删除缓存：首先删除Redis中的相关数据缓存。更新数据库：然后更新数据库，确保数据的准确性。休眠延迟：执行短暂的延时（例如500毫秒），确保所有相关数据库操作都已完成。再次删除缓存：最后再次删除缓存，确保在数据更新期间任何新生成的缓存也会被清除。 伪代码如下：
+function delayDoubleDelete(key, updateStatement) // 第一步：删除Redis中的缓存 Redis.delete(key) // 第二步：更新数据库 Database.execute(updateStatement) // 第三步：执行短暂的延时，例如500毫秒 sleep(500) // 第四步：再次删除Redis中的缓存 Redis.delete(key) end function 3.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-09-01T10:44:46+08:00">
+    <meta property="article:modified_time" content="2024-09-01T10:44:46+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">数据同步的艺术：探索PostgreSQL和Redis的一致性策略</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <blockquote> 
+ <p><strong>作者：后端小肥肠</strong></p> 
+ <p>🍇 我写过的文章中的相关代码放到了gitee，地址：<a href="https://gitee.com/u_ncle/xfc-fdw-cloud" rel="nofollow" title="xfc-fdw-cloud: 公共解决方案">xfc-fdw-cloud: 公共解决方案</a></p> 
+ <p>🍊 有疑问可私信或评论区联系我。</p> 
+ <p>🥑  创作不易未经允许严禁转载。</p> 
+</blockquote> 
+<h3>1. 前言</h3> 
+<p>在当今高度数字化的世界中,应用程序需要处理海量数据并提供快速响应。为了应对这一挑战,使用Redis作为缓存来减少对数据库的直接访问已经成为一种广泛采用的策略。这种方法不仅能够显著提升应用性能,还能有效降低数据库负载。然而,当我们将PostgreSQL作为主数据库,Redis作为缓存层时,一个关键问题随之而来:如何确保这两个系统之间的数据保持一致?</p> 
+<p>本文将深入探讨PostgreSQL和Redis之间的数据同步策略,旨在帮助开发者和架构师构建既高效又可靠的数据架构。本文将:</p> 
+<ol><li><strong><span style="color:#956fe7;">分析导致数据不一致的根本原因</span></strong></li><li><strong><span style="color:#956fe7;">探讨各种同步策略的优缺点</span></strong></li><li><strong><span style="color:#956fe7;">提供实际可行的解决方案</span></strong></li></ol> 
+<p>通过本文,读者将获得设计和实现健壮的数据同步机制所需的相关知识,从而在高并发环境中构建更可靠的应用系统。</p> 
+<h3>2. 数据为什么会不一致？</h3> 
+<p>在现代高并发应用中，确保数据的一致性是一个复杂而关键的挑战。让我们深入探讨导致数据不一致的主要原因，以及为什么在PostgreSQL和Redis之间同步数据如此重要。</p> 
+<h4>2.1 数据库：并发访问的瓶颈</h4> 
+<p>在高并发的业务场景下，数据库往往成为系统中最薄弱的环节：</p> 
+<ul><li><span style="color:#956fe7;"><strong>连接限制</strong>：</span>数据库能够同时处理的连接数是有限的，高并发下很容易达到这个限制。</li><li><span style="color:#956fe7;"><strong>锁竞争：</strong></span>并发写操作可能导致严重的锁竞争，大幅降低系统吞吐量。</li><li><span style="color:#956fe7;"><strong>资源消耗</strong>：</span>每个数据库操作都消耗CPU和I/O资源，并发请求增加会导致资源迅速耗尽。</li><li><span style="color:#956fe7;"><strong>查询性能</strong>：</span>复杂查询在高并发下可能导致数据库响应时间显著增加。</li></ul> 
+<p>这些因素综合导致数据库在高并发场景下性能急剧下降，成为整个系统的瓶颈。</p> 
+<h4>2.2 Redis：缓解数据库压力的关键</h4> 
+<p>为了应对数据库的局限性，引入Redis作为缓存层成为一种普遍策略：</p> 
+<ul><li><span style="color:#956fe7;"><strong>减轻数据库负载</strong>：</span>将热点数据存储在Redis中，大幅减少对数据库的直接访问。</li><li><span style="color:#956fe7;"><strong>提高响应速度</strong>：</span>Redis的内存存储特性使得数据访问速度远快于传统数据库。</li><li><span style="color:#956fe7;"><strong>支持高并发</strong>：</span>Redis的单线程模型和非阻塞I/O使其能够高效处理大量并发请求。</li><li><span style="color:#956fe7;"><strong>数据结构多样性</strong>：</span>Redis提供了多种数据结构，适用于不同的缓存场景。</li></ul> 
+<p>使用Redis作为缓冲层，让请求首先访问Redis而不是直接访问PostgreSQL等数据库，可以显著提升系统的整体性能和并发处理能力。</p> 
+<h4>2.3 数据一致性挑战</h4> 
+<p>虽然引入Redis缓存解决了许多性能问题，但也带来了新的挑战，特别是在数据更新方面：</p> 
+<ol><li><span style="color:#956fe7;"><strong>读取操作</strong>：</span>从Redis缓存读取数据通常不会引发严重的一致性问题，因为它只涉及单一数据源。</li><li><span style="color:#956fe7;"><strong>写入操作</strong>：</span>当需要更新数据时，问题变得复杂。我们需要同时更新数据库（PostgreSQL）和缓存（Redis），这个过程中很容易出现数据不一致： 
+  <ul><li><span style="color:#956fe7;"><strong>更新时序</strong>：</span>数据库和缓存的更新顺序会影响数据一致性。</li><li><span style="color:#956fe7;"><strong>部分失败</strong>：</span>如果更新过程中发生错误，可能导致数据库和缓存状态不一致。</li><li><span style="color:#956fe7;"><strong>并发更新</strong>：</span>多个客户端同时更新同一数据可能导致意外的结果。</li></ul></li><li><span style="color:#956fe7;"><strong>缓存失效</strong>：</span>决定何时使缓存中的数据失效也是一个挑战，过早失效会降低缓存效果，过晚失效则可能导致数据不一致。</li></ol> 
+<h4>2.4 典型的数据读取流程</h4> 
+<p>为了更好地理解这个问题，让我们看一下典型的数据读取流程：</p> 
+<p class="img-center"><img alt="" height="527" src="https://images2.imgbox.com/9b/ae/guGc9OMW_o.png" width="511"></p> 
+<ol><li>应用程序接收到数据读取请求。</li><li>首先检查Redis缓存中是否存在所需数据。</li><li>如果Redis中存在数据（缓存命中），直接返回缓存数据。</li><li>如果Redis中不存在数据（缓存未命中），则从PostgreSQL数据库读取数据。</li><li>将从数据库读取的数据写入Redis缓存，以便后续访问。</li><li>返回数据给应用程序。</li></ol> 
+<p>这个流程在处理读取操作时通常运作良好，但一旦涉及数据更新，就需要额外的机制来确保PostgreSQL和Redis之间的数据一致性。</p> 
+<p>在接下来的章节中，我们将深入探讨各种同步策略，以及如何在保证数据一致性的同时，维持系统的高性能和可扩展性。</p> 
+<h3>3. redis与Postgres数据同步策略介绍</h3> 
+<h4>3.1 先删除缓存后更新数据库</h4> 
+<p>在这种策略中，系统首先删除Redis中的缓存，然后更新数据库。这种方法可能引起如下问题：</p> 
+<ol><li><span style="color:#956fe7;"><strong>读取过程中的数据不一致</strong>：</span>如果在缓存被删除后、数据库更新之前，<span style="color:#956fe7;"><strong>另一个线程</strong></span>尝试读取数据，它会发现缓存为空。此时，它可能会从数据库中读取旧数据并将其写回缓存，导致所谓的<span style="color:#956fe7;"><strong>脏缓存</strong></span>。</li><li><span style="color:#956fe7;"><strong>数据更新后的不一致性</strong>：</span>当数据库最终更新后，缓存中的数据已经是旧数据，从而导致缓存与数据库之间的不一致。</li></ol> 
+<p><img alt="" height="452" src="https://images2.imgbox.com/c7/c1/1QA5fEqm_o.png" width="801"></p> 
+<h4>3.2 先更新数据库后删除缓存</h4> 
+<p>这种策略先对数据库进行更新，然后再删除缓存。这样做的潜在问题包括：</p> 
+<ol><li><span style="color:#956fe7;"><strong>事务失败导致的缓存未删除</strong>：</span>如果在数据库更新后、删除缓存之前，执行更新的线程<span style="color:#956fe7;"><strong>出现故障</strong></span>，这会导致缓存未被及时删除。</li><li><span style="color:#956fe7;"><strong>并发导致的数据不一致</strong>：</span>由于数据库的写入和缓存的删除是两个独立操作，无法保证它们之间的执行顺序，可能会导致读取操作在缓存删除前读到旧缓存，进而出现数据不一致。</li></ol> 
+<p><img alt="" height="452" src="https://images2.imgbox.com/74/a8/eca2s6jK_o.png" width="801"></p> 
+<h4>3.3 延时双删策略</h4> 
+<p>为了解决上述提到的同步问题，可以采用延时双删策略：</p> 
+<ol><li><span style="color:#956fe7;"><strong>删除缓存</strong>：</span>首先删除Redis中的相关数据缓存。</li><li><span style="color:#956fe7;"><strong>更新数据库</strong>：</span>然后更新数据库，确保数据的准确性。</li><li><span style="color:#956fe7;"><strong>休眠延迟</strong>：</span>执行短暂的延时（例如500毫秒），确保所有相关数据库操作都已完成。</li><li><span style="color:#956fe7;"><strong>再次删除缓存</strong>：</span>最后再次删除缓存，确保在数据更新期间任何新生成的缓存也会被清除。</li></ol> 
+<p>伪代码如下：</p> 
+<pre><code class="language-java">function delayDoubleDelete(key, updateStatement)
+    // 第一步：删除Redis中的缓存
+    Redis.delete(key)
+
+    // 第二步：更新数据库
+    Database.execute(updateStatement)
+
+    // 第三步：执行短暂的延时，例如500毫秒
+    sleep(500)
+
+    // 第四步：再次删除Redis中的缓存
+    Redis.delete(key)
+end function</code></pre> 
+<h4 style="background-color:transparent;">3.4. 使用WAL日志实现缓存同步（本文重点！！）</h4> 
+<h5>3.4.1. 使用WAL日志实现更新缓存的优势</h5> 
+<p>在实际开发中，使用WAL（Write-Ahead Logging）日志同步Redis和PostgreSQL是一种非常高效的策略。相比于传统的缓存更新方法，WAL日志带来了许多优势：</p> 
+<p style="background-color:transparent;"><strong>1. 解耦操作，降低延迟</strong></p> 
+<p>通过WAL日志，我们可以将数据库更新和缓存更新解耦。这意味着数据库操作可以独立完成，而不需要等待缓存更新，从而显著降低了响应时间，提升了系统的整体性能。</p> 
+<p><strong>2. 确保数据一致性</strong></p> 
+<p>WAL日志记录了数据库的所有变更操作，确保缓存更新时可以准确地反映数据库的最新状态。这种方式大大提高了数据的一致性，尤其是在高并发环境下，能够有效减少数据冲突和不一致的情况。</p> 
+<p><strong>3. 增强容错和恢复能力</strong></p> 
+<p>WAL日志具备出色的容错能力。即使系统发生故障，我们也可以通过重放WAL日志来恢复缓存中的数据，从而保证缓存与数据库的同步一致，快速恢复系统的正常运行。</p> 
+<p><strong>4. 灵活性强</strong></p> 
+<p>使用WAL日志还可以实现更加灵活的缓存更新策略。例如，你可以根据业务需求选择性地更新缓存，或者批量处理多条日志记录后再更新缓存，从而进一步优化系统性能。</p> 
+<p>总体来说，WAL日志为Redis和PostgreSQL的同步提供了一种高效、可靠的解决方案，特别适合需要高数据一致性和快速恢复能力的应用场景。</p> 
+<h5 style="background-color:transparent;">3.4.2. 基于Spring Boot实现缓存同步</h5> 
+<p style="text-align:justify;">在 Spring Boot 和 Java 环境中，实现 PostgreSQL 与Redis数据同步的技术流程如下：</p> 
+<p style="text-align:justify;"><img alt="" height="711" src="https://images2.imgbox.com/24/6f/h4ruzYTB_o.png" width="1200"></p> 
+<p>在上述流程中：</p> 
+<ol><li><span style="color:#956fe7;"><strong>Java 生产者</strong> </span>监听 PostgreSQL 的 WAL 日志，捕获数据库变更。</li><li>如果存在数据更新，这些更新会被发送到 RabbitMQ。</li><li>RabbitMQ 作为消息中间件，负责传递这些更新消息。</li><li><span style="color:#956fe7;"><strong>Java 消费者</strong></span> 从 RabbitMQ 接收消息，解析这些消息，并据此在 Redis 中执行相应的 CRUD 操作。</li></ol> 
+<p>这样的设计确保了 PostgreSQL 数据库的变更能够实时同步到 Redis 缓存中，从而维持两者之间的数据一致性。</p> 
+<p>本文仅展示WAL监听到同步Redis的核心步骤及代码（省去RabbitMQ），如对RabbitMQ构建感兴趣的jym可移步（<a href="https://blog.csdn.net/c18213590220/article/details/138079123" title="【架构系列】RabbitMQ应用场景及在实际项目中如何搭建可靠的RabbitMQ架构体系-CSDN博客">【架构系列】RabbitMQ应用场景及在实际项目中如何搭建可靠的RabbitMQ架构体系-CSDN博客</a>）。</p> 
+<p><span style="color:#956fe7;"><strong>步骤如下：</strong></span></p> 
+<p><strong>1. 修改 <code>postgresql.conf</code> 配置文件</strong></p> 
+<pre><code class="hljs">wal_level = logical
+max_replication_slots = 4
+max_wal_senders = 4
+</code></pre> 
+<p><strong>2. 修改pg_hba.conf配置文件</strong></p> 
+<pre><code class="hljs"># 允许复制连接
+host    replication     all             192.168.100.0/24        md5
+</code></pre> 
+<p> 这里，<code>192.168.100.0/24</code>应替换为实际的客户端IP地址或网段，<code>md5</code>表示使用密码认证。</p> 
+<p><strong>3. 重启PostgreSQL服务</strong></p> 
+<pre><code class="hljs"># 使用适当的命令重启PostgreSQL，这取决于你的操作系统和安装方式
+sudo systemctl restart postgresql
+# 或者
+sudo service postgresql restart
+</code></pre> 
+<p><strong> 4. 编写监听WAL代码</strong></p> 
+<pre><code class="language-java">package com.xfc.pg2redis.service;
+
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.stereotype.Service;
+
+import javax.annotation.PostConstruct;
+import java.util.List;
+
+@Service
+public class DatabaseChangeService {
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
+
+    private static final String SLOT_NAME = "my_replication_slot";
+
+    @Autowired
+    private ChangeLogProcessor changeLogProcessor;
+
+    @PostConstruct
+    public void startListening() {
+        new Thread(this::initializeReplicationSlot).start();
+    }
+
+    private void initializeReplicationSlot() {
+        if (!isSlotExists(SLOT_NAME)) {
+            createReplicationSlot(SLOT_NAME);
+        }
+        listenToReplicationSlot();
+    }
+
+    private boolean isSlotExists(String slotName) {
+        String query = "SELECT COUNT(*) FROM pg_replication_slots WHERE slot_name = ?";
+        Integer count = jdbcTemplate.queryForObject(query, new Object[]{slotName}, Integer.class);
+        return count != null &amp;&amp; count &gt; 0;
+    }
+
+    private void createReplicationSlot(String slotName) {
+        String query = "SELECT pg_create_logical_replication_slot(?, 'test_decoding')";
+        jdbcTemplate.update(query, slotName);
+    }
+
+    public void listenToReplicationSlot() {
+        String query = "SELECT data FROM pg_logical_slot_get_changes(?, NULL, NULL)";
+        while (true) {
+            List&lt;String&gt; changes = jdbcTemplate.queryForList(query, new Object[]{SLOT_NAME}, String.class);
+            for (String change : changes) {
+//                processChange(change);
+                changeLogProcessor.processChangeLog(change);
+            }
+            try {
+                Thread.sleep(10000);  // 暂停一段时间再次检查
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+//    private void processChange(String change) {
+//        // 处理数据库变更逻辑
+//        System.out.println("Detected change: " + change);
+//    }
+}
+</code></pre> 
+<p> 这段代码是一个 Spring Boot 服务类，它使用 <code>JdbcTemplate</code> 从 PostgreSQL 的逻辑复制槽中获取变更数据。服务启动时检查并创建逻辑复制槽，然后启动一个线程不断监听变更，处理变更数据并调用 <code>ChangeLogProcessor</code> 进行进一步处理。</p> 
+<p><strong>5. 编写解析WAL日志代码</strong></p> 
+<pre><code class="language-java">package com.xfc.pg2redis.service;
+
+import com.xfc.pg2redis.utils.RedisUtils;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.data.redis.core.StringRedisTemplate;
+import org.springframework.stereotype.Service;
+
+@Service
+public class ChangeLogProcessor {
+
+    @Autowired
+    private RedisUtils redisUtils;
+
+    public void processChangeLog(String changeLog) {
+        // 解析日志内容
+        String operation = extractOperation(changeLog);
+        String id = extractId(changeLog);
+        String data = extractData(changeLog);
+
+        switch (operation) {
+            case "INSERT":
+                // 将数据插入到 Redis
+                redisUtils.set(id, data);
+                System.out.println("Inserted into Redis: " + id + " =&gt; " + data);
+                break;
+
+            case "UPDATE":
+                // 更新 Redis 中的数据
+                redisUtils.set(id, data);
+                System.out.println("Updated in Redis: " + id + " =&gt; " + data);
+                break;
+
+            case "DELETE":
+                // 从 Redis 中删除数据
+                redisUtils.del(id);
+                System.out.println("Deleted from Redis: " + id);
+                break;
+
+            default:
+                System.out.println("Unknown operation: " + operation);
+        }
+    }
+
+    private String extractOperation(String changeLog) {
+        if (changeLog.startsWith("INSERT:")) {
+            return "INSERT";
+        } else if (changeLog.startsWith("UPDATE:")) {
+            return "UPDATE";
+        } else if (changeLog.startsWith("DELETE:")) {
+            return "DELETE";
+        }
+        return "UNKNOWN";
+    }
+
+    private String extractId(String changeLog) {
+        // 简单的正则表达式提取 id
+        String idPattern = "id\\[character varying\\]:'(.*?)'";
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(idPattern);
+        java.util.regex.Matcher matcher = pattern.matcher(changeLog);
+        return matcher.find() ? matcher.group(1) : "";
+    }
+
+    private String extractData(String changeLog) {
+        // 提取数据内容，这里假设数据是以 `name`, `price`, `num` 字段组成
+        // 这里只是一个简单的提取示例，根据实际情况调整
+        String dataPattern = "name\\[character varying\\]:'(.*?)' price\\[bigint\\]:(\\d+) num\\[integer\\]:(\\d+)";
+        java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(dataPattern);
+        java.util.regex.Matcher matcher = pattern.matcher(changeLog);
+        if (matcher.find()) {
+            return String.format("{\"name\":\"%s\", \"price\":%s, \"num\":%s}",
+                    matcher.group(1), matcher.group(2), matcher.group(3));
+        }
+        return "";
+    }
+}
+</code></pre> 
+<p>上述代码定义了一个名为 <code>ChangeLogProcessor</code> 的服务类，用于处理 PostgreSQL 生成的变更日志，并根据这些日志更新 Redis 缓存。类中的 <code>processChangeLog</code> 方法接收一个变更日志字符串，通过 <code>extractOperation</code>、<code>extractId</code> 和 <code>extractData</code> 方法提取操作类型、数据标识符（ID）和数据内容。根据操作类型（插入、更新、删除），该方法会调用 <code>RedisUtils</code> 类的方法来同步 Redis 缓存，确保 Redis 中的数据与 PostgreSQL 数据库保持一致。这样的处理流程有效支持了数据在不同存储系统间的一致性维护。 </p> 
+<h5>3.4.3. 效果测试</h5> 
+<p>1. 新增数据</p> 
+<p>调用新增数据接口：</p> 
+<p><img alt="" height="812" src="https://images2.imgbox.com/90/05/VT4YNufx_o.png" width="1200"></p> 
+<p> 日志打印：</p> 
+<p><img alt="" height="425" src="https://images2.imgbox.com/53/8c/HvWVnn01_o.png" width="1200"><br>  redis效果：</p> 
+<p><img alt="" height="229" src="https://images2.imgbox.com/aa/df/n7PcIHTm_o.png" width="1200"></p> 
+<p>2. 编辑数据</p> 
+<p> 调用编辑数据接口：</p> 
+<p><img alt="" height="812" src="https://images2.imgbox.com/3a/a4/RRqTH3mh_o.png" width="1200"><br>  日志打印：</p> 
+<p><img alt="" height="427" src="https://images2.imgbox.com/11/88/mt0B21Zl_o.png" width="1200"><br>  redis效果：</p> 
+<p><img alt="" height="171" src="https://images2.imgbox.com/b4/14/4TTjx9nQ_o.png" width="1200"></p> 
+<h4 style="background-color:transparent;">3.5. 源码地址：</h4> 
+<p><a href="https://gitee.com/u_ncle/xfc-fdw-cloud" rel="nofollow" title="xfc-fdw-cloud: 公共解决方案">xfc-fdw-cloud: 公共解决方案</a></p> 
+<h3>4. 结语</h3> 
+<p>通过本文的讨论，我们深入探讨了如何使用WAL日志实现PostgreSQL与Redis之间的高效数据同步。在现代应用程序中，确保数据库和缓存之间的数据一致性至关重要，而WAL日志提供了一种可靠的解决方案，既能保证高性能，又能确保数据的一致性。通过实际代码示例和流程解析，我们展示了如何在Spring Boot环境中实现这一机制，并验证了其在实际应用中的有效性。若本文对你有帮助。别忘记点点关注哦~</p> 
+<p><img alt="" height="383" src="https://images2.imgbox.com/40/45/oAlHX0C8_o.jpg" width="900"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5c8a03b65ba3f3ea354d1991a3afcb94/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【Redis】Redis 持久化 AOF、RDB—（七）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a6d89fb0f5a7759fb7600df84cb71644/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">RabbitMQ简单介绍</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

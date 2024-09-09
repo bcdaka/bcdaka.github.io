@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink SQL 实时读取 kafka 数据写入 Clickhouse —— 日志处理（三） - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/b637bbd80fc471e893016ce713906c62/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Flink SQL 实时读取 kafka 数据写入 Clickhouse —— 日志处理（三）">
+  <meta property="og:description" content="文章目录 前言Clickhouse 表设计adlp_log_local 本地表adlp_log 分布式表 Flink SQL 说明创建 Source Table (Kafka) 连接器表创建 Sink Table (Clickhouse) 连接器解析 Message 写入 Sink 日志查询演示总结 前言 在之前的文章中，我们总结了如何在 Django 项目中进行日志配置，以及如何在 k8s 上部署 Filebeat 采集 PVC 中的日志发送至 Kafka：
+Django 日志控制台输出、文件写入按天拆分文件，自定义 Filter 增加 trace_id 以及过滤——日志处理（一）Filebeat k8s 部署（Deployment）采集 PVC 日志发送至 Kafka——日志处理（二） 本文将总结如何使用 Flink SQL 实时将 kafka 中的日志消息发送至 Clickhouse 表中。
+说明
+限于文章主题和篇幅，本文不会将如何部署和使用 Flink SQL, 关于这些内容过多而且网上资料也很多，就不再赘述。
+本文的核心是说明如何设计 Clickhouse 表结构，以及对应的 Flink SQL 说明。
+Clickhouse 表设计 上图中的JSON 内容是kafka 中的日志消息，我们需要读取该消息中的 message 字段（我们的日志信息），然后将该字段中的 time, level, func, trace_id, message 保存至 clickhouse 中。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-21T18:22:05+08:00">
+    <meta property="article:modified_time" content="2024-07-21T18:22:05+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink SQL 实时读取 kafka 数据写入 Clickhouse —— 日志处理（三）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">前言</a></li><li><a href="#Clickhouse__13" rel="nofollow">Clickhouse 表设计</a></li><li><ul><li><a href="#adlp_log_local__19" rel="nofollow">adlp_log_local 本地表</a></li><li><a href="#adlp_log__66" rel="nofollow">adlp_log 分布式表</a></li></ul> 
+  </li><li><a href="#Flink_SQL__93" rel="nofollow">Flink SQL 说明</a></li><li><ul><li><a href="#_Source_Table_Kafka__95" rel="nofollow">创建 Source Table (Kafka) 连接器表</a></li><li><a href="#_Sink_Table_Clickhouse__114" rel="nofollow">创建 Sink Table (Clickhouse) 连接器</a></li><li><a href="#_Message__Sink_139" rel="nofollow">解析 Message 写入 Sink</a></li></ul> 
+  </li><li><a href="#_154" rel="nofollow">日志查询演示</a></li><li><a href="#_164" rel="nofollow">总结</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>前言</h2> 
+<p>在之前的文章中，我们总结了如何在 Django 项目中进行日志配置，以及如何在 k8s 上部署 Filebeat 采集 PVC 中的日志发送至 Kafka：</p> 
+<ul><li><a href="https://blog.csdn.net/qq_42586468/article/details/140543418?spm=1001.2014.3001.5501">Django 日志控制台输出、文件写入按天拆分文件，自定义 Filter 增加 trace_id 以及过滤——日志处理（一）</a></li><li><a href="https://blog.csdn.net/qq_42586468/article/details/140547836?spm=1001.2014.3001.5501">Filebeat k8s 部署（Deployment）采集 PVC 日志发送至 Kafka——日志处理（二）</a></li></ul> 
+<p>本文将总结如何使用 Flink SQL 实时将 kafka 中的日志消息发送至 Clickhouse 表中。</p> 
+<blockquote> 
+ <p>说明<br> 限于文章主题和篇幅，本文不会将如何部署和使用 Flink SQL, 关于这些内容过多而且网上资料也很多，就不再赘述。<br> 本文的核心是说明如何设计 Clickhouse 表结构，以及对应的 Flink SQL 说明。</p> 
+</blockquote> 
+<p></p> 
+<h2><a id="Clickhouse__13"></a>Clickhouse 表设计</h2> 
+<p><img src="https://images2.imgbox.com/d4/e6/NaM1FMpA_o.png" alt=""><br>上图中的JSON 内容是kafka 中的日志消息，我们需要读取该消息中的 message 字段（我们的日志信息），然后将该字段中的 time, level, func, trace_id, message 保存至 clickhouse 中。<br>这里我使用两张表保存日志：</p> 
+<ul><li><code>adlp_log_local</code>本地表</li><li><code>adlp_log</code>分布式表，FlinkSQL 实时写入分布式表<br> </li></ul> 
+<h3><a id="adlp_log_local__19"></a>adlp_log_local 本地表</h3> 
+<pre><code class="prism language-python">create table <span class="token keyword">if</span> <span class="token keyword">not</span> exists cloud_data<span class="token punctuation">.</span>adlp_log_local on cluster perftest_5shards_2replicas
+<span class="token punctuation">(</span>
+    `dt`             DateTime64<span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    `level`          LowCardinality<span class="token punctuation">(</span>String<span class="token punctuation">)</span><span class="token punctuation">,</span>
+    `trace_id`       String<span class="token punctuation">,</span>
+    `func`           String<span class="token punctuation">,</span>
+    `message`        String<span class="token punctuation">,</span>
+
+    <span class="token operator">-</span><span class="token operator">-</span> 建立索引加速低命中率内容的查询
+    INDEX idx_trace_id `trace_id` TYPE tokenbf_v1<span class="token punctuation">(</span><span class="token number">4096</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span> GRANULARITY <span class="token number">2</span><span class="token punctuation">,</span>
+    INDEX idx_message `message` TYPE tokenbf_v1<span class="token punctuation">(</span><span class="token number">30720</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span> GRANULARITY <span class="token number">1</span>
+<span class="token punctuation">)</span>
+ENGINE <span class="token operator">=</span> ReplicatedMergeTree<span class="token punctuation">(</span><span class="token string">'/clickhouse/tables/{layer}-{shard}/cloud_data/adlp_log_local'</span><span class="token punctuation">,</span> <span class="token string">'{replica}'</span><span class="token punctuation">)</span>
+    PARTITION BY toYYYYMMDD<span class="token punctuation">(</span>dt<span class="token punctuation">)</span>
+    PRIMARY KEY <span class="token punctuation">(</span>dt<span class="token punctuation">,</span> trace_id<span class="token punctuation">)</span>
+    ORDER BY <span class="token punctuation">(</span>dt<span class="token punctuation">,</span> trace_id<span class="token punctuation">)</span>
+    TTL toDateTime<span class="token punctuation">(</span>dt<span class="token punctuation">)</span> <span class="token operator">+</span> toIntervalDay<span class="token punctuation">(</span><span class="token number">30</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>字段说明</strong></p> 
+<ul><li><code>dt</code> <strong>(DateTime64(3))</strong>: 存储日志时间戳，精确到毫秒。</li><li><code>level</code> <strong>(LowCardinality(String))</strong>: 存储日志级别，如 <code>INFO</code>、<code>ERROR</code> 等，使用 <code>LowCardinality</code> 优化存储和查询。</li><li><code>trace_id</code> <strong>(String)</strong>: 存储追踪 ID，通常用于关联一系列相关的日志记录。</li><li><code>func</code> <strong>(String)</strong>: 存储函数或方法名称，表示日志产生的位置。</li><li><code>message</code><strong>(String)</strong>: 存储日志消息的具体内容。</li></ul> 
+<p><strong>索引</strong></p> 
+<ul><li><code>idx_trace_id</code>: 使用 <code>tokenbf_v1</code> 类型的布隆过滤器索引（<code>tokenbf_v1(4096, 2, 0)</code>），在 <code>trace_id</code> 字段上创建，粒度为 2。布隆过滤器索引适合低命中率的查询，能够快速过滤出大多数不匹配的记录。</li><li><code>idx_message</code>: 使用 <code>tokenbf_v1</code> 类型的布隆过滤器索引（<code>tokenbf_v1(30720, 2, 0)</code>），在 <code>message</code> 字段上创建，粒度为 1。同样用于加速低命中率的查询。</li></ul> 
+<p><strong>存储引擎</strong></p> 
+<ul><li><code>ReplicatedMergeTree</code>: 使用分布式和复制的存储引擎，路径模板为 <code>/clickhouse/tables/{layer}-{shard}/cloud_data/adlp_log_local</code>，副本名称为 <code>{replica}</code>，保证数据的高可用性和一致性。</li></ul> 
+<p><strong>分区和排序</strong></p> 
+<ul><li>分区 (PARTITION BY): 按 <code>dt</code> 字段的年月日（<code>toYYYYMMDD(dt)</code>）进行分区，有助于管理和查询按天划分的数据。</li><li>主键 (PRIMARY KEY): 主键由 <code>dt</code> 和 <code>trace_id</code> 组成，有助于高效查询。</li><li>排序 (ORDER BY): 按 <code>dt</code> 和 <code>trace_id</code> 字段排序，优化基于时间和 trace ID 的查询。</li></ul> 
+<p><strong>数据生命周期 (TTL)</strong></p> 
+<ul><li><strong>TTL (Time To Live)</strong>: 配置数据的生存时间，数据在 <code>dt</code> 字段的时间加上 30 天后自动过期删除，保持数据表的清洁和高效。<br> </li></ul> 
+<h3><a id="adlp_log__66"></a>adlp_log 分布式表</h3> 
+<pre><code class="prism language-python">create table <span class="token keyword">if</span> <span class="token keyword">not</span> exists cloud_data<span class="token punctuation">.</span>adlp_log on cluster perftest_5shards_2replicas
+<span class="token punctuation">(</span>
+    `dt`             DateTime64<span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    `level`          LowCardinality<span class="token punctuation">(</span>String<span class="token punctuation">)</span><span class="token punctuation">,</span>
+    `trace_id`       String<span class="token punctuation">,</span>
+    `func`           String<span class="token punctuation">,</span>
+    `message`        String
+<span class="token punctuation">)</span>
+ENGINE <span class="token operator">=</span> Distributed<span class="token punctuation">(</span><span class="token string">'perftest_5shards_2replicas'</span><span class="token punctuation">,</span> <span class="token string">'cloud_data'</span><span class="token punctuation">,</span> <span class="token string">'adlp_log_local'</span><span class="token punctuation">,</span> rand<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>字段说明</strong><br> 与本地表 <code>adlp_log_local</code> 相同，包含以下字段：</p> 
+<ul><li><code>dt</code> (DateTime64(3))</li><li><code>level</code> (LowCardinality(String))</li><li><code>trace_id</code> (String)</li><li><code>func</code> (String)</li><li><code>message</code> (String)</li></ul> 
+<p><strong>存储引擎</strong><br><code>Distributed</code>: 分布式引擎，允许将数据分布到多个分片和副本中。参数解释如下：</p> 
+<ul><li><strong>集群名称 (</strong><code>perftest_5shards_2replicas</code><strong>)</strong>: 指定集群的名称。</li><li><strong>数据库 (</strong><code>cloud_data</code><strong>)</strong>: 数据库名称。</li><li><strong>表 (</strong><code>adlp_log_local</code><strong>)</strong>: 本地表的名称。</li><li><strong>分片键 (</strong><code>rand()</code><strong>)</strong>: 使用随机函数进行数据分片，保证数据均匀分布。<br> </li></ul> 
+<h2><a id="Flink_SQL__93"></a>Flink SQL 说明</h2> 
+<p></p> 
+<h3><a id="_Source_Table_Kafka__95"></a>创建 Source Table (Kafka) 连接器表</h3> 
+<pre><code class="prism language-python">CREATE TEMPORARY TABLE source_table <span class="token punctuation">(</span>
+    message STRING
+<span class="token punctuation">)</span> WITH <span class="token punctuation">(</span>
+    <span class="token string">'connector'</span> <span class="token operator">=</span> <span class="token string">'kafka'</span><span class="token punctuation">,</span>
+    <span class="token string">'topic'</span> <span class="token operator">=</span> <span class="token string">'filebeat_logs'</span><span class="token punctuation">,</span>
+    <span class="token string">'properties.bootstrap.servers'</span> <span class="token operator">=</span> <span class="token string">'127.0.0.1:9092'</span><span class="token punctuation">,</span>
+    <span class="token string">'properties.group.id'</span> <span class="token operator">=</span> <span class="token string">'prod-logs-k2c'</span><span class="token punctuation">,</span>
+    <span class="token string">'scan.startup.mode'</span> <span class="token operator">=</span> <span class="token string">'earliest-offset'</span><span class="token punctuation">,</span>
+    <span class="token string">'format'</span> <span class="token operator">=</span> <span class="token string">'json'</span><span class="token punctuation">,</span>
+    <span class="token string">'json.ignore-parse-errors'</span> <span class="token operator">=</span> <span class="token string">'false'</span><span class="token punctuation">,</span>
+    <span class="token string">'json.fail-on-missing-field'</span> <span class="token operator">=</span> <span class="token string">'false'</span><span class="token punctuation">,</span>
+    <span class="token string">'properties.security.protocol'</span> <span class="token operator">=</span> <span class="token string">'SASL_PLAINTEXT'</span><span class="token punctuation">,</span>
+    <span class="token string">'properties.sasl.mechanism'</span> <span class="token operator">=</span> <span class="token string">'PLAIN'</span><span class="token punctuation">,</span>
+    <span class="token string">'properties.sasl.jaas.config'</span> <span class="token operator">=</span> <span class="token string">'org.apache.kafka.common.security.plain.PlainLoginModule required username="admin" password="admin";'</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p></p> 
+<h3><a id="_Sink_Table_Clickhouse__114"></a>创建 Sink Table (Clickhouse) 连接器</h3> 
+<pre><code class="prism language-python">CREATE TEMPORARY TABLE sink_table <span class="token punctuation">(</span>
+    `dt` TIMESTAMP<span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    `level` STRING <span class="token punctuation">,</span>
+    `trace_id` STRING <span class="token punctuation">,</span>
+    `func` STRING <span class="token punctuation">,</span>
+    `message` STRING
+<span class="token punctuation">)</span> WITH <span class="token punctuation">(</span>
+  <span class="token string">'connector'</span> <span class="token operator">=</span> <span class="token string">'clickhouse'</span><span class="token punctuation">,</span>
+  <span class="token string">'url'</span> <span class="token operator">=</span> <span class="token string">'clickhouse://127.0.0.1:8123'</span><span class="token punctuation">,</span>
+  <span class="token string">'username'</span> <span class="token operator">=</span> <span class="token string">'admin'</span><span class="token punctuation">,</span>
+  <span class="token string">'password'</span> <span class="token operator">=</span> <span class="token string">'admin'</span><span class="token punctuation">,</span>
+  <span class="token string">'database-name'</span> <span class="token operator">=</span> <span class="token string">'cloud_data'</span><span class="token punctuation">,</span>
+  <span class="token string">'table-name'</span> <span class="token operator">=</span> <span class="token string">'adlp_log'</span><span class="token punctuation">,</span>
+  <span class="token string">'use-local'</span> <span class="token operator">=</span> <span class="token string">'true'</span><span class="token punctuation">,</span>
+  <span class="token string">'sink.batch-size'</span> <span class="token operator">=</span> <span class="token string">'1000'</span><span class="token punctuation">,</span>
+  <span class="token string">'sink.flush-interval'</span> <span class="token operator">=</span> <span class="token string">'1000'</span><span class="token punctuation">,</span>
+  <span class="token string">'sink.max-retries'</span> <span class="token operator">=</span> <span class="token string">'10'</span><span class="token punctuation">,</span>
+  <span class="token string">'sink.update-strategy'</span> <span class="token operator">=</span> <span class="token string">'insert'</span><span class="token punctuation">,</span>
+  <span class="token string">'sink.sharding.use-table-definition'</span> <span class="token operator">=</span> <span class="token string">'true'</span><span class="token punctuation">,</span>
+  <span class="token string">'sink.parallelism'</span> <span class="token operator">=</span> <span class="token string">'1'</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p></p> 
+<h3><a id="_Message__Sink_139"></a>解析 Message 写入 Sink</h3> 
+<pre><code class="prism language-python">INSERT INTO sink_table
+SELECT 
+    TO_TIMESTAMP<span class="token punctuation">(</span>JSON_VALUE<span class="token punctuation">(</span>message<span class="token punctuation">,</span> <span class="token string">'$.time'</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">'yyyy-MM-dd HH:mm:ss'</span><span class="token punctuation">)</span> AS dt<span class="token punctuation">,</span>
+    JSON_VALUE<span class="token punctuation">(</span>message<span class="token punctuation">,</span> <span class="token string">'$.level'</span><span class="token punctuation">)</span> AS level<span class="token punctuation">,</span>
+    JSON_VALUE<span class="token punctuation">(</span>message<span class="token punctuation">,</span> <span class="token string">'$.trace_id'</span><span class="token punctuation">)</span> AS trace_id<span class="token punctuation">,</span>
+    JSON_VALUE<span class="token punctuation">(</span>message<span class="token punctuation">,</span> <span class="token string">'$.func'</span><span class="token punctuation">)</span> AS func<span class="token punctuation">,</span>
+    JSON_VALUE<span class="token punctuation">(</span>message<span class="token punctuation">,</span> <span class="token string">'$.message'</span><span class="token punctuation">)</span> AS message
+FROM source_table<span class="token punctuation">;</span>
+</code></pre> 
+<blockquote> 
+ <p>注意：<br> 这里在写入的时候默认我们的日志格式是 JSON 的，如果我们的日志发送到 kafka 不是 JSON 格式的，上边的 JSON_VALUE 可能会报错。当然，我们也可以在条件中加上是否为 JSON 判断，但是我觉得没必要。</p> 
+</blockquote> 
+<p></p> 
+<h2><a id="_154"></a>日志查询演示</h2> 
+<p>我们的日志导入成功后，可以通过第三方查询工具查询 clickhouse 数据源，我这里使用的是 superset 去查询 clickhouse 数据源。<br><strong>通过 trace_id 查询整个执行链路的日志</strong><br><img src="https://images2.imgbox.com/cb/c5/8pvte0SO_o.png" alt="image.png"><br><strong>查询错误日志信息</strong><br><img src="https://images2.imgbox.com/f6/45/s373dkFh_o.png" alt="image.png"></p> 
+<p><strong>全文检索 message 日志信息</strong><br><img src="https://images2.imgbox.com/bb/1c/cuvKPygt_o.png" alt="image.png"></p> 
+<p><strong>更多扩展</strong></p> 
+<ul><li><strong>superset</strong> 是一个强大的 BI 工具，可以将我们的日志中的一些指标做成看板，比如说关键错误日志数量，然后设置告警，发送通知。</li><li>通过 Flink SQL 实时将我们的日志从 kafka 中写入 clickhouse ，结合 clickhouse 强大的查询功能，以及 superset 强大的 BI 功能，可以充分挖掘业务日志中的潜在价值。<br> </li></ul> 
+<h2><a id="_164"></a>总结</h2> 
+<p>本文总结了如何使用使用 Clickhouse 保存日志数据，以及如何通过 Flink SQL 将我们的日志实时从 kafka 同步至 clickhouse，然后在结合强大的第三方查询 BI 工具 superset，玩转业务日志，挖掘业务日志的潜在价值。<br>本文设计到的技能知识点比较多，需要熟悉 Clickhouse， Kafka, FlinkSQL, Superset 等，我之前的文章中总结了一些关于 Clickhouse 和 Kafka 相关的内容，感兴趣的读者可以看看：</p> 
+<blockquote> 
+ <p><strong>clickhouse</strong></p> 
+ <ul><li><a href="https://blog.csdn.net/qq_42586468/article/details/139079924">Clickhouse字典关联外部 MySQL 表联合查询实践</a></li><li><a href="https://blog.csdn.net/qq_42586468/article/details/139225578">ClickHouse架构概览 —— Clickhouse 架构篇（一）</a></li><li><a href="https://blog.csdn.net/qq_42586468/article/details/139318656">ClickHouse 使用技巧总结</a></li><li><a href="https://blog.csdn.net/qq_42586468/article/details/139429326">ClickHouse 实现用户画像（标签）系统实践</a></li></ul> 
+</blockquote> 
+<p><strong>kafka</strong></p> 
+<blockquote> 
+ <ul><li><a href="https://blog.csdn.net/qq_42586468/article/details/139953407">kafka 生产者 API 实践总结</a></li><li><a href="https://blog.csdn.net/qq_42586468/article/details/139977737">kafka 消费者 API 使用总结</a></li><li><a href="https://blog.csdn.net/qq_42586468/article/details/140091521">保证 Kafka 数据可靠性最佳实践总结</a></li><li><a href="https://blog.csdn.net/qq_42586468/article/details/140117195">kafka 实现精确一次性语义实践总结</a></li></ul> 
+</blockquote> 
+<p><strong>superset</strong></p> 
+<blockquote> 
+ <ul><li><a href="https://blog.csdn.net/qq_42586468/article/details/136945972">Pycharm 调试 superset 源码配置（远程调试）</a></li><li><a href="https://blog.csdn.net/qq_42586468/article/details/136946220">superset 二开增加 flink 数据源连接通过flink sql 查询数据</a></li></ul> 
+</blockquote>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4c900484b0083c8617819bde125e946c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【深入C&#43;&#43;】二叉搜索树</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/02b2d545d6e86889f75c75657275fbdb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">阿里云OS Copilot：解锁操作系统运维与编程的智能助手</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

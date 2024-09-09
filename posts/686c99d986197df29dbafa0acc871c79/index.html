@@ -1,0 +1,952 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Java常见限流用法介绍和实现 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/686c99d986197df29dbafa0acc871c79/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Java常见限流用法介绍和实现">
+  <meta property="og:description" content="目录
+一、现象
+二、工具
+​​​​​​1、AtomicInteger,AtomicLong 原子类操作
+​​​​​​2、Redis&#43;Lua
+​​​​​​3、Google Guava的RateLimiter
+1） 使用
+2） Demo
+3） 优化demo
+4、阿里开源的Sentinel
+三、算法
+1、计数限流
+（1）原理
+（2）实现
+（3）优缺点
+2、固定窗口限流
+（1）原理
+（2）实现
+（3）优缺点
+3、滑动窗口限流
+（1）原理
+（2）实现
+（3）优缺点
+4、漏桶算法
+（1）原理
+（2）实现
+（3）优缺点
+5、令牌桶算法
+（1）原理
+（2）实现
+（3）优缺点
+一、现象 为什么要限流：用于在高并发环境中保护系统资源,避免因过多请求导致系统崩溃
+线上服务运行中，偶尔会遇见如Api服务瞬时请求流量过高，服务被压垮；数据处理服务处理消息队列数据，消费速度过快，导致处理性能下降甚至崩溃。
+限流前：数据推送给服务处理时，速度过快，服务未限流，导致CPU突然暴涨达到临界值，处理性能底下
+限流后：消费速度平稳，CPU平稳，未超限，内存上涨也未超限
+可见限流是非常重要的！
+二、工具 ​​​​​​1、AtomicInteger,AtomicLong 原子类操作 优点：
+性能高：AtomicInteger 和 AtomicLong 基于 CAS（Compare-And-Swap）操作，能够实现高效的并发访问，适用于高并发场景。轻量级：这些类作为 Java 标准库的一部分，无需引入额外的依赖，使用简单方便。内存操作：AtomicInteger 和 AtomicLong 的操作都在内存中完成，避免了网络开销。 缺点：
+单机限流：AtomicInteger 和 AtomicLong 主要适用于单机环境下的限流，对于分布式系统或微服务架构来说，可能需要额外的机制来实现全局限流。功能相对单一：AtomicInteger 和 AtomicLong 的功能较为单一，可能无法满足复杂的限流需求。CAS 的潜在问题：在高并发场景下，CAS 操作可能导致自旋等待，增加 CPU 开销。此外，如果多个线程同时修改同一个值，可能导致性能下降。 ​​​​​​2、Redis&#43;Lua 优点：">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-04-15T00:50:58+08:00">
+    <meta property="article:modified_time" content="2024-04-15T00:50:58+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Java常见限流用法介绍和实现</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="Yummy服务5XX排查-一、现象-toc" style="margin-left:0px;"><a href="#Yummy%E6%9C%8D%E5%8A%A15XX%E6%8E%92%E6%9F%A5-%E4%B8%80%E3%80%81%E7%8E%B0%E8%B1%A1" rel="nofollow">一、现象</a></p> 
+<p id="%E4%BA%8C%E3%80%81%E5%B7%A5%E5%85%B7-toc" style="margin-left:0px;"><a href="#%E4%BA%8C%E3%80%81%E5%B7%A5%E5%85%B7" rel="nofollow">二、工具</a></p> 
+<p id="%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B-toc" style="margin-left:40px;"><a href="#%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B" rel="nofollow">​​​​​​1、AtomicInteger,AtomicLong 原子类操作</a></p> 
+<p id="%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B2%E3%80%81Redis%2BLua-toc" style="margin-left:40px;"><a href="#%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B2%E3%80%81Redis%2BLua" rel="nofollow">​​​​​​2、Redis+Lua</a></p> 
+<p id="%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B3%E3%80%81Google%20Guava%E7%9A%84RateLimiter-toc" style="margin-left:40px;"><a href="#%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B3%E3%80%81Google%20Guava%E7%9A%84RateLimiter" rel="nofollow">​​​​​​3、Google Guava的RateLimiter</a></p> 
+<p id="1%EF%BC%89%C2%A0%E4%BD%BF%E7%94%A8-toc" style="margin-left:80px;"><a href="#1%EF%BC%89%C2%A0%E4%BD%BF%E7%94%A8" rel="nofollow">1） 使用</a></p> 
+<p id="2%EF%BC%89%20Demo-toc" style="margin-left:80px;"><a href="#2%EF%BC%89%20Demo" rel="nofollow">2） Demo</a></p> 
+<p id="3%EF%BC%89%C2%A0%E4%BC%98%E5%8C%96demo-toc" style="margin-left:80px;"><a href="#3%EF%BC%89%C2%A0%E4%BC%98%E5%8C%96demo" rel="nofollow">3） 优化demo</a></p> 
+<p id="4%E3%80%81%E9%98%BF%E9%87%8C%E5%BC%80%E6%BA%90%E7%9A%84Sentinel-toc" style="margin-left:40px;"><a href="#4%E3%80%81%E9%98%BF%E9%87%8C%E5%BC%80%E6%BA%90%E7%9A%84Sentinel" rel="nofollow">4、阿里开源的Sentinel</a></p> 
+<p id="%E4%B8%89%E3%80%81%E7%AE%97%E6%B3%95-toc" style="margin-left:0px;"><a href="#%E4%B8%89%E3%80%81%E7%AE%97%E6%B3%95" rel="nofollow">三、算法</a></p> 
+<p id="1%E3%80%81%E8%AE%A1%E6%95%B0%E9%99%90%E6%B5%81-toc" style="margin-left:40px;"><a href="#1%E3%80%81%E8%AE%A1%E6%95%B0%E9%99%90%E6%B5%81" rel="nofollow">1、计数限流</a></p> 
+<p id="%EF%BC%881%EF%BC%89%E5%8E%9F%E7%90%86-toc" style="margin-left:80px;"><a href="#%EF%BC%881%EF%BC%89%E5%8E%9F%E7%90%86" rel="nofollow">（1）原理</a></p> 
+<p id="%EF%BC%882%EF%BC%89%E5%AE%9E%E7%8E%B0-toc" style="margin-left:80px;"><a href="#%EF%BC%882%EF%BC%89%E5%AE%9E%E7%8E%B0" rel="nofollow">（2）实现</a></p> 
+<p id="%EF%BC%883%EF%BC%89%E4%BC%98%E7%BC%BA%E7%82%B9-toc" style="margin-left:80px;"><a href="#%EF%BC%883%EF%BC%89%E4%BC%98%E7%BC%BA%E7%82%B9" rel="nofollow">（3）优缺点</a></p> 
+<p id="2%E3%80%81%E5%9B%BA%E5%AE%9A%E7%AA%97%E5%8F%A3%E9%99%90%E6%B5%81-toc" style="margin-left:40px;"><a href="#2%E3%80%81%E5%9B%BA%E5%AE%9A%E7%AA%97%E5%8F%A3%E9%99%90%E6%B5%81" rel="nofollow">2、固定窗口限流</a></p> 
+<p id="%EF%BC%881%EF%BC%89%E5%8E%9F%E7%90%86-toc" style="margin-left:80px;"><a href="#%EF%BC%881%EF%BC%89%E5%8E%9F%E7%90%86" rel="nofollow">（1）原理</a></p> 
+<p id="%EF%BC%882%EF%BC%89%E5%AE%9E%E7%8E%B0-toc" style="margin-left:80px;"><a href="#%EF%BC%882%EF%BC%89%E5%AE%9E%E7%8E%B0" rel="nofollow">（2）实现</a></p> 
+<p id="%EF%BC%883%EF%BC%89%E4%BC%98%E7%BC%BA%E7%82%B9-toc" style="margin-left:80px;"><a href="#%EF%BC%883%EF%BC%89%E4%BC%98%E7%BC%BA%E7%82%B9" rel="nofollow">（3）优缺点</a></p> 
+<p id="3%E3%80%81%E6%BB%91%E5%8A%A8%E7%AA%97%E5%8F%A3%E9%99%90%E6%B5%81-toc" style="margin-left:40px;"><a href="#3%E3%80%81%E6%BB%91%E5%8A%A8%E7%AA%97%E5%8F%A3%E9%99%90%E6%B5%81" rel="nofollow">3、滑动窗口限流</a></p> 
+<p id="%EF%BC%881%EF%BC%89%E5%8E%9F%E7%90%86-toc" style="margin-left:80px;"><a href="#%EF%BC%881%EF%BC%89%E5%8E%9F%E7%90%86" rel="nofollow">（1）原理</a></p> 
+<p id="%EF%BC%882%EF%BC%89%E5%AE%9E%E7%8E%B0-toc" style="margin-left:80px;"><a href="#%EF%BC%882%EF%BC%89%E5%AE%9E%E7%8E%B0" rel="nofollow">（2）实现</a></p> 
+<p id="%EF%BC%883%EF%BC%89%E4%BC%98%E7%BC%BA%E7%82%B9-toc" style="margin-left:80px;"><a href="#%EF%BC%883%EF%BC%89%E4%BC%98%E7%BC%BA%E7%82%B9" rel="nofollow">（3）优缺点</a></p> 
+<p id="4%E3%80%81%E6%BC%8F%E6%A1%B6%E7%AE%97%E6%B3%95-toc" style="margin-left:40px;"><a href="#4%E3%80%81%E6%BC%8F%E6%A1%B6%E7%AE%97%E6%B3%95" rel="nofollow">4、漏桶算法</a></p> 
+<p id="%EF%BC%881%EF%BC%89%E5%8E%9F%E7%90%86-toc" style="margin-left:80px;"><a href="#%EF%BC%881%EF%BC%89%E5%8E%9F%E7%90%86" rel="nofollow">（1）原理</a></p> 
+<p id="%EF%BC%882%EF%BC%89%E5%AE%9E%E7%8E%B0-toc" style="margin-left:80px;"><a href="#%EF%BC%882%EF%BC%89%E5%AE%9E%E7%8E%B0" rel="nofollow">（2）实现</a></p> 
+<p id="%EF%BC%883%EF%BC%89%E4%BC%98%E7%BC%BA%E7%82%B9-toc" style="margin-left:80px;"><a href="#%EF%BC%883%EF%BC%89%E4%BC%98%E7%BC%BA%E7%82%B9" rel="nofollow">（3）优缺点</a></p> 
+<p id="5%E3%80%81%E4%BB%A4%E7%89%8C%E6%A1%B6%E7%AE%97%E6%B3%95-toc" style="margin-left:40px;"><a href="#5%E3%80%81%E4%BB%A4%E7%89%8C%E6%A1%B6%E7%AE%97%E6%B3%95" rel="nofollow">5、令牌桶算法</a></p> 
+<p id="%EF%BC%881%EF%BC%89%E5%8E%9F%E7%90%86-toc" style="margin-left:80px;"><a href="#%EF%BC%881%EF%BC%89%E5%8E%9F%E7%90%86" rel="nofollow">（1）原理</a></p> 
+<p id="%EF%BC%882%EF%BC%89%E5%AE%9E%E7%8E%B0-toc" style="margin-left:80px;"><a href="#%EF%BC%882%EF%BC%89%E5%AE%9E%E7%8E%B0" rel="nofollow">（2）实现</a></p> 
+<p id="%EF%BC%883%EF%BC%89%E4%BC%98%E7%BC%BA%E7%82%B9-toc" style="margin-left:80px;"><a href="#%EF%BC%883%EF%BC%89%E4%BC%98%E7%BC%BA%E7%82%B9" rel="nofollow">（3）优缺点</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h2 id="Yummy服务5XX排查-一、现象">一、现象</h2> 
+<p>为什么要限流：用于在高并发环境中保护系统资源,避免因过多请求导致系统崩溃</p> 
+<p>线上服务运行中，偶尔会遇见如Api服务瞬时请求流量过高，服务被压垮；数据处理服务处理消息队列数据，消费速度过快，导致处理性能下降甚至崩溃。</p> 
+<p><strong>限流前：</strong>数据推送给服务处理时，速度过快，服务未限流，导致CPU突然暴涨达到临界值，处理性能底下</p> 
+<p><img alt="" height="707" src="https://images2.imgbox.com/9c/7e/lJgvaKbq_o.jpg" width="1200"></p> 
+<p><strong>限流后：</strong>消费速度平稳，CPU平稳，未超限，内存上涨也未超限</p> 
+<h2 id="%E2%80%8B%E7%BC%96%E8%BE%91"><img alt="" height="755" src="https://images2.imgbox.com/0e/a0/cE2z6I5c_o.jpg" width="1200"></h2> 
+<p>可见<strong>限流</strong>是非常重要的！</p> 
+<h2 id="%E4%BA%8C%E3%80%81%E5%B7%A5%E5%85%B7">二、工具</h2> 
+<h3 id="%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B">​​​​​​1、AtomicInteger,AtomicLong 原子类操作</h3> 
+<p><strong>优点</strong>：</p> 
+<ol><li><strong>性能高</strong>：AtomicInteger 和 AtomicLong 基于 CAS（Compare-And-Swap）操作，能够实现高效的并发访问，适用于高并发场景。</li><li><strong>轻量级</strong>：这些类作为 Java 标准库的一部分，无需引入额外的依赖，使用简单方便。</li><li><strong>内存操作</strong>：AtomicInteger 和 AtomicLong 的操作都在内存中完成，避免了网络开销。</li></ol> 
+<p><strong>缺点</strong>：</p> 
+<ol><li><strong>单机限流</strong>：AtomicInteger 和 AtomicLong 主要适用于单机环境下的限流，对于分布式系统或微服务架构来说，可能需要额外的机制来实现全局限流。</li><li><strong>功能相对单一</strong>：AtomicInteger 和 AtomicLong 的功能较为单一，可能无法满足复杂的限流需求。</li><li><strong>CAS 的潜在问题</strong>：在高并发场景下，CAS 操作可能导致自旋等待，增加 CPU 开销。此外，如果多个线程同时修改同一个值，可能导致性能下降。</li></ol> 
+<h3 id="%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B2%E3%80%81Redis%2BLua">​​​​​​2、Redis+Lua</h3> 
+<p><strong>优点</strong>：</p> 
+<ol><li><strong>灵活性高</strong>：Redis+Lua 的限流方案允许根据业务需求灵活定制限流规则，如限制特定来源 IP 或 API 的访问频率。</li><li><strong>分布式支持</strong>：Redis 作为分布式缓存，使得限流策略可以跨多个实例或节点生效，非常适合微服务架构或分布式系统。</li><li><strong>原子性操作</strong>：Lua 脚本在 Redis 中执行时具有原子性，避免了并发访问时可能出现的数据不一致问题。</li></ol> 
+<p><strong>缺点</strong>：</p> 
+<ol><li><strong>网络开销</strong>：虽然 Redis+Lua 减少了部分网络请求，但仍然存在网络 IO 开销，尤其在高并发场景下可能会成为性能瓶颈。</li><li><strong>依赖 Redis</strong>：该方案高度依赖 Redis 的稳定性和可用性，一旦 Redis 出现故障，限流策略可能失效。</li><li><strong>学习成本</strong>：Redis 和 Lua 的使用需要一定的学习成本，尤其是对于那些不熟悉这两个技术的开发者来说。</li></ol> 
+<h3 id="%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B%E2%80%8B3%E3%80%81Google%20Guava%E7%9A%84RateLimiter">​​​​​​3、Google Guava的RateLimiter</h3> 
+<p><strong>优点</strong>：</p> 
+<ol><li><strong>基于令牌桶算法</strong>：RateLimiter采用了令牌桶算法进行限流，该算法允许突发流量的处理，当请求空闲时，可以预先生成一部分令牌，从而在新请求到达时无需等待。</li><li><strong>实现简单</strong>：RateLimiter的使用相对简单，可以方便地集成到现有系统中。</li></ol> 
+<p><strong>缺点</strong>：</p> 
+<ol><li><strong>功能相对单一</strong>：RateLimiter主要关注限流功能，对于熔断降级等复杂场景的处理能力相对较弱。</li><li><strong>缺乏实时监测和报警机制</strong>：RateLimiter没有提供实时的系统监测和报警功能，对于系统问题的发现和解决可能不够及时。</li></ol> 
+<h4 id="1%EF%BC%89%C2%A0%E4%BD%BF%E7%94%A8">1） 使用</h4> 
+<p>引入pom</p> 
+<pre><code class="language-XML">&lt;dependency&gt;
+    &lt;groupId&gt;com.google.guava&lt;/groupId&gt;
+    &lt;artifactId&gt;guava&lt;/artifactId&gt;
+    &lt;version&gt;27.1-jre&lt;/version&gt;
+&lt;/dependency&gt;</code></pre> 
+<p>常用API介绍</p> 
+<ul><li>RateLimiter.create(permitsPerSecond)：设置当前接口的QPS</li><li>rateLimiter.tryAcquire(timeout, timeUnit)：尝试在一定时间内获取令牌，超时则退出</li><li>rateLimiter.acquire():尝试获取对应数量令牌，默认一个令牌，如果没有可以用的，则该方法将一直阻塞线程，直到RateLimiter允许获得新的许可证 </li></ul> 
+<h4 id="2%EF%BC%89%20Demo">2） Demo</h4> 
+<pre><code class="language-java">/**
+ * @author : YY-帆S
+ * @since : 2024/2/26
+ */
+@Slf4j
+@Service
+@ConditionalOnProperty(value = "xxxxx", havingValue = "true")
+public class ForwardAndCustomDetailConsumer {
+
+
+
+    // 创建RateLimiter，这里设置每秒最多处理300条消息
+    private final RateLimiter rateLimiter = RateLimiter.create(300.0);
+
+    @KafkaListener(topics = "#{'${xxxxx}'.split(',')}", groupId = "${xxxxx}", containerFactory = "ActCommonKafkaConfig")
+    public void consumer(ConsumerRecord&lt;?, ?&gt; record) {
+        MDCHelper.fillMDC();
+        String value = null;
+        try {
+            // 通过RateLimiter进行限流
+            rateLimiter.acquire();
+
+
+        } catch (Exception e) {
+           xxxx;
+        }
+    }
+}
+</code></pre> 
+<h4 id="3%EF%BC%89%C2%A0%E4%BC%98%E5%8C%96demo">3） 优化demo</h4> 
+<p>第二点的demo配置不好变动，策略修改时需要修改代码，重新编译服务</p> 
+<p>因此优化后通过依赖注入的方式创建RateLimiter实例</p> 
+<p>1. 创建RateLimit的配置类</p> 
+<pre><code class="language-java">/**
+ * @author YY-帆S
+ * @Date 2024/3/8 11:42
+ */
+@Configuration
+public class RateLimiterConfig {
+
+    @Resource
+    private Act71225Properties act71225Properties;
+
+    @Bean(name = "act72183RateLimiter")
+    public RateLimiter act72183OfflineRateLimiter() {
+        return RateLimiter.create(act71225Properties.getOfflineDataRateLimit());
+    }
+}</code></pre> 
+<p>2.修改RateLimiter实现方式</p> 
+<pre><code class="language-java">/**
+ * @author : YY-帆S
+ * @since : 2024/2/26
+ */
+@Slf4j
+@Service
+@ConditionalOnProperty(value = "xxxxx", havingValue = "true")
+public class ForwardAndCustomDetailConsumer {
+
+
+    // 创建RateLimiter，这里设置每秒最多处理300条消息
+    @Resource(name = "act72183RateLimiter")
+    private RateLimiter rateLimiter; 
+
+    @KafkaListener(topics = "#{'${xxxxx}'.split(',')}", groupId = "${xxxxx}", containerFactory = "ActCommonKafkaConfig")
+    public void consumer(ConsumerRecord&lt;?, ?&gt; record) {
+        MDCHelper.fillMDC();
+        String value = null;
+        try {
+            // 通过RateLimiter进行限流
+            rateLimiter.acquire();
+
+
+        } catch (Exception e) {
+           xxxx;
+        }
+    }
+}
+</code></pre> 
+<h3 id="4%E3%80%81%E9%98%BF%E9%87%8C%E5%BC%80%E6%BA%90%E7%9A%84Sentinel">4、阿里开源的Sentinel</h3> 
+<p>文档：<a href="https://sentinelguard.io/zh-cn/docs/introduction.html" rel="nofollow" title="introduction | Sentinel">introduction | Sentinel</a></p> 
+<p><strong>优点</strong>：</p> 
+<ol><li><strong>功能丰富</strong>：Sentinel不仅支持限流功能，还提供了熔断降级、系统保护、热点参数限流等多种应用场景的支持。</li><li><strong>细粒度的控制</strong>：Sentinel可以实现细粒度的控制，满足复杂场景下对流量和资源的精确管理需求。</li><li><strong>强大的实时监测和报警机制</strong>：Sentinel提供了实时的系统监测和报警功能，可以及时发现并解决系统问题。</li><li><strong>易于扩展和集成</strong>：Sentinel为开发者提供了简单易用的扩展接口，支持多种开发框架的集成，方便开发者根据需求进行定制和扩展。</li></ol> 
+<p><strong>缺点</strong>：</p> 
+<ol><li><strong>学习成本可能较高</strong>：由于Sentinel的功能丰富，对于初学者来说可能需要一定的学习成本来熟悉和掌握。</li><li><strong>可能增加系统复杂度</strong>：引入Sentinel可能会增加系统的复杂度，特别是在大型项目中，需要仔细规划和管理相关的配置和规则。</li></ol> 
+<h2 id="%E4%B8%89%E3%80%81%E7%AE%97%E6%B3%95">三、算法</h2> 
+<h3 id="1%E3%80%81%E8%AE%A1%E6%95%B0%E9%99%90%E6%B5%81">1、计数限流</h3> 
+<h4 id="%EF%BC%881%EF%BC%89%E5%8E%9F%E7%90%86">（1）原理</h4> 
+<p>系统同时只能处理N个请求，保存一个计数器，开始处理时计数器+1，处理完成后计数器-1</p> 
+<p>每次请求查看计数器的值，超过阈值就拒绝</p> 
+<h4 id="%EF%BC%882%EF%BC%89%E5%AE%9E%E7%8E%B0">（2）实现</h4> 
+<ol><li>实现类</li></ol> 
+<p>如下以AtomicInteger 为工具实现计数限流，即同时只能处理N个数据</p> 
+<pre><code class="language-java">import lombok.extern.slf4j.Slf4j;
+
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * @author YY-帆S
+ * @Date 2024/3/25 21:07
+ */
+@Slf4j
+public class AtomicCounterRateLimiter {
+    private final AtomicInteger counter;
+    private final int limit;
+
+    public AtomicCounterRateLimiter(int limit) {
+        this.counter = new AtomicInteger(0);
+        this.limit = limit;
+    }
+
+    /**
+     * 限流
+     *
+     * @return
+     */
+    public synchronized boolean tryAcquire() {
+        //获取计数器，不超过限制则则返回true，并追加数值
+        if (counter.get() &lt; limit) {
+            counter.incrementAndGet();
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 释放
+     *
+     * @return
+     */
+    public synchronized boolean tryRelease() {
+        //获取计数器，不超过限制则则返回true，并追加数值
+        if (counter.get() &gt; 0) {
+            counter.decrementAndGet();
+            return true;
+        }
+        return false;
+    }
+}</code></pre> 
+<p>     2. 测试类</p> 
+<pre><code class="language-java">import org.junit.Test;
+
+/**
+ * @author YY-帆S
+ * @Date 2024/3/25 21:27
+ */
+public class AtomicCounterRateLimiterTest {
+
+    @Test
+    public void testLimit() {
+        //创建一个限流器，允许同时只能处理10个请求
+        AtomicCounterRateLimiter atomicCounterRateLimiter = new AtomicCounterRateLimiter(10);
+
+        // 模拟15个请求，每个请求间隔100毫秒
+        for (int i = 0; i &lt; 15; i++) {
+            new Thread(() -&gt; {
+                // 尝试获取许可
+                if (atomicCounterRateLimiter.tryAcquire()) {
+                    System.out.println(Thread.currentThread().getName() + " 获得了许可，执行操作。");
+                    // 模拟请求之间的间隔
+                    try {
+                        Thread.sleep((long) (Math.random() * 100));
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    }
+                    atomicCounterRateLimiter.tryRelease();
+                } else {
+                    System.out.println(Thread.currentThread().getName() + " 请求被拒绝。");
+                }
+            }).start();
+        }
+    }
+
+}
+</code></pre> 
+<p>执行结果：</p> 
+<blockquote> 
+ <p>Thread-0 获得了许可，执行操作。<br> Thread-1 获得了许可，执行操作。<br> Thread-4 获得了许可，执行操作。<br> Thread-2 获得了许可，执行操作。<br> Thread-3 获得了许可，执行操作。<br> Thread-5 获得了许可，执行操作。<br> Thread-7 获得了许可，执行操作。<br> Thread-6 获得了许可，执行操作。<br> Thread-8 获得了许可，执行操作。<br> Thread-9 获得了许可，执行操作。<br> Thread-10 请求被拒绝。<br> Thread-11 请求被拒绝。<br> Thread-13 请求被拒绝。<br> Thread-14 请求被拒绝。<br> Thread-12 请求被拒绝。</p> 
+</blockquote> 
+<h4 id="%EF%BC%883%EF%BC%89%E4%BC%98%E7%BC%BA%E7%82%B9">（3）优缺点</h4> 
+<p><strong>优点：</strong>简单，代码好实现，单机可用Atomic 等原子类、分布式集群可以用Redis</p> 
+<p><strong>缺点：</strong>扛不住突发性的流量，假设阈值=1w，即服务器可以同时处理1w个请求，当1w个请求在1s内同时涌进来时，服务有可能扛不住</p> 
+<h3 id="2%E3%80%81%E5%9B%BA%E5%AE%9A%E7%AA%97%E5%8F%A3%E9%99%90%E6%B5%81">2、固定窗口限流</h3> 
+<h4>（1）原理</h4> 
+<p>固定窗口限流是在计数限流的概念上，加上了时间窗口的概念，计数器每过一个时间窗口就重置为0，限流规则如在N秒内只允许处理M个请求</p> 
+<h4>（2）实现</h4> 
+<p>如下以Redis+Lua为工具实现固定时间窗口限流，即 N秒内同时只能处理M个数据</p> 
+<pre><code class="language-java">import com.bigo.web.yummy.center.dao.redis.RedisDao;
+import com.bigo.web.yummy.inner.Application;
+import lombok.extern.slf4j.Slf4j;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+import org.springframework.test.context.junit4.SpringRunner;
+
+import javax.annotation.Resource;
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * @author YY-帆S
+ * @Date 2024/3/25 18:30
+ */
+@Slf4j
+@RunWith(SpringRunner.class)
+@SpringBootTest(classes = Application.class)
+public class RedisFixedTimeRateLimit {
+
+    @Resource
+    RedisDao redisDao;
+
+    private boolean tryAcquire() {
+        String key = "limit:test";
+        //同时只能处理10个请求
+        int limitCount = 10;
+        //1s内
+        int second = 1;
+
+        String luaCode = "local key = KEYS[1]\n" +
+                "local limit = tonumber(ARGV[1])\n" +
+                "local expire_time = ARGV[2]\n" +
+                "local is_exists = redis.call(\"EXISTS\", key)\n" +
+                "if is_exists == 1 then\n" +
+                "    if redis.call(\"INCR\", key) &gt; limit then\n" +
+                "        return false\n" +
+                "    else\n" +
+                "        return true\n" +
+                "    end\n" +
+                "else\n" +
+                "    redis.call(\"INCRBY\", key, 1)\n" +
+                "    redis.call(\"EXPIRE\", key, expire_time)\n" +
+                "    return true\n" +
+                "end";
+
+        List&lt;String&gt; keys = new ArrayList&lt;&gt;();
+        keys.add(key);
+        List&lt;String&gt; values = new ArrayList&lt;&gt;();
+        values.add(String.valueOf(limitCount));
+        values.add(String.valueOf(second));
+        RedisTemplate&lt;String, String&gt; redisTemplate = redisDao.getLongCodis().getRedisTemplate();
+
+        DefaultRedisScript&lt;Boolean&gt; redisScript = new DefaultRedisScript&lt;&gt;(luaCode, Boolean.class);
+        return redisTemplate.execute(redisScript, keys, String.valueOf(limitCount), String.valueOf(second));
+    }
+
+    @Test
+    public void testLimit() {
+        // 模拟15个请求
+        for (int i = 0; i &lt; 15; i++) {
+            new Thread(() -&gt; {
+                // 尝试获取许可
+                if (tryAcquire()) {
+                    System.out.println(Thread.currentThread().getName() + " 获得了许可，执行操作。");
+                } else {
+                    System.out.println(Thread.currentThread().getName() + " 请求被拒绝。");
+                }
+            }).start();
+        }
+    }
+}
+</code></pre> 
+<h4>（3）优缺点</h4> 
+<p><strong>优点：</strong>简单，代码好实现，单机可用Atomic 等原子类、分布式集群可以用Redis</p> 
+<p><strong>缺点：</strong>限流机制不够平滑，如每秒允许请求100个请求，在第一毫秒内就请求了100个请求，此后都开始限流，导致剩余窗口内的所有请求都会被拒绝<br> 又如在最后1个毫秒内请求了100个请求，下一个毫秒开始新的时间窗口，计数清0，此时又涌入了100个请求，虽说固定时间窗口内没有超过阈值，但是全局看来，这两个毫秒内就涌入了200个请求，对于限流100的概念是不可接受的</p> 
+<p><img alt="" height="273" src="https://images2.imgbox.com/41/7c/qRVu8e7k_o.png" width="770"></p> 
+<h3 id="3%E3%80%81%E6%BB%91%E5%8A%A8%E7%AA%97%E5%8F%A3%E9%99%90%E6%B5%81">3、滑动窗口限流</h3> 
+<h4>（1）原理</h4> 
+<p>在固定时间窗口的基础上进行优化，对大的时间窗口进行划分，每个小窗口对应大窗口中的不同时间点，每个窗口独立计数。随时间的变化，小窗口随之平移，并且重置/舍弃过期的小窗口，每个小窗口的计数器相加，不超过大窗口的限流limit，即限流阈值之内。</p> 
+<p><img alt="" height="240" src="https://images2.imgbox.com/d1/08/Q60TVbwA_o.png" width="1060"></p> 
+<h4>（2）实现</h4> 
+<pre><code class="language-java">import java.util.Arrays;
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * @author YY-帆S
+ * @Date 2024/3/26 15:04
+ */
+public class SlidingWindowRateLimiter {
+
+    private int windowSize; //时间窗口大小, Unit: s
+    private int slotNum; //用于统计的子窗口数量，默认为10
+    private int slotTime; //子窗口的时间长度, Unit: ms
+    private int limit; //限流阈值
+
+    /**
+     * 存放子窗口统计结果的数组
+     * note: counters[0]记为数组左边, counters[size-1]记为数组右边
+     */
+    private AtomicInteger[] counters;
+
+    private long lastTime;
+
+    //初始化
+    public SlidingWindowRateLimiter(int windowSize, int limit, int slotNum) {
+        this.windowSize = windowSize;
+        this.limit = limit;
+        this.slotNum = slotNum;
+        // 计算子窗口的时间长度: 时间窗口 / 子窗口数量
+        this.slotTime = windowSize * 1000 / slotNum;
+        this.lastTime = System.currentTimeMillis();
+        this.counters = new AtomicInteger[slotNum];
+        resetCounters();
+    }
+
+    public SlidingWindowRateLimiter(int windowSize, int limit) {
+        this(windowSize, limit, 10);
+    }
+
+    private void resetCounters() {
+        for (int i = 0; i &lt; counters.length; i++) {
+            counters[i] = new AtomicInteger(0); // 每个数组元素都是一个新的AtomicInteger实例
+        }
+    }
+
+    /**
+     * 限流请求
+     * @return
+     */
+    public synchronized boolean tryAcquire() {
+        long currentTime = System.currentTimeMillis();
+        // 计算滑动数, 子窗口统计时所对应的时间范围为左闭右开区间, 即[a,b)
+        int slideNum = (int) Math.floor((currentTime - lastTime) / slotTime);
+        // 滑动窗口
+        slideWindow(slideNum);
+        // 统计滑动后的数组之和
+        int sum = Arrays.stream(counters).mapToInt(AtomicInteger::get).sum();
+
+        // 以达到当前时间窗口的请求阈值, 故被限流直接返回false
+        if (sum &gt;= limit) {
+            return false;
+        } else {    // 未达到限流, 故返回true
+            counters[slotNum - 1].incrementAndGet();
+            return true;
+        }
+    }
+
+    /**
+     * 将数组元素全部向左移动num个位置
+     *
+     * @param num
+     */
+    private void slideWindow(int num) {
+        if (num == 0) {
+            return;
+        }
+
+        // 数组中所有元素都会被移出, 故直接全部清零
+        if (num &gt;= slotNum) {
+            resetCounters();
+        } else {
+            // 对于a[0]~a[num-1]而言, 向左移动num个位置后, 则直接被移出了
+            // 故从a[num]开始移动即可
+            for (int index = num; index &lt; slotNum; index++) {
+                // 计算a[index]元素向左移动num个位置后的新位置索引
+                int newIndex = index - num;
+                counters[newIndex] = counters[index];
+                counters[index].getAndSet(0);
+            }
+        }
+
+        // 更新时间
+        lastTime = lastTime + num * slotTime;
+    }
+
+
+    public static void main(String[] args) throws InterruptedException {
+        //例子：5s内只能有50个请求
+        SlidingWindowRateLimiter rateLimiter = new SlidingWindowRateLimiter(5, 50);
+
+        int allNum = 3;  // 请求总数
+        int passNum = 0; // 通过数
+        int blockNum = 0; // 被限流数
+        //模拟连续请求
+        for (int i = 0; i &lt; allNum; i++) {
+            if (rateLimiter.tryAcquire()) {
+                passNum++;
+            } else {
+                blockNum++;
+            }
+        }
+        System.out.println("请求总数: " + allNum + ", 通过数: " + passNum + ", 被限流数: " + blockNum);
+
+        // 延时以准备下一次测试
+        Thread.sleep(5000);
+
+        allNum = 100;
+        passNum = 0;
+        blockNum = 0;
+        //模拟连续请求
+        for (int i = 0; i &lt; allNum; i++) {
+            if (rateLimiter.tryAcquire()) {
+                passNum++;
+            } else {
+                blockNum++;
+            }
+        }
+        System.out.println("请求总数: " + allNum + ", 通过数: " + passNum + ", 被限流数: " + blockNum);
+    }
+}
+</code></pre> 
+<p> 执行结果：</p> 
+<blockquote> 
+ <p>请求总数: 3, 通过数: 3, 被限流数: 0<br> 请求总数: 100, 通过数: 50, 被限流数: 50</p> 
+</blockquote> 
+<h4>（3）优缺点</h4> 
+<p><strong>优点：</strong>避免了固定窗口算法可能出现的窗口切换时的流量峰值，使得流量控制更为平滑<br><strong>缺点：</strong></p> 
+<ol><li>对时间区间精度要求越高，算法所需的空间容量越大，需要更多的计算和存储资源</li><li>还是存在限流不够平滑的问题。例如：限流是每秒100个，在第一毫秒发送了100个请求，达到限流，剩余窗口时间的请求都将会被拒绝</li></ol> 
+<h3 id="4%E3%80%81%E6%BC%8F%E6%A1%B6%E7%AE%97%E6%B3%95">4、漏桶算法</h3> 
+<h4>（1）原理</h4> 
+<p>该算法使用“桶”来比喻，不断有水（请求）进入桶内并以固定速率进行处理，模拟桶中的“泄漏”，当加水速度&gt;漏水速度时，直到某一个时刻，存储桶己满，新的请求将被丢弃，直到有可用空间。<br>  </p> 
+<p class="img-center"><img alt="" height="329" src="https://images2.imgbox.com/83/59/rJhTFTOq_o.png" width="479"></p> 
+<h4>（2）实现</h4> 
+<pre><code class="language-java">import lombok.extern.slf4j.Slf4j;
+
+import java.util.concurrent.atomic.AtomicInteger;
+
+/**
+ * @author YY-帆S
+ * @Date 2024/3/26 22:46
+ */
+@Slf4j
+public class LeakyBucketRateLimiter {
+
+    private AtomicInteger bucketLevel; // 当前桶中的请求数量
+    private int capacity; // 桶的容量
+    private long leakRate; // 漏水速率，单位：请求/秒
+    private long lastLeakTime; // 上一次漏水的时间戳
+
+    public LeakyBucketRateLimiter(int capacity, long leakRate) {
+        this.capacity = capacity;
+        this.leakRate = leakRate;
+        this.bucketLevel = new AtomicInteger(0);
+        this.lastLeakTime = System.currentTimeMillis();
+    }
+
+    public synchronized boolean tryAcquire() {
+        // 获取当前时间
+        long currentTime = System.currentTimeMillis();
+        //流出时间
+        long elapsedTime = currentTime - lastLeakTime;
+        //计算流出的水量 = （当前时间 - 上次时间） * 出水速率
+        long leaked = (long) (elapsedTime * (leakRate / 1000.0));
+
+        //只有有流出水才更新时间戳，不然会漏不出水
+        if (leaked &gt; 0) {
+            //计算桶内水量 = 桶内当前水量 - 流出的水量
+            int newLevel = Math.max(0, bucketLevel.get() - (int) leaked);
+            bucketLevel.set(newLevel);
+
+            //更新上次漏水时间戳
+            lastLeakTime = currentTime;
+        }
+
+        // 尝试将请求加入桶中
+        if (bucketLevel.get() &lt; capacity) {
+            bucketLevel.incrementAndGet();
+            return true;
+        } else {
+            return false;
+        }
+    }
+
+    public static void main(String[] args) throws InterruptedException {
+        LeakyBucketRateLimiter limiter = new LeakyBucketRateLimiter(1, 1); // 容量为1，漏水速率为1请求/秒
+
+        // 模拟发送请求
+        for (int i = 0; i &lt; 20; i++) {
+            new Thread(() -&gt; {
+                if (limiter.tryAcquire()) {
+                    log.info(Thread.currentThread().getName() + " 获得了许可，执行操作。");
+                } else {
+                    log.info(Thread.currentThread().getName() + " 请求被拒绝。");
+                }
+            }).start();
+            //模拟执行时间
+            Thread.sleep(500);
+        }
+    }
+
+
+}
+</code></pre> 
+<p> 例子是1s/1个请求，执行结果一致</p> 
+<blockquote> 
+ <p>23:05:15.200 INFO - Thread-0 获得了许可，执行操作。<br> 23:05:15.705 INFO - Thread-1 请求被拒绝。<br> 23:05:16.215 INFO - Thread-2 获得了许可，执行操作。<br> 23:05:16.724 INFO - Thread-3 请求被拒绝。<br> 23:05:17.233 INFO - Thread-4 获得了许可，执行操作。<br> 23:05:17.741 INFO - Thread-5 请求被拒绝。<br> 23:05:18.252 INFO - Thread-6 获得了许可，执行操作。<br> 23:05:18.762 INFO - Thread-7 请求被拒绝。<br> 23:05:19.273 INFO - Thread-8 获得了许可，执行操作。<br> 23:05:19.785 INFO - Thread-9 请求被拒绝。<br> 23:05:20.299 INFO - Thread-10 获得了许可，执行操作。<br> 23:05:20.813 INFO - Thread-11 请求被拒绝。<br> 23:05:21.327 INFO - Thread-12 获得了许可，执行操作。<br> 23:05:21.840 INFO - Thread-13 请求被拒绝。<br> 23:05:22.353 INFO - Thread-14 获得了许可，执行操作。<br> 23:05:22.867 INFO - Thread-15 请求被拒绝。<br> 23:05:23.382 INFO - Thread-16 获得了许可，执行操作。<br> 23:05:23.896 INFO - Thread-17 请求被拒绝。<br> 23:05:24.411 INFO - Thread-18 获得了许可，执行操作。<br> 23:05:24.925 INFO - Thread-19 请求被拒绝。</p> 
+</blockquote> 
+<h4>（3）优缺点</h4> 
+<p><strong>优点：</strong></p> 
+<ol><li>平滑流量输出：漏桶算法可以有效地平滑网络上的突发流量，为网络提供一个稳定的流量输出。通过将流量注入到漏桶中，并根据桶的漏水速率来控制流量的输出，可以确保流量的平稳性。</li><li>防止流量冲击：由于漏桶具有缓存功能，当流量突发超过设定阈值时，超出的部分可以被暂存在桶中/直接丢弃，从而避免了流量冲击对系统造成的压力。</li></ol> 
+<p><strong>缺点：</strong></p> 
+<ol><li>灵活性相对较差：漏桶算法的速率是恒定的，不能根据实际需要动态调整。这可能导致在某些情况下，系统无法充分利用网络资源，造成一定的资源浪费。</li><li>无法应对突发流量：由于漏桶的出口速度是固定的，在面对突发流量时，即使是在流量较小的情况下，仍然是以固定速率处理，也无法以更快的速度处理请求</li></ol> 
+<h3 id="5%E3%80%81%E4%BB%A4%E7%89%8C%E6%A1%B6%E7%AE%97%E6%B3%95">5、令牌桶算法</h3> 
+<h4>（1）原理</h4> 
+<p>        与漏桶算法相反，系统以固定的速率往桶里放入令牌，称为令牌桶，如果有请求需要这个令牌，这可以从桶里拿一个，拿到了令牌即允许放行，直到令牌被拿完即令牌不足，则请求需等待或被丢弃。</p> 
+<p>        令牌的数量与时间和发放速率强相关，随着时间流逝，系统会不断往桶里放入更多的令牌，如果放令牌的速度比拿令牌的速度快，则令牌桶最终会被放满。</p> 
+<p class="img-center"><img alt="" height="394" src="https://images2.imgbox.com/6e/7a/R4hb9sRG_o.jpg" width="531"></p> 
+<h4>（2）实现</h4> 
+<p>推荐用Google-Guava的RateLimiter，比较成熟，如上第二点工具有例子，但是Google-Guava的RateLimiter是基于单机的限流工具。</p> 
+<p>如下基于Redis+lua实现一个令牌桶限流算法，可以实现分布式集群限流的目的。</p> 
+<ol><li>实现代码</li></ol> 
+<p>lua限流脚本和初始化脚本</p> 
+<pre><code class="language-Lua">-- KEYS[1]: 令牌桶的key，格式为 "rate_limiter:{bucket_key}"
+-- ARGV[1]: 请求的令牌数量
+-- ARGV[2]: 当前时间戳（可选，用于避免Redis服务器与客户端时间不同步的问题）
+
+local key = KEYS[1]  --令牌桶的key
+local tokens_requested = tonumber(ARGV[1]) --请求的令牌数量
+local now = tonumber(ARGV[2]) or redis.call('TIME')[1] --当前时间戳（可选，用于避免Redis服务器与客户端时间不同步的问题）
+
+-- 获取当前桶中的令牌数和上次刷新时间
+local ratelimit_info = redis.call("HMGET", key, "last_refreshed", "current_permits", "capacity", "rate")
+local last_refreshed = ratelimit_info[1]
+local current_permits = tonumber(ratelimit_info[2])
+local capacity = tonumber(ratelimit_info[3])  --桶的容量
+local fill_rate = tonumber(ratelimit_info[4]) --每秒添加的令牌数量（即速率）
+
+-- 初始化当前桶容量
+local local_curr_permits = capacity;
+
+-- 如果上次刷新时间不存在，则初始化为当前时间
+if (last_refreshed == nil or type(last_refreshed) =='boolean') then
+    last_refreshed = now
+    redis.call("HMSET", key, "last_refreshed", now);
+else
+    --计算该时间间隔内加入了多少令牌
+    local reverse_permits = (now - last_refreshed) * fill_rate
+    if (reverse_permits &gt; 0) then
+        redis.call("HMSET", key, "last_refreshed", now);
+    end
+
+    --计算当前总共有多少令牌，期望值
+    local expect_curr_permits = reverse_permits + current_permits
+    -- 与桶最大容量做对比
+    local_curr_permits = math.min(expect_curr_permits, capacity);
+end
+
+if (local_curr_permits &gt;= tokens_requested) then
+    local_curr_permits = local_curr_permits - tokens_requested
+    redis.call("HMSET", key, "current_permits", local_curr_permits);
+    return 1 -- 表示成功获取令牌
+else
+    redis.call("HMSET", key, "current_permits", local_curr_permits);
+    return 0 -- 表示获取令牌失败
+end
+
+
+
+------ 初始化lua ------
+local result = 1
+redis.pcall("HMSET", KEYS[1],
+        "last_refreshed", ARGV[1],
+        "current_permits", ARGV[2],
+        "capacity", ARGV[3],
+        "rate", ARGV[4])
+return result
+</code></pre> 
+<p><strong> Redis+Lua限流核心逻辑：</strong></p> 
+<pre><code class="language-java">import lombok.extern.slf4j.Slf4j;
+import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.script.DefaultRedisScript;
+
+import java.util.ArrayList;
+import java.util.List;
+
+/**
+ * @author YY-帆S
+ * @Date 2024/3/27 11:17
+ */
+@Slf4j
+public class TokenBucketRateLimiter {
+
+    //Redis缓存key前缀
+    private static final String KEY_PREFIX = "TokenRateLimiter:";
+
+    /**
+     * 初始化lua脚本
+     */
+    private static final String rateLimitInitLuaCode = "local result = true\n" +
+            "redis.pcall(\"HMSET\", KEYS[1],\n" +
+            "        \"capacity\", ARGV[1],\n" +
+            "        \"rate\", ARGV[2])\n" +
+            "return true";
+
+    /**
+     * 令牌桶锁lua脚本
+     */
+    private static final String rateLimitLuaCode = "" +
+            "-- KEYS[1]: 令牌桶的key，格式为 \"rate_limiter:{bucket_key}\"\n" +
+            "-- ARGV[1]: 请求的令牌数量\n" +
+            "-- ARGV[2]: 当前时间戳（可选，用于避免Redis服务器与客户端时间不同步的问题）\n" +
+            "\n" +
+            "local key = KEYS[1]  --令牌桶的key\n" +
+            "local tokens_requested = tonumber(ARGV[1]) --请求的令牌数量\n" +
+            "local now = tonumber(ARGV[2]) or redis.call('TIME')[1] --当前时间戳（可选，用于避免Redis服务器与客户端时间不同步的问题）\n" +
+            "\n" +
+            "-- 获取当前桶中的令牌数和上次刷新时间\n" +
+            "local ratelimit_info = redis.call(\"HMGET\", key, \"last_refreshed\", \"current_permits\", \"capacity\", \"rate\")\n" +
+            "local last_refreshed = ratelimit_info[1]\n" +
+            "local current_permits = tonumber(ratelimit_info[2])\n" +
+            "local capacity = tonumber(ratelimit_info[3])  --桶的容量\n" +
+            "local fill_rate = tonumber(ratelimit_info[4]) --每秒添加的令牌数量（即速率）\n" +
+            "\n" +
+            "-- 初始化当前桶容量\n" +
+            "local local_curr_permits = capacity;\n" +
+            "\n" +
+            "-- 如果上次刷新时间不存在，则初始化为当前时间\n" +
+            "if (last_refreshed == nil or type(last_refreshed) =='boolean') then\n" +
+            "    last_refreshed = now\n" +
+            "    redis.call(\"HMSET\", key, \"last_refreshed\", now);\n" +
+            "else\n" +
+            "    --计算该时间间隔内加入了多少令牌\n" +
+            "    local reverse_permits = (now - last_refreshed)* fill_rate\n" +
+            "    if (reverse_permits &gt; 0) then\n" +
+            "        redis.call(\"HMSET\", key, \"last_refreshed\", now);\n" +
+            "    end\n" +
+            "\n" +
+            "    --计算当前总共有多少令牌，期望值\n" +
+            "    local expect_curr_permits = reverse_permits + current_permits\n" +
+            "    -- 与桶最大容量做对比\n" +
+            "    local_curr_permits = math.min(expect_curr_permits, capacity);\n" +
+            "end\n" +
+            "\n" +
+            "if(local_curr_permits &gt;= tokens_requested) then\n" +
+            "    local_curr_permits = local_curr_permits - tokens_requested\n" +
+            "    redis.call(\"HMSET\", key, \"current_permits\", local_curr_permits);\n" +
+            "    return true -- 表示成功获取令牌\n" +
+            "else\n" +
+            "    redis.call(\"HMSET\", key, \"current_permits\", local_curr_permits);\n" +
+            "    return false -- 表示获取令牌失败\n" +
+            "end\n";
+
+
+    RedisTemplate redisTemplate;
+
+    //初始化构造器
+    public TokenBucketRateLimiter(RedisTemplate redisTemplate, int permitsPerSecond, String bucketKey) {
+        //初始化构造信息
+        List&lt;String&gt; keys = new ArrayList&lt;&gt;();
+        keys.add(getRateLimiterKey(bucketKey));
+        this.redisTemplate = redisTemplate;
+        DefaultRedisScript&lt;Boolean&gt; redisScript = new DefaultRedisScript&lt;&gt;(rateLimitInitLuaCode, Boolean.class);
+        this.redisTemplate.execute(redisScript, keys, String.valueOf(permitsPerSecond), String.valueOf(permitsPerSecond));
+    }
+
+    //构造令牌桶缓存key
+    public String getRateLimiterKey(String bucketKey) {
+        return KEY_PREFIX + bucketKey;
+    }
+    
+    //默认一次拿一个令牌
+    public boolean tryAcquire(String bucketKey) {
+        return tryAcquire(1, bucketKey);
+    }
+
+    /**
+     * 核心逻辑，获取令牌桶数据
+     * @param request
+     * @param bucketKey
+     * @return
+     */
+    public boolean tryAcquire(int request, String bucketKey) {
+        DefaultRedisScript&lt;Boolean&gt; redisScript = new DefaultRedisScript&lt;&gt;(rateLimitLuaCode, Boolean.class);
+        List&lt;String&gt; keys = new ArrayList&lt;&gt;();
+        keys.add(getRateLimiterKey(bucketKey));
+
+        return (boolean) this.redisTemplate.execute(redisScript, keys, String.valueOf(request), String.valueOf(System.currentTimeMillis() / 1000));
+    }
+}
+</code></pre> 
+<p>        2. 测试代码</p> 
+<pre><code class="language-java">import com.bigo.web.live.TimeUtil;
+import com.bigo.web.yummy.center.dao.redis.RedisDao;
+import com.bigo.web.yummy.inner.Application;
+import lombok.extern.slf4j.Slf4j;
+import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.test.context.junit4.SpringRunner;
+
+import javax.annotation.Resource;
+
+/**
+ * @author YY-帆S
+ * @Date 2024/3/27 13:25
+ */
+@RunWith(SpringRunner.class)
+@SpringBootTest(classes = Application.class)
+@Slf4j
+public class TokenBucketRateLimiterTest {
+    @Resource
+    RedisDao redisDao;
+
+    @Test
+    public void testTokenBucketRateLimiter() throws InterruptedException {
+        //令牌桶
+        String bucketKey = "yyfsTest";
+
+        // 每秒新增3个桶
+        TokenBucketRateLimiter limiter = new TokenBucketRateLimiter(redisDao.getLongCodis().getRedisTemplate(), 3, bucketKey);
+
+        // 模拟发送请求
+        int allNum = 4;  // 请求总数
+        //模拟连续请求
+        for (int i = 0; i &lt; allNum; i++) {
+            if (limiter.tryAcquire(bucketKey)) {
+                System.out.println(TimeUtil.parseTimestampToString("yyyy-MM-dd HH:mm:ss", System.currentTimeMillis()) + " 获得了许可，执行操作。");
+            } else {
+                System.out.println(TimeUtil.parseTimestampToString("yyyy-MM-dd HH:mm:ss", System.currentTimeMillis()) + " 请求被拒绝。");
+            }
+        }
+
+        // 延时以准备下一次测试
+        Thread.sleep(5000);
+
+        allNum = 20;
+        for (int i = 0; i &lt; allNum; i++) {
+            if (limiter.tryAcquire(bucketKey)) {
+                System.out.println(TimeUtil.parseTimestampToString("yyyy-MM-dd HH:mm:ss", System.currentTimeMillis()) + " 获得了许可，执行操作。");
+            } else {
+                System.out.println(TimeUtil.parseTimestampToString("yyyy-MM-dd HH:mm:ss", System.currentTimeMillis()) + " 请求被拒绝。");
+            }
+            Thread.sleep(200);
+        }
+    }
+}
+</code></pre> 
+<p>初始化结果</p> 
+<p class="img-center"><img alt="" height="101" src="https://images2.imgbox.com/6b/d4/9BkQ0N91_o.png" width="475"></p> 
+<p>执行过程结果</p> 
+<p class="img-center"><img alt="" height="141" src="https://images2.imgbox.com/9e/5a/3CtfZSyK_o.png" width="464"></p> 
+<p>执行输出结果</p> 
+<p><img alt="" height="647" src="https://images2.imgbox.com/2b/e5/C8u8JMRN_o.png" width="830"></p> 
+<h4>（3）优缺点</h4> 
+<p><strong>优点：</strong></p> 
+<ol><li>应对突发流量：令牌桶算法允许流量突发，当桶满时，系统能以最大的速度处理请求</li><li>灵活性：算法允许根据实际需求调整令牌生成速率和令牌桶大小等参数</li><li>限制平均速度：长期运行的服务，数据处理速度最终会动态平衡，限制在预定义的平均速率，即生成令牌的速率</li></ol> 
+<p><strong>缺点：</strong></p> 
+<ol><li>导致过载的可能性：要控制令牌的产生速度，如果令牌产生的速度过快，可能会导致大量的突发流量，这可能会使网络或服务过载。</li><li>内存资源限制：令牌桶需要一定的存储空间来保存令牌，可能会导致内存资源的浪费。且对于特别频繁的请求，令牌桶算法可能会占用较多的计算资源，增加系统负担。</li><li>实现稍复杂：相比于计数器等其他限流算法，令牌桶算法的实现稍微复杂一些</li></ol> 
+<p></p> 
+<p><strong>参考文档：</strong></p> 
+<p><a class="link-info" href="https://zhuanlan.zhihu.com/p/494782784" rel="nofollow" title="https://zhuanlan.zhihu.com/p/494782784">https://zhuanlan.zhihu.com/p/494782784</a></p> 
+<p><a class="link-info" href="https://blog.csdn.net/weixin_45583158/article/details/135664278" title="https://blog.csdn.net/weixin_45583158/article/details/135664278">https://blog.csdn.net/weixin_45583158/article/details/135664278</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/59ad66ec529d7cb4526cfe451bb46c7c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">AI克隆语音（基于GPT-SoVITS）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0c8e62dfede85631702fd99e8e0cc286/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">AIGC重塑金融：AI大模型驱动的金融变革与实践，面试必会</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【EFK】基于K8S构建EFK&#43;logstash&#43;kafka日志平台 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/02d2b2d25105f6bbb9ae6cc6fab01c80/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【EFK】基于K8S构建EFK&#43;logstash&#43;kafka日志平台">
+  <meta property="og:description" content="基于K8S构建EFK&#43;logstash&#43;kafka日志平台 一、常见日志收集方案1.1、EFK1.2、ELK Stack1.3、ELK &#43;filbeat1.4、其他方案 二、EFK组件介绍2.1、Elasticsearch组件2.2、Filebeat组件【1】 Filebeat和beat关系【2】Filebeat是什么【3】Filebeat工作原理【4】传输方案 2.3、Logstash组件2.4、Fluent组件2.5、fluentd、filebeat、logstash对比分析 三、EFK组件安装3.1、安装elasticsearch【1】创建headless service服务【2】创建Storageclass ，实现存储类动态供给【3】安装Elasticsearch集群 3.2、安装kibana可视化UI界面3.3、安装fluentd组件3.4、测试收集pod容器日志 一、常见日志收集方案 1.1、EFK 在Kubernetes集群上运行多个服务和应用程序时，日志收集系统可以帮助你快速分类和分析由Pod生成的大量日志数据。Kubernetes中比较流行的日志收集解决方案是Elasticsearch、Fluentd和Kibana（EFK）技术栈，也是官方推荐的一种方案。
+Elasticsearch是一个实时的，分布式的，可扩展的搜索引擎，它允许进行全文本和结构化搜索以及对日志进行分析。它通常用于索引和搜索大量日志数据，也可以用于搜索许多不同种类的文档。
+Elasticsearch通常与Kibana一起部署，kibana可以把Elasticsearch采集到的数据通过dashboard（仪表板）可视化展示出来。Kibana允许你通过Web界面浏览Elasticsearch日志数据，也可自定义查询条件快速检索出elasticccsearch中的日志数据。
+Fluentd是一个流行的开源数据收集器，我们在 Kubernetes 集群节点上安装 Fluentd，通过获取容器日志文件、过滤和转换日志数据，然后将数据传递到 Elasticsearch 集群，在该集群中对其进行索引和存储。
+1.2、ELK Stack E - Elasticsearch（简称：ES）
+L - Logstash
+K - Kibana
+Elasticsearch：日志存储和搜索引擎，它的特点有：分布式，零配置，自动发现，索引自动分片，索引副本机制，restful风格接口，多数据源，自动搜索负载等。
+Logstash：是一个完全开源的工具，他可以对你的日志进行收集、过滤，并将其存储供以后使用（支持动态的从各种数据源搜集数据，并对数据进行过滤、分析、丰富、统一格式等操作。）。
+Kibana 也是一个开源和免费的工具，Kibana可以为 Logstash 和 ElasticSearch 提供的日志分析友好的 Web 界面，可以帮助您汇总、分析和搜索重要数据日志。
+应用程序（AppServer）–&gt;Logstash–&gt;ElasticSearch–&gt;Kibana–&gt;浏览器（Browser）：
+Logstash收集AppServer产生的Log，并存放到ElasticSearch集群中，而Kibana则从ElasticSearch集群中查询数据生成图表，再返回给Browser。
+考虑到聚合端（日志处理、清洗等）负载问题和采集端传输效率，一般在日志量比较大的时候在采集端和聚合端增加队列，以用来实现日志消峰。
+1.3、ELK &#43;filbeat Filebeat（采集）—&gt; Logstash（聚合、处理）—&gt; ElasticSearch （存储）—&gt;Kibana （展示）
+1.4、其他方案 ELK日志流程可以有多种方案（不同组件可自由组合，根据自身业务配置），常见有以下：
+Logstash（采集、处理）—&gt; ElasticSearch （存储）—&gt;Kibana （展示）
+Logstash（采集）—&gt; Logstash（聚合、处理）—&gt; ElasticSearch （存储）—&gt;Kibana （展示）
+Filebeat（采集、处理）—&gt; ElasticSearch （存储）—&gt;Kibana （展示）
+Filebeat（采集）—&gt; Logstash（聚合、处理）—&gt; ElasticSearch （存储）—&gt;Kibana （展示）">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-02-28T14:50:31+08:00">
+    <meta property="article:modified_time" content="2024-02-28T14:50:31+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【EFK】基于K8S构建EFK&#43;logstash&#43;kafka日志平台</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>基于K8S构建EFK+logstash+kafka日志平台</h4> 
+ <ul><li><a href="#_1" rel="nofollow">一、常见日志收集方案</a></li><li><ul><li><a href="#11EFK_2" rel="nofollow">1.1、EFK</a></li><li><a href="#12ELK_Stack_12" rel="nofollow">1.2、ELK Stack</a></li><li><a href="#13ELK_filbeat_30" rel="nofollow">1.3、ELK +filbeat</a></li><li><a href="#14_35" rel="nofollow">1.4、其他方案</a></li></ul> 
+  </li><li><a href="#EFK_47" rel="nofollow">二、EFK组件介绍</a></li><li><ul><li><a href="#21Elasticsearch_49" rel="nofollow">2.1、Elasticsearch组件</a></li><li><a href="#22Filebeat_58" rel="nofollow">2.2、Filebeat组件</a></li><li><ul><li><a href="#1_Filebeatbeat_59" rel="nofollow">【1】 Filebeat和beat关系</a></li><li><a href="#2Filebeat_71" rel="nofollow">【2】Filebeat是什么</a></li><li><a href="#3Filebeat_82" rel="nofollow">【3】Filebeat工作原理</a></li><li><a href="#4_87" rel="nofollow">【4】传输方案</a></li></ul> 
+   </li><li><a href="#23Logstash_103" rel="nofollow">2.3、Logstash组件</a></li><li><a href="#24Fluent_105" rel="nofollow">2.4、Fluent组件</a></li><li><a href="#25fluentdfilebeatlogstash_107" rel="nofollow">2.5、fluentd、filebeat、logstash对比分析</a></li></ul> 
+  </li><li><a href="#EFK_109" rel="nofollow">三、EFK组件安装</a></li><li><ul><li><a href="#31elasticsearch_114" rel="nofollow">3.1、安装elasticsearch</a></li><li><ul><li><a href="#1headless_service_121" rel="nofollow">【1】创建headless service服务</a></li><li><a href="#2Storageclass__151" rel="nofollow">【2】创建Storageclass ，实现存储类动态供给</a></li><li><a href="#3Elasticsearch_325" rel="nofollow">【3】安装Elasticsearch集群</a></li></ul> 
+   </li><li><a href="#32kibanaUI_488" rel="nofollow">3.2、安装kibana可视化UI界面</a></li><li><a href="#33fluentd_564" rel="nofollow">3.3、安装fluentd组件</a></li><li><a href="#34pod_706" rel="nofollow">3.4、测试收集pod容器日志</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>一、常见日志收集方案</h2> 
+<h3><a id="11EFK_2"></a>1.1、EFK</h3> 
+<p>在Kubernetes集群上运行多个服务和应用程序时，日志收集系统可以帮助你快速分类和分析由Pod生成的大量日志数据。Kubernetes中比较流行的日志收集解决方案是Elasticsearch、Fluentd和Kibana（EFK）技术栈，也是官方推荐的一种方案。</p> 
+<blockquote> 
+ <p><font size="4" color="green">Elasticsearch是一个实时的，分布式的，可扩展的搜索引擎，它允许进行全文本和结构化搜索以及对日志进行分析。它通常用于索引和搜索大量日志数据，也可以用于搜索许多不同种类的文档。</font></p> 
+</blockquote> 
+<blockquote> 
+ <p><font size="4" color="green">Elasticsearch通常与Kibana一起部署，kibana可以把Elasticsearch采集到的数据通过dashboard（仪表板）可视化展示出来。Kibana允许你通过Web界面浏览Elasticsearch日志数据，也可自定义查询条件快速检索出elasticccsearch中的日志数据。</font></p> 
+</blockquote> 
+<blockquote> 
+ <p><font size="4" color="green">Fluentd是一个流行的开源数据收集器，我们在 Kubernetes 集群节点上安装 Fluentd，通过获取容器日志文件、过滤和转换日志数据，然后将数据传递到 Elasticsearch 集群，在该集群中对其进行索引和存储。</font></p> 
+</blockquote> 
+<h3><a id="12ELK_Stack_12"></a>1.2、ELK Stack</h3> 
+<p>E - Elasticsearch（简称：ES）<br> L - Logstash<br> K - Kibana</p> 
+<blockquote> 
+ <p><font size="4" color="green">Elasticsearch：日志存储和搜索引擎，它的特点有：分布式，零配置，自动发现，索引自动分片，索引副本机制，restful风格接口，多数据源，自动搜索负载等。</font></p> 
+</blockquote> 
+<blockquote> 
+ <p><font size="4" color="green">Logstash：是一个完全开源的工具，他可以对你的日志进行收集、过滤，并将其存储供以后使用（支持动态的从各种数据源搜集数据，并对数据进行过滤、分析、丰富、统一格式等操作。）。</font></p> 
+</blockquote> 
+<blockquote> 
+ <p><font size="4" color="green">Kibana 也是一个开源和免费的工具，Kibana可以为 Logstash 和 ElasticSearch 提供的日志分析友好的 Web 界面，可以帮助您汇总、分析和搜索重要数据日志。</font></p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/e3/5c/TgJEEmD3_o.png" alt="在这里插入图片描述"><br> 应用程序（AppServer）–&gt;Logstash–&gt;ElasticSearch–&gt;Kibana–&gt;浏览器（Browser）：</p> 
+<p>Logstash收集AppServer产生的Log，并存放到ElasticSearch集群中，而Kibana则从ElasticSearch集群中查询数据生成图表，再返回给Browser。</p> 
+<p>考虑到聚合端（日志处理、清洗等）负载问题和采集端传输效率，一般在日志量比较大的时候在采集端和聚合端增加队列，以用来实现日志消峰。</p> 
+<h3><a id="13ELK_filbeat_30"></a>1.3、ELK +filbeat</h3> 
+<p><img src="https://images2.imgbox.com/27/e0/xyYH8JFg_o.png" alt="在这里插入图片描述"></p> 
+<p>Filebeat（采集）—&gt; Logstash（聚合、处理）—&gt; ElasticSearch （存储）—&gt;Kibana （展示）</p> 
+<h3><a id="14_35"></a>1.4、其他方案</h3> 
+<p>ELK日志流程可以有多种方案（不同组件可自由组合，根据自身业务配置），常见有以下：</p> 
+<blockquote> 
+ <p><font size="4" color="green"> Logstash（采集、处理）—&gt; ElasticSearch （存储）—&gt;Kibana （展示）</font></p> 
+</blockquote> 
+<blockquote> 
+ <p><font size="4" color="green"> Logstash（采集）—&gt; Logstash（聚合、处理）—&gt; ElasticSearch （存储）—&gt;Kibana （展示）</font></p> 
+</blockquote> 
+<blockquote> 
+ <p><font size="4" color="green">Filebeat（采集、处理）—&gt; ElasticSearch （存储）—&gt;Kibana （展示）</font></p> 
+</blockquote> 
+<blockquote> 
+ <p><font size="4" color="green">Filebeat（采集）—&gt; Logstash（聚合、处理）—&gt; ElasticSearch （存储）—&gt;Kibana （展示）</font></p> 
+</blockquote> 
+<blockquote> 
+ <p><strong><font size="4" color="green">Filebeat（采集）—&gt; Kafka/Redis(消峰) —&gt; Logstash（聚合、处理）—&gt; ElasticSearch （存储）—&gt;Kibana （展示）</font></strong></p> 
+</blockquote> 
+<h2><a id="EFK_47"></a>二、EFK组件介绍</h2> 
+<h3><a id="21Elasticsearch_49"></a>2.1、Elasticsearch组件</h3> 
+<blockquote> 
+ <p><font size="4" color="green"> Elasticsearch 是一个分布式的免费开源搜索和分析引擎，适用于包括文本、数字、地理空间、结构化和非结构化数据等在内的所有类型的数据。</font></p> 
+</blockquote> 
+<blockquote> 
+ <p><font size="4" color="green">Elasticsearch 在 Apache Lucene 的基础上开发而成，由 Elasticsearch N.V.（即现在的 Elastic）于 2010 年首次发布。Elasticsearch 以其简单的 REST 风格 API、分布式特性、速度和可扩展性而闻名，是 Elastic Stack 的核心组件；<br> Elastic Stack 是一套适用于数据采集、扩充、存储、分析和可视化的免费开源工具。</font></p> 
+</blockquote> 
+<blockquote> 
+ <p><font size="4" color="green">人们通常将 Elastic Stack 称为 ELK Stack（代指 Elasticsearch、Logstash 和 Kibana）。<br> 目前 Elastic Stack 包括一系列丰富的轻量型数据采集代理，这些代理统称为 Beats，可用来向 Elasticsearch 发送数据。</font></p> 
+</blockquote> 
+<h3><a id="22Filebeat_58"></a>2.2、Filebeat组件</h3> 
+<h4><a id="1_Filebeatbeat_59"></a>【1】 Filebeat和beat关系</h4> 
+<p>filebeat是Beats中的一员。<br> 　　Beats是一个轻量级日志采集器，Beats家族有6个成员，早期的ELK架构中使用Logstash收集、解析日志，但是Logstash对内存、cpu、io等资源消耗比较高。相比Logstash，Beats所占系统的CPU和内存几乎可以忽略不计。</p> 
+<p>目前Beats包含六种工具：<br> 1、Packetbeat：网络数据（收集网络流量数据）<br> 2、Metricbeat：指标（收集系统、进程和文件系统级别的CPU和内存使用情况等数据）<br> 3、Filebeat：日志文件（收集文件数据）<br> 4、Winlogbeat：windows事件日志（收集Windows事件日志数据）<br> 5、Auditbeat：审计数据（收集审计日志）<br> 6、Heartbeat：运行时间监控（收集系统运行时的数据）</p> 
+<h4><a id="2Filebeat_71"></a>【2】Filebeat是什么</h4> 
+<p>Filebeat是用于转发和收集日志数据的轻量级传送工具。Filebeat监视你指定的日志文件或位置，收集日志事件，并将它们转发到Elasticsearch或 Logstash中。<br> Filebeat的工作方式如下：启动Filebeat时，它将启动一个或多个输入，这些输入将在为日志数据指定的位置中查找。对于Filebeat所找到的每个日志，Filebeat都会启动收集器。每个收集器都读取单个日志以获取新内容，并将新日志数据发送到libbeat，libbeat将聚集事件，并将聚集的数据发送到为Filebeat配置的输出。</p> 
+<p>工作的流程图如下：<br> <img src="https://images2.imgbox.com/af/cd/dzugxNcL_o.png" alt="在这里插入图片描述"><br> Filebeat 有两个主要组件：<br> harvester：一个harvester负责读取一个单个文件的内容。harvester逐行读取每个文件，并把这些内容发送到输出。每个文件启动一个harvester。<br> Input：一个input负责管理harvesters，并找到所有要读取的源。如果input类型是log，则input查找驱动器上与已定义的log日志路径匹配的所有文件，并为每个文件启动一个harvester。</p> 
+<h4><a id="3Filebeat_82"></a>【3】Filebeat工作原理</h4> 
+<p>在任何环境下，应用程序都有停机的可能性。 Filebeat 读取并转发日志行，如果中断，则会记住所有事件恢复联机状态时所在位置。<br> Filebeat带有内部模块（auditd，Apache，Nginx，System和MySQL），可通过一个指定命令来简化通用日志格式的收集，解析和可视化。<br> FileBeat 不会让你的管道超负荷。FileBeat 如果是向 Logstash 传输数据，当 Logstash 忙于处理数据，会通知 FileBeat 放慢读取速度。一旦拥塞得到解决，FileBeat将恢复到原来的速度并继续传播。<br> Filebeat保持每个文件的状态，并经常刷新注册表文件中的磁盘状态。状态用于记住harvester正在读取的最后偏移量，并确保发送所有日志行。Filebeat将每个事件的传递状态存储在注册表文件中。所以它能保证事件至少传递一次到配置的输出，没有数据丢失。</p> 
+<h4><a id="4_87"></a>【4】传输方案</h4> 
+<p>1、output.elasticsearch<br> 如果你希望使用 filebeat 直接向 elasticsearch 输出数据，需要配置 output.elasticsearch<br> output.elasticsearch:<br> hosts: [“192.168.40.180:9200”]<br> 2、output.logstash<br> 如果使用filebeat向 logstash输出数据，然后由 logstash 再向elasticsearch 输出数据，需要配置 output.logstash。 logstash 和 filebeat 一起工作时，如果 logstash 忙于处理数据，会通知FileBeat放慢读取速度。一旦拥塞得到解决，FileBeat 将恢复到原来的速度并继续传播。这样，可以减少管道超负荷的情况。<br> output.logstash:<br> hosts: [“192.168.40.180:5044”]</p> 
+<p>3、output.kafka<br> 如果使用filebeat向kafka输出数据，然后由 logstash 作为消费者拉取kafka中的日志，并再向elasticsearch 输出数据，需要配置 output.logstash<br> output.kafka:<br> enabled: true<br> hosts: [“192.168.40.180:9092”]<br> topic: elfk8stest</p> 
+<h3><a id="23Logstash_103"></a>2.3、Logstash组件</h3> 
+<h3><a id="24Fluent_105"></a>2.4、Fluent组件</h3> 
+<h3><a id="25fluentdfilebeatlogstash_107"></a>2.5、fluentd、filebeat、logstash对比分析</h3> 
+<h2><a id="EFK_109"></a>三、EFK组件安装</h2> 
+<p>在安装Elasticsearch集群之前，我们先创建一个名称空间，在这个名称空间下安装日志收工具elasticsearch、fluentd、kibana。我们创建一个kube-logging名称空间，将EFK组件安装到该名称空间中。</p> 
+<p><code>kubectl create ns kube-logging</code></p> 
+<h3><a id="31elasticsearch_114"></a>3.1、安装elasticsearch</h3> 
+<p>首先，我们需要部署一个有3个节点的Elasticsearch集群。<br> 我们使用3个Elasticsearch Pods可以避免高可用中多节点集群中发生的“脑裂”问题。<br> 脑裂问题参考如下：<br> <a href="https://www.elastic.co/guide/en/elasticsearch/reference/current/modules-node.html#split-brain" rel="nofollow">https://www.elastic.co/guide/en/elasticsearch/reference/current/modules-node.html#split-brain</a></p> 
+<h4><a id="1headless_service_121"></a>【1】创建headless service服务</h4> 
+<pre><code class="prism language-yaml"><span class="token punctuation">[</span>root@master 4<span class="token punctuation">]</span><span class="token comment"># cat elasticsearch_svc.yaml</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Service
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> elasticsearch
+  <span class="token key atrule">namespace</span><span class="token punctuation">:</span> kube<span class="token punctuation">-</span>logging
+  <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+    <span class="token key atrule">app</span><span class="token punctuation">:</span> elasticsearch
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">selector</span><span class="token punctuation">:</span>
+    <span class="token key atrule">app</span><span class="token punctuation">:</span> elasticsearch
+  <span class="token key atrule">clusterIP</span><span class="token punctuation">:</span> None
+  <span class="token key atrule">ports</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">port</span><span class="token punctuation">:</span> <span class="token number">9200</span>
+    <span class="token key atrule">name</span><span class="token punctuation">:</span> rest
+  <span class="token punctuation">-</span> <span class="token key atrule">port</span><span class="token punctuation">:</span> <span class="token number">9300</span>
+    <span class="token key atrule">name</span><span class="token punctuation">:</span> inter<span class="token punctuation">-</span>node
+</code></pre> 
+<p>在kube-logging名称空间定义了一个名为 elasticsearch 的 Service服务，带有app=elasticsearch标签，当我们将 Elasticsearch StatefulSet 与此服务关联时，服务将返回带有标签app=elasticsearch的 Elasticsearch Pods的DNS A记录，然后设置clusterIP=None，将该服务设置成无头服务。最后，我们分别定义端口9200、9300，分别用于与 REST API 交互，以及用于节点间通信。</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># kubectl apply -f elasticsearch_svc.yaml</span>
+service/elasticsearch created
+<span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># kubectl get svc -n kube-logging</span>
+NAME            TYPE        CLUSTER-IP   EXTERNAL-IP   PORT<span class="token punctuation">(</span>S<span class="token punctuation">)</span>             AGE
+elasticsearch   ClusterIP   None         <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>        <span class="token number">9200</span>/TCP,9300/TCP   20s
+</code></pre> 
+<p>现在我们已经为 Pod 设置了无头服务和一个稳定的域名.elasticsearch.kube-logging.svc.cluster.local，接下来我们通过 StatefulSet来创建具体的 Elasticsearch的Pod 应用。</p> 
+<h4><a id="2Storageclass__151"></a>【2】创建Storageclass ，实现存储类动态供给</h4> 
+<p><strong>1、安装nfs</strong></p> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># yum install nfs-utils -y</span>
+<span class="token punctuation">[</span>root@node01 ~<span class="token punctuation">]</span><span class="token comment"># yum install nfs-utils -y</span>
+<span class="token punctuation">[</span>root@node02 ~<span class="token punctuation">]</span><span class="token comment">#yum install nfs-utils -y</span>
+ 
+<span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># systemctl start nfs</span>
+<span class="token punctuation">[</span>root@node01 ~<span class="token punctuation">]</span><span class="token comment"># systemctl start nfs</span>
+<span class="token punctuation">[</span>root@node02 ~<span class="token punctuation">]</span><span class="token comment"># systemctl start nfs</span>
+
+<span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># systemctl enable nfs.service</span>
+<span class="token punctuation">[</span>root@node01 ~<span class="token punctuation">]</span><span class="token comment"># systemctl enable nfs.service</span>
+<span class="token punctuation">[</span>root@node02 ~<span class="token punctuation">]</span><span class="token comment"># systemctl enable nfs.service</span>
+</code></pre> 
+<p><strong>2、master创建共享目录</strong></p> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># mkdir /data/v1 -p</span>
+<span class="token comment"># 编辑/etc/exports文件</span>
+<span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># vim /etc/exports</span>
+/data/v1 <span class="token number">10.32</span>.1.0/24<span class="token punctuation">(</span>rw,no_root_squash<span class="token punctuation">)</span>
+<span class="token comment"># 加载配置，使配置生效</span>
+<span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># exportfs -arv</span>
+exporting <span class="token number">10.32</span>.1.0/24:/data/v1
+<span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># systemctl restart nfs</span>
+</code></pre> 
+<p><strong>3、创建nfs作为存储的供应商</strong></p> 
+<ul><li><strong>创建sa</strong><br> <code> kubectl create sa nfs-provisioner</code></li><li><strong>对sa做rbac授权</strong></li></ul> 
+<pre><code class="prism language-yaml"><span class="token punctuation">[</span>root@master 4<span class="token punctuation">]</span><span class="token comment"># cat rbac.yaml</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> rbac.authorization.k8s.io/v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> ClusterRole
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>provisioner<span class="token punctuation">-</span>runner
+<span class="token key atrule">rules</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">apiGroups</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">""</span><span class="token punctuation">]</span>
+    <span class="token key atrule">resources</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"persistentvolumes"</span><span class="token punctuation">]</span>
+    <span class="token key atrule">verbs</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"get"</span><span class="token punctuation">,</span><span class="token string">"list"</span><span class="token punctuation">,</span><span class="token string">"watch"</span><span class="token punctuation">,</span><span class="token string">"create"</span><span class="token punctuation">,</span><span class="token string">"delete"</span><span class="token punctuation">]</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">apiGroups</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">""</span><span class="token punctuation">]</span>
+    <span class="token key atrule">resources</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"persistentvolumeclaims"</span><span class="token punctuation">]</span>
+    <span class="token key atrule">verbs</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"get"</span><span class="token punctuation">,</span> <span class="token string">"list"</span><span class="token punctuation">,</span> <span class="token string">"watch"</span><span class="token punctuation">,</span> <span class="token string">"update"</span><span class="token punctuation">]</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">apiGroups</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"storage.k8s.io"</span><span class="token punctuation">]</span>
+    <span class="token key atrule">resources</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"storageclasses"</span><span class="token punctuation">]</span>
+    <span class="token key atrule">verbs</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"get"</span><span class="token punctuation">,</span> <span class="token string">"list"</span><span class="token punctuation">,</span> <span class="token string">"watch"</span><span class="token punctuation">]</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">apiGroups</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">""</span><span class="token punctuation">]</span>
+    <span class="token key atrule">resources</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"events"</span><span class="token punctuation">]</span>
+    <span class="token key atrule">verbs</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"create"</span><span class="token punctuation">,</span> <span class="token string">"update"</span><span class="token punctuation">,</span> <span class="token string">"patch"</span><span class="token punctuation">]</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">apiGroups</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">""</span><span class="token punctuation">]</span>
+    <span class="token key atrule">resources</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"services"</span><span class="token punctuation">,</span> <span class="token string">"endpoints"</span><span class="token punctuation">]</span>
+    <span class="token key atrule">verbs</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"get"</span><span class="token punctuation">]</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">apiGroups</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"extensions"</span><span class="token punctuation">]</span>
+    <span class="token key atrule">resources</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"podsecuritypolicies"</span><span class="token punctuation">]</span>
+    <span class="token key atrule">resourceNames</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"nfs-provisioner"</span><span class="token punctuation">]</span>
+    <span class="token key atrule">verbs</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"use"</span><span class="token punctuation">]</span>
+<span class="token punctuation">---</span>
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> ClusterRoleBinding
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> rbac.authorization.k8s.io/v1
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> run<span class="token punctuation">-</span>nfs<span class="token punctuation">-</span>provisioner
+<span class="token key atrule">subjects</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">kind</span><span class="token punctuation">:</span> ServiceAccount
+    <span class="token key atrule">name</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>provisioner
+    <span class="token key atrule">namespace</span><span class="token punctuation">:</span> default
+<span class="token key atrule">roleRef</span><span class="token punctuation">:</span>
+  <span class="token key atrule">kind</span><span class="token punctuation">:</span> ClusterRole
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>provisioner<span class="token punctuation">-</span>runner
+  <span class="token key atrule">apiGroup</span><span class="token punctuation">:</span> rbac.authorization.k8s.io
+<span class="token punctuation">---</span>
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Role
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> rbac.authorization.k8s.io/v1
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> leader<span class="token punctuation">-</span>locking<span class="token punctuation">-</span>nfs<span class="token punctuation">-</span>provisioner
+<span class="token key atrule">rules</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">apiGroups</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">""</span><span class="token punctuation">]</span>
+    <span class="token key atrule">resources</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"endpoints"</span><span class="token punctuation">]</span>
+    <span class="token key atrule">verbs</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"get"</span><span class="token punctuation">,</span> <span class="token string">"list"</span><span class="token punctuation">,</span> <span class="token string">"watch"</span><span class="token punctuation">,</span> <span class="token string">"create"</span><span class="token punctuation">,</span> <span class="token string">"update"</span><span class="token punctuation">,</span> <span class="token string">"patch"</span><span class="token punctuation">]</span>
+<span class="token punctuation">---</span>
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> RoleBinding
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> rbac.authorization.k8s.io/v1
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> leader<span class="token punctuation">-</span>locking<span class="token punctuation">-</span>nfs<span class="token punctuation">-</span>provisioner
+<span class="token key atrule">subjects</span><span class="token punctuation">:</span>
+<span class="token punctuation">-</span> <span class="token key atrule">kind</span><span class="token punctuation">:</span> ServiceAccount
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>provisioner
+  <span class="token key atrule">namespace</span><span class="token punctuation">:</span> default
+<span class="token key atrule">roleRef</span><span class="token punctuation">:</span>
+  <span class="token key atrule">kind</span><span class="token punctuation">:</span> Role
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> leader<span class="token punctuation">-</span>locking<span class="token punctuation">-</span>nfs<span class="token punctuation">-</span>provisioner
+  <span class="token key atrule">apiGroup</span><span class="token punctuation">:</span> rbac.authorization.k8s.io
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># kubectl apply -f rbac.yaml</span>
+clusterrole.rbac.authorization.k8s.io/nfs-provisioner-runner created
+clusterrolebinding.rbac.authorization.k8s.io/run-nfs-provisioner created
+role.rbac.authorization.k8s.io/leader-locking-nfs-provisioner created
+rolebinding.rbac.authorization.k8s.io/leader-locking-nfs-provisioner created
+</code></pre> 
+<ul><li><strong>创建pod</strong><br> 把nfs-client-provisioner.tar.gz上传到node工作节点上，手动解压。<br> <code>ctr -n=k8s.io image import nfs-client-provisioner.tar.gz</code><br> 通过deployment创建pod用来运行nfs-provisioner</li></ul> 
+<pre><code class="prism language-yaml"><span class="token punctuation">[</span>root@master 4<span class="token punctuation">]</span><span class="token comment"># cat deployment.yaml</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> apps/v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Deployment
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+ <span class="token key atrule">name</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>provisioner
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">selector</span><span class="token punctuation">:</span>
+    <span class="token key atrule">matchLabels</span><span class="token punctuation">:</span>
+     <span class="token key atrule">app</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>provisioner
+  <span class="token key atrule">replicas</span><span class="token punctuation">:</span> <span class="token number">1</span>
+  <span class="token key atrule">strategy</span><span class="token punctuation">:</span>
+      <span class="token key atrule">type</span><span class="token punctuation">:</span> Recreate
+  <span class="token key atrule">template</span><span class="token punctuation">:</span>
+    <span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+      <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+        <span class="token key atrule">app</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>provisioner
+    <span class="token key atrule">spec</span><span class="token punctuation">:</span>
+      <span class="token key atrule">serviceAccount</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>provisioner
+      <span class="token key atrule">containers</span><span class="token punctuation">:</span>
+      <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>provisioner
+        <span class="token comment"># 这个供应商镜像如果有问题，就换成其他的，我的最后换成了</span>
+        <span class="token comment"># registry.cn-beijing.aliyuncs.com/mydlq/nfs-subdir-external-provisioner  前提是这个镜像上传到了node节点</span>
+        <span class="token key atrule">image</span><span class="token punctuation">:</span> registry.cn<span class="token punctuation">-</span>hangzhou.aliyuncs.com/open<span class="token punctuation">-</span>ali/xianchao/nfs<span class="token punctuation">-</span>client<span class="token punctuation">-</span>provisioner<span class="token punctuation">:</span>v1
+        <span class="token key atrule">imagePullPolicy</span><span class="token punctuation">:</span> IfNotPresent
+        <span class="token key atrule">volumeMounts</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>client<span class="token punctuation">-</span>root
+          <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> /persistentvolumes
+        <span class="token key atrule">env</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> PROVISIONER_NAME
+          <span class="token key atrule">value</span><span class="token punctuation">:</span> example.com/nfs
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> NFS_SERVER
+          <span class="token key atrule">value</span><span class="token punctuation">:</span> 10.32.1.147
+          <span class="token comment">#这个需要写nfs服务端所在的ip地址，大家需要写自己安装了nfs服务的机器ip</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> NFS_PATH
+          <span class="token key atrule">value</span><span class="token punctuation">:</span> /data/v1
+      <span class="token key atrule">volumes</span><span class="token punctuation">:</span>
+        <span class="token comment"># 这个是nfs服务端共享的目录</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> nfs<span class="token punctuation">-</span>client<span class="token punctuation">-</span>root
+          <span class="token key atrule">nfs</span><span class="token punctuation">:</span>
+           <span class="token key atrule">server</span><span class="token punctuation">:</span> 10.32.1.147
+           <span class="token key atrule">path</span><span class="token punctuation">:</span> /data/v1
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># kubectl apply -f deployment.yaml</span>
+deployment.apps/nfs-provisioner configured
+<span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># kubectl get pods -owide| grep nfs</span>
+nfs-provisioner-5fb64dc877-4pzbk   <span class="token number">1</span>/1     Running   <span class="token number">0</span>             6m49s   <span class="token number">10.244</span>.196.143   node01   <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>           <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>
+</code></pre> 
+<ul><li><strong>创建storageclass</strong></li></ul> 
+<pre><code class="prism language-yaml"><span class="token punctuation">[</span>root@master 4<span class="token punctuation">]</span><span class="token comment"># cat class.yaml</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> storage.k8s.io/v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> StorageClass
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> do<span class="token punctuation">-</span>block<span class="token punctuation">-</span>storage
+<span class="token key atrule">provisioner</span><span class="token punctuation">:</span> example.com/nfs
+<span class="token punctuation">[</span>root@master 4<span class="token punctuation">]</span><span class="token comment"># k apply -f class.yaml</span>
+storageclass.storage.k8s.io/do<span class="token punctuation">-</span>block<span class="token punctuation">-</span>storage created
+<span class="token punctuation">[</span>root@master 4<span class="token punctuation">]</span><span class="token comment"># k get sc</span>
+NAME               PROVISIONER       RECLAIMPOLICY   VOLUMEBINDINGMODE   ALLOWVOLUMEEXPANSION   AGE
+do<span class="token punctuation">-</span>block<span class="token punctuation">-</span>storage   example.com/nfs   Delete          Immediate           false                  70m
+</code></pre> 
+<h4><a id="3Elasticsearch_325"></a>【3】安装Elasticsearch集群</h4> 
+<p>把elasticsearch_7_2_0.tar.gz和busybox.tar.gz<br> 上传到工作节点node01、node02，手动解压：</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@node01 package<span class="token punctuation">]</span><span class="token comment"># ctr -n=k8s.io image import elasticsearch_7_2_0.tar.gz</span>
+<span class="token punctuation">[</span>root@node02 package<span class="token punctuation">]</span><span class="token comment"># ctr -n=k8s.io image import elasticsearch_7_2_0.tar.gz</span>
+</code></pre> 
+<p>更新和应用yaml文件</p> 
+<pre><code class="prism language-yaml"><span class="token punctuation">[</span>root@master 4<span class="token punctuation">]</span><span class="token comment"># cat elasticsearch-statefulset.yaml</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> apps/v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> StatefulSet
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> es<span class="token punctuation">-</span>cluster
+  <span class="token key atrule">namespace</span><span class="token punctuation">:</span> kube<span class="token punctuation">-</span>logging
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">serviceName</span><span class="token punctuation">:</span> elasticsearch
+  <span class="token key atrule">replicas</span><span class="token punctuation">:</span> <span class="token number">3</span>
+  <span class="token key atrule">selector</span><span class="token punctuation">:</span>
+    <span class="token key atrule">matchLabels</span><span class="token punctuation">:</span>
+      <span class="token key atrule">app</span><span class="token punctuation">:</span> elasticsearch
+  <span class="token key atrule">template</span><span class="token punctuation">:</span>
+    <span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+      <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+        <span class="token key atrule">app</span><span class="token punctuation">:</span> elasticsearch
+    <span class="token key atrule">spec</span><span class="token punctuation">:</span>
+      <span class="token key atrule">containers</span><span class="token punctuation">:</span>
+      <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> elasticsearch
+        <span class="token key atrule">image</span><span class="token punctuation">:</span> docker.elastic.co/elasticsearch/elasticsearch<span class="token punctuation">:</span>7.2.0
+        <span class="token key atrule">imagePullPolicy</span><span class="token punctuation">:</span> IfNotPresent
+        <span class="token key atrule">resources</span><span class="token punctuation">:</span>
+          <span class="token key atrule">limits</span><span class="token punctuation">:</span>
+            <span class="token key atrule">cpu</span><span class="token punctuation">:</span> 1000m
+          <span class="token key atrule">requests</span><span class="token punctuation">:</span>
+            <span class="token key atrule">cpu</span><span class="token punctuation">:</span> 100m
+        <span class="token key atrule">ports</span><span class="token punctuation">:</span>
+          <span class="token punctuation">-</span> <span class="token key atrule">containerPort</span><span class="token punctuation">:</span> <span class="token number">9200</span>
+            <span class="token key atrule">name</span><span class="token punctuation">:</span> rest
+            <span class="token key atrule">protocol</span><span class="token punctuation">:</span> TCP
+          <span class="token punctuation">-</span> <span class="token key atrule">containerPort</span><span class="token punctuation">:</span> <span class="token number">9300</span>
+            <span class="token key atrule">name</span><span class="token punctuation">:</span> inter<span class="token punctuation">-</span>node
+            <span class="token key atrule">protocol</span><span class="token punctuation">:</span> TCP
+        <span class="token key atrule">volumeMounts</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> data
+          <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> /usr/share/elasticsearch/data
+        <span class="token key atrule">env</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> cluster.name
+          <span class="token key atrule">value</span><span class="token punctuation">:</span> k8s<span class="token punctuation">-</span>logs
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> node.name
+          <span class="token key atrule">valueFrom</span><span class="token punctuation">:</span>
+            <span class="token key atrule">fieldRef</span><span class="token punctuation">:</span>
+              <span class="token key atrule">fieldPath</span><span class="token punctuation">:</span> metadata.name
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> discovery.seed_hosts
+          <span class="token key atrule">value</span><span class="token punctuation">:</span> <span class="token string">"es-cluster-0.elasticsearch,es-cluster-1.elasticsearch,es-cluster-2.elasticsearch"</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> cluster.initial_master_nodes
+          <span class="token key atrule">value</span><span class="token punctuation">:</span> <span class="token string">"es-cluster-0,es-cluster-1,es-cluster-2"</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> ES_JAVA_OPTS
+          <span class="token key atrule">value</span><span class="token punctuation">:</span> <span class="token string">"-Xms512m -Xmx512m"</span>
+      <span class="token key atrule">initContainers</span><span class="token punctuation">:</span>
+      <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> fix<span class="token punctuation">-</span>permissions
+        <span class="token key atrule">image</span><span class="token punctuation">:</span> busybox
+        <span class="token key atrule">imagePullPolicy</span><span class="token punctuation">:</span> IfNotPresent
+        <span class="token key atrule">command</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"sh"</span><span class="token punctuation">,</span> <span class="token string">"-c"</span><span class="token punctuation">,</span> <span class="token string">"chown -R 1000:1000 /usr/share/elasticsearch/data"</span><span class="token punctuation">]</span>
+        <span class="token key atrule">securityContext</span><span class="token punctuation">:</span>
+          <span class="token key atrule">privileged</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+        <span class="token key atrule">volumeMounts</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> data
+          <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> /usr/share/elasticsearch/data
+      <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> increase<span class="token punctuation">-</span>vm<span class="token punctuation">-</span>max<span class="token punctuation">-</span>map
+        <span class="token key atrule">image</span><span class="token punctuation">:</span> busybox
+        <span class="token key atrule">imagePullPolicy</span><span class="token punctuation">:</span> IfNotPresent
+        <span class="token key atrule">command</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"sysctl"</span><span class="token punctuation">,</span> <span class="token string">"-w"</span><span class="token punctuation">,</span> <span class="token string">"vm.max_map_count=262144"</span><span class="token punctuation">]</span>
+        <span class="token key atrule">securityContext</span><span class="token punctuation">:</span>
+          <span class="token key atrule">privileged</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+      <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> increase<span class="token punctuation">-</span>fd<span class="token punctuation">-</span>ulimit
+        <span class="token key atrule">image</span><span class="token punctuation">:</span> busybox
+        <span class="token key atrule">imagePullPolicy</span><span class="token punctuation">:</span> IfNotPresent
+        <span class="token key atrule">command</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token string">"sh"</span><span class="token punctuation">,</span> <span class="token string">"-c"</span><span class="token punctuation">,</span> <span class="token string">"ulimit -n 65536"</span><span class="token punctuation">]</span>
+        <span class="token key atrule">securityContext</span><span class="token punctuation">:</span>
+          <span class="token key atrule">privileged</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+  <span class="token key atrule">volumeClaimTemplates</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+      <span class="token key atrule">name</span><span class="token punctuation">:</span> data
+      <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+        <span class="token key atrule">app</span><span class="token punctuation">:</span> elasticsearch
+    <span class="token key atrule">spec</span><span class="token punctuation">:</span>
+      <span class="token key atrule">accessModes</span><span class="token punctuation">:</span> <span class="token punctuation">[</span> <span class="token string">"ReadWriteOnce"</span> <span class="token punctuation">]</span>
+      <span class="token key atrule">storageClassName</span><span class="token punctuation">:</span> do<span class="token punctuation">-</span>block<span class="token punctuation">-</span>storage
+      <span class="token key atrule">resources</span><span class="token punctuation">:</span>
+        <span class="token key atrule">requests</span><span class="token punctuation">:</span>
+          <span class="token key atrule">storage</span><span class="token punctuation">:</span> 5Gi
+</code></pre> 
+<blockquote> 
+ <p><font size="4" color="green">上面内容的解释：在kube-logging的名称空间中定义了一个es-cluster的StatefulSet。<br> 然后，我们使用serviceName 字段与我们之前创建的headless ElasticSearch服务相关联。这样可以确保可以使用以下DNS地址访问StatefulSet中的每个Pod：，es-cluster-[0,1,2].elasticsearch.kube-logging.svc.cluster.local，其中[0,1,2]与Pod分配的序号数相对应。<br> 我们指定3个replicas（3个Pod副本），将selector matchLabels 设置为app: elasticseach。该.spec.selector.matchLabels和.spec.template.metadata.labels字段必须匹配。</font></p> 
+</blockquote> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># kubectl get pods -n kube-logging</span>
+NAME           READY   STATUS    RESTARTS   AGE
+es-cluster-0   <span class="token number">1</span>/1     Running   <span class="token number">0</span>          10m
+es-cluster-1   <span class="token number">1</span>/1     Running   <span class="token number">0</span>          10m
+es-cluster-2   <span class="token number">1</span>/1     Running   <span class="token number">0</span>          10m
+<span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># kubectl get svc -n kube-logging</span>
+NAME            TYPE        CLUSTER-IP   EXTERNAL-IP   PORT<span class="token punctuation">(</span>S<span class="token punctuation">)</span>             AGE
+elasticsearch   ClusterIP   None         <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>        <span class="token number">9200</span>/TCP,9300/TCP   6h15m
+
+</code></pre> 
+<p>pod部署完成之后，可以通过REST API检查elasticsearch集群是否部署成功，使用下面的命令将本地端口9200转发到 Elasticsearch 节点（如es-cluster-0）对应的端口：</p> 
+<p><code>kubectl port-forward es-cluster-0 9200:9200 --namespace=kube-logging</code><br> 然后，在另外的终端窗口中，执行如下请求，新开一个master1终端：</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># curl http://localhost:9200/_cluster/state?pretty|head -50</span>
+  % Total    % Received % Xferd  Average Speed   Time    Time     Time  Current
+                                 Dload  Upload   Total   Spent    Left  Speed
+ <span class="token number">10</span>  146k   <span class="token number">10</span> <span class="token number">16294</span>    <span class="token number">0</span>     <span class="token number">0</span>   310k      <span class="token number">0</span> --:--<span class="token punctuation">{<!-- --></span>-- --:--:-- --:--:--     <span class="token number">0</span>
+  <span class="token string">"cluster_name"</span> <span class="token builtin class-name">:</span> <span class="token string">"k8s-logs"</span>,
+  <span class="token string">"cluster_uuid"</span> <span class="token builtin class-name">:</span> <span class="token string">"GCzlBOZnT8abADeTCJyrRg"</span>,
+  <span class="token string">"version"</span> <span class="token builtin class-name">:</span> <span class="token number">17</span>,
+  <span class="token string">"state_uuid"</span> <span class="token builtin class-name">:</span> <span class="token string">"yIAM6AEzSdOCgK9FHmuriQ"</span>,
+  <span class="token string">"master_node"</span> <span class="token builtin class-name">:</span> <span class="token string">"7UL9lwt2Qa-Rx9S-5hm3tQ"</span>,
+  <span class="token string">"blocks"</span> <span class="token builtin class-name">:</span> <span class="token punctuation">{<!-- --></span> <span class="token punctuation">}</span>,
+  <span class="token string">"nodes"</span> <span class="token builtin class-name">:</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token string">"6FkyqeBnQ9GGJjqxmIK4OA"</span> <span class="token builtin class-name">:</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token string">"name"</span> <span class="token builtin class-name">:</span> <span class="token string">"es-cluster-2"</span>,
+      <span class="token string">"ephemeral_id"</span> <span class="token builtin class-name">:</span> <span class="token string">"T8DdDj6tQSm-mERp4rkrNg"</span>,
+      <span class="token string">"transport_address"</span> <span class="token builtin class-name">:</span> <span class="token string">"10.244.196.142:9300"</span>,
+      <span class="token string">"attributes"</span> <span class="token builtin class-name">:</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token string">"ml.machine_memory"</span> <span class="token builtin class-name">:</span> <span class="token string">"8201035776"</span>,
+        <span class="token string">"ml.max_open_jobs"</span> <span class="token builtin class-name">:</span> <span class="token string">"20"</span>,
+        <span class="token string">"xpack.installed"</span> <span class="token builtin class-name">:</span> <span class="token string">"true"</span>
+      <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>,
+    <span class="token string">"7UL9lwt2Qa-Rx9S-5hm3tQ"</span> <span class="token builtin class-name">:</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token string">"name"</span> <span class="token builtin class-name">:</span> <span class="token string">"es-cluster-0"</span>,
+      <span class="token string">"ephemeral_id"</span> <span class="token builtin class-name">:</span> <span class="token string">"JFYS2bHqTD-FaxV5IpACWQ"</span>,
+      <span class="token string">"transport_address"</span> <span class="token builtin class-name">:</span> <span class="token string">"10.244.196.135:9300"</span>,
+      <span class="token string">"attributes"</span> <span class="token builtin class-name">:</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token string">"ml.machine_memory"</span> <span class="token builtin class-name">:</span> <span class="token string">"8201035776"</span>,
+        <span class="token string">"xpack.installed"</span> <span class="token builtin class-name">:</span> <span class="token string">"true"</span>,
+        <span class="token string">"ml.max_open_jobs"</span> <span class="token builtin class-name">:</span> <span class="token string">"20"</span>
+      <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>,
+    <span class="token string">"QRd7XeJ5TtO-bdaru3wAkg"</span> <span class="token builtin class-name">:</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token string">"name"</span> <span class="token builtin class-name">:</span> <span class="token string">"es-cluster-1"</span>,
+      <span class="token string">"ephemeral_id"</span> <span class="token builtin class-name">:</span> <span class="token string">"uG4ZE_N8QGGNDyXnE4puSQ"</span>,
+      <span class="token string">"transport_address"</span> <span class="token builtin class-name">:</span> <span class="token string">"10.244.140.105:9300"</span>,
+      <span class="token string">"attrib:--utes"</span> <span class="token builtin class-name">:</span> <span class="token punctuation">{<!-- --></span>
+         <span class="token string">"ml.machine_memory"</span> <span class="token builtin class-name">:</span> <span class="token string">"8201248768"</span>,
+-        <span class="token string">"ml.max_open_jobs"</span> <span class="token builtin class-name">:</span> <span class="token string">"20"</span>,
+-        <span class="token string">"xpack.installed"</span> <span class="token builtin class-name">:</span> <span class="token string">"true"</span>
+<span class="token builtin class-name">:</span>      <span class="token punctuation">}</span>
+-    <span class="token punctuation">}</span>
+-  <span class="token punctuation">}</span>,
+<span class="token comment"># 看到上面的信息就表明我们名为 k8s-logs 的 Elasticsearch 集群成功创建了3个节点：</span>
+<span class="token comment"># es-cluster-0，es-cluster-1，和es-cluster-2</span>
+<span class="token comment"># 当前主节点是 es-cluster-0</span>
+</code></pre> 
+<h3><a id="32kibanaUI_488"></a>3.2、安装kibana可视化UI界面</h3> 
+<pre><code class="prism language-yaml"><span class="token punctuation">[</span>root@master 4<span class="token punctuation">]</span><span class="token comment"># cat kibana.yaml</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Service
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> kibana
+  <span class="token key atrule">namespace</span><span class="token punctuation">:</span> kube<span class="token punctuation">-</span>logging
+  <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+    <span class="token key atrule">app</span><span class="token punctuation">:</span> kibana
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">ports</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> <span class="token key atrule">port</span><span class="token punctuation">:</span> <span class="token number">5601</span>
+  <span class="token key atrule">selector</span><span class="token punctuation">:</span>
+    <span class="token key atrule">app</span><span class="token punctuation">:</span> kibana
+<span class="token punctuation">---</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> apps/v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> Deployment
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> kibana
+  <span class="token key atrule">namespace</span><span class="token punctuation">:</span> kube<span class="token punctuation">-</span>logging
+  <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+    <span class="token key atrule">app</span><span class="token punctuation">:</span> kibana
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">replicas</span><span class="token punctuation">:</span> <span class="token number">1</span>
+  <span class="token key atrule">selector</span><span class="token punctuation">:</span>
+    <span class="token key atrule">matchLabels</span><span class="token punctuation">:</span>
+      <span class="token key atrule">app</span><span class="token punctuation">:</span> kibana
+  <span class="token key atrule">template</span><span class="token punctuation">:</span>
+    <span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+      <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+        <span class="token key atrule">app</span><span class="token punctuation">:</span> kibana
+    <span class="token key atrule">spec</span><span class="token punctuation">:</span>
+      <span class="token key atrule">containers</span><span class="token punctuation">:</span>
+      <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> kibana
+        <span class="token key atrule">image</span><span class="token punctuation">:</span> docker.elastic.co/kibana/kibana<span class="token punctuation">:</span>7.2.0
+        <span class="token key atrule">imagePullPolicy</span><span class="token punctuation">:</span> IfNotPresent
+        <span class="token key atrule">resources</span><span class="token punctuation">:</span>
+          <span class="token key atrule">limits</span><span class="token punctuation">:</span>
+            <span class="token key atrule">cpu</span><span class="token punctuation">:</span> 1000m
+          <span class="token key atrule">requests</span><span class="token punctuation">:</span>
+            <span class="token key atrule">cpu</span><span class="token punctuation">:</span> 100m
+        <span class="token key atrule">env</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> ELASTICSEARCH_URL
+          <span class="token key atrule">value</span><span class="token punctuation">:</span> http<span class="token punctuation">:</span>//elasticsearch<span class="token punctuation">:</span><span class="token number">9200</span>
+        <span class="token key atrule">ports</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">containerPort</span><span class="token punctuation">:</span> <span class="token number">5601</span>
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># kubectl apply -f kibana.yaml</span>
+<span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># kubectl get pods -n kube-logging</span>
+NAME                     READY   STATUS    RESTARTS   AGE
+es-cluster-0             <span class="token number">1</span>/1     Running   <span class="token number">0</span>          41m
+es-cluster-1             <span class="token number">1</span>/1     Running   <span class="token number">0</span>          41m
+es-cluster-2             <span class="token number">1</span>/1     Running   <span class="token number">0</span>          40m
+kibana-69f46c6bd-vm7rh   <span class="token number">1</span>/1     Running   <span class="token number">0</span>          18m
+<span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment">#  kubectl get svc -n kube-logging</span>
+NAME            TYPE        CLUSTER-IP       EXTERNAL-IP   PORT<span class="token punctuation">(</span>S<span class="token punctuation">)</span>             AGE
+elasticsearch   ClusterIP   None             <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>        <span class="token number">9200</span>/TCP,9300/TCP   6h43m
+kibana          ClusterIP   <span class="token number">10.109</span>.118.117   <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>        <span class="token number">5601</span>/TCP            18m
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token comment"># 修改service的type类型为NodePort：</span>
+<span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment">#  kubectl edit svc kibana -n kube-logging</span>
+<span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment">#  kubectl get svc -n kube-logging</span>
+NAME            TYPE        CLUSTER-IP       EXTERNAL-IP   PORT<span class="token punctuation">(</span>S<span class="token punctuation">)</span>             AGE
+elasticsearch   ClusterIP   None             <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>        <span class="token number">9200</span>/TCP,9300/TCP   6h44m
+kibana          NodePort    <span class="token number">10.109</span>.118.117   <span class="token operator">&lt;</span>none<span class="token operator">&gt;</span>        <span class="token number">5601</span>:31598/TCP      20m
+</code></pre> 
+<p>在浏览器中打开http://&lt;k8s集群任意节点IP&gt;:31598即可，如果看到如下欢迎界面证明 Kibana 已经成功部署到了Kubernetes集群之中。<br> <img src="https://images2.imgbox.com/80/97/iJYcfMNz_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="33fluentd_564"></a>3.3、安装fluentd组件</h3> 
+<p>将镜像上传到各个节点（master、node节点都要上传）<br> 然后解压</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># ctr -n=k8s.io images import fluentd-v1-9-1.tar.gz</span>
+<span class="token punctuation">[</span>root@node01 package<span class="token punctuation">]</span><span class="token comment"># ctr -n=k8s.io images import fluentd-v1-9-1.tar.gz</span>
+<span class="token punctuation">[</span>root@node02 package<span class="token punctuation">]</span><span class="token comment"># ctr -n=k8s.io images import fluentd-v1-9-1.tar.gz</span>
+</code></pre> 
+<pre><code class="prism language-yaml"><span class="token punctuation">[</span>root@master 4<span class="token punctuation">]</span><span class="token comment"># cat fluentd.yaml</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> ServiceAccount
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> fluentd
+  <span class="token key atrule">namespace</span><span class="token punctuation">:</span> kube<span class="token punctuation">-</span>logging
+  <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+    <span class="token key atrule">app</span><span class="token punctuation">:</span> fluentd
+<span class="token punctuation">---</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> rbac.authorization.k8s.io/v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> ClusterRole
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> fluentd
+  <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+    <span class="token key atrule">app</span><span class="token punctuation">:</span> fluentd
+<span class="token key atrule">rules</span><span class="token punctuation">:</span>
+<span class="token punctuation">-</span> <span class="token key atrule">apiGroups</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> <span class="token string">""</span>
+  <span class="token key atrule">resources</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> pods
+  <span class="token punctuation">-</span> namespaces
+  <span class="token key atrule">verbs</span><span class="token punctuation">:</span>
+  <span class="token punctuation">-</span> get
+  <span class="token punctuation">-</span> list
+  <span class="token punctuation">-</span> watch
+<span class="token punctuation">---</span>
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> ClusterRoleBinding
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> rbac.authorization.k8s.io/v1
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> fluentd
+<span class="token key atrule">roleRef</span><span class="token punctuation">:</span>
+  <span class="token key atrule">kind</span><span class="token punctuation">:</span> ClusterRole
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> fluentd
+  <span class="token key atrule">apiGroup</span><span class="token punctuation">:</span> rbac.authorization.k8s.io
+<span class="token key atrule">subjects</span><span class="token punctuation">:</span>
+<span class="token punctuation">-</span> <span class="token key atrule">kind</span><span class="token punctuation">:</span> ServiceAccount
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> fluentd
+  <span class="token key atrule">namespace</span><span class="token punctuation">:</span> kube<span class="token punctuation">-</span>logging
+<span class="token punctuation">---</span>
+<span class="token key atrule">apiVersion</span><span class="token punctuation">:</span> apps/v1
+<span class="token key atrule">kind</span><span class="token punctuation">:</span> DaemonSet
+<span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+  <span class="token key atrule">name</span><span class="token punctuation">:</span> fluentd
+  <span class="token key atrule">namespace</span><span class="token punctuation">:</span> kube<span class="token punctuation">-</span>logging
+  <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+    <span class="token key atrule">app</span><span class="token punctuation">:</span> fluentd
+<span class="token key atrule">spec</span><span class="token punctuation">:</span>
+  <span class="token key atrule">selector</span><span class="token punctuation">:</span>
+    <span class="token key atrule">matchLabels</span><span class="token punctuation">:</span>
+      <span class="token key atrule">app</span><span class="token punctuation">:</span> fluentd
+  <span class="token key atrule">template</span><span class="token punctuation">:</span>
+    <span class="token key atrule">metadata</span><span class="token punctuation">:</span>
+      <span class="token key atrule">labels</span><span class="token punctuation">:</span>
+        <span class="token key atrule">app</span><span class="token punctuation">:</span> fluentd
+    <span class="token key atrule">spec</span><span class="token punctuation">:</span>
+      <span class="token key atrule">serviceAccount</span><span class="token punctuation">:</span> fluentd
+      <span class="token key atrule">serviceAccountName</span><span class="token punctuation">:</span> fluentd
+      <span class="token key atrule">tolerations</span><span class="token punctuation">:</span>
+      <span class="token punctuation">-</span> <span class="token key atrule">key</span><span class="token punctuation">:</span> node<span class="token punctuation">-</span>role.kubernetes.io/master
+        <span class="token key atrule">effect</span><span class="token punctuation">:</span> NoSchedule
+      <span class="token key atrule">containers</span><span class="token punctuation">:</span>
+      <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> fluentd
+        <span class="token key atrule">image</span><span class="token punctuation">:</span> fluentd<span class="token punctuation">:</span>v1.9.1<span class="token punctuation">-</span>debian<span class="token punctuation">-</span><span class="token number">1.0</span>
+        <span class="token key atrule">imagePullPolicy</span><span class="token punctuation">:</span> IfNotPresent
+        <span class="token key atrule">env</span><span class="token punctuation">:</span>
+          <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span>  FLUENT_ELASTICSEARCH_HOST
+            <span class="token key atrule">value</span><span class="token punctuation">:</span> <span class="token string">"elasticsearch.kube-logging.svc.cluster.local"</span>
+          <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span>  FLUENT_ELASTICSEARCH_PORT
+            <span class="token key atrule">value</span><span class="token punctuation">:</span> <span class="token string">"9200"</span>
+          <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> FLUENT_ELASTICSEARCH_SCHEME
+            <span class="token key atrule">value</span><span class="token punctuation">:</span> <span class="token string">"http"</span>
+          <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> FLUENTD_SYSTEMD_CONF
+            <span class="token key atrule">value</span><span class="token punctuation">:</span> disable
+          <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> FLUENT_CONTAINER_TAIL_PARSE_TYPE  <span class="token comment"># 注意：如果是用containerd做容器运行时，就要加这4行，使用docker则不用</span>
+            <span class="token key atrule">value</span><span class="token punctuation">:</span> <span class="token string">"cri"</span>
+          <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> FLUENT_CONTAINER_TAIL_PARSE_TIME_FORMAT
+            <span class="token key atrule">value</span><span class="token punctuation">:</span> <span class="token string">"%Y-%m-%dT%H:%M:%S.%L%z"</span>
+        <span class="token key atrule">resources</span><span class="token punctuation">:</span>
+          <span class="token key atrule">limits</span><span class="token punctuation">:</span>
+            <span class="token key atrule">memory</span><span class="token punctuation">:</span> 512Mi
+          <span class="token key atrule">requests</span><span class="token punctuation">:</span>
+            <span class="token key atrule">cpu</span><span class="token punctuation">:</span> 100m
+            <span class="token key atrule">memory</span><span class="token punctuation">:</span> 200Mi
+        <span class="token key atrule">volumeMounts</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> varlog
+          <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> /var/log
+        <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> varlibdockercontainers
+          <span class="token key atrule">mountPath</span><span class="token punctuation">:</span> /var/lib/docker/containers
+          <span class="token key atrule">readOnly</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+      <span class="token key atrule">terminationGracePeriodSeconds</span><span class="token punctuation">:</span> <span class="token number">30</span>
+      <span class="token key atrule">volumes</span><span class="token punctuation">:</span>
+      <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> varlog
+        <span class="token key atrule">hostPath</span><span class="token punctuation">:</span>
+          <span class="token key atrule">path</span><span class="token punctuation">:</span> /var/log
+      <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> varlibdockercontainers
+        <span class="token key atrule">hostPath</span><span class="token punctuation">:</span>
+          <span class="token key atrule">path</span><span class="token punctuation">:</span> /var/lib/docker/containers
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># kubectl apply -f fluentd.yaml</span>
+serviceaccount/fluentd unchanged
+clusterrole.rbac.authorization.k8s.io/fluentd unchanged
+clusterrolebinding.rbac.authorization.k8s.io/fluentd unchanged
+daemonset.apps/fluentd created
+
+<span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># kubectl get pods -n kube-logging</span>
+NAME                     READY   STATUS    RESTARTS   AGE
+es-cluster-0             <span class="token number">1</span>/1     Running   <span class="token number">0</span>          17h
+es-cluster-1             <span class="token number">1</span>/1     Running   <span class="token number">0</span>          17h
+es-cluster-2             <span class="token number">1</span>/1     Running   <span class="token number">0</span>          17h
+fluentd-8fzqg            <span class="token number">1</span>/1     Running   <span class="token number">0</span>          23s
+fluentd-fjhgg            <span class="token number">1</span>/1     Running   <span class="token number">0</span>          23s
+fluentd-vlhn6            <span class="token number">1</span>/1     Running   <span class="token number">0</span>          23s
+kibana-69f46c6bd-vm7rh   <span class="token number">1</span>/1     Running   <span class="token number">0</span>          16h
+</code></pre> 
+<p>Fluentd 启动成功后，我们可以前往 Kibana 的 Dashboard 页面中，点击左侧的Discover，可以看到如下配置页面：</p> 
+<p><img src="https://images2.imgbox.com/fc/d4/sg9cW3oA_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/c1/a7/zxAFd8d3_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/ca/8f/YCxcNpGY_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/36/8c/TrWdiBbS_o.png" alt="在这里插入图片描述"></p> 
+<p>点击左侧的discover，可看到如下：<br> <img src="https://images2.imgbox.com/be/c3/zqk5SzWx_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="34pod_706"></a>3.4、测试收集pod容器日志</h3> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># cat pod.yaml</span>
+apiVersion: v1
+kind: Pod
+metadata:
+  name: counter
+  <span class="token comment">#namespace: kube-logging</span>
+spec:
+  containers:
+  - name: count
+    image: busybox
+    imagePullPolicy: IfNotPresent
+    args: <span class="token punctuation">[</span>/bin/sh, -c,<span class="token string">'i=0; while true; do echo "$i: $(date)"; i=$((i+1)); sleep 60; done'</span><span class="token punctuation">]</span>
+<span class="token punctuation">[</span>root@master <span class="token number">4</span><span class="token punctuation">]</span><span class="token comment"># kubectl apply -f pod.yaml</span>
+pod/counter created
+
+</code></pre> 
+<p>Kibana查询语言KQL官方地址：<br> <a href="https://www.elastic.co/guide/en/kibana/7.2/kuery-query.html" rel="nofollow">https://www.elastic.co/guide/en/kibana/7.2/kuery-query.html</a></p> 
+<p>登录到kibana的控制面板，在discover处的搜索栏中输入kubernetes.pod_name:counter，这将过滤名为的Pod的日志数据counter，如下所示：</p> 
+<p><img src="https://images2.imgbox.com/a7/b2/mL6wxH7X_o.png" alt="在这里插入图片描述"></p> 
+<p>此时日志中的时间是不准确的，需要调整。<br> pod.yaml调整后可正常显示<br> <img src="https://images2.imgbox.com/50/bf/EygF0Ge9_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/96259818d49c9af524908db404f4aa78/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Warp-“21世纪现代化终端“-智能AI终端</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7ebd059e5bb0d78fa561419e99e7e746/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">RabbitMQ和RocketMQ区别 | RabbitMQ和RocketMQ优缺点解析 | 消息队列中间件对比：RabbitMQ vs RocketMQ - 选择哪个适合您的业务需求？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

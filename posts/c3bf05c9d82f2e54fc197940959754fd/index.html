@@ -1,0 +1,256 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Stable Diffusion动态加载Lora过程中的实验、原理与说明 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/c3bf05c9d82f2e54fc197940959754fd/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Stable Diffusion动态加载Lora过程中的实验、原理与说明">
+  <meta property="og:description" content="对比实验 显存占用情况 使用StableDiffusionXLPipeline.from_pretrained() 方法SDXL半精度加载显存占用约7G左右。
+使用load_lora_weights()加载了5个Lora模型后显存提升到8G，平均每个Lora的大小在200M左右。
+使用unload_lora_weights()后显存没有发生变化，还是8G，说明该方法不会清空已经加载到显存的Lora模型，但这时候再调用模型生成图片已经丢失Lora的效果了。
+推理耗时 Lora数量耗时（秒）015120224……745 这里使用的Lora平均每个的大小在200M左右，从上表不难发现单个Lora耗时约增加4秒左右。
+代码分析与原理说明 1）加载Lora 通过调用load_lora_weights()来加载不同的Lora权重，这些权重的张量都会加载到显存中，但注意只有第一次调用该方法的Lora才会生效，可通过get_active_adapters()查看。
+def load_lora_weights( self, pretrained_model_name_or_path_or_dict: Union[str, Dict[str, torch.Tensor]], adapter_name=None, **kwargs ): ... # lora_state_dict 实际执行把tensor加载到显存中，同时返回2个字典记录所添加的lora的名称和配置信息 state_dict, network_alphas = self.lora_state_dict(pretrained_model_name_or_path_or_dict, **kwargs) # state_dict 和 network_alphas 是上面返回的2个参数 # 加载后默认调用的lora是第一次load进来的lora self.load_lora_into_unet( state_dict, network_alphas=network_alphas, unet=getattr(self, self.unet_name) if not hasattr(self, &#34;unet&#34;) else self.unet, low_cpu_mem_usage=low_cpu_mem_usage, adapter_name=adapter_name, _pipeline=self, ) self.load_lora_into_text_encoder( state_dict, network_alphas=network_alphas, text_encoder=getattr(self, self.text_encoder_name) if not hasattr(self, &#34;text_encoder&#34;) else self.text_encoder, lora_scale=self.lora_scale, low_cpu_mem_usage=low_cpu_mem_usage, adapter_name=adapter_name, _pipeline=self, ) 用一张图来表示load_lora_weights()加载过程，蓝色表示生效的张量。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2023-12-13T21:09:24+08:00">
+    <meta property="article:modified_time" content="2023-12-13T21:09:24+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Stable Diffusion动态加载Lora过程中的实验、原理与说明</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_2"></a>对比实验</h2> 
+<h3><a id="_3"></a>显存占用情况</h3> 
+<p><img src="https://images2.imgbox.com/e9/e8/13e4MapY_o.png" alt="SDXL半精度加载显存占用"><br> 使用<code>StableDiffusionXLPipeline.from_pretrained()</code> 方法SDXL半精度加载显存占用约7G左右。</p> 
+<p><img src="https://images2.imgbox.com/7d/94/FiNI4IuB_o.png" alt="加载7个Lora模型"><br> 使用<code>load_lora_weights()</code>加载了5个Lora模型后显存提升到8G，平均每个Lora的大小在200M左右。<br> 使用<code>unload_lora_weights()</code>后显存没有发生变化，还是8G，说明该方法不会清空已经加载到显存的Lora模型，但<em><strong>这时候再调用模型生成图片已经丢失Lora的效果了</strong></em>。</p> 
+<h3><a id="_15"></a>推理耗时</h3> 
+<table><thead><tr><th>Lora数量</th><th>耗时（秒）</th></tr></thead><tbody><tr><td>0</td><td>15</td></tr><tr><td>1</td><td>20</td></tr><tr><td>2</td><td>24</td></tr><tr><td>…</td><td>…</td></tr><tr><td>7</td><td>45</td></tr></tbody></table> 
+<p>这里使用的Lora平均每个的大小在200M左右，从上表不难发现单个Lora耗时约增加4秒左右。</p> 
+<h2><a id="_26"></a>代码分析与原理说明</h2> 
+<h3><a id="1Lora_28"></a>1）加载Lora</h3> 
+<p>通过调用<code>load_lora_weights()</code>来加载不同的Lora权重，这些权重的张量都会加载到显存中，但注意只有第一次调用该方法的Lora才会生效，可通过<code>get_active_adapters()</code>查看。</p> 
+<pre><code class="prism language-python"><span class="token keyword">def</span> <span class="token function">load_lora_weights</span><span class="token punctuation">(</span>
+        self<span class="token punctuation">,</span> pretrained_model_name_or_path_or_dict<span class="token punctuation">:</span> Union<span class="token punctuation">[</span><span class="token builtin">str</span><span class="token punctuation">,</span> Dict<span class="token punctuation">[</span><span class="token builtin">str</span><span class="token punctuation">,</span> torch<span class="token punctuation">.</span>Tensor<span class="token punctuation">]</span><span class="token punctuation">]</span><span class="token punctuation">,</span> adapter_name<span class="token operator">=</span><span class="token boolean">None</span><span class="token punctuation">,</span> <span class="token operator">**</span>kwargs
+    <span class="token punctuation">)</span><span class="token punctuation">:</span>
+    
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        <span class="token comment"># lora_state_dict 实际执行把tensor加载到显存中，同时返回2个字典记录所添加的lora的名称和配置信息</span>
+        state_dict<span class="token punctuation">,</span> network_alphas <span class="token operator">=</span> self<span class="token punctuation">.</span>lora_state_dict<span class="token punctuation">(</span>pretrained_model_name_or_path_or_dict<span class="token punctuation">,</span> <span class="token operator">**</span>kwargs<span class="token punctuation">)</span>
+        
+       
+        <span class="token comment"># state_dict 和 network_alphas 是上面返回的2个参数</span>
+        <span class="token comment"># 加载后默认调用的lora是第一次load进来的lora</span>
+        self<span class="token punctuation">.</span>load_lora_into_unet<span class="token punctuation">(</span>
+            state_dict<span class="token punctuation">,</span>
+            network_alphas<span class="token operator">=</span>network_alphas<span class="token punctuation">,</span>
+            unet<span class="token operator">=</span><span class="token builtin">getattr</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> self<span class="token punctuation">.</span>unet_name<span class="token punctuation">)</span> <span class="token keyword">if</span> <span class="token keyword">not</span> <span class="token builtin">hasattr</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> <span class="token string">"unet"</span><span class="token punctuation">)</span> <span class="token keyword">else</span> self<span class="token punctuation">.</span>unet<span class="token punctuation">,</span>
+            low_cpu_mem_usage<span class="token operator">=</span>low_cpu_mem_usage<span class="token punctuation">,</span>
+            adapter_name<span class="token operator">=</span>adapter_name<span class="token punctuation">,</span>
+            _pipeline<span class="token operator">=</span>self<span class="token punctuation">,</span>
+        <span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>load_lora_into_text_encoder<span class="token punctuation">(</span>
+            state_dict<span class="token punctuation">,</span>
+            network_alphas<span class="token operator">=</span>network_alphas<span class="token punctuation">,</span>
+            text_encoder<span class="token operator">=</span><span class="token builtin">getattr</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> self<span class="token punctuation">.</span>text_encoder_name<span class="token punctuation">)</span>
+            <span class="token keyword">if</span> <span class="token keyword">not</span> <span class="token builtin">hasattr</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> <span class="token string">"text_encoder"</span><span class="token punctuation">)</span>
+            <span class="token keyword">else</span> self<span class="token punctuation">.</span>text_encoder<span class="token punctuation">,</span>
+            lora_scale<span class="token operator">=</span>self<span class="token punctuation">.</span>lora_scale<span class="token punctuation">,</span>
+            low_cpu_mem_usage<span class="token operator">=</span>low_cpu_mem_usage<span class="token punctuation">,</span>
+            adapter_name<span class="token operator">=</span>adapter_name<span class="token punctuation">,</span>
+            _pipeline<span class="token operator">=</span>self<span class="token punctuation">,</span>
+        <span class="token punctuation">)</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/f9/43/gZapi2Jp_o.jpg" alt="在这里插入图片描述"></p> 
+<p>用一张图来表示<code>load_lora_weights()</code>加载过程，蓝色表示生效的张量。<br> <img src="https://images2.imgbox.com/fa/a2/Ub7RWsHM_o.jpg" alt="在这里插入图片描述"></p> 
+<p><mark>因此如果不特别指定调用哪个Lora的话，默认输入的张量需要跟Base和第一个Lora的权重分别相乘再叠加</mark></p> 
+<h3><a id="2Lora_72"></a>2）卸载Lora</h3> 
+<p>卸载Lora时需要调用<code>unload_lora_weights()</code>方法，关键是把config删除，并不清显存，如代码中的<code>del self.unet.peft_config</code>操作。<strong>如果后续需要再调用Lora的话，则需要重头开始加载Lora权重</strong>。</p> 
+<pre><code class="prism language-python">  <span class="token keyword">def</span> <span class="token function">unload_lora_weights</span><span class="token punctuation">(</span>self<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        
+        <span class="token keyword">if</span> <span class="token keyword">not</span> USE_PEFT_BACKEND<span class="token punctuation">:</span>
+            <span class="token keyword">if</span> version<span class="token punctuation">.</span>parse<span class="token punctuation">(</span>__version__<span class="token punctuation">)</span> <span class="token operator">&gt;</span> version<span class="token punctuation">.</span>parse<span class="token punctuation">(</span><span class="token string">"0.23"</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+                logger<span class="token punctuation">.</span>warn<span class="token punctuation">(</span>
+                    <span class="token string">"You are using `unload_lora_weights` to disable and unload lora weights. If you want to iteratively enable and disable adapter weights,"</span>
+                    <span class="token string">"you can use `pipe.enable_lora()` or `pipe.disable_lora()`. After installing the latest version of PEFT."</span>
+                <span class="token punctuation">)</span>
+
+            <span class="token keyword">for</span> _<span class="token punctuation">,</span> module <span class="token keyword">in</span> self<span class="token punctuation">.</span>unet<span class="token punctuation">.</span>named_modules<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+                <span class="token keyword">if</span> <span class="token builtin">hasattr</span><span class="token punctuation">(</span>module<span class="token punctuation">,</span> <span class="token string">"set_lora_layer"</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+                    module<span class="token punctuation">.</span>set_lora_layer<span class="token punctuation">(</span><span class="token boolean">None</span><span class="token punctuation">)</span>
+        <span class="token keyword">else</span><span class="token punctuation">:</span>
+            recurse_remove_peft_layers<span class="token punctuation">(</span>self<span class="token punctuation">.</span>unet<span class="token punctuation">)</span>
+            <span class="token keyword">if</span> <span class="token builtin">hasattr</span><span class="token punctuation">(</span>self<span class="token punctuation">.</span>unet<span class="token punctuation">,</span> <span class="token string">"peft_config"</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            <span class="token comment"># 关键是把config删除，并不清显存</span>
+            <span class="token comment"># 因此执行unload_lora_weights 会丢失所有记载的lora的config信息，但不会释放显存</span>
+                <span class="token keyword">del</span> self<span class="token punctuation">.</span>unet<span class="token punctuation">.</span>peft_config
+</code></pre> 
+<h3><a id="3Lora_94"></a>3）指定Lora</h3> 
+<p>在拥有多个Lora加载后，如果需要指定某个或者某几个Lora，则需要用<code>set_adapters()</code>方法。该方法对Unet和Text Encoder都执行<code>set_adapter()</code>操作，间接调用了<em>peft_utils</em>模块中的<code>set_weights_and_activate_adapters()</code> 方法为Unet或者Text Encoder的某些层指定Lora类型和权重。</p> 
+<pre><code class="prism language-python"> <span class="token keyword">def</span> <span class="token function">set_adapters</span><span class="token punctuation">(</span>
+        self<span class="token punctuation">,</span>
+        adapter_names<span class="token punctuation">:</span> Union<span class="token punctuation">[</span>List<span class="token punctuation">[</span><span class="token builtin">str</span><span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token builtin">str</span><span class="token punctuation">]</span><span class="token punctuation">,</span>
+        adapter_weights<span class="token punctuation">:</span> Optional<span class="token punctuation">[</span>List<span class="token punctuation">[</span><span class="token builtin">float</span><span class="token punctuation">]</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token boolean">None</span><span class="token punctuation">,</span>
+    <span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token comment"># 对unet和text encoder都执行set adapter操作。间接调用 set_weights_and_activate_adapters 方法</span>
+        self<span class="token punctuation">.</span>unet<span class="token punctuation">.</span>set_adapters<span class="token punctuation">(</span>adapter_names<span class="token punctuation">,</span> adapter_weights<span class="token punctuation">)</span>
+
+        <span class="token comment"># Handle the Text Encoder</span>
+        <span class="token keyword">if</span> <span class="token builtin">hasattr</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> <span class="token string">"text_encoder"</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            self<span class="token punctuation">.</span>set_adapters_for_text_encoder<span class="token punctuation">(</span>adapter_names<span class="token punctuation">,</span> self<span class="token punctuation">.</span>text_encoder<span class="token punctuation">,</span> adapter_weights<span class="token punctuation">)</span>
+        <span class="token keyword">if</span> <span class="token builtin">hasattr</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> <span class="token string">"text_encoder_2"</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            self<span class="token punctuation">.</span>set_adapters_for_text_encoder<span class="token punctuation">(</span>adapter_names<span class="token punctuation">,</span> self<span class="token punctuation">.</span>text_encoder_2<span class="token punctuation">,</span> adapter_weights<span class="token punctuation">)</span>
+</code></pre> 
+<pre><code class="prism language-python"><span class="token comment"># src/diffusers/utils/peft_utils.py</span>
+<span class="token keyword">def</span> <span class="token function">set_weights_and_activate_adapters</span><span class="token punctuation">(</span>model<span class="token punctuation">,</span> adapter_names<span class="token punctuation">,</span> weights<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">from</span> peft<span class="token punctuation">.</span>tuners<span class="token punctuation">.</span>tuners_utils <span class="token keyword">import</span> BaseTunerLayer
+
+    <span class="token comment"># iterate over each adapter, make it active and set the corresponding scaling weight</span>
+    <span class="token keyword">for</span> adapter_name<span class="token punctuation">,</span> weight <span class="token keyword">in</span> <span class="token builtin">zip</span><span class="token punctuation">(</span>adapter_names<span class="token punctuation">,</span> weights<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token keyword">for</span> module <span class="token keyword">in</span> model<span class="token punctuation">.</span>modules<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            <span class="token keyword">if</span> <span class="token builtin">isinstance</span><span class="token punctuation">(</span>module<span class="token punctuation">,</span> BaseTunerLayer<span class="token punctuation">)</span><span class="token punctuation">:</span>
+                <span class="token comment"># For backward compatbility with previous PEFT versions</span>
+                <span class="token keyword">if</span> <span class="token builtin">hasattr</span><span class="token punctuation">(</span>module<span class="token punctuation">,</span> <span class="token string">"set_adapter"</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+                    module<span class="token punctuation">.</span>set_adapter<span class="token punctuation">(</span>adapter_name<span class="token punctuation">)</span>
+                <span class="token keyword">else</span><span class="token punctuation">:</span>
+                    module<span class="token punctuation">.</span>active_adapter <span class="token operator">=</span> adapter_name
+                module<span class="token punctuation">.</span>set_scale<span class="token punctuation">(</span>adapter_name<span class="token punctuation">,</span> weight<span class="token punctuation">)</span>
+</code></pre> 
+<p><strong>如果已经执行过<code>set_adapter()</code>，而下次又需要使用不同的Lora，则重新执行<code>set_adapter()</code>选择需要的Lora即可</strong>。</p> 
+<h3><a id="4Lora_129"></a>4）解除Lora</h3> 
+<p>如果不需要Lora，想用Base模型直接生成图片，这时候可以通过<code>disable_lora()</code>方法来解除已经指定好的Lora。<strong>这时候再生成图片，输入的张量只会跟Base的矩阵张量相乘</strong>。</p> 
+<blockquote> 
+ <p>注意：后续如果需要重新使用Lora，必须先执行 enable_lora() 方法!</p> 
+</blockquote> 
+<pre><code class="prism language-python"><span class="token comment"># src/diffusers/utils/peft_utils.py#L227</span>
+<span class="token comment"># disable_lora底层调用了该方法</span>
+<span class="token comment"># 会把Unet和Text Encoder的某些层注释掉Lora，因此达到解除Lora的效果</span>
+<span class="token comment"># 可以看到效果和指定Lora时刚好是相反的</span>
+
+<span class="token keyword">def</span> <span class="token function">set_adapter_layers</span><span class="token punctuation">(</span>model<span class="token punctuation">,</span> enabled<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">from</span> peft<span class="token punctuation">.</span>tuners<span class="token punctuation">.</span>tuners_utils <span class="token keyword">import</span> BaseTunerLayer
+
+    <span class="token keyword">for</span> module <span class="token keyword">in</span> model<span class="token punctuation">.</span>modules<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token keyword">if</span> <span class="token builtin">isinstance</span><span class="token punctuation">(</span>module<span class="token punctuation">,</span> BaseTunerLayer<span class="token punctuation">)</span><span class="token punctuation">:</span>
+            <span class="token comment"># The recent version of PEFT needs to call `enable_adapters` instead</span>
+            <span class="token keyword">if</span> <span class="token builtin">hasattr</span><span class="token punctuation">(</span>module<span class="token punctuation">,</span> <span class="token string">"enable_adapters"</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            <span class="token comment"># false的时候注释掉 lora适配器</span>
+                module<span class="token punctuation">.</span>enable_adapters<span class="token punctuation">(</span>enabled<span class="token operator">=</span>enabled<span class="token punctuation">)</span>
+            <span class="token keyword">else</span><span class="token punctuation">:</span>
+                module<span class="token punctuation">.</span>disable_adapters <span class="token operator">=</span> <span class="token keyword">not</span> enabled
+</code></pre> 
+<p><img src="https://images2.imgbox.com/48/30/o5O8uGu2_o.jpg" alt="在这里插入图片描述"></p> 
+<h3><a id="5Lora_153"></a>5）查看Lora</h3> 
+<p>通过<code>get_active_adapters()</code>方法即可查看指定的Lora，即前面示例图中蓝色的Lora模块。</p> 
+<pre><code class="prism language-python">    <span class="token keyword">def</span> <span class="token function">get_active_adapters</span><span class="token punctuation">(</span>self<span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> List<span class="token punctuation">[</span><span class="token builtin">str</span><span class="token punctuation">]</span><span class="token punctuation">:</span>
+     
+        <span class="token keyword">if</span> <span class="token keyword">not</span> USE_PEFT_BACKEND<span class="token punctuation">:</span>
+            <span class="token keyword">raise</span> ValueError<span class="token punctuation">(</span>
+                <span class="token string">"PEFT backend is required for this method. Please install the latest version of PEFT `pip install -U peft`"</span>
+            <span class="token punctuation">)</span>
+
+        <span class="token keyword">from</span> peft<span class="token punctuation">.</span>tuners<span class="token punctuation">.</span>tuners_utils <span class="token keyword">import</span> BaseTunerLayer
+
+        active_adapters <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+
+        <span class="token keyword">for</span> module <span class="token keyword">in</span> self<span class="token punctuation">.</span>unet<span class="token punctuation">.</span>modules<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            <span class="token keyword">if</span> <span class="token builtin">isinstance</span><span class="token punctuation">(</span>module<span class="token punctuation">,</span> BaseTunerLayer<span class="token punctuation">)</span><span class="token punctuation">:</span>
+                active_adapters <span class="token operator">=</span> module<span class="token punctuation">.</span>active_adapters
+                <span class="token keyword">break</span>
+
+        <span class="token keyword">return</span> active_adapters
+</code></pre> 
+<h3><a id="6Lora_175"></a>6）融合Lora</h3> 
+<p>前面已经实验过，当有多个Lora调用时，推理时间几乎会线性增加，这是因为输入的张量除了与Base的模型相乘外，还需要与每个Lora相乘再叠加，因此推理时间会变长。一种解决方案是将需要的Lora与Base进行合并，即通过<code>fuse_lora()</code>来实现，这样推理时间可与Base单独使用时一致。下图中深蓝色表示Base的权重已经叠加了需要的Lora的权重，因此输入张量无需再经过Lora。但是缺点是<mark>多次融合Lora后，Base将无法恢复，需要后续需要单独使用Base，只能重新加载Base！</mark></p> 
+<p><img src="https://images2.imgbox.com/a4/6e/gQ66TFUp_o.jpg" alt="融合Lora"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/533b2da1c4e6ec1cf77bf297131143a3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Android Studio配置国内镜像源和HTTP代理</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/fc81497b77e3280d13ae443b6f32f083/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">JAVA的三大版本，你都了解过吗？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

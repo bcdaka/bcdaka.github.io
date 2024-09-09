@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>CUDA算子优化：矩阵乘GEMM优化(三) - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/11c7457f478103a7fb9f148f735e7f33/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="CUDA算子优化：矩阵乘GEMM优化(三)">
+  <meta property="og:description" content="一.从汇编代码分析程序性能
+由于做完优化之后，需要有一个东西来判断机器是否能够真正地按照我们设想的模式运行。使用了float4之后，GPU是不是真的使用了向量化指令。采用循环展开后，GPU是不是真的会进行展开？另外，CUDA C和汇编代码之间还隔着编译器。只有看最底层的汇编码，才能真正地理解我们所做的优化是哪个地方起了作用，节省了哪个部分的耗时。
+NV的GPU提供了ptx和sass两个层面的汇编码。ptx本质上是一个伪汇编码，事实上机器真正能够识别的是sass码。ptx还需要使用ptxas工具再转化成sass码才能被GPU识别。然后nv提供了cuobjdump和nvdisasm两个工具，我们可以通过这两个工具来看到最底层的汇编码。
+NV每一代机器的指令集都有所不同。关于指令集相关资料，NV GPU指令集 。此外NV的指令还有一些其他，control code，后面直接用控制码表示。通过控制码将一些本来应该在硬件实现的逻辑软件化了，从而在同样大小的电路面积上塞下更大的计算单元。关于CUDA指令集的资料可以详见cloudcore的相关文章 cloudcore文章 。
+第二个问题，当我们在看汇编代码的时候，我们到底看的是什么东西？访存密集型的kernel和计算密集型的kernel。
+访存密集型的kernel：我们需要关注访问global memory 的时候是不是合并访存了，访问shared memory的时候是不是有bank冲突了。在汇编代码中，这些代码不太能看的出来。我们主要关注的是有没有采用LDG.128的访存指令，以及计算指令的占比是不是太多，#pragma unroll是不是有效展开了。
+计算密集型的kernel：我们重点关注计算指令的占比。这个一般跟并行策略会联系在一起。一般而言，如果并行策略不太行，那么计算指令的占比会很低，这样的话，访存所导致的latency很难被计算指令掩盖，计算效率会非常差。如果并行策略比较好，那么计算指令的占比也会非常高。也只有当计算指令占比非常高的时候，才有可能地逼近峰值性能。
+二、对于现有sgemm的代码的分析和观察
+回顾，sgemm是hpc领域的经典问题，目前有大量的论文在针对不同硬件结构，不同矩阵特性进行研究。对于NV的GPU，关于sgemm最著名的工作是scott的maxas。在Maxwell架构上的部分卡能够达到98%的浮点性能，几乎达到极限。
+scott工作在CUDA C层面，主要有3个方面：
+技巧1，global-&gt;shared memory，采用了texture内存，将线程划分，一般线程只读A，一般线程只读B。
+技巧2，shared memory-&gt;，将8*8的读取变成4个4*4的读取，从而避免bank冲突。
+技巧3，Store C矩阵的时候，为了合并访存，采用了一种非常奇怪的方式取store。
+针对大矩阵的sgemm计算时。如果k维度足够大，global-&gt;shared memory以及Store C的耗时占比会非常小，所以这两个优化技巧在大矩阵中并不能起到很大的作用。所以相对来说，技巧2会更加具有借鉴意义。所以相对来说，技巧2会更加有借鉴意义。
+紧接着，我们来分析一下sgemm中最耗时的部分，也就是最内层的迭代部分。需要计算8*8*8=512次乘加运算。scott的sgemm在maxwell产生的汇编代码如下图左，为了比较，我们将GEMM(二)中的代码sgemm_v2最后生成的SASS码放在一起用比较。
+三.汇编级别代码调整
+减少FFMA指令所产生的register bank冲突。这里面有两个优化技巧，一个是寄存器的重映射，另一个是调整FFMA顺序，尽可能地在指令中使用.reuse标识以及提高双发射的效率。
+3.1寄存器的重映射
+由于每代架构中的硬件细节有所不同，所以register的remapping细节也有所不同。首先说一下这里面的硬件细节不同是指，不同的架构中，寄存器到bank的映射方式不同。kepler架构的映射方式比较奇怪。
+对于Maxwell架构而言，相对来说简单一些，bank index即reg_index%4这么一个简单的关系。Pascal架构和Maxwell架构的寄存器bank映射关系一样。而volta架构又有一些不同，在volta之前都是4路的bank，而volta架构变成了2路的bank。
+由于架构不一样，针对不同架构的register重映射方式也不一样。
+3.2指令重排
+主要是针对FFMA指令的重排。作用：在maxwell架构中，scott重排主要是为了尽可能地解决对角线那些元素的寄存器bank冲突。举例来说，要计算C矩阵1，2，3，4，5的元素的值，正常的顺序是调用FFMA指令先算1，再算2等。重排后先算2，再算1，再算3。从指令角度的话，就是FFMA指令的排序顺序有所不同，所以是指令重排。
+重排的目的是为了更好地使用reuse标识。读取指令的操作数的时候，有一个寄存器的reuse cache。在指令中使用这个标识就代表这个数被hold住了，下一条指令可以直接使用。
+四、实验
+如何解决bank冲突
+以B矩阵对应的shared memory为例，首先，计算warp_id，也就是当前线程属于哪个warp，有tid/32即可得。随后计算lane_id，即当前线程属于这个warp上得哪个线程，由tid%32即可得。随后通过warp_id和lane_id来计算出，对应128个元素得哪一个元素。先算（warp_id%4）*16，假设是warp2，就是图左侧第二个warp。前面有2个warp，跳过了2*16=32个元素。然后再看看当前lane_id。0-15在左半边，16-31在右半边。所以lane_id/16，先看是左半边还是右半边。右半边的话，先跳过8个元素。最后再lane_id的奇偶数，如果奇数就再跳一个4个元素。代码实现如下。
+//load index of the tile const int warp_id = tid / 32; const int lane_id = tid % 32; const int tile_index_b = (warp_id%4)*16 &#43; (lane_id/16)*8 &#43; (lane_id%2)*4; const int tile_index_a = (warp_id/4)*32 &#43; ((lane_id%16)/2)*4; shared memory取数的代码更改就是下面这样，以B矩阵块为例：">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-14T11:42:11+08:00">
+    <meta property="article:modified_time" content="2024-06-14T11:42:11+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">CUDA算子优化：矩阵乘GEMM优化(三)</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><strong>一.从汇编代码分析程序性能</strong></p> 
+<p>由于做完优化之后，需要有一个东西来判断机器是否能够真正地按照我们设想的模式运行。使用了float4之后，GPU是不是真的使用了向量化指令。采用循环展开后，GPU是不是真的会进行展开？另外，CUDA C和汇编代码之间还隔着编译器。只有看最底层的汇编码，才能真正地理解我们所做的优化是哪个地方起了作用，节省了哪个部分的耗时。</p> 
+<p><strong>NV的GPU提供了ptx和sass两个层面的汇编码</strong>。ptx本质上是一个伪汇编码，事实上机器真正能够识别的是sass码。ptx还需要使用ptxas工具再转化成sass码才能被GPU识别。然后nv提供了<strong>cuobjdump</strong>和<strong>nvdisasm</strong>两个工具，我们可以通过这两个工具来看到最底层的汇编码。</p> 
+<p>NV每一代机器的指令集都有所不同。关于指令集相关资料，<a href="https://link.zhihu.com/?target=https%3A//docs.nvidia.com/cuda/cuda-binary-utilities/index.html%23instruction-set-ref" rel="nofollow" title="NV GPU指令集">NV GPU指令集</a> 。此外NV的指令还有一些其他，control code，后面直接用控制码表示。通过控制码将一些本来应该在硬件实现的逻辑软件化了，从而在同样大小的电路面积上塞下更大的计算单元。关于CUDA指令集的资料可以详见cloudcore的相关文章 <a href="https://zhuanlan.zhihu.com/p/161624982" rel="nofollow" title="cloudcore文章 ">cloudcore文章 </a> 。</p> 
+<p><strong>第二个问题，当我们在看汇编代码的时候，我们到底看的是什么东西？访存密集型的kernel</strong>和<strong>计算密集型的kernel</strong>。</p> 
+<p><strong>访存密集型的kernel：</strong>我们需要关注访问global memory 的时候是不是合并访存了，访问shared memory的时候是不是有bank冲突了。在汇编代码中，这些代码不太能看的出来。我们主要关注的是有没有采用LDG.128的访存指令，以及计算指令的占比是不是太多，#pragma unroll是不是有效展开了。</p> 
+<p><strong>计算密集型的kernel：</strong>我们重点关注计算指令的占比。这个一般跟并行策略会联系在一起。一般而言，如果并行策略不太行，那么计算指令的占比会很低，这样的话，访存所导致的latency很难被计算指令掩盖，计算效率会非常差。如果并行策略比较好，那么计算指令的占比也会非常高。也只有当计算指令占比非常高的时候，才有可能地逼近峰值性能。</p> 
+<p>二、对于现有sgemm的代码的分析和观察</p> 
+<p>回顾，sgemm是hpc领域的经典问题，目前有大量的论文在针对不同硬件结构，不同矩阵特性进行研究。对于NV的GPU，关于sgemm最著名的工作是scott的<a href="https://link.zhihu.com/?target=https%3A//github.com/NervanaSystems/maxas/wiki/SGEMM" rel="nofollow" title="maxas">maxas</a>。在Maxwell架构上的部分卡能够达到98%的浮点性能，几乎达到极限。</p> 
+<p>scott工作在CUDA C层面，主要有3个方面：</p> 
+<p>技巧1，global-&gt;shared memory，采用了texture内存，将线程划分，一般线程只读A，一般线程只读B。</p> 
+<p>技巧2，shared memory-&gt;，将8*8的读取变成4个4*4的读取，从而避免bank冲突。</p> 
+<p>技巧3，Store C矩阵的时候，为了合并访存，采用了一种非常奇怪的方式取store。</p> 
+<p>针对大矩阵的sgemm计算时。如果k维度足够大，global-&gt;shared memory以及Store C的耗时占比会非常小，所以这两个优化技巧在大矩阵中并不能起到很大的作用。所以相对来说，技巧2会更加具有借鉴意义。所以相对来说，技巧2会更加有借鉴意义。</p> 
+<p>紧接着，我们来分析一下sgemm中最耗时的部分，也就是最内层的迭代部分。需要计算8*8*8=512次乘加运算。scott的sgemm在maxwell产生的汇编代码如下图左，为了比较，我们将GEMM(二)中的代码sgemm_v2最后生成的SASS码放在一起用比较。</p> 
+<p>三.汇编级别代码调整</p> 
+<p>减少FFMA指令所产生的register bank冲突。这里面有两个优化技巧，一个是寄存器的重映射，另一个是调整FFMA顺序，尽可能地在指令中使用.reuse标识以及提高双发射的效率。</p> 
+<p>3.1寄存器的重映射</p> 
+<p>由于每代架构中的硬件细节有所不同，所以register的remapping细节也有所不同。首先说一下这里面的硬件细节不同是指，不同的架构中，寄存器到bank的映射方式不同。kepler架构的映射方式比较奇怪。</p> 
+<p>对于Maxwell架构而言，相对来说简单一些，bank index即reg_index%4这么一个简单的关系。Pascal架构和Maxwell架构的寄存器bank映射关系一样。而volta架构又有一些不同，在volta之前都是4路的bank，而volta架构变成了2路的bank。</p> 
+<p>由于架构不一样，针对不同架构的register重映射方式也不一样。</p> 
+<p>3.2指令重排</p> 
+<p>主要是针对FFMA指令的重排。作用：在maxwell架构中，scott重排主要是为了尽可能地解决对角线那些元素的寄存器bank冲突。举例来说，要计算C矩阵1，2，3，4，5的元素的值，正常的顺序是调用FFMA指令先算1，再算2等。重排后先算2，再算1，再算3。从指令角度的话，就是FFMA指令的排序顺序有所不同，所以是指令重排。</p> 
+<p>重排的目的是为了更好地使用reuse标识。读取指令的操作数的时候，有一个寄存器的reuse cache。在指令中使用这个标识就代表这个数被hold住了，下一条指令可以直接使用。</p> 
+<p>四、实验</p> 
+<p>如何解决bank冲突</p> 
+<p>以B矩阵对应的shared memory为例，首先，计算warp_id，也就是当前线程属于哪个warp，有tid/32即可得。随后计算lane_id，即当前线程属于这个warp上得哪个线程，由tid%32即可得。随后通过warp_id和lane_id来计算出，对应128个元素得哪一个元素。先算（warp_id%4）*16，假设是warp2，就是图左侧第二个warp。前面有2个warp，跳过了2*16=32个元素。然后再看看当前lane_id。0-15在左半边，16-31在右半边。所以lane_id/16，先看是左半边还是右半边。右半边的话，先跳过8个元素。最后再lane_id的奇偶数，如果奇数就再跳一个4个元素。代码实现如下。</p> 
+<pre><code class="language-cpp">//load index of the tile
+const int warp_id = tid / 32;
+const int lane_id = tid % 32;
+const int tile_index_b = (warp_id%4)*16 + (lane_id/16)*8 + (lane_id%2)*4;
+const int tile_index_a = (warp_id/4)*32 + ((lane_id%16)/2)*4;</code></pre> 
+<p>shared memory取数的代码更改就是下面这样，以B矩阵块为例：</p> 
+<pre><code class="language-cpp">// 改变前
+#pragma unroll
+for (int thread_y = 0; thread_y &lt; THREAD_SIZE_Y; thread_y += 4) {
+     FETCH_FLOAT4(frag_b[(j+1)%2][thread_y]) = FETCH_FLOAT4(Bs[next_stage_flag][(j+1)%BLOCK_SIZE_K][THREAD_SIZE_Y * ty + thread_y]);
+}
+// 改变后
+FETCH_FLOAT4(frag_b[(j+1)%2][0]) = FETCH_FLOAT4(Bs[next_stage_flag][(j+1)%BLOCK_SIZE_K][tile_index]);
+FETCH_FLOAT4(frag_b[(j+1)%2][4]) = FETCH_FLOAT4(Bs[next_stage_flag][(j+1)%BLOCK_SIZE_K][tile_index + 64]);
+</code></pre> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/116dd5e3ba853cf833a669910dbbb08a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【C&#43;&#43;】类的默认成员函数</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/07433b8ae9e2bc1579c18d1f60e9b1e3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">解决：安装MySQL 5.7 的时候报错：unknown variable ‘mysqlx_port=0.0‘</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

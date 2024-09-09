@@ -1,0 +1,233 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【大数据】计算引擎：Spark核心概念 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/468c7b882447130e518853f73f8ac969/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【大数据】计算引擎：Spark核心概念">
+  <meta property="og:description" content="目录
+前言
+1.什么是Spark
+2.核心概念
+2.1.Spark如何拉高计算性能
+2.2.RDD
+2.3.Stage
+3.运行流程
+前言 本文是作者大数据系列中的一文，专栏地址：
+https://blog.csdn.net/joker_zjn/category_12631789.html?spm=1001.2014.3001.5482
+该系列会成体系的聊一聊整个大数据的技术栈，绝对干货，欢迎订阅。
+1.什么是Spark 整个大数据的计算引擎是先有了MapReduce，再有的其它，可以理解为后面出现的其它计算引擎都是对MapReduce的一个补足与升级。
+Spark就是对MapReduce的一个补足与升级，其弥补了MapReduce在迭代计算上孱弱的缺陷。其核心就是将数据内存中来，而不是每次都要去读磁盘，进行磁盘IO。
+spark是什么：
+spark是基于内存的计算引擎，它不是指单个技术，而是指一个技术栈，一个构建于spark core上面的全套的用来处理各种计算的技术栈。
+Spark Core提供了什么能力：
+Spark既然是补足，就要先说MapReduce在计算这一方面的不足，MapReduce在计算性能上存在的核心问题是迭代计算性能不好，原因是结果需要写入HDFS中。要用到这个结果的后续作业要先去读HDFS，拿到数据，这无疑是十分缓慢的。
+我们反过来想，MapReduce为什么要这样干？
+MapReduce不是想这么干，而是只能这么干，因为如果不将结果写入HDFS中，全局怎么能找得到这个数据喃？要是写入HDFS，就能通过NameNode找到数据。
+要更好的支持迭代计算，无疑将计算结果放在内存中是最好的，读内存毕竟比读磁盘快多了。落磁盘是因为HDFS帮我们管理了分布式的磁盘资源，我们可以找它拿数据，落内存还要找到分布式系统中存储的数据，这就需要另一套内存管理机制来帮我们管理分布式内存了。这套内存管理机制叫RDD，就是Spark Core提供的。
+Spark的特点总结：
+spark是基于内存的计算引擎，其也是mapreduce模式的，但是相较于mapreducce：
+spark支持更多种数据集操作，编程模型更灵活。
+由于是在内存中流转的，不像mapreducce的结果是落在分布式文件系统中的，所以spark的速度更快。
+天生基于DAG，比MapReduce过程更简洁高效。
+在大数据领域一般存在以下几种使用场景：
+复杂的批量数据处理，用mapreduce，一般业务耗时需求能忍受在数十分钟到数小时
+基于历史数据的交互式查询，用数据仓库，一般业务耗时需求能忍受在数十秒到数分钟
+基于实时数据流的数据处理，用spark，一般业务耗时需求能忍受在数百毫秒到数秒
+Spark其实是一个全套的基于内存的技术栈，其基于spark core可以完成各种各样数据的计算。Spark提供了一组什么能力？就是接下来我们在下一节要讲的核心概念的内容。
+2.核心概念 2.1.Spark如何拉高计算性能 Spark对比MapReuce之所以做迭代计算性能好，是因为两个核心点：
+有向无环图
+基于内存
+以上就是Spark Core提供的东西，接下来会通过一个例子来逐步带大家一点点的推出Spark Core的这两个核心概念。
+首先是计算任务的过程有两种，一种是要分前后阶段，前后阶段之间有依赖关系，一种是不分前后阶段，可以并行执行的。
+分前后阶段的：
+ALTER TABLE PR_EXPERT_PEOPLE DROP COLUMN description_bak; 这个查询会有两个阶段。首先k会执行子查询（过滤年龄大于18的记录），这个操作产生一个中间结果。然后，它会在中间结果上执行第二个过滤操作（筛选性别为男性的记录）。由于这两个操作是连续的，它们之间存在依赖关系，必须按照顺序执行。
+可以并行执行的：
+这个查询可以分成两个子任务，去查a的数据。去查b的数据，这两个任务是可以并行执行的，最后合在一起就可以了。
+SELECT * FROM a JOIN b ON a.type=b.type 上面的例子主要是带大家感受一下，计算任务的子流程无非就是两种，要么有先后依赖关系，要么可以并行执行。
+对于一个计算任务而言，最高效的方式就是将能并行的子流程并行执行，有依赖关系的子流程串行执行，也就是说逻辑关系上子任务之间组成这样的有向无环图，效率上是最佳的：
+OK，其实把上面聊完，Spark的核心概念就已经出来了：
+RDD
+Stage
+2.2.RDD RDD其实就是有向无环图的节点。我们想一想这些节点会是什么？其实就是计算任务，但是光有任务是无法完成工作的，还需要对应数据，所以这个有向无环图上的节点就是任务&#43;数据的一个抽象，理解为一个单独可以完成的子任务即可。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-06T18:57:29+08:00">
+    <meta property="article:modified_time" content="2024-06-06T18:57:29+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【大数据】计算引擎：Spark核心概念</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><img alt="" height="106" src="https://images2.imgbox.com/e1/23/s9aq1Lz2_o.png" width="644"></p> 
+<p id="main-toc"><strong>目录</strong></p> 
+<p id="%E5%89%8D%E8%A8%80-toc" style="margin-left:0px;"><a href="#%E5%89%8D%E8%A8%80" rel="nofollow">前言</a></p> 
+<p id="1.%E4%BB%80%E4%B9%88%E6%98%AFSpark-toc" style="margin-left:0px;"><a href="#1.%E4%BB%80%E4%B9%88%E6%98%AFSpark" rel="nofollow">1.什么是Spark</a></p> 
+<p id="2.%E6%A0%B8%E5%BF%83%E6%A6%82%E5%BF%B5-toc" style="margin-left:0px;"><a href="#2.%E6%A0%B8%E5%BF%83%E6%A6%82%E5%BF%B5" rel="nofollow">2.核心概念</a></p> 
+<p id="2.1.Spark%E5%A6%82%E4%BD%95%E6%8B%89%E9%AB%98%E8%AE%A1%E7%AE%97%E6%80%A7%E8%83%BD-toc" style="margin-left:40px;"><a href="#2.1.Spark%E5%A6%82%E4%BD%95%E6%8B%89%E9%AB%98%E8%AE%A1%E7%AE%97%E6%80%A7%E8%83%BD" rel="nofollow">2.1.Spark如何拉高计算性能</a></p> 
+<p id="2.2.RDD-toc" style="margin-left:40px;"><a href="#2.2.RDD" rel="nofollow">2.2.RDD</a></p> 
+<p id="2.3.Stage-toc" style="margin-left:40px;"><a href="#2.3.Stage" rel="nofollow">2.3.Stage</a></p> 
+<p id="3.%E8%BF%90%E8%A1%8C%E6%B5%81%E7%A8%8B-toc" style="margin-left:0px;"><a href="#3.%E8%BF%90%E8%A1%8C%E6%B5%81%E7%A8%8B" rel="nofollow">3.运行流程</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2> 
+<p>本文是作者大数据系列中的一文，专栏地址：</p> 
+<p><a href="https://blog.csdn.net/joker_zjn/category_12631789.html?spm=1001.2014.3001.5482" title="https://blog.csdn.net/joker_zjn/category_12631789.html?spm=1001.2014.3001.5482">https://blog.csdn.net/joker_zjn/category_12631789.html?spm=1001.2014.3001.5482</a></p> 
+<p>该系列会成体系的聊一聊整个大数据的技术栈，绝对干货，欢迎订阅。</p> 
+<h2 id="1.%E4%BB%80%E4%B9%88%E6%98%AFSpark">1.什么是Spark</h2> 
+<p>整个大数据的计算引擎是先有了MapReduce，再有的其它，可以理解为后面出现的其它计算引擎都是对MapReduce的一个补足与升级。</p> 
+<p>Spark就是对MapReduce的一个补足与升级，其弥补了MapReduce在迭代计算上孱弱的缺陷。其核心就是将数据内存中来，而不是每次都要去读磁盘，进行磁盘IO。</p> 
+<p><strong>spark是什么：</strong></p> 
+<p>spark是基于内存的计算引擎，它不是指单个技术，而是指一个技术栈，一个构建于spark core上面的全套的用来处理各种计算的技术栈。</p> 
+<p class="img-center"><img alt="" height="310" src="https://images2.imgbox.com/80/3c/nccEqj9h_o.png" width="442"></p> 
+<p><strong>Spark Core提供了什么能力：</strong></p> 
+<p>Spark既然是补足，就要先说MapReduce在计算这一方面的不足，MapReduce在计算性能上存在的核心问题是迭代计算性能不好，原因是结果需要写入HDFS中。要用到这个结果的后续作业要先去读HDFS，拿到数据，这无疑是十分缓慢的。</p> 
+<p>我们反过来想，MapReduce为什么要这样干？</p> 
+<p>MapReduce不是想这么干，而是只能这么干，因为如果不将结果写入HDFS中，全局怎么能找得到这个数据喃？要是写入HDFS，就能通过NameNode找到数据。</p> 
+<p>要更好的支持迭代计算，无疑将计算结果放在内存中是最好的，读内存毕竟比读磁盘快多了。落磁盘是因为HDFS帮我们管理了分布式的磁盘资源，我们可以找它拿数据，落内存还要找到分布式系统中存储的数据，这就需要另一套内存管理机制来帮我们管理分布式内存了。这套内存管理机制叫RDD，就是Spark Core提供的。</p> 
+<p><strong>Spark的特点总结：</strong></p> 
+<p>spark是基于内存的计算引擎，其也是mapreduce模式的，但是相较于mapreducce：</p> 
+<ul><li> <p>spark支持更多种数据集操作，编程模型更灵活。</p> </li><li> <p>由于是在内存中流转的，不像mapreducce的结果是落在分布式文件系统中的，所以spark的速度更快。</p> </li><li> <p>天生基于DAG，比MapReduce过程更简洁高效。</p> </li></ul> 
+<p><img alt="" height="267" src="https://images2.imgbox.com/9f/36/gmpWklIx_o.png" width="917"></p> 
+<p>在大数据领域一般存在以下几种使用场景：</p> 
+<ul><li> <p>复杂的批量数据处理，用mapreduce，一般业务耗时需求能忍受在数十分钟到数小时</p> </li><li> <p>基于历史数据的交互式查询，用数据仓库，一般业务耗时需求能忍受在数十秒到数分钟</p> </li><li> <p>基于实时数据流的数据处理，用spark，一般业务耗时需求能忍受在数百毫秒到数秒</p> </li></ul> 
+<p>Spark其实是一个全套的基于内存的技术栈，其基于spark core可以完成各种各样数据的计算。Spark提供了一组什么能力？就是接下来我们在下一节要讲的核心概念的内容。</p> 
+<h2 id="2.%E6%A0%B8%E5%BF%83%E6%A6%82%E5%BF%B5">2.核心概念</h2> 
+<h3 id="2.1.Spark%E5%A6%82%E4%BD%95%E6%8B%89%E9%AB%98%E8%AE%A1%E7%AE%97%E6%80%A7%E8%83%BD">2.1.Spark如何拉高计算性能</h3> 
+<p>Spark对比MapReuce之所以做迭代计算性能好，是因为两个核心点：</p> 
+<ul><li> <p>有向无环图</p> </li><li> <p>基于内存</p> </li></ul> 
+<p>以上就是Spark Core提供的东西，接下来会通过一个例子来逐步带大家一点点的推出Spark Core的这两个核心概念。</p> 
+<p>首先是计算任务的过程有两种，一种是要分前后阶段，前后阶段之间有依赖关系，一种是不分前后阶段，可以并行执行的。</p> 
+<p>分前后阶段的：</p> 
+<blockquote> 
+ <pre>ALTER TABLE PR_EXPERT_PEOPLE DROP COLUMN description_bak;</pre> 
+</blockquote> 
+<p>这个查询会有两个阶段。首先k会执行子查询（过滤年龄大于18的记录），这个操作产生一个中间结果。然后，它会在中间结果上执行第二个过滤操作（筛选性别为男性的记录）。由于这两个操作是连续的，它们之间存在依赖关系，必须按照顺序执行。</p> 
+<p>可以并行执行的：</p> 
+<p>这个查询可以分成两个子任务，去查a的数据。去查b的数据，这两个任务是可以并行执行的，最后合在一起就可以了。</p> 
+<blockquote> 
+ <pre>SELECT * FROM a JOIN b ON a.type=b.type</pre> 
+</blockquote> 
+<p>上面的例子主要是带大家感受一下，计算任务的子流程无非就是两种，要么有先后依赖关系，要么可以并行执行。</p> 
+<p>对于一个计算任务而言，最高效的方式就是将能并行的子流程并行执行，有依赖关系的子流程串行执行，也就是说逻辑关系上子任务之间组成这样的有向无环图，效率上是最佳的：</p> 
+<p class="img-center"><img alt="" height="302" src="https://images2.imgbox.com/1c/c1/VZiqO9Rk_o.png" width="565"></p> 
+<p>OK，其实把上面聊完，Spark的核心概念就已经出来了：</p> 
+<ul><li> <p>RDD</p> </li><li> <p>Stage</p> </li></ul> 
+<h3 id="2.2.RDD">2.2.RDD</h3> 
+<p>RDD其实就是有向无环图的节点。我们想一想这些节点会是什么？其实就是计算任务，但是光有任务是无法完成工作的，还需要对应数据，所以这个有向无环图上的节点就是任务+数据的一个抽象，理解为一个单独可以完成的子任务即可。</p> 
+<p>RDD里面存的其实也不是数据：</p> 
+<p>Spark肯定不能去操作HDFS，走磁盘IO的方式读数据，本来Spark就是要解决这个问题的。所以要把内存利用起来，内存里也不能直接装数据，毕竟数据量那么大，内存肯定也装不下，所以内存中只能装要用到的数据在磁盘中的位置信息，也就是一个映射。总结起来RDD里面存的其实就是计算任务和数据映射。</p> 
+<p><strong>总结一下RDD是什么：</strong></p> 
+<ul><li> <p>RDD 是理解成集合就行了，它是只读的、可分区的数据集合，其成员分布在集群的不同节点上。</p> </li><li> <p>每个RDD对应着HDFS中的一个或者多个文件。</p> </li><li> <p>每个 RDD 被分成多个分区（Partition），每个分区对应一个或多个数据块。</p> </li><li> <p>RDD 不可修改，可以通过操作其他 RDD 生成，这些操作包括转换（如 map、filter）和动作（如 count、save）。</p> </li><li> <p>RDD并不直接存储数据，而是由其分块记录着对应的HDFS的数据分区中参与运算的数据信息</p> </li><li> <p>数据（叫运算结果更准确点）是在RDD的分区中流转的，RDD只是一个抽象概念，具体干活的分区，数据是在不同RDD的不同分区中流转的。</p> </li></ul> 
+<p><strong>RDD如何生成：</strong></p> 
+<p></p> 
+<h3 id="2.3.Stage">2.3.Stage</h3> 
+<p>观察下面一幅图：</p> 
+<p style="text-align:center;"><img alt="" height="410" src="https://images2.imgbox.com/f5/d1/i4jEF0kY_o.png" width="684"></p> 
+<p>可以看到有些任务之间没有交叉的依赖关系，所以其实是可以并行计算的，比如Stage1和Stage2，这样并行计算无疑也拉高了计算速度。Spark中将一组可以关起门来自己玩儿和其它任务之间没有交叉依赖关系的任务叫做Stage，理解为一个任何集合即可。</p> 
+<p>stage划分的依据是什么？</p> 
+<p>首先有两个概念：</p> 
+<p>窄依赖：每一个父RDD的分区最多被一个子RDD的分区所使用。这意味着数据的转换可以在分区级别上直接进行，而不需要跨分区的数据重组。</p> 
+<p>宽依赖：一个父RDD的分区可能被多个子RDD的分区所使用，或者一个父RDD的所有分区数据需要被重组以供应给子RDD的某些分区。</p> 
+<p>从节点出发，窄依赖为一个stage，遇到第一个宽依赖就断开，作为stage的边界。</p> 
+<p><strong>RDD、RDD分区、Stage三者之间的关系：</strong></p> 
+<p>RDD是Spark中最基本的数据抽象，代表一个不可变、可分区、且元素可并行计算的集合，直接理解成为分布式内存的抽象即可。RDD的数据是分布存储的，意味着Spark集群中的每个节点上只存储了RDD的部分数据，这些数据被划分为多个分区。</p> 
+<p>分区是RDD的一个重要概念，它指的是将数据划分为多个逻辑部分，以便于在集群的不同节点上进行并行处理。分区的数量和大小可以影响Spark作业的性能，因此通常需要根据具体情况进行合理配置。每个分区在物理上可能存储在集群的一个或多个节点上，这样Spark就可以利用集群的并行计算能力来处理数据。</p> 
+<p>Stage是Spark作业执行过程中的一个逻辑阶段，代表了一组具有依赖关系的任务集合。在Spark中，一个作业（Job）通常会被划分为多个阶段（Stage），每个阶段包含一组可以并行执行的任务（Task）。阶段的划分主要基于RDD之间的依赖关系，特别是宽依赖（即一个分区的计算依赖于多个父RDD的分区）。宽依赖会导致新的Stage的产生，因为需要在不同的节点上重新组合数据。</p> 
+<p>因此，RDD、分区和Stage在Spark中构成了数据处理和执行的关键组件。RDD提供了数据的分布式表示，分区实现了数据的并行处理，而Stage则代表了作业执行的逻辑阶段。这三者相互协作，使得Spark能够高效地处理大规模数据集。</p> 
+<p></p> 
+<h2 id="3.%E8%BF%90%E8%A1%8C%E6%B5%81%E7%A8%8B">3.运行流程</h2> 
+<p>spark的架构和工作流程其实就是map reduce2.0那一套。map reduce2.0也算是玩明白了，靠谱的分布式计算引擎就应该是：</p> 
+<ul><li>做流程上的优化（DAG），以保证有个最有的依赖路径</li><li>每个计算任务内部的调度和监控独立（每个作业一个executor或者application master之类的东西） spark其实就是完整的实现了这一套。</li></ul> 
+<p>所以Spark的整体运行流程如下：</p> 
+<p><img alt="" height="392" src="https://images2.imgbox.com/b1/26/n8HiiI45_o.png" width="598"></p> 
+<p>Spark的运行流程可以概括为以下几个主要步骤：</p> 
+<ul><li> <p>启动 Spark Application： 用户编写一个Spark应用程序并提交给Spark集群运行。 Spark集群初始化，启动一个Driver进程。Driver是Spark应用的主控进程，负责管理和协调整个应用的执行。</p> </li><li> <p>建立运行环境： Driver启动后，会创建一个SparkContext（Spark上下文）实例。SparkContext是Spark与Cluster Manager（集群管理器）进行通信的桥梁，也是整个应用的主要入口点。 SparkContext向Cluster Manager注册应用，并请求资源，比如申请Executor进程来执行具体任务。</p> </li><li> <p>资源分配与Executor启动： Cluster Manager（如YARN、Mesos或Standalone）接收到资源请求后，根据当前集群状况为应用分配资源，并启动Executor进程。 Executor是Spark应用在工作节点（Worker Node）上运行的进程，负责在分配给它们的资源上执行任务，并将结果返回给Driver。</p> </li><li> <p>构建DAG与Stage划分： SparkContext根据应用程序中的RDD操作构建DAG（有向无环图），代表了操作之间的依赖关系。 DAG Scheduler分析DAG，将其拆分成多个Stage。通常，Stage的边界发生在shuffle操作处，因为shuffle操作会导致数据重分布。</p> </li><li> <p>任务调度与执行： Task Scheduler（任务调度器）根据Stage内的任务集（TaskSet）进一步安排任务到各个Executor上执行。 Executor向SparkContext申请Task，Task Scheduler分配任务并发送代码（来自应用的Jar包）到Executor。 Executor在本地线程中执行Task，并处理数据，可能涉及读取、转换、写入数据等操作。</p> </li><li> <p>结果收集与输出： Executor完成任务后，将结果返回给Task Scheduler，再转交给Driver。 如果是Action操作，如collect，最终结果会被收集到Driver上；如果是Transformation，则结果可能继续留在Executor内存中供进一步处理。</p> </li><li> <p>资源清理与应用结束： 应用程序执行完毕，SparkContext向Cluster Manager注销，释放所有Executor资源。 Executor进程停止，相关资源回收，集群准备服务于下一个应用。</p> </li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/da3d54ecb19aee2849e307911b4f3f2f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C语言：详解gcc驱动程序完成编译、汇编、链接的过程</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4c8d31f8ff1e983a5d0b49aec88d3c71/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">20240607 每日AI必读资讯</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

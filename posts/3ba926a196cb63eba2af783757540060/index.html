@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>flink反压 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/3ba926a196cb63eba2af783757540060/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="flink反压">
+  <meta property="og:description" content="flink反压（backpressure），简单来说就是当接收方的接收速率低于发送方的发送速率，这时如果不做处理就会导致接收方的数据积压越来越多直到内存溢出，所以此时需要一个机制来根据接收方的状态反过来限制发送方的发送速率，来达到一个两者速率匹配的状态。
+TCP-based 反压 在flink1.5之前的版本，使用的是TCP-based 的反压机制，不过这种机制缺点明显。
+（1）在一个 TaskManager 中可能要执行多个 Task，如果多个 Task 的数据最终都要传输到下游的同一个 TaskManager 就会复用同一个 Socket 进行传输，这个时候如果单个 Task 产生反压，就会导致复用的 Socket 阻塞，其余的 Task 也无法使用传输，checkpoint barrier 也无法发出导致下游执行 checkpoint 的延迟增大。（2）依赖最底层的 TCP 去做流控，会导致反压传播路径太长，导致生效的延迟比较大。
+所以这里不再介绍TCP-based 的反压机制。
+在flink1.5以后引入了Credit-based 反压，可以理解为就是在 Flink 层面实现类似 TCP 流控的反压机制来解决上述的弊端，Credit 可以类比为 TCP 的 Window 机制。
+Credit-based 反压 在 Flink 层面实现反压机制，通过 ResultPartition 和 InputGate 传输 feedback 。Credit-base 的 feedback 步骤：（1）每一次 ResultPartition 向 InputGate 发送数据的时候，都会发送一个 backlog size 告诉下游准备发送多少消息，下游就会去计算有多少的 Buffer 去接收消息。（backlog 的作用是为了让消费端感知到我们生产端的情况）（2）如果下游有充足的 Buffer ，就会返还给上游 Credit （表示剩余 buffer 数量），告知发送消息（图上两个虚线是还是采用 Netty 和 Socket 进行通信）。下面用图来解释：">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-04-30T08:53:34+08:00">
+    <meta property="article:modified_time" content="2024-04-30T08:53:34+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">flink反压</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>flink反压（backpressure），简单来说就是当接收方的接收速率低于发送方的发送速率，这时如果不做处理就会导致接收方的数据积压越来越多直到内存溢出，所以此时需要一个机制来根据接收方的状态反过来限制发送方的发送速率，来达到一个两者速率匹配的状态。</p> 
+<h2>TCP-based 反压</h2> 
+<p>在flink1.5之前的版本，使用的是TCP-based 的反压机制，不过这种机制缺点明显。</p> 
+<p>（1）在一个 TaskManager 中可能要执行多个 Task，如果多个 Task 的数据最终都要传输到下游的同一个 TaskManager 就会复用同一个 Socket 进行传输，这个时候如果单个 Task 产生反压，就会导致复用的 Socket 阻塞，其余的 Task 也无法使用传输，checkpoint barrier 也无法发出导致下游执行 checkpoint 的延迟增大。（2）依赖最底层的 TCP 去做流控，会导致反压传播路径太长，导致生效的延迟比较大。</p> 
+<p>所以这里不再介绍TCP-based 的反压机制。</p> 
+<p>在flink1.5以后引入了Credit-based 反压，可以理解为就是在 Flink 层面实现类似 TCP 流控的反压机制来解决上述的弊端，Credit 可以类比为 TCP 的 Window 机制。</p> 
+<h2>Credit-based 反压</h2> 
+<p>在 Flink 层面实现反压机制，通过 ResultPartition 和 InputGate 传输 feedback 。Credit-base 的 feedback 步骤：（1）每一次 ResultPartition 向 InputGate 发送数据的时候，都会发送一个 backlog size 告诉下游准备发送多少消息，下游就会去计算有多少的 Buffer 去接收消息。（backlog 的作用是为了让消费端感知到我们生产端的情况）（2）如果下游有充足的 Buffer ，就会返还给上游 Credit （表示剩余 buffer 数量），告知发送消息（图上两个虚线是还是采用 Netty 和 Socket 进行通信）。下面用图来解释：</p> 
+<p><img alt="" height="559" src="https://images2.imgbox.com/bb/ec/osWRhEsF_o.png" width="981"></p> 
+<p>如图所示在 Flink 层面实现反压机制，就是每一次 ResultSubPartition 向 InputChannel 发送消息的时候都会发送一个 backlog size 告诉下游准备发送多少消息，下游就会去计算有多少的 Buffer 去接收消息，算完之后如果有充足的 Buffer 就会返还给上游一个 Credit 告知他可以发送消息（图上两个 ResultSubPartition 和 InputChannel 之间是虚线是因为最终还是要通过 Netty 和 Socket 去通信），下面我们看一个具体示例。</p> 
+<p><img alt="" height="557" src="https://images2.imgbox.com/2e/0e/jINbCCXe_o.png" width="982"></p> 
+<p>假设我们上下游的速度不匹配，上游发送速率为 2，下游接收速率为 1，可以看到图上在 ResultSubPartition 中累积了两条消息，10 和 11， backlog 就为 2，这时就会将发送的数据 &lt;8,9&gt; 和 backlog = 2 一同发送给下游。下游收到了之后就会去计算是否有 2 个 Buffer 去接收，可以看到 InputChannel 中已经不足了这时就会从 Local BufferPool 和 Network BufferPool 申请，好在这个时候 Buffer 还是可以申请到的。</p> 
+<p><img alt="" height="559" src="https://images2.imgbox.com/1b/4e/0xl5RPai_o.png" width="984"></p> 
+<p>过了一段时间后由于上游的发送速率要大于下游的接受速率，下游的 TaskManager 的 Buffer 已经到达了申请上限，这时候下游就会向上游返回 Credit = 0，ResultSubPartition 接收到之后就不会向 Netty 去传输数据，上游 TaskManager 的 Buffer 也很快耗尽，达到反压的效果，这样在 ResultSubPartition 层就能感知到反压，不用通过 Socket 和 Netty 一层层地向上反馈，降低了反压生效的延迟。同时也不会将 Socket 去阻塞，解决了由于一个 Task 反压导致 TaskManager 和 TaskManager 之间的 Socket 阻塞的问题。</p> 
+<p>总结：</p> 
+<p>1. 网络流控是为了在上下游速度不匹配的情况下，防止下游出现过载。</p> 
+<p>2. 网络流控有静态限速和动态反压两种手段</p> 
+<p>3. Flink 1.5 之前是基于 TCP 流控 + bounded buffer 实现反压</p> 
+<p>4. Flink 1.5 之后实现了自己托管的 credit – based 流控机制，在应用层模拟 TCP 的流控机制</p> 
+<p>是否有了动态反压，静态限速就没用了？不是的。实际上动态反压不是万能的，我们流计算的结果最终是要输出到一个外部的存储（Storage），外部数据存储到 Sink 端的反压是不一定会触发的，这要取决于外部存储的实现，像 Kafka 这样是实现了限流限速的消息中间件可以通过协议将反压反馈给 Sink 端，但是像 ES 无法将反压进行传播反馈给 Sink 端，这种情况下为了防止外部存储在大的数据量下被打爆，我们就可以通过静态限速的方式在 Source 端去做限流。所以说动态反压并不能完全替代静态限速的，需要根据合适的场景去选择处理方案。</p> 
+<h2>反压影响</h2> 
+<p>反压并不会直接影响作业的可用性，它表明作业处于亚健康的状态，有潜在的性能瓶颈并可能导致更大的数据处理延迟。通常来说，对于一些对延迟要求不高或者数据量较少的应用，反压的影响可能并不明显。然而对于规模比较大的 Flink 作业，反压可能会导致严重的问题。</p> 
+<p>反压会影响checkpoint<br> （1）checkpoint时长：checkpoint barrier跟随普通数据流动，如果数据处理被阻塞，使得checkpoint barrier流经整个数据管道的时长变长，导致checkpoint 总体时间变长。<br> （2）state大小：为保证Exactly-Once准确一次，对于有两个以上输入管道的 Operator，checkpoint barrier需要对齐，即接受到较快的输入管道的barrier后，它后面数据会被缓存起来但不处理，直到较慢的输入管道的barrier也到达。这些被缓存的数据会被放到state 里面，导致checkpoint变大。<br> checkpoint是保证准确一次的关键，checkpoint时间变长有可能导致checkpoint超时失败，而state大小可能拖慢checkpoint甚至导致OOM。</p> 
+<h2>反压监控</h2> 
+<p>1. flink web ui自带反压监控</p> 
+<p>该页面提供了 SubTask 级别的反压监控，1.13 版本以前是通过周期性对 Task 线程的栈信息采样，得到线程被阻塞在请求 Buffer（意味着被下游队列阻塞）的频率来判断该节点是否处于反压状态。Flink 1.13 优化了反压检测的逻辑（使用基于任务 Mailbox 计时，而不在再于堆栈采 样），并且重新实现了作业图的 UI 展示：Flink 现在在 UI 上通过颜色和数值来展示繁忙和反压的程度。黑色表示反压严重，红色表示非常繁忙，蓝色表示比较空闲。Backpressure Status值有OK/LOW/HIGH。</p> 
+<p>OK: 0% &lt;= back pressured &lt;= 10%<br> LOW: 10% &lt; back pressured &lt;= 50%<br> HIGH: 50% &lt; back pressured &lt;= 100%</p> 
+<p>假如通过web ui 查看到某个算子处于反压状态，可以分析该算子瓶颈：</p> 
+<p>如果处于反压状态，那么有两种可能性：<br> （1）该节点的发送速率跟不上它的产生数据速率。这一般会发生在一条输入多条输出的 Operator（比如 flatmap）。这种情况，该节点是反压的根源节点，它是从 Source Task 到 Sink Task 的第一个出现反压的节点。<br> （2）下游的节点接受速率较慢，通过反压机制限制了该节点的发送速率。这种情况， 需要继续排查下游节点，一直找到第一个为 OK 的一般就是根源节点。 总体来看，如果我们找到第一个出现反压的节点，反压根源要么是就这个节点，要么是 它紧接着的下游节点。 通常来讲，第二种情况更常见。如果无法确定，还需要结合 Metrics 进一步判断。</p> 
+<p>2. 利用 Metrics 定位</p> 
+<p>监控反压时会用到的 Metrics 主要和 Channel 接受端的 Buffer 使用率有关，最为有用的是以下几个 Metrics:</p> 
+<p><img alt="" height="260" src="https://images2.imgbox.com/c6/b4/sN83d9SC_o.png" width="1031"></p> 
+<p>inPoolUsage = floatingBuffersUsage + exclusiveBuffersUsage。</p> 
+<p>（1）采用 Metrics 分析反压的思路</p> 
+<p>如果一个 Subtask 的发送端 Buffer 占用率很高，则表明它 被下游反压限速了；如果一个 Subtask 的接受端 Buffer 占用很高，则表明它将反压传导至上游。</p> 
+<p><img alt="" height="462" src="https://images2.imgbox.com/0d/b6/tyzt9MUg_o.png" width="1176"></p> 
+<p>（2）将inPoolUsage分为floatingBuffersUsage + exclusiveBuffersUsage进一步分析</p> 
+<p>Flink 1.9及以上版本，还可以根据 floatingBuffersUsage/exclusiveBuffersUsage 以 及其上游 Task 的 outPoolUsage 来进行进一步的分析一个 Subtask 和其上游 Subtask 的数据传输。<br> 在流量较大时，Channel 的 Exclusive Buffer 可能会被写满，此时 Flink 会向 Buffer Pool 申请剩余的 Floating Buffer。这些 Floating Buffer 属于备用 Buffer。</p> 
+<p><img alt="" height="489" src="https://images2.imgbox.com/36/66/X0DAPVqr_o.png" width="1166"></p> 
+<p>解析：<br> 1）floatingBuffersUsage 为高则表明反压正在传导至上游。<br> 2）exclusiveBuffersUsage 则表明了反压可能存在倾斜。如果floatingBuffersUsage 高、exclusiveBuffersUsage 低，则存在倾斜。因为少数 channel 占用了大部分的 floating Buffer（channel 有自己的 exclusive buffer，当 exclusive buffer 消耗完，就会使用floating Buffer）。</p> 
+<h2>如何分析反压</h2> 
+<p>（1）数据倾斜<br> 通过 Web UI 各个 SubTask 的 Records Sent 和 Record Received 来确认，另外 Checkpoint detail 里不同 SubTask 的 State size 也是一个分析数据倾斜的有用指标。解决方式把数据分组的 key 进行本地/预聚合来消除/减少数据倾斜。<br> （2）用户代码的执行效率<br> 对 TaskManager 进行 CPU profile，分析 TaskThread 是否跑满一个 CPU 核：如果没有跑满，需要分析 CPU 主要花费在哪些函数里面，比如生产环境中偶尔会卡在 Regex 的用户函数（ReDoS）；如果没有跑满，需要看 Task Thread 阻塞在哪里，可能是用户函数本身有些同步的调用，可能是 checkpoint 或者 GC 等系统活动。<br> （3）TaskManager 的内存以及 GC<br> TaskManager JVM 各区内存不合理导致的频繁 Full GC 甚至失联。可以加上 -XX:+PrintGCDetails 来打印 GC 日志的方式来观察 GC 的问题。推荐TaskManager 启用 G1 垃圾回收器来优化 GC。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4b09ddc8c3d755a8d8f50c3eed40506f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Vue 2 中组件详解</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b514e0bc143dee3ddc267dd0850b95df/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Kafka客户端工具：Offset Explorer 使用指南</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

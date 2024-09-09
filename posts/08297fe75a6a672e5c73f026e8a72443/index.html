@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Redis缓存的使用 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/08297fe75a6a672e5c73f026e8a72443/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Redis缓存的使用">
+  <meta property="og:description" content="1.缓存穿透 描述：查询数据在redis不存在，请求打到数据库
+解决方法：
+缓存空值
+当出现Redis查不到数据，数据库也查不到数据的情况，我们就把这个key保存到Redis中，设置value=&#34;null&#34;，并设置其过期时间极短，后面再出现查询这个key的请求的时候，直接返回null，就不需要再查询数据库了。但这种处理方式是有问题的，假如传进来的这个不存在的Key值每次都是随机的，那存进Redis也没有意义。
+使用布隆过滤器。
+如果布隆过滤器判定某个 key 不存在布隆过滤器中，那么就一定不存在，如果判定某个 key 存在，那么很大可能是存在(存在一定的误判率)。于是我们可以在缓存之前再加一个布隆过滤器，将数据库中的所有key都存储在布隆过滤器中，在查询Redis前先去布隆过滤器查询 key 是否存在，如果不存在就直接返回，不让其访问数据库，从而避免了对底层存储系统的查询压力。 2.缓存击穿 描述：缓存过期，伴随大量对该 key 的请求
+1）互斥锁
+比如某个key只允许一个线程查询数据和写缓存，其他线程等待。这种方式会阻塞其他的线程，此时系统的吞吐量会下降
+2）热点数据永不过期
+物理不过期，针对热点key不设置过期时间
+逻辑不过期，把过期时间存在key对应的value里，如果发现要过期了，通过一个后台的异步线程进行缓存的构建
+3）熔断降级
+3.缓存雪崩 描述:同一时间大批量的 key 过期
+解决方法：
+1）热点数据不过期
+2）随机分散过期时间
+4.缓存预热 缓存预热就是系统上线后，将相关的缓存数据直接加载到缓存系统。这样就可以避免在用户请 求的时候，先查询数据库，然后再将数据缓存的问题！用户直接查询事先被预热的缓存数据！
+解决思路：
+1、直接写个缓存刷新页面，上线时手工操作下；
+2、数据量不大，可以在项目启动的时候 自动进行加载；
+3、定时刷新缓存；
+5.缓存更新 除了缓存服务器自带的缓存失效策略之外（Redis默认的有6中策略可供选择），我们 还可以根据具体的业务需求进行自定义的缓存淘汰，
+常见的策略有两种：
+（1）定时去清理过期的 缓存；
+（2）当有用户请求过来时，再判断这个请求所用到的缓存是否过期，过期的话就去底层系 统得到新数据并更新缓存。
+两者各有优劣，第一种的缺点是维护大量缓存的key是比较麻烦的，第 二种的缺点就是每次用户请求过来都要判断缓存失效，逻辑相对比较复杂！具体用哪种方案，大家 可以根据自己的应用场景来权衡。
+6.缓存降级 当访问量剧增、服务出现问题（如响应时间慢或不响应）或非核心服务影响到核心流 程的性能时，仍然需要保证服务还是可用的，即使是有损服务。系统可以根据一些关键数据进行自 动降级，也可以配置开关实现人工降级。 降级的最终目的是保证核心服务可用，即使是有损的。而 且有些服务是无法降级的（如加入购物车、结算）。
+以参考日志级别设置预案：
+（1）一般：比如 有些服务偶尔因为网络抖动或者服务正在上线而超时，可以自动降级；
+（2）警告：有些服务在一 段时间内成功率有波动（如在95~100%之间），可以自动降级或人工降级，并发送告警；
+（3）错 误：比如可用率低于90%，或者数据库连接池被打爆了，或者访问量突然猛增到系统能承受的最大 阀值，此时可以根据情况自动降级或者人工降级；
+（4）严重错误：比如因为特殊原因数据错误 了，此时需要紧急人工降级。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-12T23:05:29+08:00">
+    <meta property="article:modified_time" content="2024-06-12T23:05:29+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Redis缓存的使用</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h4></h4> 
+<h5>1.缓存穿透</h5> 
+<p>描述：查询数据在redis不存在，请求打到数据库</p> 
+<p><img alt="" height="230" src="https://images2.imgbox.com/bf/42/EMYIzG4Z_o.png" width="843"></p> 
+<p>解决方法：</p> 
+<ul><li> <p>缓存空值</p> </li></ul> 
+<p>            当出现Redis查不到数据，数据库也查不到数据的情况，我们就把这个key保存到Redis中，设置value="null"，并设置其过期时间极短，后面再出现查询这个key的请求的时候，直接返回null，就不需要再查询数据库了。但这种处理方式是有问题的，假如传进来的这个不存在的Key值每次都是随机的，那存进Redis也没有意义。</p> 
+<ul><li> <p>使用布隆过滤器。</p> 如果布隆过滤器判定某个 key 不存在布隆过滤器中，那么就一定不存在，如果判定某个 key 存在，那么很大可能是存在(存在一定的误判率)。于是我们可以在缓存之前再加一个布隆过滤器，将数据库中的所有key都存储在布隆过滤器中，在查询Redis前先去布隆过滤器查询 key 是否存在，如果不存在就直接返回，不让其访问数据库，从而避免了对底层存储系统的查询压力。</li></ul> 
+<h5>2.缓存击穿</h5> 
+<p>描述：缓存过期，伴随大量对该 key 的请求</p> 
+<p>1）互斥锁</p> 
+<p>        比如某个key只允许一个线程查询数据和写缓存，其他线程等待。这种方式会阻塞其他的线程，此时系统的吞吐量会下降</p> 
+<p>2）热点数据永不过期</p> 
+<p>物理不过期，针对热点key不设置过期时间</p> 
+<p>逻辑不过期，把过期时间存在key对应的value里，如果发现要过期了，通过一个后台的异步线程进行缓存的构建</p> 
+<p>3）熔断降级</p> 
+<p></p> 
+<h5>3.缓存雪崩</h5> 
+<p>描述:同一时间大批量的 key 过期</p> 
+<p>解决方法：</p> 
+<p>1）热点数据不过期</p> 
+<p>2）随机分散过期时间</p> 
+<h5>4.缓存预热</h5> 
+<p>缓存预热就是系统上线后，将相关的缓存数据直接加载到缓存系统。这样就可以避免在用户请 求的时候，先查询数据库，然后再将数据缓存的问题！用户直接查询事先被预热的缓存数据！</p> 
+<p>解决思路：</p> 
+<p>1、直接写个缓存刷新页面，上线时手工操作下；</p> 
+<p>2、数据量不大，可以在项目启动的时候 自动进行加载；</p> 
+<p>3、定时刷新缓存；</p> 
+<h5>5.缓存更新</h5> 
+<p>除了缓存服务器自带的缓存失效策略之外（Redis默认的有6中策略可供选择），我们 还可以根据具体的业务需求进行自定义的缓存淘汰，</p> 
+<p>常见的策略有两种：</p> 
+<p>（1）定时去清理过期的 缓存；</p> 
+<p>（2）当有用户请求过来时，再判断这个请求所用到的缓存是否过期，过期的话就去底层系 统得到新数据并更新缓存。</p> 
+<p>两者各有优劣，第一种的缺点是维护大量缓存的key是比较麻烦的，第 二种的缺点就是每次用户请求过来都要判断缓存失效，逻辑相对比较复杂！具体用哪种方案，大家 可以根据自己的应用场景来权衡。</p> 
+<p></p> 
+<h5>6.缓存降级</h5> 
+<p>当访问量剧增、服务出现问题（如响应时间慢或不响应）或非核心服务影响到核心流 程的性能时，仍然需要保证服务还是可用的，即使是有损服务。系统可以根据一些关键数据进行自 动降级，也可以配置开关实现人工降级。 降级的最终目的是保证核心服务可用，即使是有损的。而 且有些服务是无法降级的（如加入购物车、结算）。</p> 
+<p>以参考日志级别设置预案：</p> 
+<p>（1）一般：比如 有些服务偶尔因为网络抖动或者服务正在上线而超时，可以自动降级；</p> 
+<p>（2）警告：有些服务在一 段时间内成功率有波动（如在95~100%之间），可以自动降级或人工降级，并发送告警；</p> 
+<p>（3）错 误：比如可用率低于90%，或者数据库连接池被打爆了，或者访问量突然猛增到系统能承受的最大 阀值，此时可以根据情况自动降级或者人工降级；</p> 
+<p>（4）严重错误：比如因为特殊原因数据错误 了，此时需要紧急人工降级。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/be1b043e9a8eaef8149460d071c3621a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">UML相关1</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/af359c5d1b96baf7a72a534ec5d1e34c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">leetcode hot100 之 最长公共子序列</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

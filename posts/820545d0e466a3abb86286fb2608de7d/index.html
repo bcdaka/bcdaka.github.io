@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>一文实现Llama 3 图片理解能力微调（XTuner&#43;LLaVA 版） - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/820545d0e466a3abb86286fb2608de7d/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="一文实现Llama 3 图片理解能力微调（XTuner&#43;LLaVA 版）">
+  <meta property="og:description" content="本次实验基于 Llama3-8B-Instruct 和 XTuner 团队预训练好的 Image Projector 微调自己的多模态图文理解模型 LLaVA。实验平台为InternStudio，实验所用的显存为24G。
+=============目录============
+一、总体步骤
+二、可能遇到的问题
+三、测试效果
+四、部分Q&amp;A
+=============正文============
+一、总体步骤
+参考Llama3-Tutorial/docs/llava.md at main · kv-chiu/Llama3-Tutorial · GitHub
+本文实现时用的是24G显存。另外，也测试了80g（1卡A100)，2*80g（2卡A100）。共三种情况。
+二、可能遇到的问题
+1. 输入xtuner train命令训练时，报错“RuntimeError: operator torchvision::nms does not exist”
+原因：torchvision版本有问题
+解决：通过“conda update torchvision -c pytorch”命令再次更新
+如果再次报错，可以尝试“pip install --upgrade torchvision”再次更新，安装成功
+2.训练时，即使用了deepspeed参数，仍然报错out of memory
+原因：显存不够
+思路一：用lmdeploy里的量化技术。结果：不可行。因为该训练命令是在xtuner框架下的，不支持。
+思路二：修改deepspeed的参数命令如下：
+xtuner train /root/Llama3-Tutorial/configs/llama3-llava/llava_llama3_8b_instruct_qlora_clip_vit_large_p14_336_lora_e1_finetune.py --work-dir /root/model/llama3_llava_pth --deepspeed deepspeed_zero2_offload 结果：可行（原理解释参照下文的第四部分Q&amp;A）
+3.测试没有添加export命令，直接跑xtuner 运行llava模型，会报错。
+解决：再次添加教程里的export命令即可（解释见Q&amp;A）
+3.用24g显存训练了4小时30分钟左右，日志显示保存pth文件成功。但实际文件找不到。
+解决：云盘空间不足，自动删除了，当时是45g。扩容到75g后重跑即可。
+总结教训：这个其实是非常惨重的教训。花了了很长时间去训练的模型前功尽弃。
+延伸问题：
+1）如何预估训练时要用的硬盘空间（乃至内存、显存、时间等资源）
+2）后续成功后，看到生成的pth文件并没有大到会爆了硬盘空间的程度，为什么仍然会磁盘空间不足？
+（见Q&amp;A）
+4.用2*80g（2卡A100）和80g（A100）运行训练时，报错“typeError: All input tensors need to be on the same GPU, but found some tensors to not be on a GPU”">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-13T03:26:43+08:00">
+    <meta property="article:modified_time" content="2024-05-13T03:26:43+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">一文实现Llama 3 图片理解能力微调（XTuner&#43;LLaVA 版）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>本次实验基于 Llama3-8B-Instruct 和 XTuner 团队<a href="https://so.csdn.net/so/search?q=%E9%A2%84%E8%AE%AD%E7%BB%83&amp;spm=1001.2101.3001.7020" title="预训练">预训练</a>好的 Image Projector 微调自己的多模态图文理解模型 LLaVA。实验平台为<a href="https://studio.intern-ai.org.cn/" rel="nofollow" title="InternStudio">InternStudio</a>，实验所用的显存为24G。</p> 
+<p>=============目录============</p> 
+<p>一、总体步骤</p> 
+<p>二、可能遇到的问题</p> 
+<p>三、测试效果</p> 
+<p>四、部分Q&amp;A</p> 
+<p>=============正文============</p> 
+<p><strong>一、总体步骤</strong></p> 
+<p>参考<a href="https://github.com/kv-chiu/Llama3-Tutorial/blob/main/docs/llava.md" title="Llama3-Tutorial/docs/llava.md at main · kv-chiu/Llama3-Tutorial · GitHub">Llama3-Tutorial/docs/llava.md at main · kv-chiu/Llama3-Tutorial · GitHub</a></p> 
+<p>本文实现时用的是24G显存。另外，也测试了80g（1卡A100)，2*80g（2卡A100）。共三种情况。</p> 
+<p><img alt="" height="180" src="https://images2.imgbox.com/56/74/bwix1NRE_o.png" width="761"></p> 
+<p><strong>二、可能遇到的问题</strong></p> 
+<p>1. 输入xtuner train命令训练时，报错“RuntimeError: operator torchvision::nms does not exist”</p> 
+<p><img alt="" height="515" src="https://images2.imgbox.com/52/10/OdwNYqPK_o.png" width="1051"><img alt="" height="209" src="https://images2.imgbox.com/e1/66/HY0YOrJN_o.png" width="1062"></p> 
+<p>原因：torchvision版本有问题</p> 
+<p>解决：通过“conda update torchvision -c pytorch”命令再次更新</p> 
+<p><img alt="" height="91" src="https://images2.imgbox.com/df/67/Po9EzPzE_o.png" width="1060"></p> 
+<p>如果再次报错，可以尝试“pip install --upgrade torchvision”再次更新，安装成功</p> 
+<p><img alt="" height="510" src="https://images2.imgbox.com/c5/ad/3LOxqNaK_o.png" width="1056"></p> 
+<p></p> 
+<p>2.训练时，即使用了deepspeed参数，仍然报错out of memory</p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/40/da/leaC1r8t_o.png" width="1200"></p> 
+<p>原因：显存不够</p> 
+<p>思路一：用lmdeploy里的量化技术。结果：不可行。因为该训练命令是在xtuner框架下的，不支持。</p> 
+<p>思路二：修改deepspeed的参数命令如下：</p> 
+<pre><code class="language-bash">xtuner train /root/Llama3-Tutorial/configs/llama3-llava/llava_llama3_8b_instruct_qlora_clip_vit_large_p14_336_lora_e1_finetune.py --work-dir /root/model/llama3_llava_pth --deepspeed deepspeed_zero2_offload
+</code></pre> 
+<p>结果：可行（原理解释参照下文的第四部分Q&amp;A）</p> 
+<p>3.测试没有添加export命令，直接跑xtuner 运行llava模型，会报错。</p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/1a/cd/DFRo4CX9_o.png" width="1200"></p> 
+<p>解决：再次添加教程里的export命令即可（解释见Q&amp;A）</p> 
+<p>3.用24g显存训练了4小时30分钟左右，日志显示保存pth文件成功。但实际文件找不到。</p> 
+<p><img alt="" height="495" src="https://images2.imgbox.com/61/ce/sOpw6CdN_o.png" width="1200"></p> 
+<p>解决：云盘空间不足，自动删除了，当时是45g。扩容到75g后重跑即可。</p> 
+<p><strong>总结教训：这个其实是非常惨重的教训。</strong>花了了很长时间去训练的模型前功尽弃。</p> 
+<p>延伸问题：</p> 
+<p>1）如何预估训练时要用的硬盘空间（乃至内存、显存、时间等资源）</p> 
+<p>2）后续成功后，看到生成的pth文件并没有大到会爆了硬盘空间的程度，为什么仍然会磁盘空间不足？</p> 
+<p>（见Q&amp;A）</p> 
+<p>4.用2*80g（2卡A100）和80g（A100）运行训练时，报错“typeError: All input tensors need to be on the same GPU, but found some tensors to not be on a GPU”<img alt="" height="1200" src="https://images2.imgbox.com/06/c2/PX3t5GVp_o.png" width="1200"></p> 
+<p>解决：把参数deepspeed_zero3改为deepspeed_zero2，即可通过</p> 
+<p><img alt="" height="687" src="https://images2.imgbox.com/a8/c2/EMKVz8Ga_o.png" width="1200"></p> 
+<p>原理，因为前者会过多把一些数据（如张量）分拆到CPU处理，导致报错</p> 
+<p></p> 
+<p>三、测试效果</p> 
+<p>1.正常训练跑通后，如图</p> 
+<p><img alt="" height="244" src="https://images2.imgbox.com/a6/85/ZRq0ccVh_o.png" width="1200"></p> 
+<p>——显存24g时消耗19714MB，训练所需时间为4小时30分钟。</p> 
+<p><img alt="" height="196" src="https://images2.imgbox.com/dd/fd/K3OU5if1_o.png" width="857"></p> 
+<p>——在单卡 A100 80g上, 操作教程中，训练过程所需显存约为44447 MiB，所需时间为30分钟。而本文实操时, 训练过程所需显存约为35000 MB左右，20分钟完毕</p> 
+<p><img alt="" height="457" src="https://images2.imgbox.com/17/d8/PgxGNe5k_o.png" width="837"></p> 
+<p>——在双卡 A100 2*80g上, 本文实操44447 MiB，所需时间为30分钟（1.比上文的35000 MB多，资源有限，无法再试多几次，暂作记录。2.关于如何提速发挥双卡效用，可看下文的QA）</p> 
+<p><img alt="" height="317" src="https://images2.imgbox.com/c1/86/dQqNe5Kj_o.png" width="531"></p> 
+<p>2.推理运行时，</p> 
+<p>——显存24g时,未测试</p> 
+<p>——在单卡 A100 80g上或在双卡 A100 2*80g上，总消耗显存都在22000MB左右</p> 
+<p><u>（提醒注意，双卡时，训练时是集中在一卡上，而推理时则平均分摊到2卡上。估计前者是默认，后者未知是人为代码设置还是默认）</u></p> 
+<p><img alt="" height="609" src="https://images2.imgbox.com/39/dc/9lpkYion_o.png" width="617"></p> 
+<p>微调后的推理效果大致如下（补充说明，输入图片后，该模型可以描述该图片并回答用户问题；而微调前的效果，如操作步骤教程所说，只能重复打标签，无法详细说明图片）</p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/33/5d/pfiwwq53_o.png" width="1200"></p> 
+<p>四、部分Q&amp;A</p> 
+<p><u>1.简单介绍一下deepspeed</u></p> 
+<p>DeepSpeed是一个由微软开发的深度学习优化库，旨在提高大规模模型训练的效率和可扩展性。以下是关于DeepSpeed的详细介绍：</p> 
+<p>——功能：</p> 
+<ul><li><strong>零梯度同步（Zero Redundancy Optimizer, Zero-3）</strong>：允许不同GPU之间异步更新权重，显著减少了通信开销，提高了大规模分布式训练的速度。</li><li><strong>混合精度训练</strong>：通过降低浮点精度来加速计算，同时保持模型的准确度，使得训练可以在更少的时间内完成。</li><li><strong>模型并行与数据并行</strong>：结合了模型并行和数据并行，能够处理超大规模的模型，即使在单个节点上也能有效管理多GPU的训练。</li><li><strong>ZeRO-Inference</strong>：除了训练阶段的优化，还提供了ZeRO-Inference，一个用于推理阶段的优化器，减少内存占用，提高推理速度。</li><li><strong>显存优化</strong>：DeepSpeed的核心思想在于当GPU显存不够时，可以利用CPU内存来弥补。这允许训练更大的模型，即使在没有大量GPU显存的情况下。</li></ul> 
+<p>——优劣点：</p> 
+<ul><li><strong>优点</strong>： 
+  <ul><li>显著提高了大规模模型训练的效率和可扩展性。</li><li>提供了多种优化策略，如零梯度同步、混合精度训练等，以加速训练过程并保持模型性能。</li><li>易于使用，具有清晰的代码结构和详尽的文档。</li></ul></li><li><strong>缺点</strong>： 
+  <ul><li>由于其高度复杂性和对系统资源的依赖，可能需要较高的学习成本来掌握其使用。</li><li>在某些特定硬件或操作系统上可能存在兼容性问题。</li></ul></li></ul> 
+<p>——使用时容易犯错的地方：</p> 
+<ul><li><strong>配置问题</strong>：DeepSpeed的配置相对复杂，需要正确设置各种参数和选项才能充分发挥其优势。如果配置不当，可能会导致性能下降或训练失败。</li><li><strong>版本兼容性</strong>：DeepSpeed可能与你当前使用的深度学习框架（如PyTorch）的版本不完全兼容。因此，在使用之前，请确保你已经安装了正确版本的PyTorch和DeepSpeed。</li><li><strong>系统资源限制</strong>：虽然DeepSpeed可以优化内存和显存的使用，但它仍然受到系统资源的限制。如果你的系统资源不足（如CPU内存、磁盘空间等），可能会导致训练失败或性能下降。</li><li><strong>模型和数据问题</strong>：在使用DeepSpeed进行训练之前，请确保你的模型和数据已经经过适当的预处理和准备。否则，可能会导致训练过程中出现问题。</li></ul> 
+<p><u>2. 使用deepspeed时，遇到内存不够可以有哪些解决思路。</u></p> 
+<ol><li><strong>检查并理解配置文件</strong>：首先，打开 <code>deepspeed_zero.json</code> 或其他 DeepSpeed 配置文件，并理解其中各项设置的作用。</li><li><strong>调整 ZeRO 设置</strong>：在配置文件中，找到与 ZeRO 相关的设置，如 <code>stage</code>（ZeRO 阶段）、<code>optimizer_state_sharding</code>（优化器状态分片）等。根据你的硬件资源，尝试调整这些设置来减少内存和显存的使用。</li><li><strong>调整模型和数据并行参数</strong>：在配置文件中，还可以找到与模型和数据并行相关的参数，如 <code>train_batch_size</code>、<code>train_micro_batch_size_per_gpu</code>、<code>gradient_accumulation_steps</code> 等。适当调整这些参数可以影响训练过程中内存和显存的使用。</li><li><strong>使用混合精度训练</strong>：如果配置文件中包含混合精度训练的设置（如 <code>fp16</code> 或 <code>bfloat16</code>），确保它们已正确启用并配置。混合精度训练可以通过减少浮点数的精度来降低显存的使用。</li><li><strong>逐步尝试</strong>：每次只调整一个或少数几个参数，并重新运行训练命令以查看效果。这样可以帮助你更准确地确定哪些设置对解决问题有帮助。</li><li><strong>查阅文档和社区支持</strong>：如果以上步骤都不能解决问题，建议查阅 DeepSpeed 的官方文档或寻求社区支持以获取更多帮助。</li></ol> 
+<p><u>3. 使用deepspeed时，为什么上文中添加了offload能解决内存不够的问题</u>。</p> 
+<p><strong>offload的作用</strong>主要是将一部分模型的状态（Model States）或激活值（Activation）从GPU显存中卸载（offload）到CPU内存或硬盘上，从而节省GPU显存的使用。这是因为相比GPU，CPU的内存通常更加充裕，而且CPU处理这些数据时虽然速度较慢，但在训练深度学习模型时，这部分计算通常不是性能瓶颈。</p> 
+<p>具体来说，<code>offload</code>可以帮助解决在训练大模型时遇到的显存不足的问题。当模型的规模很大，或者批次大小（batch size）设置得很大时，显存的占用会迅速增加，导致训练无法进行。通过使用<code>offload</code>，可以将一部分数据从GPU显存中移动到CPU内存或硬盘上，从而释放显存，使得训练可以继续进行。</p> 
+<p>同时，需要注意的是，虽然<code>offload</code>可以节省显存，但它也可能会带来一些性能上的开销，因为CPU和GPU之间的数据传输速度通常比GPU内部的数据传输速度慢。因此，在使用<code>offload</code>时，需要权衡显存节省和性能开销之间的关系，选择合适的配置参数。</p> 
+<p><strong>认识误区</strong></p> 
+<p>——”DeepSpeed的核心思想在于当GPU显存不够时，可以利用CPU内存来弥补”，意味着DeepSpeed有能力将部分数据从GPU显存转移到CPU内存。但是，这并不等同于<code>--deepspeed deepspeed_zero命令</code>直接执行数据迁移的操作。</p> 
+<p>具体来说，<code>--deepspeed deepspeed_zero</code>是DeepSpeed框架的一个功能，它实现了ZeRO（Zero Redundancy Optimizer）技术。ZeRO技术通过模型参数、优化器状态等的分片，以及利用CPU内存来存储这些分片，从而达到优化显存使用的目的。在这个过程中，数据（如模型参数、优化器状态等）可能会根据需要被从GPU显存转移到CPU内存。</p> 
+<p>而<code>offload</code>是DeepSpeed中的另一个功能，它更加明确地将某些数据（如激活值）从GPU显存卸载到CPU内存或硬盘上，以进一步节省显存。</p> 
+<p>所以，虽然<code>--deepspeed deepspeed_zero</code>和<code>offload</code>都涉及到将数据从GPU显存转移到CPU内存的操作，但它们的实现方式和应用场景有所不同。<code>--deepspeed deepspeed_zero</code>主要是通过ZeRO技术来实现显存优化，而<code>offload</code>则更加专注于在训练过程中动态地将数据从显存卸载到CPU内存或硬盘上。</p> 
+<p>——““DeepSpeed将当前时刻，训练模型用不到的参数，缓存到CPU中，等到要用到了，再从CPU挪到GPU。这里的“参数”，不仅指的是模型参数，还指optimizer、梯度等。 越多的参数挪到CPU上，GPU的负担就越小；但随之的代价就是，更为频繁的CPU，GPU交互，极大增加了训练推理的时间开销”，这个说法不完全准确。</p> 
+<p>首先，DeepSpeed和ZeRO确实不是直接将所有的模型参数、优化器状态或梯度从GPU“挪到”CPU。相反，ZeRO技术通过分片（sharding）的方式，在多个GPU之间分散存储这些参数和状态，同时可能利用CPU内存来存储那些当前不需要直接参与计算的数据。</p> 
+<p>具体来说，ZeRO有几个不同的阶段（stage），每个阶段都决定了哪些数据应该被分片以及如何分片。例如，在ZeRO Stage 1中，模型参数本身会被分片并分散到不同的GPU上，但优化器状态和梯度仍然会完整地存储在每个GPU上。而在ZeRO Stage 2或更高的阶段，连优化器状态和梯度也会被分片。</p> 
+<p>当模型在训练过程中需要访问某些当前不在GPU上的数据时（比如某个分片在另一个GPU上或在CPU内存中），DeepSpeed会负责将这些数据移动到正确的位置。这确实可能涉及CPU和GPU之间的数据传输，但这并不是简单的“挪到”CPU，而是一个更复杂的数据管理和传输过程。</p> 
+<p>参考资料：</p> 
+<p><a href="https://blog.csdn.net/m0_59596990/article/details/135034965" title="目前最火的大模型训练框架 DeepSpeed 详解来了-CSDN博客">目前最火的大模型训练框架 DeepSpeed 详解来了-CSDN博客</a></p> 
+<p><a href="https://zhuanlan.zhihu.com/p/670958880" rel="nofollow" title="模型并行训练：为什么要用Megatron，DeepSpeed不够用吗？ - 知乎 (zhihu.com)">模型并行训练：为什么要用Megatron，DeepSpeed不够用吗？ - 知乎 (zhihu.com)</a></p> 
+<p><u>3.能否简单介绍下PyTorch 和 torchvision有何区别</u></p> 
+<ul><li> <p><strong>PyTorch</strong>：PyTorch 是一个开源的 Python 机器学习库，用于自然语言处理、计算机视觉等任务。它提供了大量的构建深度学习模型所需的工具，包括张量计算（类似于 NumPy）、自动微分（用于构建和优化神经网络）、丰富的神经网络库、优化算法等等。</p> </li><li> <p><strong>torchvision</strong>：torchvision 是 PyTorch 的一个扩展库，提供了流行的数据集、模型架构和图像变换等，使得人们可以更容易地处理计算机视觉任务。torchvision 的 <code>datasets</code> 模块包含了一些常用的数据集（如 ImageNet、CIFAR10 等），<code>models</code> 模块则包含了一些预训练的模型（如 AlexNet、VGG、ResNet、MobileNet 等）。此外，torchvision 还提供了一些图像变换工具，用于数据的预处理和后处理。</p> </li></ul> 
+<p>这两个库通常是互补的，PyTorch 提供了深度学习模型的基本构建和优化工具，而 torchvision 则提供了处理计算机视觉任务所需的额外工具和数据集。因此，在处理计算机视觉任务时，人们通常会同时安装和使用这两个库。</p> 
+<p></p> 
+<p><u>3.export MKL_SERVICE_FORCE_INTEL=1这个命令有啥用？</u></p> 
+<p>export MKL_SERVICE_FORCE_INTEL=1 是在 Unix-like 系统（如 Linux）的 shell 中临时设置一个环境变量。这个特定的环境变量 MKL_SERVICE_FORCE_INTEL 通常与 Intel 的 Math Kernel Library (MKL) 有关，用于强制某些程序或库使用 Intel 的优化版数学函数，而不是系统默认的数学库。<br> 针对的问题和报错见文章https://blog.csdn.net/weixin_39190382/article/details/134554729</p> 
+<p></p> 
+<p><u>4.假设某模型训练消耗22g显存，那在40g，80g，2*80g显存上训练，时间会有不同吗？详细说说和原因</u></p> 
+<p>当模型训练消耗22G显存时，在不同的显存配置（如40G、80G、2×80G）上进行训练，其训练时间可能会有所不同，但具体差异和原因取决于多个因素。</p> 
+<ol><li> <p><strong>显存大小与训练时间</strong>：</p> 
+  <ul><li>在理论上，仅仅因为显存大小的不同，并不直接决定训练时间的长短。如果模型只需要22G显存，那么理论上在40G、80G或2×80G的显存上训练时间应该是相近的，因为都足够满足模型的需求。</li><li>然而，在实际情况中，显存大小可能会间接影响训练时间。例如，更大的显存允许使用更大的batch size，这可能会提高GPU的利用率，从而减少单位数据的训练时间。但是，这并不意味着总训练时间会减少，因为总训练量（即迭代次数）通常是由数据集大小和batch size共同决定的。</li></ul></li><li> <p><strong>多GPU与训练时间</strong>：</p> 
+  <ul><li>当使用2×80G显存（即两个具有80G显存的GPU）时，可以通过数据并行或模型并行来加速训练。数据并行意味着将数据集分成两部分，每个GPU处理一部分数据，然后合并结果。这可以显著降低每个迭代的时间，因为两个GPU同时工作。</li><li>然而，使用多GPU也会引入一些额外的开销，如数据在GPU之间的传输、结果的合并等。因此，实际加速比可能并不完全等于GPU的数量。参考<a href="https://blog.51cto.com/u_16213670/8784177" rel="nofollow" title="多卡跑深度学习 多卡训练效果不如单卡_mob64ca140d2323的技术博客_51CTO博客">多卡跑深度学习 多卡训练效果不如单卡_mob64ca140d2323的技术博客_51CTO博客</a></li></ul></li><li> <p><strong>其他因素</strong>：</p> 
+  <ul><li>除了显存大小和GPU数量外，还有许多其他因素可能影响训练时间，如CPU频率、内存读写速度、磁盘I/O速度、网络带宽等。</li><li>此外，深度学习框架、优化器、学习率等超参数的选择也会对训练时间产生影响。</li></ul></li></ol> 
+<p>总结，就硬件而言，显存本身的结构是否更新更先进，是重要因素，而不是容量大小。</p> 
+<p><u>5.扩容显存后如何加快训练？加快推理的话呢？回答时注意2点：1）加快措施必须和扩容相关，否则视为不需要扩容，也能采取这些措施。2）扩容有2种，1种是小卡换大卡，针对1张卡的情况，另一种是增加卡，比如原来1卡，增加2卡？</u></p> 
+<p>针对您提出的问题，以下是关于扩容显存后如何加快训练和推理的解答：</p> 
+<p>一、扩容显存后加快训练的措施</p> 
+<ol><li><strong>优化模型结构</strong>： 
+  <ul><li>增大显存后，可以尝试使用更复杂的模型结构，如增加网络层数或神经元数量，以提高模型的表现能力。</li><li>精简模型结构，去除冗余层或神经元，以减少计算量和显存占用，同时保持模型性能。</li></ul></li><li><strong>调整批量大小（Batch Size）</strong>： 
+  <ul><li>扩容显存后，可以尝试增加批量大小，以提高GPU的利用率和训练速度。但需要注意，过大的批量大小可能导致显存不足或其他问题。</li><li>逐步增加批量大小，找到最佳的平衡点，以实现训练速度和显存占用的最佳组合。</li></ul></li><li><strong>使用混合精度训练</strong>： 
+  <ul><li>混合精度训练是一种有效降低显存占用的方法，它使用不同精度的数据类型进行训练，如FP16或FP32与FP16的混合。</li><li>扩容显存后，可以尝试使用混合精度训练来加快训练速度，同时保持模型性能。</li></ul></li><li><strong>使用多个GPU</strong>： 
+  <ul><li>如果扩容是通过增加显卡数量实现的，可以使用多个GPU进行并行计算，以加快训练速度。</li><li>使用深度学习框架提供的多GPU训练功能，如TensorFlow的tf.distribute.Strategy或PyTorch的DataParallel/DistributedDataParallel等。</li></ul></li><li><strong>优化数据加载和预处理</strong>： 
+  <ul><li>使用高性能的数据加载和预处理库，如PyTorch的Dataloader或TensorFlow的tf.data等。</li><li>配置适当的num_workers和pin_memory等参数，以提高数据加载和传输的效率。</li></ul></li></ol> 
+<p>二、扩容显存后加快推理的措施</p> 
+<ol><li><strong>使用更高效的模型</strong>： 
+  <ul><li>扩容显存后，可以尝试使用更高效的模型进行推理，如使用剪枝、量化等技术优化模型大小和计算量。</li><li>选择适合当前任务的模型结构，避免过度复杂的模型导致推理速度过慢。</li></ul></li><li><strong>批量推理</strong>： 
+  <ul><li>类似于训练时的批量处理，推理时也可以采用批量推理的方式，以提高GPU的利用率和推理速度。</li><li>但需要注意，批量推理可能增加额外的计算和内存开销，需要权衡利弊。</li></ul></li><li><strong>使用多个GPU</strong>： 
+  <ul><li>如果扩容是通过增加显卡数量实现的，可以使用多个GPU进行并行推理，以加快推理速度。</li><li>使用深度学习框架提供的多GPU推理功能，如TensorFlow的tf.distribute.Strategy或PyTorch的DataParallel/DistributedDataParallel等。</li></ul></li><li><strong>优化代码和库</strong>： 
+  <ul><li>使用高性能的推理库和工具，如TensorRT、ONNX Runtime等。</li><li>优化代码实现，减少不必要的内存占用和计算开销。</li></ul></li></ol> 
+<p>总结：扩容显存后加快训练和推理的关键在于提高显存的利用率和计算效率。通过优化模型结构、调整批量大小、使用混合精度训练、使用多个GPU等方法，可以充分利用扩容后的显存资源，实现更快的训练和推理速度。同时，也需要注意平衡资源利用率和计算效率之间的关系，以达到最佳的性能表现。</p> 
+<p><u>6.训练成功后，看到生成的pth文件并没有大到会爆了硬盘空间的程度，为什么硬盘扩容前会磁盘空间不足保存模型失败，非得后来扩容才保存pth文件成功？</u></p> 
+<p>如果在硬盘扩容前尝试保存pth文件但遭遇磁盘空间不足的错误，而扩容后成功保存了该文件，这通常是由于以下几个原因：</p> 
+<ol><li><strong>磁盘空间分配和可用空间</strong>：在操作系统中，即使文件的大小远小于整个磁盘的容量，也可能因为磁盘上其他文件或文件夹占用了大量空间，导致没有足够的连续空间来保存新文件。例如，一个5GB的文件可能无法在一个总容量为10GB但已有多个小文件占据大部分非连续空间的磁盘上保存。</li><li><strong>文件系统和碎片</strong>：文件系统可能会因为频繁的文件创建、删除和修改而产生碎片。这些碎片会降低磁盘空间的利用效率，即使从总容量上看还有足够的空间，也可能因为无法找到足够大的连续空间块来保存新文件。</li><li><strong>临时文件和其他数据</strong>：在训练过程中，可能会产生大量的临时文件、日志文件或其他与训练相关的数据。这些数据可能会占用大量的磁盘空间，导致没有足够的空间来保存最终的模型文件（pth文件）。</li><li><strong>其他应用程序和系统进程</strong>：其他正在运行的应用程序和系统进程也可能占用大量的磁盘空间。这些进程可能会锁定某些文件或文件夹，导致无法释放空间来保存新文件。</li></ol> 
+<p>当硬盘扩容后，你有更多的连续空间来保存文件，因此即使pth文件本身并不大，也能够成功保存。此外，扩容后可能还有助于减少文件碎片、释放被临时文件或其他数据占用的空间，从而进一步提高磁盘空间的利用效率。</p> 
+<p>为了避免将来再次遇到磁盘空间不足的问题，你可以考虑以下方法：</p> 
+<ul><li>定期清理临时文件、日志文件和其他不必要的文件。</li><li>使用磁盘碎片整理工具来减少文件碎片，提高磁盘空间的利用效率。</li><li>监控磁盘使用情况，确保有足够的空间来保存重要的文件和数据。</li><li>在可能的情况下，将大型文件或数据集存储在外部硬盘、网络存储或其他存储介质上，以释放本地磁盘空间。</li></ul> 
+<p><u>7.如何预估训练时要用的硬盘空间，之前出现过硬盘扩容前会磁盘空间不足保存模型失败的例子。</u></p> 
+<p>要预估训练时所需的硬盘空间，可以遵循以下步骤和考虑因素，以确保有足够的空间来保存模型和其他相关文件：</p> 
+<ol><li><strong>评估模型大小</strong>： 
+  <ul><li>了解你的模型在训练完成后大致会占用多少空间。这通常取决于模型的复杂性和参数数量。例如，深度学习模型可能会生成数百MB到数GB的pth文件。</li></ul></li><li><strong>考虑检查点（Checkpoints）</strong>： 
+  <ul><li>在训练过程中，你可能会保存多个检查点文件，以便在需要时恢复训练或进行模型评估。这些文件也会占用额外的空间。预估你将保存多少个检查点以及每个检查点的大小。</li></ul></li><li><strong>日志和临时文件</strong>： 
+  <ul><li>训练过程中可能会生成大量的日志文件和临时文件。这些文件可能会占用相当大的空间，尤其是在长时间运行的训练中。考虑这些文件可能占用的空间，并确定是否需要定期清理它们。</li></ul></li><li><strong>数据集</strong>： 
+  <ul><li>确保你有足够的空间来存储训练数据集、验证数据集和测试数据集（如果适用）。这些数据集可能会占用大量的磁盘空间，特别是在处理大型图像、视频或文本数据时。</li></ul></li><li><strong>依赖库和代码</strong>： 
+  <ul><li>考虑你的项目依赖的库和代码所需的磁盘空间。虽然这些通常不是主要的存储需求，但在某些情况下，它们可能会占用一些空间。</li></ul></li><li><strong>预留空间</strong>： 
+  <ul><li>预留一些额外的磁盘空间以应对不可预见的情况。这可以确保你在训练过程中不会因为磁盘空间不足而遇到问题。</li></ul></li><li><strong>监控磁盘使用情况</strong>： 
+  <ul><li>在训练过程中定期监控磁盘使用情况。这可以帮助你及时发现磁盘空间不足的问题，并采取相应的措施来释放空间或增加存储容量。</li></ul></li></ol> 
+<p>对于你提到的案例，如果之前硬盘扩容前会磁盘空间不足保存模型失败，你可以按照以下步骤进行预估和规划：</p> 
+<ol><li><strong>查看之前的训练日志</strong>： 
+  <ul><li>回顾之前的训练日志，了解在训练过程中生成了哪些文件以及它们的大小。这可以帮助你估算在类似训练中将使用的磁盘空间。</li></ul></li><li><strong>评估模型大小和检查点</strong>： 
+  <ul><li>根据你的模型架构和训练策略，预估模型大小和检查点文件的大小。考虑你计划保存的检查点数量。</li></ul></li><li><strong>计算总需求</strong>： 
+  <ul><li>将模型大小、检查点文件大小、日志和临时文件大小以及数据集大小相加，得出总磁盘空间需求。</li></ul></li><li><strong>比较与当前磁盘空间</strong>： 
+  <ul><li>将总磁盘空间需求与当前可用的磁盘空间进行比较。如果当前空间不足，考虑清理不必要的文件、增加存储容量或优化存储策略。</li></ul></li><li><strong>制定存储策略</strong>： 
+  <ul><li>根据你的需求和可用资源，制定合适的存储策略。例如，你可以定期清理旧的检查点文件和日志文件，以释放磁盘空间。或者，你可以考虑使用外部存储或云存储来保存大型数据集和模型文件。</li></ul></li></ol>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4fb1c1dbef366287f800808c82637a27/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">微信公众号 - Java推送小程序订阅消息给用户_java 通过微信公众号发送订阅通知</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c60fd99ff0386fce009f297527f8e265/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">android中Room数据库的基本使用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

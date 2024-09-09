@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Redis第15讲——RedLock、Zookeeper及数据库实现分布式锁 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/939b5e9a342596dd2cab30d770354edd/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Redis第15讲——RedLock、Zookeeper及数据库实现分布式锁">
+  <meta property="og:description" content="由于篇幅原因，在上篇文章我们只介绍了redis实现分布式锁的两种方式——setnx和Redission，并对Reidssion加锁和看门狗机制的源码进行了分析，但这两种方案在极端情况下都会出现或多或少的问题。那么针对上述问题，比较主流的解决方案有两种：RedLock和Zookeeper实现的分布式锁。
+ps：我们上篇文章提到过主流的分布式锁实现方案有zookeeper、redis和数据库，所以本节也会顺带介绍一下数据库实现分布式锁。
+一、数据库 ps：这里就简单介绍一下。
+最简单的方式可能就是直接创建一张锁表，然后通过该表的数据来实现。
+表的字段可以是：id、method_name(唯一约束)、update_time等：
+加锁：当我们想要锁住某个方法时，可以在表中insert一条数据，因为我们对method_name做了唯一性约束，所以这时如果有多个请求的话，数据库可以保证只有一个操作可以成功。解锁：当方法执行完毕可以用删除语句来解锁。 存在的问题：
+锁没有失效时间，一旦解锁失败，其它线程就无法获得锁。
+解决：弄个定时任务定时清理一遍。
+非阻塞锁，一旦插入失败就会直接报错，没有获得锁的线程并不会排队等待。
+解决：可以while循环把它变成阻塞的。
+非重入，同一个线程在释放锁之前无法再次获得该锁。
+解决：可以在表中加个记录获得锁的主机信息和线程信息，下次再获取的时候先查一把数据库。
+虽然有对应的解决方案，但是这些解决方案的背后又都是问题，比如定时任务这个，假如任务还没执行完，定时任务就把锁给清理了；而且数据库也需要一定的开销，所以不推荐使用数据库实现分布式锁。
+二、RedLock 进入正题。
+简单来说RedLock是Redis的作者Antirez在单Redis节点基础上引入的高可用模式。
+2.1 为什么要使用RedLock 在上篇文章也提到过，不管是用原生的setnx命令还是用Reidssion实现的分布式锁，它们都无法解决Reids在主从复制、哨兵集群下的多节点问题：
+线程A在Matser上获取锁。在Key的写入被传输到Slave之前，Matser崩溃。Slave被提升为主节点。线程B 获取了与线程A已经持有锁相同的锁。 这个场景同一把锁被两个线程同时持有，这是不被允许的，所以Redis的作者提出RedLock算法来应对这种问题。
+2.2 RedLock加锁原理 RedLock通过使用多个Redis节点，来提供一个更加健壮的分布式锁解决方案，能够在某些Redis节点故障的情况下，仍然能够保证分布式锁的可用性。
+假设我们有N个Redis主节点，例如N=5，这些节点是完全独立的，我们不适用赋值或任何其它隐式协调系统，为了取到锁，客户端应该执行以下操作（来自Redis官方文档）：
+获取当前时间（毫秒）。依次从5个节点，使用相同的key和随机值（例如UUID）获取锁。当向Redis请求获取锁时，客户端应该设置一个超时时间，这个时间要远小于锁失效的时（例如，如果自动释放时间为 10 秒，超时时间可能在 5-50 毫秒范围内）。这可以防止客户端在尝试与宕机的 Redis 节点通信时被长时间阻塞：如果一个实例不可用，客户端应该尽快尝试与下一个实例通信。客户端计算获取锁所用的时间减去步骤1的时间，就获得了获取锁消耗的时间。当前仅当大多数（N/2&#43;1,这里是3个节点）的Redis节点都获取到锁，并且获取锁使用的时间小于锁失效的时间，锁才算获取成功。成功获取锁后，key的真正有效时间=TTL-锁的获取时间-时钟漂移（2.5小节会提）。如果客户端由于某种原因未能获取锁（无法锁定 N/2&#43;1 个实例或有效时间为负），它将尝试解锁所有实例（甚至是它认为自己无法锁定的实例）。 ps：加锁失败的实例也要执行解锁操作的原因是：可能会出现服务端响应消息丢失但实际上成功了的情况。
+2.3 存在的问题 上述看着似乎挺完美的，但在实际工作中，用的并不多，主要有两个原因：该方案的使用成本较高、且并不能完全解决分布式锁的问题：
+假设现在还是5个Redis节点，线程A此时已经在三个节点上获取到了锁，表示已经加锁成功了，那么极端场景下就会出现问题：
+严重依赖系统时间：如果获取到锁的三个节点中的某个节点时间稍微快一点，则它持有的锁就会被提前释放，当他释放后，就又有3个实例空闲了，这时线程2也可以获取到锁，就又出现了两个线程同时持有了锁。
+假设redis没有配置持久化：3个节点中的某一个节点重启了，此时又有3个节点空闲了，然后另一个线程又可以加锁成功了。
+在脑裂（网络分区）的情况下，RedLock也可能会产生两个线程同时持有锁的情况。
+还有一个性能问题：setnx和Redission实现的分布式锁只需要在一个节点写成功就行了，而RedLock需要写多个节点才算加锁成功。
+2.4 如何使用 在Redission客户端中也实现了基于Redis的RedLock加锁算法：
+Config config1=new Config(); config1.useSingleServer().setAddress(&#34;redis://127.0.1.1:6379&#34;); Config config2=new Config(); config1.useSingleServer().setAddress(&#34;redis://127.0.1.1:6378&#34;); Config config3=new Config(); config1.useSingleServer().setAddress(&#34;redis://127.0.1.1:6377&#34;); RedissonClient redissonClient1 = Redisson.create(config1); RedissonClient redissonClient2 = Redisson.create(config2); RedissonClient redissonClient3 = Redisson.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-02T07:30:00+08:00">
+    <meta property="article:modified_time" content="2024-05-02T07:30:00+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Redis第15讲——RedLock、Zookeeper及数据库实现分布式锁</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>由于篇幅原因，<strong>在上篇文章我们只介绍了redis实现分布式锁的两种方式——setnx和Redission，并对Reidssion加锁和看门狗机制的源码进行了分析</strong>，但这两种方案在极端情况下都会出现或多或少的问题。那么针对上述问题，比较主流的解决方案有两种：<strong>RedLock和Zookeeper实现的分布式锁。</strong></p> 
+<p><span style="color:#956fe7;"><strong>ps：我们上篇文章提到过主流的分布式锁实现方案有zookeeper、redis和数据库，所以本节也会顺带介绍一下数据库实现分布式锁。</strong></span></p> 
+<h2>一、数据库</h2> 
+<p><strong><span style="color:#956fe7;">ps：这里就简单介绍一下。</span></strong></p> 
+<p>最简单的方式可能就是直接创建一张锁表，然后通过该表的数据来实现。</p> 
+<p>表的字段可以是：<strong>id、method_name(唯一约束)、update_time等</strong>：</p> 
+<blockquote> 
+ <ul><li><strong>加锁：</strong>当我们想要锁住某个方法时，可以在表中insert一条数据，因为我们对method_name做了唯一性约束，所以这时如果有多个请求的话，数据库可以保证只有一个操作可以成功。</li><li><strong>解锁：</strong>当方法执行完毕可以用删除语句来解锁。</li></ul> 
+</blockquote> 
+<p>存在的问题：</p> 
+<blockquote> 
+ <ul><li> <p><strong>锁没有失效时间，一旦解锁失败，其它线程就无法获得锁。</strong></p> 
+   <ul><li> <p>解决：弄个定时任务定时清理一遍。</p> </li></ul></li><li> <p><strong>非阻塞锁，一旦插入失败就会直接报错，没有获得锁的线程并不会排队等待。</strong></p> 
+   <ul><li> <p>解决：可以while循环把它变成阻塞的。</p> </li></ul></li><li> <p><strong>非重入，同一个线程在释放锁之前无法再次获得该锁。</strong></p> 
+   <ul><li> <p>解决：可以在表中加个记录获得锁的主机信息和线程信息，下次再获取的时候先查一把数据库。</p> </li></ul></li></ul> 
+</blockquote> 
+<p>虽然有对应的解决方案，但是这些解决方案的背后又都是问题，比如定时任务这个，假如任务还没执行完，定时任务就把锁给清理了；而且数据库也需要一定的开销，所以不推荐使用数据库实现分布式锁。</p> 
+<h2>二、RedLock</h2> 
+<p><strong>进入正题。</strong></p> 
+<p>简单来说<strong>RedLock是Redis的作者Antirez在单Redis节点基础上引入的高可用模式。</strong></p> 
+<h3>2.1 为什么要使用RedLock</h3> 
+<p>在上篇文章也提到过，不管是用原生的setnx命令还是用Reidssion实现的分布式锁，它们都无法解决Reids在主从复制、哨兵集群下的多节点问题：</p> 
+<blockquote> 
+ <ul><li>线程A在Matser上获取锁。</li><li>在Key的写入被传输到Slave之前，Matser崩溃。</li><li>Slave被提升为主节点。</li><li>线程B 获取了与线程A已经持有锁相同的锁。</li></ul> 
+</blockquote> 
+<p>这个场景同一把锁被<strong>两个线程同时持有</strong>，这是不被允许的，所以Redis的作者提出RedLock算法来应对这种问题。</p> 
+<h3>2.2 RedLock加锁原理</h3> 
+<p><strong>RedLock通过使用多个Redis节点，来提供一个更加健壮的分布式锁解决方案，能够在某些Redis节点故障的情况下，仍然能够保证分布式锁的可用性。</strong></p> 
+<p>假设我们有N个Redis主节点，例如N=5，这些节点是完全独立的，我们不适用赋值或任何其它隐式协调系统，为了取到锁，客户端应该执行以下操作<strong>（来自</strong><a class="link-info" href="https://redis.io/docs/latest/develop/use/patterns/distributed-locks/" rel="nofollow" title="Redis官方文档">Redis官方文档</a><strong>）</strong>：</p> 
+<blockquote> 
+ <ul><li>获取当前时间（毫秒）。</li><li>依次从5个节点，使用<strong>相同的key和随机值（例如UUID）</strong>获取锁。</li><li>当向Redis请求获取锁时，客户端应该设置一个超时时间，这个时间要远小于锁失效的时<strong>（例如，如果自动释放时间为 10 秒，超时时间可能在 5-50 毫秒范围内）</strong>。<strong>这可以防止客户端在尝试与宕机的 Redis 节点通信时被长时间阻塞：如果一个实例不可用，客户端应该尽快尝试与下一个实例通信。</strong></li><li><strong>客户端计算获取锁所用的时间减去步骤1的时间，就获得了获取锁消耗的时间。</strong>当前仅当大多数<span style="color:#fe2c24;"><strong>（N/2+1,这里是3个节点）</strong></span>的Redis节点都获取到锁，并且获取锁使用的时间小于锁失效的时间，锁才算获取成功。</li><li>成功获取锁后，<strong>key的真正有效时间=TTL-锁的获取时间-时钟漂移（2.5小节会提）</strong>。</li><li>如果客户端由于某种原因未能获取锁（无法锁定 N/2+1 个实例或有效时间为负），<strong>它将尝试解锁所有实例（甚至是它认为自己无法锁定的实例）</strong>。</li></ul> 
+</blockquote> 
+<p><span style="color:#956fe7;"><strong>ps：加锁失败的实例也要执行解锁操作的原因是：可能会出现服务端响应消息丢失但实际上成功了的情况。</strong></span></p> 
+<h3>2.3 存在的问题</h3> 
+<p>上述看着似乎挺完美的，但在实际工作中，用的并不多，主要有两个原因：<strong>该方案的使用成本较高、且并不能完全解决分布式锁的问题：</strong></p> 
+<blockquote> 
+ <ul><li> <p>假设现在还是5个Redis节点，<strong>线程A此时已经在三个节点上获取到了锁，</strong>表示已经加锁成功了，那么极端场景下就会出现问题：</p> 
+   <ul><li> <p><strong>严重依赖系统时间：</strong>如果获取到锁的三个节点中的<strong>某个节点时间稍微快一点</strong>，则它持有的锁就会被提前释放，当他释放后，就又有3个实例空闲了，这时线程2也可以获取到锁，就又出现了两个线程同时持有了锁。</p> </li><li> <p><strong>假设redis没有配置持久化：</strong>3个节点中的某一个节点重启了，此时又有3个节点空闲了，然后另一个线程又可以加锁成功了。</p> </li></ul></li><li> <p><strong><a class="link-info" href="https://blog.csdn.net/weixin_45433817/article/details/137209295?spm=1001.2014.3001.5501" title="在脑裂（网络分区）">在脑裂（网络分区）</a></strong>的情况下，RedLock也可能会产生两个线程同时持有锁的情况。</p> </li></ul> 
+</blockquote> 
+<p><strong>还有一个性能问题：</strong>setnx和Redission实现的分布式锁只需要在<strong>一个</strong>节点写成功就行了，而RedLock需要写<strong>多个</strong>节点才算加锁成功。</p> 
+<h3>2.4 如何使用</h3> 
+<p>在Redission客户端中也实现了基于Redis的RedLock加锁算法：</p> 
+<pre><code class="language-java">Config config1=new Config();
+config1.useSingleServer().setAddress("redis://127.0.1.1:6379");
+Config config2=new Config();
+config1.useSingleServer().setAddress("redis://127.0.1.1:6378");
+Config config3=new Config();
+config1.useSingleServer().setAddress("redis://127.0.1.1:6377");
+RedissonClient redissonClient1 = Redisson.create(config1);
+RedissonClient redissonClient2 = Redisson.create(config2);
+RedissonClient redissonClient3 = Redisson.create(config3);
+RLock lock1 = redissonClient1.getLock("myLock");
+RLock lock2 = redissonClient2.getLock("myLock");
+RLock lock3 = redissonClient3.getLock("myLock");
+RedissonRedLock lock = new RedissonRedLock(lock1, lock2, lock3);
+boolean b = lock.tryLock();
+if (b){
+    try {
+        //业务逻辑
+    } finally {
+        lock.unlock();
+    }
+}else {
+    //获取锁失败的逻辑
+}</code></pre> 
+<p>除了Redission，还有一些其它工具也可以实现RedLock，比如Java的<strong>RedLock-java库、Go的Redsync库</strong>等，这些工具的使用方法都类似，都是创建多个Redis实例，然后使用RedLock算法来获取分布式锁。</p> 
+<h3>2.5 两位大佬的激烈讨论</h3> 
+<p>关于RedLock，两位大佬展开过激烈的讨论，感兴趣的可以了解一下。</p> 
+<p><strong>Martin——著名的分布式系统专家</strong>，在他博客上发表过一篇文章：<a href="https://martin.kleppmann.com/2016/02/08/how-to-do-distributed-locking.html" rel="nofollow" title="How to do distributed locking — Martin Kleppmann’s blog">How to do distributed locking — Martin Kleppmann’s blog</a>。</p> 
+<p>在这篇文章中他认为RedLock实现分布式锁有问题：</p> 
+<blockquote> 
+ <ul><li><strong>网络分区：</strong>在网络分区的情况下，不同的节点可能会获取相同的锁，这会导致分布式系统的不一致问题。</li><li><strong>时间漂移：</strong>由于不同的机器之间的时间可能存在微小的漂移，这会导致锁的失效时间不一致，也会导致不一致问题。</li><li><strong>Redis的主从复制：</strong>在Redis主从复制的情况下，如果Redis的主节点出现故障，需要选举新的主节点，这个过程可能会导致锁丢失，同样存在一致性问题。</li></ul> 
+</blockquote> 
+<p><strong>Antirez——Redis的作者</strong>，他在自己博客上也发表了一篇文章：<a href="http://antirez.com/news/101" rel="nofollow" title="Is Redlock safe? - &lt;antirez&gt;">Is Redlock safe? - &lt;antirez&gt;</a>。</p> 
+<p>这篇文章对Matin指出的问题给予了回复：</p> 
+<blockquote> 
+ <ul><li><strong>网络分区：</strong>在网络分区的情况下，RedLock仍然可以提供足够的可靠性。虽然会存在节点获取到相同锁的情况，但这种情况只会在网络分区时发生，且只会发生在一小部分节点上。而在网络恢复后，RedLock会自动解锁。</li><li><strong>时间漂移：</strong>RedLock可以使用NTP等工具来同步不同机器的时间，从而必变时间漂移的问题。</li><li><strong>Redis的主从复制：</strong>虽然Redis的主从复制可能导致锁的丢失，但这种情况非常罕见，并且可以通过多种方式来避免，例如使用Redis Cluster。</li></ul> 
+</blockquote> 
+<h2>三、Zookeeper实现</h2> 
+<h3>3.1 实现方案</h3> 
+<p>基于Zookeeper临时有序节点也可以实现分布式锁，方案如下：</p> 
+<blockquote> 
+ <ul><li>创建一个锁目录/locks，该节点为持久节点。</li><li>想要获取锁的线程都在锁目录下创建一个临时顺序节点。</li><li>获取锁目录下所有子节点，对子节点按自增序号从小到大排序。</li><li>判断本节点是不是第一个子节点（序号最小），如果是，则获取锁成功，反之，则监听自己的上一个节点的删除事件。</li><li>持有锁的线程只需要删除当前节点，就可释放锁。</li><li>当自己监听的节点被删除时，监听事件触发，则回到第3步重新进行判断，直到获取锁。</li></ul> 
+</blockquote> 
+<h3>3.2 特性</h3> 
+<p>下面我们看看它是否具有分布式锁的特性：</p> 
+<blockquote> 
+ <ul><li><strong>锁释放：</strong>在创建锁的时候，客户端会在ZK中创建一个临时节点，一旦客户端获取到锁随后挂掉（Session连接断开），那么这个临时节点就会被删除掉，其它客户端就可以再次获得锁。</li><li><strong>阻塞锁：</strong>没有获取锁的客户端会监听自己上一个节点的删除事件，一旦监听到被删除，ZK就会通知客户端判断自己创建的节点是不是第一个节点（序号最小），如果是就成功获取锁，反之继续排队。</li><li><strong>可重入：</strong>客户端在创建节点的时候，会把自己主机信息和线程信息直接写入到节点中，想要再次获取的时候就和当前第一个节点中的数据对比，如果信息一样就直接获取到锁，反之就再创建一个临时节点，参与排队。</li><li><strong>可用性：</strong>ZK是集群部署的，只要集群中有半数以上的机器存活，就可对外提供服务。</li></ul> 
+</blockquote> 
+<p>由于<strong>ZK保证了数据的强一致性</strong>，因此不会存在之前Redis方案中的问题。</p> 
+<h3>3.3 存在的问题</h3> 
+<p>由于ZK保证了数据的强一致性，因此不会存在之前Redis方案中的问题，<strong>没有银弹</strong>，任何方案都会有不足之处，如下：</p> 
+<blockquote> 
+ <ul><li> <p><strong>性能问题：ZK在性能方面肯定不如缓存服务那么高，因为每次创建和释放锁都要创建、销毁节点；</strong>而且创建和删除节点只能通过Leader来执行，然后将数据同步到所有的Follower上。</p> </li><li> <p><strong>并发问题：</strong>假如由于网络抖动，客户端和ZK集群的seesion连接断了，那么ZK以为是客户端挂了，就会删除临时节点，这时候其它客户端就可以获取到分布式锁。不过这种情况并不常见，因为<strong>ZK有重试机制</strong>，一旦ZK集群检测不到客户端的心跳，就会重试多次重试后还是不行的话才会删除临时节点。<strong>（Curator客户端支持多种重试策略）</strong></p> </li></ul> 
+</blockquote> 
+<h3>3.4 如何使用</h3> 
+<p>Curator是Netflix开源的一套Zookeeper客户端框架，可以直接使用Curator来实现Zookeeper分布式锁：</p> 
+<h4>3.4.1 引入依赖</h4> 
+<pre><code class="language-java">&lt;!--引入对应的zookeeper --&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;org.apache.zookeeper&lt;/groupId&gt;
+    &lt;artifactId&gt;zookeeper&lt;/artifactId&gt;
+    &lt;version&gt;3.7.1&lt;/version&gt;
+&lt;/dependency&gt;
+&lt;!--添加对应的curator框架依赖--&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;org.apache.curator&lt;/groupId&gt;
+    &lt;artifactId&gt;curator-framework&lt;/artifactId&gt;
+    &lt;version&gt;5.2.0&lt;/version&gt;
+&lt;/dependency&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;org.apache.curator&lt;/groupId&gt;
+    &lt;artifactId&gt;curator-recipes&lt;/artifactId&gt;
+    &lt;version&gt;5.2.0&lt;/version&gt;
+&lt;/dependency&gt;
+&lt;dependency&gt;
+    &lt;groupId&gt;org.apache.curator&lt;/groupId&gt;
+    &lt;artifactId&gt;curator-client&lt;/artifactId&gt;
+    &lt;version&gt;5.2.0&lt;/version&gt;
+&lt;/dependency&gt;</code></pre> 
+<h4>3.4.2 使用demo</h4> 
+<pre><code class="language-java">public class ZKLock {
+    public static void main(String[] args) {
+        InterProcessLock lock=new InterProcessMutex(getCuratorFramework(),"/locks");
+        try {
+            //加锁
+            lock.acquire();
+            //业务逻辑
+            //......
+            //释放锁
+            lock.release();
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
+    }
+​
+    private static CuratorFramework getCuratorFramework() {
+        // 重试策略，这里使用的是指数补偿重试策略，重试3次，初始重试间隔1000ms，每次重试之后重试间隔递增。
+        RetryPolicy retry = new ExponentialBackoffRetry(1000, 3);
+        // 初始化Curator客户端：指定链接信息 及 重试策略
+        CuratorFramework client = CuratorFrameworkFactory.newClient("ip:port", retry);
+        // 开始链接
+        client.start();
+        return client;
+    }
+}</code></pre> 
+<p><strong><span style="color:#956fe7;">ps：如果想要重入，则需要使用同一个InterProcessMutex对象。</span></strong></p> 
+<p><span style="color:#ff9900;"><strong>End：希望对大家有所帮助，如果有纰漏或者更好的想法，请您一定不要吝啬你的赐教🙋。</strong></span></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/660aa8f7c3082b8e400eaecddd73fe61/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【如何成功安装 Python 软件包 weditor】</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c1b9185f0f35de464daf53f3e88c135b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">MySQL如何设计库表结构</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

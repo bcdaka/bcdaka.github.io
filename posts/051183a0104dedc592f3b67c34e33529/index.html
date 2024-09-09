@@ -1,0 +1,1394 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>路规算法详细解读（一）—— FAST-Planner重要部分代码解读 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/051183a0104dedc592f3b67c34e33529/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="路规算法详细解读（一）—— FAST-Planner重要部分代码解读">
+  <meta property="og:description" content="由于最近的研究需要，需要对Fast-planner和Ego-planner的代码了解，所以写出这篇代码解读文章，本文持续更新。废话不多说了，上干货！
+本文基于以下大佬的代码解析基础上去阅读、理解、总结而成，对我的帮助真的特别大。觉得有帮助的朋友记得给大佬点赞！
+Fast-Planner代码阅读-1. Robust and Efficient Quadrotor Trajectory Generation for Fast Autonomous Flight_fast planner b样条_养生少年小余的博客-CSDN博客
+本文之所以成就之高，原因在于其框架的完整性，代码主要解读包含三大板块：kinodynamic a_star 路径搜索、non_uniform_bspline均匀B样条轨迹优化、非均匀B样条轨迹优化三大主要部分。
+一、kinodynamic a_star 路径搜索 实现该功能的文件为/fast_planner/path_searching/src/kinodynamic_astar.cpp，将围绕其主要循环函数展开。
+int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, Eigen::Vector3d start_a, Eigen::Vector3d end_pt, Eigen::Vector3d end_v, bool init, bool dynamic, double time_start) 该函数传入参数为分别为start_pt（起点位置）、start_v（起点速度）、start_a（起点加速度）、end_pt（终点位置）、end_v（终点速度）、init（初始化成功标志位）、dynamic（动静规划标志位）、time_start（起始时间）。
+1. 读取并初始化参数、计算起点代价、优化时间，将起点加入到openlist中： 该步骤是为了将传入的vector转化为可带入运算的状态矩阵
+//函数传入参数为起始点的位置、速度、加速度、终点位置、速度、初始化标志位、动态（可行）标志位？、起始时间 start_vel_ = start_v;//取出传入的起始点的速度 start_acc_ = start_a;//传入起始点的加速度 //path_node_pool_ 可能在初始化时被分配一定数量的节点，这些节点在运行时被重复使用，而不是每次需要节点时都动态地分配内存。这有助于提高性能，避免频繁的内存分配和释放。 PathNodePtr cur_node = path_node_pool_[0];//取出第一个路径点赋给当前节点 cur_node-&gt;parent = NULL;//父节点 cur_node-&gt;state.head(3) = start_pt;//state矩阵前3列记录位置 cur_node-&gt;state.tail(3) = start_v;//state矩阵后三列记录速度 cur_node-&gt;index = posToIndex(start_pt);//获取全剧坐标系下的位置索引 cur_node-&gt;g_score = 0.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2023-11-17T14:51:01+08:00">
+    <meta property="article:modified_time" content="2023-11-17T14:51:01+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">路规算法详细解读（一）—— FAST-Planner重要部分代码解读</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>由于最近的研究需要，需要对Fast-planner和Ego-planner的代码了解，所以写出这篇代码解读文章，本文持续更新。废话不多说了，上干货！</p> 
+<p>本文基于以下大佬的代码解析基础上去阅读、理解、总结而成，对我的帮助真的特别大。觉得有帮助的朋友记得给大佬点赞！</p> 
+<p><a href="https://blog.csdn.net/weixin_42284263/article/details/119204964?spm=1001.2014.3001.5502#t20" title="Fast-Planner代码阅读-1. Robust and Efficient Quadrotor Trajectory Generation for Fast Autonomous Flight_fast planner b样条_养生少年小余的博客-CSDN博客">Fast-Planner代码阅读-1. Robust and Efficient Quadrotor Trajectory Generation for Fast Autonomous Flight_fast planner b样条_养生少年小余的博客-CSDN博客</a></p> 
+<p>本文之所以成就之高，原因在于其框架的完整性，代码主要解读包含三大板块：<strong>kinodynamic a_star 路径搜索</strong>、<em><strong>non_uniform_bspline均匀B样条轨迹优化、非均匀B样条轨迹优化</strong></em>三大主要部分。</p> 
+<h2>一、<strong>kinodynamic a_star 路径搜索</strong></h2> 
+<p><strong>实现该功能的文件为</strong><strong>/fast_planner/path_searching/src/kinodynamic_astar.cpp，将围绕其主要循环函数展开。</strong></p> 
+<pre><code class="language-cpp">int KinodynamicAstar::search(Eigen::Vector3d start_pt, Eigen::Vector3d start_v, Eigen::Vector3d start_a,
+                             Eigen::Vector3d end_pt, Eigen::Vector3d end_v, bool init, bool dynamic, double time_start)</code></pre> 
+<p>该函数传入参数为分别为start_pt（起点位置）、start_v（起点速度）、start_a（起点加速度）、end_pt（终点位置）、end_v（终点速度）、init（初始化成功标志位）、dynamic（动静规划标志位）、time_start（起始时间）。</p> 
+<h3>1. 读取并初始化参数、计算起点代价、优化时间，将起点加入到openlist中：</h3> 
+<p>该步骤是为了将传入的vector转化为可带入运算的状态矩阵</p> 
+<pre><code class="language-cpp">  //函数传入参数为起始点的位置、速度、加速度、终点位置、速度、初始化标志位、动态（可行）标志位？、起始时间
+  start_vel_ = start_v;//取出传入的起始点的速度
+  start_acc_ = start_a;//传入起始点的加速度
+//path_node_pool_ 可能在初始化时被分配一定数量的节点，这些节点在运行时被重复使用，而不是每次需要节点时都动态地分配内存。这有助于提高性能，避免频繁的内存分配和释放。
+  PathNodePtr cur_node = path_node_pool_[0];//取出第一个路径点赋给当前节点
+  cur_node-&gt;parent = NULL;//父节点
+  cur_node-&gt;state.head(3) = start_pt;//state矩阵前3列记录位置
+  cur_node-&gt;state.tail(3) = start_v;//state矩阵后三列记录速度
+  cur_node-&gt;index = posToIndex(start_pt);//获取全剧坐标系下的位置索引
+  cur_node-&gt;g_score = 0.0;//记录当前点成本代价值
+
+  Eigen::VectorXd end_state(6);//初始化目标点状态的
+  Eigen::Vector3i end_index;//记录终点索引值
+  double time_to_goal;//路径规划时间
+
+  end_state.head(3) = end_pt;
+  end_state.tail(3) = end_v;
+  end_index = posToIndex(end_pt);
+  cur_node-&gt;f_score = lambda_heu_ * estimateHeuristic(cur_node-&gt;state, end_state, time_to_goal);//记录当前节点的代价函数
+  cur_node-&gt;node_state = IN_OPEN_SET;//标记为待探索列表
+  open_set_.push(cur_node);//将当前节点添加到openlist中
+  use_node_num_ += 1;//已探索点个数记录</code></pre> 
+<p>其中，estimateHeuristic用于计算两点之间的启发函数代价，传入参数为起点与终点的状态，返回值为计算所得的代价值并且同时更新到达终点的最优时间optimal_time</p> 
+<pre><code class="language-cpp">double KinodynamicAstar::estimateHeuristic(Eigen::VectorXd x1, Eigen::VectorXd x2, double&amp; optimal_time)
+{
+  const Vector3d dp = x2.head(3) - x1.head(3);//位置变化量
+  const Vector3d v0 = x1.segment(3, 3);//起点速度矩阵
+  const Vector3d v1 = x2.segment(3, 3);//终点速度矩阵
+
+  double c1 = -36 * dp.dot(dp);//算一下alpha，belta带入后就能够清楚带入参数的含义了
+  double c2 = 24 * (v0 + v1).dot(dp);
+  double c3 = -4 * (v0.dot(v0) + v0.dot(v1) + v1.dot(v1));
+  double c4 = 0;
+  double c5 = w_time_;
+
+  std::vector&lt;double&gt; ts = quartic(c5, c4, c3, c2, c1);//对下列c式子求导数，令其为0
+
+  double v_max = max_vel_ * 0.5;
+  double t_bar = (x1.head(3) - x2.head(3)).lpNorm&lt;Infinity&gt;() / v_max;//最短时间限制
+  ts.push_back(t_bar);
+
+  double cost = 100000000;
+  double t_d = t_bar;
+
+  for (auto t : ts)
+  {
+    if (t &lt; t_bar)//小于最小时间不合理则跳出
+      continue;
+    double c = -c1 / (3 * t * t * t) - c2 / (2 * t * t) - c3 / t + w_time_ * t;//将alpha，belta带入到J*中化简得
+    if (c &lt; cost)
+    {
+      cost = c;
+      t_d = t;
+    }
+  }
+
+  optimal_time = t_d;
+
+  return 1.0 * (1 + tie_breaker_) * cost;//返回启发式函数代价并且将对应的路径时间赋给optimal_time
+}</code></pre> 
+<p>这部分对应论文的：</p> 
+<p><img alt="" height="503" src="https://images2.imgbox.com/fe/e5/SAuWFeEF_o.png" width="677"></p> 
+<p style="text-align:justify;">庞特里亚金极大值原理的基本思想是，如果在某个时间点，存在一个最优轨迹或最优控制策略， 本论文中的启发函数利用庞特里亚金原理解决两点边值问题，得到最优解后用最优解的控制代价作为启发函数。quartic函数是求解4次方程的函数，四次方程函数是由（5）将alpha，belta带入后求导所得到的，quartic函数用于返回最优的控制时间量。关于时间的一元四次方程是通过费拉里方法求解的，需要嵌套一个元三次方程进行求解，也就是代码中应的cubic函数。</p> 
+<pre><code class="language-cpp">//四次方程的费拉里解法，https://zh.wikipedia.org/wiki/%E5%9B%9B%E6%AC%A1%E6%96%B9%E7%A8%8B，降次为三次方程电泳cubic
+vector&lt;double&gt; KinodynamicAstar::quartic(double a, double b, double c, double d, double e)
+{
+  vector&lt;double&gt; dts;
+
+  double a3 = b / a;
+  double a2 = c / a;
+  double a1 = d / a;
+  double a0 = e / a;
+
+  vector&lt;double&gt; ys = cubic(1, -a2, a1 * a3 - 4 * a0, 4 * a2 * a0 - a1 * a1 - a3 * a3 * a0);
+  double y1 = ys.front();
+  double r = a3 * a3 / 4 - a2 + y1;
+  if (r &lt; 0)
+    return dts;
+
+  double R = sqrt(r);
+  double D, E;
+  if (R != 0)
+  {
+    D = sqrt(0.75 * a3 * a3 - R * R - 2 * a2 + 0.25 * (4 * a3 * a2 - 8 * a1 - a3 * a3 * a3) / R);
+    E = sqrt(0.75 * a3 * a3 - R * R - 2 * a2 - 0.25 * (4 * a3 * a2 - 8 * a1 - a3 * a3 * a3) / R);
+  }
+  else
+  {
+    D = sqrt(0.75 * a3 * a3 - 2 * a2 + 2 * sqrt(y1 * y1 - 4 * a0));
+    E = sqrt(0.75 * a3 * a3 - 2 * a2 - 2 * sqrt(y1 * y1 - 4 * a0));
+  }
+
+  if (!std::isnan(D))
+  {
+    dts.push_back(-a3 / 4 + R / 2 + D / 2);
+    dts.push_back(-a3 / 4 + R / 2 - D / 2);
+  }
+  if (!std::isnan(E))
+  {
+    dts.push_back(-a3 / 4 - R / 2 + E / 2);
+    dts.push_back(-a3 / 4 - R / 2 - E / 2);
+  }
+
+  return dts;
+}
+
+vector&lt;double&gt; KinodynamicAstar::cubic(double a, double b, double c, double d)
+{
+  vector&lt;double&gt; dts;
+
+  double a2 = b / a;
+  double a1 = c / a;
+  double a0 = d / a;
+
+  double Q = (3 * a1 - a2 * a2) / 9;
+  double R = (9 * a1 * a2 - 27 * a0 - 2 * a2 * a2 * a2) / 54;
+  double D = Q * Q * Q + R * R;
+  if (D &gt; 0)
+  {
+    double S = std::cbrt(R + sqrt(D));
+    double T = std::cbrt(R - sqrt(D));
+    dts.push_back(-a2 / 3 + (S + T));
+    return dts;
+  }
+  else if (D == 0)
+  {
+    double S = std::cbrt(R);
+    dts.push_back(-a2 / 3 + S + S);
+    dts.push_back(-a2 / 3 - S);
+    return dts;
+  }
+  else//&lt;0
+  {
+    double theta = acos(R / sqrt(-Q * Q * Q));
+    dts.push_back(2 * sqrt(-Q) * cos(theta / 3) - a2 / 3);
+    dts.push_back(2 * sqrt(-Q) * cos((theta + 2 * M_PI) / 3) - a2 / 3);
+    dts.push_back(2 * sqrt(-Q) * cos((theta + 4 * M_PI) / 3) - a2 / 3);
+    return dts;
+  }
+}</code></pre> 
+<p style="text-align:justify;">cubic函数中区分了Delta的情况采用了不同的方法求根，判别式&gt;=0的情况利用了求根公式，判别式&lt;0的情况使用了三角函数解法。最终求得到最优的控制量t，并且更新了最优时间。</p> 
+<p style="text-align:justify;">关于dynamic标志位（我猜的，水平有限暂时这么理解，有清楚的大佬评论教我）</p> 
+<pre><code class="language-cpp">if (dynamic)//为真时记录时间、将当前节点时间信息记录到expande_node中
+  {
+    time_origin_ = time_start;
+    cur_node-&gt;time = time_start;
+    cur_node-&gt;time_idx = timeToIndex(time_start);
+    expanded_nodes_.insert(cur_node-&gt;index, cur_node-&gt;time_idx, cur_node);
+    // cout &lt;&lt; "time start: " &lt;&lt; time_start &lt;&lt; endl;
+  }
+  else
+    expanded_nodes_.insert(cur_node-&gt;index, cur_node);//仅将当前节点的空间信息插入到 expanded_nodes_ 中
+
+  PathNodePtr neighbor = NULL;//初始化邻居节点为空
+  PathNodePtr terminate_node = NULL;//终点节点为空
+  bool init_search = init;//初始化标记位
+  const int tolerance = ceil(1 / resolution_);//容差，变换前每1单位表示的距离</code></pre> 
+<ul><li> <p>如果 <code>dynamic</code> 为 <code>true</code>：</p> 
+  <ul><li>该搜索算法会考虑时间信息，即路径规划是在动态环境中进行的。</li><li>每个节点除了空间状态外，还包含了时间信息（如 <code>cur_node-&gt;time</code> 和 <code>cur_node-&gt;time_idx</code>）。</li><li>节点被插入到 <code>expanded_nodes_</code> 中时，时间信息也会被考虑。</li><li>最终搜索的路径是在三维空间和时间维度上的。</li></ul></li><li> <p>如果 <code>dynamic</code> 为 <code>false</code>：</p> 
+  <ul><li>该搜索算法只考虑空间状态，即路径规划是在静态环境中进行的。</li><li>时间信息对于节点的存储和搜索不被考虑。</li><li>最终搜索的路径仅包含在三维空间中。</li></ul></li></ul> 
+<h3>2.主要循环：</h3> 
+<p>while循环是大头，包含了轨迹检查、节点拓展、节点剪枝、轨迹细化等功能。当open_set待搜索列表不为空时就一直执行（备注很清楚，是主观解读，如果有错误还请评论区指正）：</p> 
+<h4>(1). 终止条件：</h4> 
+<pre><code class="language-cpp">//基本循环函数
+  while (!open_set_.empty())
+  {
+    cur_node = open_set_.top();//在open_set中取节点。
+
+    // Terminate?
+    /*标志位在这个搜索算法中的主要作用是为了提前终止搜索。它表示当前节点是否已经离起点足够远，
+    超过了预定的 horizon_ 阈值。这个设计可能是为了在搜索空间较大时，避免过度的搜索，以提高算法的效率。
+    ，当 reach_horizon 为真时，意味着当前节点已经离起点足够远，可能是因为在搜索空间中没有更好的路径，
+    或者当前路径不太可能变得更好。在这种情况下，算法可以提前结束搜索，以减少计算时间。
+    */
+    bool reach_horizon = (cur_node-&gt;state.head(3) - start_pt).norm() &gt;= horizon_;
+
+    bool near_end = abs(cur_node-&gt;index(0) - end_index(0)) &lt;= tolerance &amp;&amp;//判断是否到达终点了。
+                    abs(cur_node-&gt;index(1) - end_index(1)) &lt;= tolerance &amp;&amp;
+                    abs(cur_node-&gt;index(2) - end_index(2)) &lt;= tolerance;
+
+    if (reach_horizon || near_end)//离起点足够远或者判定到达起点了，停止条件当超出一定范围或者已经找到终点
+    {
+      terminate_node = cur_node;//将当前节点设为终点
+      retrievePath(terminate_node);//反向搜索路径
+      if (near_end)//当确实是靠近终点时
+      {
+        // Check whether shot traj exist
+        estimateHeuristic(cur_node-&gt;state, end_state, time_to_goal);//计算优化的最小时间
+        computeShotTraj(cur_node-&gt;state, end_state, time_to_goal);//带入优化的时间判断轨迹是否合理
+        if (init_search)//如果初始化成功
+          ROS_ERROR("Shot in first search loop!");
+      }
+    }
+   
+    if (reach_horizon)//先判断是否超出范围
+    {
+      if (is_shot_succ_)//搜索到的路径安全可行的
+      {
+        std::cout &lt;&lt; "reach end" &lt;&lt; std::endl;//此处终点是最远点（其实也不算是规划成功，因为超出距离后到达的是最远处路径可行，并非是原来要找的终点）
+        return REACH_END;
+      }
+      else
+      {
+        std::cout &lt;&lt; "reach horizon" &lt;&lt; std::endl;//路径动态不可行（规划失败）
+        return REACH_HORIZON;
+      }
+    }
+
+    if (near_end)
+    {
+      if (is_shot_succ_)
+      {
+        std::cout &lt;&lt; "reach end" &lt;&lt; std::endl;
+        return REACH_END;
+      }
+      else if (cur_node-&gt;parent != NULL)//规划路径动态不可行，但是上一节点是可行的，此时为规划到接近终点的状态
+      {
+        std::cout &lt;&lt; "near end" &lt;&lt; std::endl;
+        return NEAR_END;
+      }
+      else
+      {
+        std::cout &lt;&lt; "no path" &lt;&lt; std::endl;
+        return NO_PATH;
+      }
+    }
+  /*
+  上述代码皆是单个循环内单个openlist节点内部的终止的判定条件，类似于递归代码的逻辑
+  下方代码可以看作是递归单个节点不满足逻辑时候需要处理的步骤（反正我是这么理解的）
+  */</code></pre> 
+<h4>(2).节点扩张：</h4> 
+<p>当节点不满足终止条件（到达终点或超出探索距离）时，以当前节点为根，离散输入控制量，得到下一状态。</p> 
+<pre><code class="language-cpp">  //当前节点无法到达，进行节点扩张
+    open_set_.pop();//弹出该节点
+    cur_node-&gt;node_state = IN_CLOSE_SET;//将已经探索的节点加入到close_list中，标记为已探索
+    iter_num_ += 1;//搜索完的点+1
+
+    double res = 1 / 2.0, time_res = 1 / 1.0, time_res_init = 1 / 20.0;//初始化时间常数
+    Eigen::Matrix&lt;double, 6, 1&gt; cur_state = cur_node-&gt;state;//记录当前节点状态
+    Eigen::Matrix&lt;double, 6, 1&gt; pro_state;//下一状态
+    vector&lt;PathNodePtr&gt; tmp_expand_nodes;//临时扩展节点列表
+    Eigen::Vector3d um;//离散的控制量，这里指的是三维上加速度
+    double pro_t;//拓展节点的时间戳
+    vector&lt;Eigen::Vector3d&gt; inputs;//输入
+    vector&lt;double&gt; durations;//单位输入控制量的持续时间
+    /*
+    这里大家要首先明确一点，init_search标志位用来标志是否用不连续的初始状态重试搜索。
+    本人的理解是如果有初始的节点输入状态存储，但是由于路径规划失败导致无法到达终点
+    所以需要拓展新的节点重新规划路径。
+    */
+    if (init_search)//具有上次搜索失败的离散状态量
+    {
+      inputs.push_back(start_acc_);//存储起始状态的加速度
+      for (double tau = time_res_init * init_max_tau_; tau &lt;= init_max_tau_ + 1e-3;
+           tau += time_res_init * init_max_tau_)
+        durations.push_back(tau);
+      init_search = false;
+    }//离散化时间
+
+    else//没有初始离散状态，未初始化成功，通过最大最小加速度初始化离散加速度后再离散时间
+    {
+      for (double ax = -max_acc_; ax &lt;= max_acc_ + 1e-3; ax += max_acc_ * res)
+        for (double ay = -max_acc_; ay &lt;= max_acc_ + 1e-3; ay += max_acc_ * res)
+          for (double az = -max_acc_; az &lt;= max_acc_ + 1e-3; az += max_acc_ * res)
+          {
+            um &lt;&lt; ax, ay, az;
+            inputs.push_back(um);
+          }
+      for (double tau = time_res * max_tau_; tau &lt;= max_tau_; tau += time_res * max_tau_)
+        durations.push_back(tau);//离散化时间
+    }
+
+    // cout &lt;&lt; "cur state:" &lt;&lt; cur_state.head(3).transpose() &lt;&lt; endl;
+    //组合不同的时间与加速度组合，得到不一样的下一状态集合
+    for (int i = 0; i &lt; inputs.size(); ++i)
+      for (int j = 0; j &lt; durations.size(); ++j)
+      {
+        um = inputs[i];
+        double tau = durations[j];
+        stateTransit(cur_state, pro_state, um, tau);//输入时间与加速度离散值，更新pro_state
+        pro_t = cur_node-&gt;time + tau;//拓展状态时间记录
+
+        Eigen::Vector3d pro_pos = pro_state.head(3);//拓展位置向量
+
+        // Check if in close set
+        Eigen::Vector3i pro_id = posToIndex(pro_pos);//拓展位置世界坐标系下的索引
+        int pro_t_id = timeToIndex(pro_t);//拓展位置时间id
+        PathNodePtr pro_node = dynamic ? expanded_nodes_.find(pro_id, pro_t_id) : expanded_nodes_.find(pro_id);//根据是否带时间戳记录拓展节点
+        if (pro_node != NULL &amp;&amp; pro_node-&gt;node_state == IN_CLOSE_SET)//当存在于closet中，跳过此次拓展
+        {
+          if (init_search)
+            std::cout &lt;&lt; "close" &lt;&lt; std::endl;
+          continue;
+        }
+
+      //剩下NULL或不存在与closelist中的点
+        // Check maximal velocity
+        Eigen::Vector3d pro_v = pro_state.tail(3);//检查速度限制超过则跳过该次检查
+        if (fabs(pro_v(0)) &gt; max_vel_ || fabs(pro_v(1)) &gt; max_vel_ || fabs(pro_v(2)) &gt; max_vel_)
+        {
+          if (init_search)
+            std::cout &lt;&lt; "vel" &lt;&lt; std::endl;
+          continue;
+        }
+
+      //剩下不超过速度限制的点，且不存在于close中，但可能为空
+        // Check not in the same voxel
+        Eigen::Vector3i diff = pro_id - cur_node-&gt;index;//检查拓展的栅格是否为当前栅格相同
+        int diff_time = pro_t_id - cur_node-&gt;time_idx;//检查栅格
+        if (diff.norm() == 0 &amp;&amp; ((!dynamic) || diff_time == 0))//带时间戳时时间相同，或者时间相同跳出循环
+        {
+          if (init_search)
+            std::cout &lt;&lt; "same" &lt;&lt; std::endl;
+          continue;
+        }
+
+      //剩下不超过速度限制、且不是重复的点，且不存在于close中，但可能为空或者存在同一栅格中（但花费的时间不同的点）
+        // Check safety
+        Eigen::Vector3d pos;
+        Eigen::Matrix&lt;double, 6, 1&gt; xt;
+        bool is_occ = false;
+        for (int k = 1; k &lt;= check_num_; ++k)//分辨率提高检查点，比如a到b我检查5个点，判定每个点是否占用
+        {
+          double dt = tau * double(k) / double(check_num_);
+          stateTransit(cur_state, xt, um, dt);//前向积分得到扩展节点的位置和速度
+          pos = xt.head(3);
+          if (edt_environment_-&gt;sdf_map_-&gt;getInflateOccupancy(pos) == 1 )//检查是否占用
+          {
+            is_occ = true;//占用标志位记为true
+            break;
+          }
+        }
+        if (is_occ)
+        {
+          if (init_search)
+            std::cout &lt;&lt; "safe" &lt;&lt; std::endl;//当检测到被占用时，跳过
+          continue;
+        }
+      //更新拓展状态的代价
+        double time_to_goal, tmp_g_score, tmp_f_score;//定义变量暂时存储代价函数值
+        tmp_g_score = (um.squaredNorm() + w_time_) * tau + cur_node-&gt;g_score;
+        tmp_f_score = tmp_g_score + lambda_heu_ * estimateHeuristic(pro_state, end_state, time_to_goal);</code></pre> 
+<h4>(3)剪枝：</h4> 
+<p>剪枝对同一栅格内所得到的采样点进行更新，仅保留最低代价的状态</p> 
+<pre><code class="language-cpp">//节点剪枝
+        // Compare nodes expanded from the same parent
+
+      /*
+      prune为剪枝标志位
+    如果 prune 为 true，表示需要对当前生成的节点进行剪枝。这说明当前节点与之前扩展的节点在相同的体素内（位置索引相同且时间索引相同，如果是动态规划）。
+    如果当前节点的代价（tmp_f_score）比之前扩展的相同节点的代价更小，则更新之前扩展的节点的信息，以保留更优的路径信息。
+    如果 prune 为 false，表示不需要对当前生成的节点进行剪枝。这说明当前节点与之前扩展的节点在不同的体素内。
+    如果当前节点是一个新的节点（pro_node == NULL），将其添加到搜索队列中，并更新相关信息。
+    如果当前节点已经在开放集合中，检查新路径的代价是否更小，如果是，则更新节点信息。
+      */
+        bool prune = false;
+        for (int j = 0; j &lt; tmp_expand_nodes.size(); ++j)//遍历所有临时拓展节点列表，用来检查拓展的点中有没有同个节点内的点，有的话标记剪枝操作
+        {
+          PathNodePtr expand_node = tmp_expand_nodes[j];
+          if ((pro_id - expand_node-&gt;index).norm() == 0 &amp;&amp; ((!dynamic) || pro_t_id == expand_node-&gt;time_idx))//当前遍历节点与本次循环拓展节点在相同的体素内
+          {
+            prune = true;//标记需要剪枝（即比较代价函数）
+            if (tmp_f_score &lt; expand_node-&gt;f_score)//比较代价函数，选取代价小的节点并保存。
+            {
+              expand_node-&gt;f_score = tmp_f_score;//将原来计算好的代价记录下来
+              expand_node-&gt;g_score = tmp_g_score;
+              expand_node-&gt;state = pro_state;//记录状态值
+              expand_node-&gt;input = um;//往前拓展状态的输入
+              expand_node-&gt;duration = tau;//往前拓展的积分的时间
+              if (dynamic)
+                expand_node-&gt;time = cur_node-&gt;time + tau;//如果是带时间戳的路径规划则记录时间戳信息
+            }
+            break;
+          }
+        }
+        // tem中存有的点是所有离散点？expand中存的是剪枝后每个节点的最优点
+        // This node end up in a voxel different from others
+        if (!prune)//当前节点为全新节点
+        {
+          if (pro_node == NULL)//如果 pro_node 为空，说明这是一个新的节点，需要将其添加到搜索队列中。更新节点的信息，包括索引、状态、代价等。
+          {
+            pro_node = path_node_pool_[use_node_num_];
+            pro_node-&gt;index = pro_id;
+            pro_node-&gt;state = pro_state;
+            pro_node-&gt;f_score = tmp_f_score;
+            pro_node-&gt;g_score = tmp_g_score;
+            pro_node-&gt;input = um;
+            pro_node-&gt;duration = tau;
+            pro_node-&gt;parent = cur_node;
+            pro_node-&gt;node_state = IN_OPEN_SET;//将其加入到openset中
+            if (dynamic)//带时间戳的规划需要带时间
+            {
+              pro_node-&gt;time = cur_node-&gt;time + tau;
+              pro_node-&gt;time_idx = timeToIndex(pro_node-&gt;time);
+            }
+            open_set_.push(pro_node);
+
+            //将其加入到探索列表节点中
+            if (dynamic)
+              expanded_nodes_.insert(pro_id, pro_node-&gt;time, pro_node);
+            else
+              expanded_nodes_.insert(pro_id, pro_node);
+            //加入临时探索列表中
+            tmp_expand_nodes.push_back(pro_node);//更新tmp
+            //已使用点数量
+            use_node_num_ += 1;
+            if (use_node_num_ == allocate_num_)//超过原定义好的ptr存储序列
+            {
+              cout &lt;&lt; "run out of memory." &lt;&lt; endl;
+              return NO_PATH;
+            }
+          }
+          else if (pro_node-&gt;node_state == IN_OPEN_SET)//如果 pro_node 已经在开放集合中，检查新路径的代价是否更小，如果是，则更新节点信息。
+          {
+            if (tmp_g_score &lt; pro_node-&gt;g_score)
+            {
+              // pro_node-&gt;index = pro_id;
+              pro_node-&gt;state = pro_state;
+              pro_node-&gt;f_score = tmp_f_score;
+              pro_node-&gt;g_score = tmp_g_score;
+              pro_node-&gt;input = um;
+              pro_node-&gt;duration = tau;
+              pro_node-&gt;parent = cur_node;
+              if (dynamic)
+                pro_node-&gt;time = cur_node-&gt;time + tau;
+            }
+          }
+          else//如果 pro_node 的状态不是在开放集合中，可能存在错误。
+          {
+            cout &lt;&lt; "error type in searching: " &lt;&lt; pro_node-&gt;node_state &lt;&lt; endl;
+          }
+        }
+      }
+    // init_search = false;
+  }</code></pre> 
+<h3>3.流程分析 ：</h3> 
+<p><img alt="" height="865" src="https://images2.imgbox.com/63/53/7KloBHCk_o.png" width="1200"></p> 
+<p>流程分析如下（字丑，别骂了，爱看不看，有错误欢迎指出）</p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/77/7d/wmvJsHPw_o.png" width="960"></p> 
+<h2> 二、<strong>non_uniform_bspline均匀B样条轨迹优化</strong></h2> 
+<p><strong>该部分的主要文件为：/fast_planner/bspline/src/non_uniform_bspline.cpp，</strong>用于实现B样条初始化，主要包含以下几个函数<strong>：B样条曲线参数初始化函数、节点处轨迹计算函数、轨迹拟合获取控制点函数、轨迹求导函数、动态可行性检查函数、轨迹节点调整函数。</strong>接下来将按照顺序介绍以上函数，写得备注很详细！</p> 
+<p><strong>关于B样条轨迹的讲解可以阅读笔者下方这篇文章：</strong></p> 
+<p><a href="https://blog.csdn.net/weixin_43793717/article/details/134387224?spm=1001.2014.3001.5501" title="路径规划算法曲线篇（二）—— B样条曲线轨迹表示详解-CSDN博客">路径规划算法曲线篇（二）—— B样条曲线轨迹表示详解-CSDN博客</a></p> 
+<h3><strong>1.B样条初始化函数</strong></h3> 
+<p>读完上面那片文章应该对B样条有了初步认识了，此函数传入控制点、阶数、节点间隔实现对B样条参数的初始化。已知控制点数、阶数即可得求节点数。Fast中采用的是3次B样条曲线拟合轨迹，本代码初始化时候，节点向量从-3*interval开始的，一共有m_个节点。</p> 
+<pre><code class="language-cpp">/*
+输入参数为，点，阶数，时间间隔
+功能：初始化成员变量：控制点矩阵、B样条次数、时间间隔、多样条阶数、节点向量
+*/
+void NonUniformBspline::setUniformBspline(const Eigen::MatrixXd&amp; points, const int&amp; order,
+                                          const double&amp; interval) {
+  //control_points_是动态大小的矩阵，元素为双浮点数，每行代表一个控制点，维度由列号确定即N*3矩阵
+  control_points_ = points;
+  //p为B样条次数
+  p_              = order;
+  //节点之间的是检查，即delta_t
+  interval_       = interval;
+ //B样条控制点个数-1得到阶数
+  n_ = points.rows() - 1;
+  //节点数为阶数+次数
+  m_ = n_ + p_ + 1;
+//初始化存储节点的向量
+  u_ = Eigen::VectorXd::Zero(m_ + 1);
+  //B样条节点初始化，初始化为均匀B样条，即间隔相等。
+  /*
+  前p_+1个节点被称为开头节点或者起始节点，他们决定了B样条的起始点，这样定义出来的起始节点为小于0的区间
+  中间的p_ + 1 到 m_ - p_ 之间节点为中间节点，由累加而成。确保连续
+  后m_ - p_ 个节点称为尾节点（trailing nodes）或结束节点，它们决定了 B 样条曲线的结束点，初始化时，这些节点的值与前一个节点相等，确保在这一段区间内的节点是连续的。这个区间的长度是 (m_ - p_) 
+  自己写出来很好理解
+  */
+  for (int i = 0; i &lt;= m_; ++i) {
+
+    if (i &lt;= p_) {
+      u_(i) = double(-p_ + i) * interval_;
+    } else if (i &gt; p_ &amp;&amp; i &lt;= m_ - p_) {
+      u_(i) = u_(i - 1) + interval_;
+    } else if (i &gt; m_ - p_) {
+      u_(i) = u_(i - 1) + interval_;
+    }
+  }</code></pre> 
+<h3>2.求B样条时间节点u_处值</h3> 
+<p>由B样条的性质可知，B样条上某一点的值可以由De Boor递归公式推导得到，代码中的做法是将需要求的点值映射到距离其最近的时间节点，然后将其带入计算得到传入时间节点u处的值。</p> 
+<pre><code class="language-cpp">/*De Boor递归算法，计算传入参数u处的B样条曲线值，返回B-样条曲线在参数 u 处的B样条曲线函数*/
+Eigen::VectorXd NonUniformBspline::evaluateDeBoor(const double&amp; u) {
+//限制参数 u 的范围： 将参数 u 限制在 B-样条曲线有效范围内，即 [u_(p_), u_(m_ - p_)]。
+  double ub = min(max(u_(p_), u), u_(m_ - p_));
+
+  // determine which [ui,ui+1] lay in
+  //找到输入的u是第几个节点处
+  int k = p_;
+  while (true) {
+    if (u_(k + 1) &gt;= ub) break;
+    ++k;
+  }
+
+//通过k找到与当前节点相关的控制点k-p_到k
+  /* deBoor's alg */
+  vector&lt;Eigen::VectorXd&gt; d;
+  for (int i = 0; i &lt;= p_; ++i) {
+    d.push_back(control_points_.row(k - p_ + i));
+    // cout &lt;&lt; d[i].transpose() &lt;&lt; endl;
+  }
+
+//De Boor递归计算控制点，计算过程中使用了混合参数 alpha，该参数用于混合现有控制点以生成新的控制点。
+//数学推导https://en.wikipedia.org/wiki/De_Boor%27s_algorithm
+  for (int r = 1; r &lt;= p_; ++r) {//外循环次数
+    for (int i = p_; i &gt;= r; --i) {//内循环控制节点，次数高一次，控制节点少一个（自己写以下就能理解）
+      double alpha = (ub - u_[i + k - p_]) / (u_[i + 1 + k - r] - u_[i + k - p_]);
+      // cout &lt;&lt; "alpha: " &lt;&lt; alpha &lt;&lt; endl;
+      d[i] = (1 - alpha) * d[i - 1] + alpha * d[i];
+    }
+  }
+  //返回计算得到的 B-样条曲线在参数 u 处的点
+  return d[p_];
+}</code></pre> 
+<h3>3.<strong>轨迹拟合获取控制点函数</strong></h3> 
+<p>这个函数很重要，起着承上启下的作用，在第一部分动态搜索得到了离散的路经点，<strong>此函数作用为求取控制点矩阵，该控制点矩阵生成的B样条曲线拟合路径点的路径。</strong></p> 
+<p class="img-center"><img alt="" height="141" src="https://images2.imgbox.com/cb/42/diOtA3sX_o.png" width="605"></p> 
+<p>其中，M矩阵表示了控制点与时间节点值之间的关系，来自于文献K. Qin, “General matrix representations for b-splines,” The Visual Computer, vol. 16, no. 3, pp. 177–186, 2000.</p> 
+<p>第一行表示了位置约束关系，第二行是速度、第三行是加速度。当传入的离散轨迹点为K时，有K-1段轨迹，由于是三次B样条曲线，（）所以算上头部3个节点，此外为了保证曲线的连续性后面添2个节点（因为要保证速度与加速度约束），共有K+5个时间节点，可以得到所求控制点个数应为K+5-次数3为K+2个。然后通过上式构建AX=B方程即可求解出控制点向量X。</p> 
+<p>关于s(t)，需要注意的是，当选择的约束为位置约束时为常数1，速度约束为1/t，加速度为1/t^2以此类推，需要高阶导数可以自己添加。另外添加了两个速度约束与两个加速度约束，此时的A矩阵大小应该为K+4*K+2。具体的代码含义我都以及备注了：</p> 
+<p class="img-center"><img alt="" height="96" src="https://images2.imgbox.com/77/c5/3VAEod2o_o.png" width="187"></p> 
+<pre><code class="language-cpp">/*
+函数参数：ts：轨迹执行时间、point_set：原轨迹点集合、start_end_derivative：起点与终点的高阶约束
+输出：更新ctrl_pts控制点矩阵的值
+函数功能：将给定点集和起始/终止导数转换为 B-样条曲线的控制点矩阵，通过对原始轨迹的拟合得到B样条轨迹的控制点
+*/
+void NonUniformBspline::parameterizeToBspline(const double&amp; ts, const vector&lt;Eigen::Vector3d&gt;&amp; point_set,
+                                              const vector&lt;Eigen::Vector3d&gt;&amp; start_end_derivative,
+                                              Eigen::MatrixXd&amp;               ctrl_pts) {
+  //判断输入的时间是否合理
+  if (ts &lt;= 0) {
+    cout &lt;&lt; "[B-spline]:time step error." &lt;&lt; endl;
+    return;
+  }
+  //判断输入的轨迹点是否合理
+  if (point_set.size() &lt; 2) {
+    cout &lt;&lt; "[B-spline]:point set have only " &lt;&lt; point_set.size() &lt;&lt; " points." &lt;&lt; endl;
+    return;
+  }
+//起点与终点的导数限制（即一阶和二阶导数，有此信息才可以确保得到一个具有足够信息的线性方程组，从而可以求解出 B-样条曲线的控制点。）
+  if (start_end_derivative.size() != 4) {
+    cout &lt;&lt; "[B-spline]:derivatives error." &lt;&lt; endl;
+  }
+//记录原曲线路经点个数
+  int K = point_set.size();
+
+  // write A
+  //该矩阵用来构建线性方程组， B-样条曲线参数化过程中求解控制点
+  //一阶 B-样条基函数的系数向量、一阶 B-样条基函数的导数系数向量、二阶 B-样条基函数的系数向量
+  //取该数值的原因是B样条曲线矩阵表示论文中提出的，以满足 B-样条曲线的一些良好性质。
+  Eigen::Vector3d prow(3), vrow(3), arow(3);
+  prow &lt;&lt; 1, 4, 1;
+  vrow &lt;&lt; -1, 0, 1;
+  arow &lt;&lt; 1, -2, 1;
+
+//K+4是因为添加了四行导数约束信息
+  Eigen::MatrixXd A = Eigen::MatrixXd::Zero(K + 4, K + 2);
+
+  for (int i = 0; i &lt; K; ++i) A.block(i, i, 1, 3) = (1 / 6.0) * prow.transpose();
+
+  A.block(K, 0, 1, 3)         = (1 / 2.0 / ts) * vrow.transpose();
+  A.block(K + 1, K - 1, 1, 3) = (1 / 2.0 / ts) * vrow.transpose();
+
+  A.block(K + 2, 0, 1, 3)     = (1 / ts / ts) * arow.transpose();
+  A.block(K + 3, K - 1, 1, 3) = (1 / ts / ts) * arow.transpose();
+  // cout &lt;&lt; "A:\n" &lt;&lt; A &lt;&lt; endl;
+
+  // A.block(0, 0, K, K + 2) = (1 / 6.0) * A.block(0, 0, K, K + 2);
+  // A.block(K, 0, 2, K + 2) = (1 / 2.0 / ts) * A.block(K, 0, 2, K + 2);
+  // A.row(K + 4) = (1 / ts / ts) * A.row(K + 4);
+  // A.row(K + 5) = (1 / ts / ts) * A.row(K + 5);
+
+  // write b
+  Eigen::VectorXd bx(K + 4), by(K + 4), bz(K + 4);
+  for (int i = 0; i &lt; K; ++i) {
+    bx(i) = point_set[i](0);
+    by(i) = point_set[i](1);
+    bz(i) = point_set[i](2);
+  }
+
+  for (int i = 0; i &lt; 4; ++i) {
+    bx(K + i) = start_end_derivative[i](0);
+    by(K + i) = start_end_derivative[i](1);
+    bz(K + i) = start_end_derivative[i](2);
+  }
+
+  // solve Ax = b
+  //求解线性方程
+  Eigen::VectorXd px = A.colPivHouseholderQr().solve(bx);
+  Eigen::VectorXd py = A.colPivHouseholderQr().solve(by);
+  Eigen::VectorXd pz = A.colPivHouseholderQr().solve(bz);
+
+  // convert to control pts
+  //控制点赋值
+  ctrl_pts.resize(K + 2, 3);
+  ctrl_pts.col(0) = px;
+  ctrl_pts.col(1) = py;
+  ctrl_pts.col(2) = pz;
+
+  // cout &lt;&lt; "[B-spline]: parameterization ok." &lt;&lt; endl;
+}
+</code></pre> 
+<h3>4.<strong>轨迹求导函数</strong></h3> 
+<p>轨迹求导函数不难理解，主要用途是用于检测轨迹上的速度与加速度限制。利用B样条曲线的递归公式，先计算控制点，在通过控制点得到求导后的矩阵</p> 
+<pre><code class="language-cpp">/*得到求导之后的区域显得控制点矩阵*/
+Eigen::MatrixXd NonUniformBspline::getDerivativeControlPoints() {
+  // The derivative of a b-spline is also a b-spline, its order become p_-1
+  // control point Qi = p_*(Pi+1-Pi)/(ui+p_+1-ui+1)
+  Eigen::MatrixXd ctp = Eigen::MatrixXd::Zero(control_points_.rows() - 1, control_points_.cols());
+  for (int i = 0; i &lt; ctp.rows(); ++i) {
+    ctp.row(i) =
+        p_ * (control_points_.row(i + 1) - control_points_.row(i)) / (u_(i + p_ + 1) - u_(i + 1));
+  }
+  return ctp;
+}
+
+/*计算求导后的曲线，并且将新的控制点、次数、节点向量记录下来*/
+NonUniformBspline NonUniformBspline::getDerivative() {
+  Eigen::MatrixXd   ctp = getDerivativeControlPoints();
+  NonUniformBspline derivative(ctp, p_ - 1, interval_);
+
+  /* cut the first and last knot */
+  Eigen::VectorXd knot(u_.rows() - 2);
+  knot = u_.segment(1, u_.rows() - 2);
+  derivative.setKnot(knot);
+
+  return derivative;
+}
+</code></pre> 
+<h3>5. 速度、加速度检查函数： </h3> 
+<p>速度加速度这里计算的是控制点之间的值，因为B样条的特殊性质，限制控制点的速度与加速度可以间接控制B样条的速度与加速度，计算公式如论文中所示：</p> 
+<p class="img-center"><img alt="" height="88" src="https://images2.imgbox.com/d2/43/bQE4ZdTz_o.png" width="591"></p> 
+<p></p> 
+<pre><code class="language-cpp">/*轨迹安全性检查，并更新超阈值比例*/
+bool NonUniformBspline::checkFeasibility(bool show) {
+  bool fea = true;//可行性标记位
+  // SETY &lt;&lt; "[Bspline]: total points size: " &lt;&lt; control_points_.rows() &lt;&lt; endl;
+
+  Eigen::MatrixXd P         = control_points_;//取出控制点
+  int             dimension = control_points_.cols();//求控制点列数即维度，x，y，z
+
+  /* check vel feasibility and insert points */
+  double max_vel = -1.0;//初始化最大速度为负
+  for (int i = 0; i &lt; P.rows() - 1; ++i) {//遍历每一个控制点
+    Eigen::VectorXd vel = p_ * (P.row(i + 1) - P.row(i)) / (u_(i + p_ + 1) - u_(i + 1));//根据控制点计算速度
+
+    if (fabs(vel(0)) &gt; limit_vel_ + 1e-4 || fabs(vel(1)) &gt; limit_vel_ + 1e-4 ||//判断是否有任一维度上的速度超过阈值
+        fabs(vel(2)) &gt; limit_vel_ + 1e-4) {
+
+      if (show) cout &lt;&lt; "[Check]: Infeasible vel " &lt;&lt; i &lt;&lt; " :" &lt;&lt; vel.transpose() &lt;&lt; endl;
+      fea = false;//标记为不可行
+
+      for (int j = 0; j &lt; dimension; ++j) {
+        max_vel = max(max_vel, fabs(vel(j)));//采用计算出来的速度更新最大速度
+      }
+    }
+  }
+
+  /* acc feasibility */
+  double max_acc = -1.0;
+  for (int i = 0; i &lt; P.rows() - 2; ++i) {//遍历n-2个点
+
+    Eigen::VectorXd acc = p_ * (p_ - 1) *
+        ((P.row(i + 2) - P.row(i + 1)) / (u_(i + p_ + 2) - u_(i + 2)) -
+         (P.row(i + 1) - P.row(i)) / (u_(i + p_ + 1) - u_(i + 1))) /
+        (u_(i + p_ + 1) - u_(i + 2));//计算加速度
+
+    if (fabs(acc(0)) &gt; limit_acc_ + 1e-4 || fabs(acc(1)) &gt; limit_acc_ + 1e-4 ||
+        fabs(acc(2)) &gt; limit_acc_ + 1e-4) {//判断是否有任一维度上的加速度超过阈值
+
+      if (show) cout &lt;&lt; "[Check]: Infeasible acc " &lt;&lt; i &lt;&lt; " :" &lt;&lt; acc.transpose() &lt;&lt; endl;
+      fea = false;
+
+      for (int j = 0; j &lt; dimension; ++j) {//记录更新最大加速度
+        max_acc = max(max_acc, fabs(acc(j)));
+      }
+    }
+  }
+
+  double ratio = max(max_vel / limit_vel_, sqrt(fabs(max_acc) / limit_acc_));//计算最大速度或加速度超过约束的
+
+  return fea;
+}
+
+/*获取当前控制点与时间向量节点下计算出来的超阈值比例*/
+double NonUniformBspline::checkRatio() {
+  Eigen::MatrixXd P         = control_points_;
+  int             dimension = control_points_.cols();
+
+  // find max vel
+  double max_vel = -1.0;
+  for (int i = 0; i &lt; P.rows() - 1; ++i) {
+    Eigen::VectorXd vel = p_ * (P.row(i + 1) - P.row(i)) / (u_(i + p_ + 1) - u_(i + 1));
+    for (int j = 0; j &lt; dimension; ++j) {
+      max_vel = max(max_vel, fabs(vel(j)));
+    }
+  }
+  // find max acc
+  double max_acc = -1.0;
+  for (int i = 0; i &lt; P.rows() - 2; ++i) {
+    Eigen::VectorXd acc = p_ * (p_ - 1) *
+        ((P.row(i + 2) - P.row(i + 1)) / (u_(i + p_ + 2) - u_(i + 2)) -
+         (P.row(i + 1) - P.row(i)) / (u_(i + p_ + 1) - u_(i + 1))) /
+        (u_(i + p_ + 1) - u_(i + 2));
+    for (int j = 0; j &lt; dimension; ++j) {
+      max_acc = max(max_acc, fabs(acc(j)));
+    }
+  }
+  double ratio = max(max_vel / limit_vel_, sqrt(fabs(max_acc) / limit_acc_));
+  ROS_ERROR_COND(ratio &gt; 2.0, "max vel: %lf, max acc: %lf.", max_vel, max_acc);
+
+  return ratio;
+}
+
+/*获取当前控制点与时间向量节点下计算出来的超阈值比例*/
+double NonUniformBspline::checkRatio() {
+  Eigen::MatrixXd P         = control_points_;
+  int             dimension = control_points_.cols();
+
+  // find max vel
+  double max_vel = -1.0;
+  for (int i = 0; i &lt; P.rows() - 1; ++i) {
+    Eigen::VectorXd vel = p_ * (P.row(i + 1) - P.row(i)) / (u_(i + p_ + 1) - u_(i + 1));
+    for (int j = 0; j &lt; dimension; ++j) {
+      max_vel = max(max_vel, fabs(vel(j)));
+    }
+  }
+  // find max acc
+  double max_acc = -1.0;
+  for (int i = 0; i &lt; P.rows() - 2; ++i) {
+    Eigen::VectorXd acc = p_ * (p_ - 1) *
+        ((P.row(i + 2) - P.row(i + 1)) / (u_(i + p_ + 2) - u_(i + 2)) -
+         (P.row(i + 1) - P.row(i)) / (u_(i + p_ + 1) - u_(i + 1))) /
+        (u_(i + p_ + 1) - u_(i + 2));
+    for (int j = 0; j &lt; dimension; ++j) {
+      max_acc = max(max_acc, fabs(acc(j)));
+    }
+  }
+  double ratio = max(max_vel / limit_vel_, sqrt(fabs(max_acc) / limit_acc_));
+  ROS_ERROR_COND(ratio &gt; 2.0, "max vel: %lf, max acc: %lf.", max_vel, max_acc);
+
+  return ratio;
+}
+
+/*检查可行性，重新分配时间节点*/
+bool NonUniformBspline::reallocateTime(bool show) {
+  // SETY &lt;&lt; "[Bspline]: total points size: " &lt;&lt; control_points_.rows() &lt;&lt; endl;
+  // cout &lt;&lt; "origin knots:\n" &lt;&lt; u_.transpose() &lt;&lt; endl;
+  bool fea = true;
+
+  Eigen::MatrixXd P         = control_points_;
+  int             dimension = control_points_.cols();
+
+  double max_vel, max_acc;
+
+  /* check vel feasibility and insert points */
+  for (int i = 0; i &lt; P.rows() - 1; ++i) {
+    Eigen::VectorXd vel = p_ * (P.row(i + 1) - P.row(i)) / (u_(i + p_ + 1) - u_(i + 1));
+
+    if (fabs(vel(0)) &gt; limit_vel_ + 1e-4 || fabs(vel(1)) &gt; limit_vel_ + 1e-4 ||
+        fabs(vel(2)) &gt; limit_vel_ + 1e-4) {
+
+      fea = false;
+      if (show) cout &lt;&lt; "[Realloc]: Infeasible vel " &lt;&lt; i &lt;&lt; " :" &lt;&lt; vel.transpose() &lt;&lt; endl;
+
+      max_vel = -1.0;
+      for (int j = 0; j &lt; dimension; ++j) {
+        max_vel = max(max_vel, fabs(vel(j)));
+      }
+
+      double ratio = max_vel / limit_vel_ + 1e-4;
+      if (ratio &gt; limit_ratio_) ratio = limit_ratio_;
+
+    /*
+    在这段代码中，j = i + 2 处开始调整，是因为速度的计算涉及到两个相邻的控制点，即 P.row(i + 1) 和 P.row(i + 2)。
+    为了调整速度，需要改变这两个控制点之间的时间间隔，即 u_(i + p_ + 1) - u_(i + 1)。因此，j 从 i + 2 开始，
+    以便调整第 i + 1 和 i + 2 之间的时间节点。
+    */
+      double time_ori = u_(i + p_ + 1) - u_(i + 1);
+      double time_new = ratio * time_ori;
+      double delta_t  = time_new - time_ori;
+      double t_inc    = delta_t / double(p_);
+
+      for (int j = i + 2; j &lt;= i + p_ + 1; ++j) {
+        u_(j) += double(j - i - 1) * t_inc;
+        if (j &lt;= 5 &amp;&amp; j &gt;= 1) {
+          // cout &lt;&lt; "vel j: " &lt;&lt; j &lt;&lt; endl;
+        }
+      }
+
+      for (int j = i + p_ + 2; j &lt; u_.rows(); ++j) {
+        u_(j) += delta_t;
+      }
+    }
+  }
+
+  /* acc feasibility */
+  for (int i = 0; i &lt; P.rows() - 2; ++i) {
+
+    Eigen::VectorXd acc = p_ * (p_ - 1) *
+        ((P.row(i + 2) - P.row(i + 1)) / (u_(i + p_ + 2) - u_(i + 2)) -
+         (P.row(i + 1) - P.row(i)) / (u_(i + p_ + 1) - u_(i + 1))) /
+        (u_(i + p_ + 1) - u_(i + 2));
+
+    if (fabs(acc(0)) &gt; limit_acc_ + 1e-4 || fabs(acc(1)) &gt; limit_acc_ + 1e-4 ||
+        fabs(acc(2)) &gt; limit_acc_ + 1e-4) {
+
+      fea = false;
+      if (show) cout &lt;&lt; "[Realloc]: Infeasible acc " &lt;&lt; i &lt;&lt; " :" &lt;&lt; acc.transpose() &lt;&lt; endl;
+
+      max_acc = -1.0;
+      for (int j = 0; j &lt; dimension; ++j) {
+        max_acc = max(max_acc, fabs(acc(j)));
+      }
+
+      double ratio = sqrt(max_acc / limit_acc_) + 1e-4;
+      if (ratio &gt; limit_ratio_) ratio = limit_ratio_;
+      // cout &lt;&lt; "ratio: " &lt;&lt; ratio &lt;&lt; endl;
+
+      double time_ori = u_(i + p_ + 1) - u_(i + 2);
+      double time_new = ratio * time_ori;
+      double delta_t  = time_new - time_ori;
+      double t_inc    = delta_t / double(p_ - 1);
+
+      if (i == 1 || i == 2) {
+        // cout &lt;&lt; "acc i: " &lt;&lt; i &lt;&lt; endl;
+        for (int j = 2; j &lt;= 5; ++j) {
+          u_(j) += double(j - 1) * t_inc;
+        }
+
+        for (int j = 6; j &lt; u_.rows(); ++j) {
+          u_(j) += 4.0 * t_inc;
+        }
+
+      } else {
+
+        for (int j = i + 3; j &lt;= i + p_ + 1; ++j) {
+          u_(j) += double(j - i - 2) * t_inc;
+          if (j &lt;= 5 &amp;&amp; j &gt;= 1) {
+            // cout &lt;&lt; "acc j: " &lt;&lt; j &lt;&lt; endl;
+          }
+        }
+
+        for (int j = i + p_ + 2; j &lt; u_.rows(); ++j) {
+          u_(j) += delta_t;
+        }
+      }
+    }
+  }
+
+  return fea;
+}</code></pre> 
+<h3>6.时间重分配</h3> 
+<p>对于速度、加速度分配不合理的曲线的时间节点进行重分配，注意速度与加速度不合理时不仅仅要修改当前时间节点，因为与多节点有关都要修改。调整时间比例因子通过计算超过的比例系数获得。</p> 
+<p class="img-center"><img alt="" height="177" src="https://images2.imgbox.com/2b/66/BoVE17xp_o.png" width="488"></p> 
+<p class="img-center"><img alt="" height="274" src="https://images2.imgbox.com/38/15/9NyOe38u_o.png" width="570"></p> 
+<pre><code class="language-cpp">/*
+函数参数：ts：轨迹执行时间、point_set：原轨迹点集合、start_end_derivative：起点与终点的高阶约束
+输出：更新ctrl_pts控制点矩阵的值
+函数功能：将给定点集和起始/终止导数转换为 B-样条曲线的控制点矩阵，通过对原始轨迹的拟合得到B样条轨迹的控制点
+*/
+void NonUniformBspline::parameterizeToBspline(const double&amp; ts, const vector&lt;Eigen::Vector3d&gt;&amp; point_set,
+                                              const vector&lt;Eigen::Vector3d&gt;&amp; start_end_derivative,
+                                              Eigen::MatrixXd&amp;               ctrl_pts) {
+  //判断输入的时间是否合理
+  if (ts &lt;= 0) {
+    cout &lt;&lt; "[B-spline]:time step error." &lt;&lt; endl;
+    return;
+  }
+  //判断输入的轨迹点是否合理
+  if (point_set.size() &lt; 2) {
+    cout &lt;&lt; "[B-spline]:point set have only " &lt;&lt; point_set.size() &lt;&lt; " points." &lt;&lt; endl;
+    return;
+  }
+//起点与终点的导数限制（即一阶和二阶导数，有此信息才可以确保得到一个具有足够信息的线性方程组，从而可以求解出 B-样条曲线的控制点。）
+  if (start_end_derivative.size() != 4) {
+    cout &lt;&lt; "[B-spline]:derivatives error." &lt;&lt; endl;
+  }
+//记录原曲线路经点个数
+  int K = point_set.size();
+
+  // write A
+  //该矩阵用来构建线性方程组， B-样条曲线参数化过程中求解控制点
+  //一阶 B-样条基函数的系数向量、一阶 B-样条基函数的导数系数向量、二阶 B-样条基函数的系数向量
+  //取该数值的原因是B样条曲线矩阵表示论文中提出的，以满足 B-样条曲线的一些良好性质。
+  Eigen::Vector3d prow(3), vrow(3), arow(3);
+  prow &lt;&lt; 1, 4, 1;
+  vrow &lt;&lt; -1, 0, 1;
+  arow &lt;&lt; 1, -2, 1;
+
+//K+4是因为添加了四行导数约束信息
+  Eigen::MatrixXd A = Eigen::MatrixXd::Zero(K + 4, K + 2);
+
+  for (int i = 0; i &lt; K; ++i) A.block(i, i, 1, 3) = (1 / 6.0) * prow.transpose();
+
+  A.block(K, 0, 1, 3)         = (1 / 2.0 / ts) * vrow.transpose();
+  A.block(K + 1, K - 1, 1, 3) = (1 / 2.0 / ts) * vrow.transpose();
+
+  A.block(K + 2, 0, 1, 3)     = (1 / ts / ts) * arow.transpose();
+  A.block(K + 3, K - 1, 1, 3) = (1 / ts / ts) * arow.transpose();
+  // cout &lt;&lt; "A:\n" &lt;&lt; A &lt;&lt; endl;
+
+  // A.block(0, 0, K, K + 2) = (1 / 6.0) * A.block(0, 0, K, K + 2);
+  // A.block(K, 0, 2, K + 2) = (1 / 2.0 / ts) * A.block(K, 0, 2, K + 2);
+  // A.row(K + 4) = (1 / ts / ts) * A.row(K + 4);
+  // A.row(K + 5) = (1 / ts / ts) * A.row(K + 5);
+
+  // write b
+  Eigen::VectorXd bx(K + 4), by(K + 4), bz(K + 4);
+  for (int i = 0; i &lt; K; ++i) {
+    bx(i) = point_set[i](0);
+    by(i) = point_set[i](1);
+    bz(i) = point_set[i](2);
+  }
+
+  for (int i = 0; i &lt; 4; ++i) {
+    bx(K + i) = start_end_derivative[i](0);
+    by(K + i) = start_end_derivative[i](1);
+    bz(K + i) = start_end_derivative[i](2);
+  }
+
+  // solve Ax = b
+  //求解线性方程
+  Eigen::VectorXd px = A.colPivHouseholderQr().solve(bx);
+  Eigen::VectorXd py = A.colPivHouseholderQr().solve(by);
+  Eigen::VectorXd pz = A.colPivHouseholderQr().solve(bz);
+
+  // convert to control pts
+  //控制点赋值
+  ctrl_pts.resize(K + 2, 3);
+  ctrl_pts.col(0) = px;
+  ctrl_pts.col(1) = py;
+  ctrl_pts.col(2) = pz;
+
+  // cout &lt;&lt; "[B-spline]: parameterization ok." &lt;&lt; endl;
+}</code></pre> 
+<p> 通过以上步骤，我们通过离散的路径点求得B样条控制点，此时为均匀B样条并通过速度、加速度约束条件调整不合理的时间节点，此时曲线也变成了非均匀B样条。但是，为了获得更加光滑且安全的路径，还需要对路径进行优化，接下来将基于控制点构建路径优化模型，并对约束条件建模，将此问题建模为一个带约束的优化问题，通过优化器得到最优轨迹。</p> 
+<h2>三、B样条优化</h2> 
+<p>由上一步得到了初始化的B样条轨迹,次部分为了得到更加光滑安全的轨迹,此处通过优化控制点优化其生成的B样条轨迹.</p> 
+<h3>1.代价函数</h3> 
+<h4>a.平滑代价函数</h4> 
+<p>采用jerk最小化,代码中采用的是差分的形式，对应于论文中的下式子：</p> 
+<p class="img-center"><img alt="" height="99" src="https://images2.imgbox.com/bd/5d/6OZDjXhg_o.png" width="557"></p> 
+<pre><code class="language-cpp">/*计算光滑代价惩罚函数*/
+/*输入：三维点集合（控制点）、更新cost、梯度信息gradient*/
+void BsplineOptimizer::calcSmoothnessCost(const vector&lt;Eigen::Vector3d&gt;&amp; q, double&amp; cost,
+                                          vector&lt;Eigen::Vector3d&gt;&amp; gradient) {
+  //初始化代价为0
+  cost = 0.0;
+  //初始化一个0向量并且用0向量初始化梯度矩阵
+  Eigen::Vector3d zero(0, 0, 0);
+  std::fill(gradient.begin(), gradient.end(), zero);
+  //初始化临时变量
+  Eigen::Vector3d jerk, temp_j;
+//遍历控制点求jerk
+  for (int i = 0; i &lt; q.size() - order_; i++) {
+    /* evaluate jerk */
+    //采用三阶差分的形式求取jerk
+    jerk = q[i + 3] - 3 * q[i + 2] + 3 * q[i + 1] - q[i];
+    //累加所有带价值
+    cost += jerk.squaredNorm();
+    //*2是为了调整效果
+    temp_j = 2.0 * jerk;
+    /* jerk gradient */
+    //由于上述采用的计算形式是差分，所以直接求导就是得到系数，这里设计得很巧妙因为是累加
+    gradient[i + 0] += -temp_j;
+    gradient[i + 1] += 3.0 * temp_j;
+    gradient[i + 2] += -3.0 * temp_j;
+    gradient[i + 3] += temp_j;
+  }
+}</code></pre> 
+<h4>b.障碍物碰撞惩罚函数：</h4> 
+<p>障碍物碰撞距离获取直接通过地图函数调用实现，对应于文中以下公式（跟代码不是统一方法）：</p> 
+<p class="img-center"><img alt="" height="257" src="https://images2.imgbox.com/d0/55/AqoYWKpl_o.png" width="559"></p> 
+<pre><code class="language-cpp">/*计算障碍物距离代价惩罚函数*/
+void BsplineOptimizer::calcDistanceCost(const vector&lt;Eigen::Vector3d&gt;&amp; q, double&amp; cost,
+                                        vector&lt;Eigen::Vector3d&gt;&amp; gradient) {
+ //初始化代价为0
+  cost = 0.0;
+ //初始化一个0向量并且用0向量初始化梯度矩阵
+  Eigen::Vector3d zero(0, 0, 0);
+  std::fill(gradient.begin(), gradient.end(), zero);
+ //初始化距离值
+  double          dist;
+  //定义变量存储梯度向量
+  Eigen::Vector3d dist_grad, g_zero(0, 0, 0);
+ //位运算检查是否包含ENDPOINT标志，函数根据是否需要考虑路径的终点来调整计算
+ //如果包含 ENDPOINT，则处理整个路径点向量；如果不包含，就排除掉最后 order_ 个点，可能是为了避免在计算中出现索引越界的问题。
+  int end_idx = (cost_function_ &amp; ENDPOINT) ? q.size() : q.size() - order_;
+
+  for (int i = order_; i &lt; end_idx; i++) {
+    //通过调用evaluateEDTWithGrad计算距离dist与距离梯度dist_grad
+    edt_environment_-&gt;evaluateEDTWithGrad(q[i], -1.0, dist, dist_grad);
+    //果梯度的范数大于阈值，则对梯度进行归一化。
+    if (dist_grad.norm() &gt; 1e-4) dist_grad.normalize();
+    //当路径点距离环境较近时，代价增加，通过梯度的计算，可以在后续的优化过程中调整路径点，以增加与环境的距离，从而减少代价。
+    if (dist &lt; dist0_) {
+      cost += pow(dist - dist0_, 2);
+      gradient[i] += 2.0 * (dist - dist0_) * dist_grad;
+    }
+  }
+}</code></pre> 
+<h4> c.动力学可行性惩罚</h4> 
+<p>对每一个超过速度、加速度限制的控制范围进行惩罚，对应于文中以下公式：</p> 
+<p class="img-center"><img alt="" height="323" src="https://images2.imgbox.com/e6/37/fzhrGtCq_o.png" width="575"></p> 
+<pre><code class="language-cpp">/*计算控制点速度、加速度可行性函数*/
+void BsplineOptimizer::calcFeasibilityCost(const vector&lt;Eigen::Vector3d&gt;&amp; q, double&amp; cost,
+                                           vector&lt;Eigen::Vector3d&gt;&amp; gradient) {
+  //初始化代价为0
+  cost = 0.0;
+ //初始化一个0向量并且用0向量初始化梯度矩阵
+  Eigen::Vector3d zero(0, 0, 0);
+  std::fill(gradient.begin(), gradient.end(), zero);
+
+ //速度、加速度平方，ts时间倒数平方与四次方
+  /* abbreviation */
+  double ts, vm2, am2, ts_inv2, ts_inv4;
+  vm2 = max_vel_ * max_vel_;
+  am2 = max_acc_ * max_acc_;
+
+  ts      = bspline_interval_;
+  ts_inv2 = 1 / ts / ts;
+  ts_inv4 = ts_inv2 * ts_inv2;
+
+  /* velocity feasibility */
+  for (int i = 0; i &lt; q.size() - 1; i++) {
+    //位置差分，位置差/步长等于速度
+    Eigen::Vector3d vi = q[i + 1] - q[i];
+
+    for (int j = 0; j &lt; 3; j++) {
+      //vm2是最大的速度，由于速度是的一阶导数，因此在从位置差分转换为加速度时要/t^2
+      double vd = vi(j) * vi(j) * ts_inv2 - vm2;
+      if (vd &gt; 0.0) {
+        //方超过最大速度时累加惩罚项
+        cost += pow(vd, 2);
+        //4为比例系数
+        double temp_v = 4.0 * vd * ts_inv2;
+        gradient[i + 0](j) += -temp_v * vi(j);
+        gradient[i + 1](j) += temp_v * vi(j);
+      }
+    }
+  }
+
+  /* acceleration feasibility */
+  for (int i = 0; i &lt; q.size() - 2; i++) {
+    //采用差分形式计算加速度差
+    Eigen::Vector3d ai = q[i + 2] - 2 * q[i + 1] + q[i];
+
+    for (int j = 0; j &lt; 3; j++) {
+      //每个方向上加速度大小的平方/t^4，由于加速度是位置的二阶导数，因此在从位置差分转换为加速度时要/t^4
+      double ad = ai(j) * ai(j) * ts_inv4 - am2;
+      if (ad &gt; 0.0) {
+        cost += pow(ad, 2);
+       //计算梯度的向量采用累加
+        double temp_a = 4.0 * ad * ts_inv4;
+        gradient[i + 0](j) += temp_a * ai(j);
+        gradient[i + 1](j) += -2 * temp_a * ai(j);
+        gradient[i + 2](j) += temp_a * ai(j);
+      }
+    }
+  }
+}</code></pre> 
+<h3>2.计算总代价函数和</h3> 
+<p>对于以上三者求和得到总代价函数，其比例系数在上述函数已经单独乘了，此处只需要直接相加，其中还定义了其他代价函数。对应于论文中的下式：<br>  </p> 
+<p class="img-center"><img alt="" height="138" src="https://images2.imgbox.com/c1/94/v2U16Djm_o.png" width="650"></p> 
+<pre><code class="language-cpp">/*优化项结合函数，输入为控制点、引用更新梯度向量、联合函数*/
+void BsplineOptimizer::combineCost(const std::vector&lt;double&gt;&amp; x, std::vector&lt;double&gt;&amp; grad,
+                                   double&amp; f_combine) {
+  /* convert the NLopt format vector to control points. */
+  /*NLopt 格式的向量转换到控制点表示，以支持1D至3D的B样条优化*/
+  // This solver can support 1D-3D B-spline optimization, but we use Vector3d to store each control point
+  // For 1D case, the second and third elements are zero, and similar for the 2D case.
+  for (int i = 0; i &lt; order_; i++) {
+    for (int j = 0; j &lt; dim_; ++j) {
+      g_q_[i][j] = control_points_(i, j);
+    }
+    //如果 dim_ 小于3，则剩余的维度设置为0。这是为了处理1D和2D情况。
+    for (int j = dim_; j &lt; 3; ++j) {
+      g_q_[i][j] = 0.0;
+    }
+  }
+ //处理由NLopt传入的变量 x，将其转换为控制点并存储在 g_q_ 中。同样，如果 dim_ 小于3，则剩余的维度设置为0，得到矩阵g_q_
+  for (int i = 0; i &lt; variable_num_ / dim_; i++) {
+    for (int j = 0; j &lt; dim_; ++j) {
+      g_q_[i + order_][j] = x[dim_ * i + j];
+    }
+    for (int j = dim_; j &lt; 3; ++j) {
+      g_q_[i + order_][j] = 0.0;
+    }
+  }
+
+  //考虑终点，如果 cost_function_ 不包含 ENDPOINT 标志，则将 control_points_ 中的最后 order_ 个控制点复制到 g_q_ 的相应位置
+  if (!(cost_function_ &amp; ENDPOINT)) {
+    for (int i = 0; i &lt; order_; i++) {
+
+      for (int j = 0; j &lt; dim_; ++j) {
+        g_q_[order_ + variable_num_ / dim_ + i][j] =
+            control_points_(control_points_.rows() - order_ + i, j);
+      }
+      for (int j = dim_; j &lt; 3; ++j) {
+        g_q_[order_ + variable_num_ / dim_ + i][j] = 0.0;
+      }
+    }
+  }
+
+ //定义总代价函数
+  f_combine = 0.0;
+  grad.resize(variable_num_);
+  fill(grad.begin(), grad.end(), 0.0);
+  if (cost_function_ &amp; SMOOTHNESS) {
+//此处思路真的很清晰，标志位cost_function_设计的很巧妙
+  /*  evaluate costs and their gradient  */
+  //每个代价变量
+  double f_smoothness, f_distance, f_feasibility, f_endpoint, f_guide, f_waypoints;
+  f_smoothness = f_distance = f_feasibility = f_endpoint = f_guide = f_waypoints = 0.0;
+
+  if (cost_function_ &amp; SMOOTHNESS) {
+    calcSmoothnessCost(g_q_, f_smoothness, g_smoothness_);
+    f_combine += lambda1_ * f_smoothness;
+    for (int i = 0; i &lt; variable_num_ / dim_; i++)
+      for (int j = 0; j &lt; dim_; j++) grad[dim_ * i + j] += lambda1_ * g_smoothness_[i + order_](j);
+  }
+  if (cost_function_ &amp; DISTANCE) {
+    calcDistanceCost(g_q_, f_distance, g_distance_);
+    f_combine += lambda2_ * f_distance;
+    for (int i = 0; i &lt; variable_num_ / dim_; i++)
+      for (int j = 0; j &lt; dim_; j++) grad[dim_ * i + j] += lambda2_ * g_distance_[i + order_](j);
+  }
+  if (cost_function_ &amp; FEASIBILITY) {
+    calcFeasibilityCost(g_q_, f_feasibility, g_feasibility_);
+    f_combine += lambda3_ * f_feasibility;
+    for (int i = 0; i &lt; variable_num_ / dim_; i++)
+      for (int j = 0; j &lt; dim_; j++) grad[dim_ * i + j] += lambda3_ * g_feasibility_[i + order_](j);
+  }
+  if (cost_function_ &amp; ENDPOINT) {
+    calcEndpointCost(g_q_, f_endpoint, g_endpoint_);
+    f_combine += lambda4_ * f_endpoint;
+    for (int i = 0; i &lt; variable_num_ / dim_; i++)
+      for (int j = 0; j &lt; dim_; j++) grad[dim_ * i + j] += lambda4_ * g_endpoint_[i + order_](j);
+  }
+  if (cost_function_ &amp; GUIDE) {
+    calcGuideCost(g_q_, f_guide, g_guide_);
+    f_combine += lambda5_ * f_guide;
+    for (int i = 0; i &lt; variable_num_ / dim_; i++)
+      for (int j = 0; j &lt; dim_; j++) grad[dim_ * i + j] += lambda5_ * g_guide_[i + order_](j);
+  }
+  if (cost_function_ &amp; WAYPOINTS) {
+    calcWaypointsCost(g_q_, f_waypoints, g_waypoints_);
+    f_combine += lambda7_ * f_waypoints;
+    for (int i = 0; i &lt; variable_num_ / dim_; i++)
+      for (int j = 0; j &lt; dim_; j++) grad[dim_ * i + j] += lambda7_ * g_waypoints_[i + order_](j);
+  }
+  /*  print cost  */
+  // if ((cost_function_ &amp; WAYPOINTS) &amp;&amp; iter_num_ % 10 == 0) {
+  //   cout &lt;&lt; iter_num_ &lt;&lt; ", total: " &lt;&lt; f_combine &lt;&lt; ", acc: " &lt;&lt; lambda8_ * f_view
+  //        &lt;&lt; ", waypt: " &lt;&lt; lambda7_ * f_waypoints &lt;&lt; endl;
+  // }
+
+  // if (optimization_phase_ == SECOND_PHASE) {
+  //  &lt;&lt; ", smooth: " &lt;&lt; lambda1_ * f_smoothness
+  //  &lt;&lt; " , dist:" &lt;&lt; lambda2_ * f_distance
+  //  &lt;&lt; ", fea: " &lt;&lt; lambda3_ * f_feasibility &lt;&lt; endl;
+  // &lt;&lt; ", end: " &lt;&lt; lambda4_ * f_endpoint
+  // &lt;&lt; ", guide: " &lt;&lt; lambda5_ * f_guide
+  // }
+}
+                                   }</code></pre> 
+<h3>3.通过Nlopt进行优化：</h3> 
+<pre><code class="language-cpp">Eigen::MatrixXd BsplineOptimizer::BsplineOptimizeTraj(const Eigen::MatrixXd&amp; points, const double&amp; ts,
+                                                      const int&amp; cost_function, int max_num_id,
+                                                      int max_time_id) {
+  //初始化控制点与维度
+  setControlPoints(points);
+  //初始化节点向量
+  setBsplineInterval(ts);
+  //初始化目代价函数
+  setCostFunction(cost_function);
+  //初始化最大控制点与时间id
+  setTerminateCond(max_num_id, max_time_id);
+  //执行优化
+  optimize();
+  //返回优化后的控制点
+  return this-&gt;control_points_;
+}
+
+/*优化函数，目标最小化代价输出的控制点*/
+void BsplineOptimizer::optimize() {
+  /* initialize solver */
+  //初始化迭代次数和最小代价、设置控制点的数量
+  iter_num_        = 0;
+  min_cost_        = std::numeric_limits&lt;double&gt;::max();
+  const int pt_num = control_points_.rows();
+
+//初始化存储代价值向量
+  g_q_.resize(pt_num);
+  g_smoothness_.resize(pt_num);
+  g_distance_.resize(pt_num);
+  g_feasibility_.resize(pt_num);
+  g_endpoint_.resize(pt_num);
+  g_waypoints_.resize(pt_num);
+  g_guide_.resize(pt_num);
+
+//判断是否有终点硬约束
+  if (cost_function_ &amp; ENDPOINT) {
+    variable_num_ = dim_ * (pt_num - order_);
+    // end position used for hard constraint
+    end_pt_ = (1 / 6.0) *
+        (control_points_.row(pt_num - 3) + 4 * control_points_.row(pt_num - 2) +
+         control_points_.row(pt_num - 1));
+  } else {
+    variable_num_ = max(0, dim_ * (pt_num - 2 * order_)) ;
+  }
+
+  /* do optimization using NLopt slover */
+   //创建 NLopt 优化器，选择合适的算法。
+  nlopt::opt opt(nlopt::algorithm(isQuadratic() ? algorithm1_ : algorithm2_), variable_num_);
+  opt.set_min_objective(BsplineOptimizer::costFunction, this);
+  //设置最大迭代次数、最长运行时间和相对容差。
+  opt.set_maxeval(max_iteration_num_[max_num_id_]);
+  opt.set_maxtime(max_iteration_time_[max_time_id_]);
+  opt.set_xtol_rel(1e-5);
+
+  vector&lt;double&gt; q(variable_num_);
+  for (int i = order_; i &lt; pt_num; ++i) {
+    if (!(cost_function_ &amp; ENDPOINT) &amp;&amp; i &gt;= pt_num - order_) continue;
+    for (int j = 0; j &lt; dim_; j++) {
+      q[dim_ * (i - order_) + j] = control_points_(i, j);
+    }
+  }
+
+  if (dim_ != 1) {
+    vector&lt;double&gt; lb(variable_num_), ub(variable_num_);
+    const double   bound = 10.0;
+    for (int i = 0; i &lt; variable_num_; ++i) {
+      lb[i] = q[i] - bound;
+      ub[i] = q[i] + bound;
+    }
+    opt.set_lower_bounds(lb);
+    opt.set_upper_bounds(ub);
+  }
+
+  try {
+    // cout &lt;&lt; fixed &lt;&lt; setprecision(7);
+    // vec_time_.clear();
+    // vec_cost_.clear();
+    // time_start_ = ros::Time::now();
+
+    //执行优化
+    double        final_cost;
+    nlopt::result result = opt.optimize(q, final_cost);
+
+    /* retrieve the optimization result */
+    // cout &lt;&lt; "Min cost:" &lt;&lt; min_cost_ &lt;&lt; endl;
+  } catch (std::exception&amp; e) {
+    ROS_WARN("[Optimization]: nlopt exception");
+    cout &lt;&lt; e.what() &lt;&lt; endl;
+  }
+
+ //遍历向量
+  for (int i = order_; i &lt; control_points_.rows(); ++i) {
+    if (!(cost_function_ &amp; ENDPOINT) &amp;&amp; i &gt;= pt_num - order_) continue;
+    for (int j = 0; j &lt; dim_; j++) {
+      control_points_(i, j) = best_variable_[dim_ * (i - order_) + j];
+    }
+  }
+
+  if (!(cost_function_ &amp; GUIDE)) ROS_INFO_STREAM("iter num: " &lt;&lt; iter_num_);
+}
+</code></pre> 
+<p>综上，通过最小化代价，得到一组最优的控制点。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/476d0f8ad300c4d347b18b0bb7e6b67a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">hive数据库delete删除部分数据/删除分区内的数据</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a2ea61ce325ed7341bd8fd444a795e59/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">AIGC：使用bert_vits2实现栩栩如生的个性化语音克隆</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

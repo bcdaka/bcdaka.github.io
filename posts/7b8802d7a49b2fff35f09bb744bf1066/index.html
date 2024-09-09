@@ -1,0 +1,897 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>增强大型语言模型（LLM）可访问性：深入探究在单块AMD GPU上通过QLoRA微调Llama 2的过程 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/7b8802d7a49b2fff35f09bb744bf1066/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="增强大型语言模型（LLM）可访问性：深入探究在单块AMD GPU上通过QLoRA微调Llama 2的过程">
+  <meta property="og:description" content="Enhancing LLM Accessibility: A Deep Dive into QLoRA Through Fine-tuning Llama 2 on a single AMD GPU — ROCm Blogs
+基于之前的博客《使用LoRA微调Llama 2》的内容，我们深入研究了一种称为量化低秩调整（QLoRA）的参数高效微调（PEFT）方法。本次重点是利用QLoRA技术在单块AMD GPU上，使用ROCm微调Llama-2 7B模型。通过使用QLoRA，可以解决内存和计算能力限制方面的挑战。本次探索旨在展示如何利用QLoRA来增强对开源大型语言模型的可访问性。
+QLoRA微调 QLoRA是一种结合了高精度计算技术和低精度存储方法的微调技术。这有助于在确保模型仍然高性能和精确的同时，保持模型大小的小巧。
+QLoRA如何工作？ 简而言之，QLoRA在不牺牲性能的前提下，优化了LLM微调的内存使用，与标准的16位模型微调形成了对比。具体来说，QLoRA采用4位量化压缩预训练语言模型。然后冻结语言模型参数，并引入少量的可训练参数，以低秩适配器（Low-Rank Adapters）的形式。在微调过程中，QLoRA通过冻结的4位量化预训练语言模型反向传播梯度到低秩适配器中。值得注意的是，在训练期间，只有LoRA层进行更新。要更深入了解LoRA，请参阅原始的LoRA论文。
+QLoRA与LoRA的比较 QLoRA和LoRA都是两种参数高效的微调技术。LoRA作为一个独立的微调方法运作，而QLoRA则结合了LoRA作为一个辅助机制，以解决量化过程中引入的错误，并在微调期间进一步最小化资源需求。
+一步步使用QLoRA对Llama 2进行微调 本节将指导您通过QLoRA一步步对具有70亿参数的Llama 2模型进行微调，该模型可以在单个AMD GPU上运行。实现这一成就的关键在于QLoRA的关键支持，它在有效减少内存需求方面发挥了不可或缺的作用。
+为此，我们将使用以下设置：
+- 硬件 &amp; 操作系统：请访问此链接，查看与ROCm兼容的硬件和操作系统列表。
+- 软件：
+- ROCm 6.1.0&#43;
+- Pytorch for ROCm 2.0&#43;
+- 库：`transformers`、`accelerate`、`peft`、`trl`、`bitsandbytes`、`scipy`
+在这篇博客中，我们使用单个MI250GPU以及Docker镜像rocm/pytorch:rocm6.1_ubuntu20.04_py3.9_pytorch_2.1.2进行了实验。
+您可以在Github仓库中找到这篇博客中使用的完整代码。
+1. 开始 我们的第一步是确认GPU的可用性。
+!rocm-smi --showproductname ========================= ROCm System Management Interface ========================= =================================== Product Info =================================== GPU[0] : 系列： AMD INSTINCT MI250 (MCM) OAM AC MBA GPU[0] : 型号： 0x0b0c GPU[0] : 制造商： Advanced Micro Devices, Inc.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-27T10:40:33+08:00">
+    <meta property="article:modified_time" content="2024-06-27T10:40:33+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">增强大型语言模型（LLM）可访问性：深入探究在单块AMD GPU上通过QLoRA微调Llama 2的过程</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p></p> 
+<p><a href="https://rocm.blogs.amd.com/artificial-intelligence/llama2-Qlora/README.html" rel="nofollow" title="Enhancing LLM Accessibility: A Deep Dive into QLoRA Through Fine-tuning Llama 2 on a single AMD GPU — ROCm Blogs">Enhancing LLM Accessibility: A Deep Dive into QLoRA Through Fine-tuning Llama 2 on a single AMD GPU — ROCm Blogs</a></p> 
+<p></p> 
+<p>基于之前的博客<a class="link-info" href="https://rocm.blogs.amd.com/artificial-intelligence/llama2-lora/README.html" rel="nofollow" title="《使用LoRA微调Llama 2》">《使用LoRA微调Llama 2》</a>的内容，我们深入研究了一种称为量化低秩调整（QLoRA）的参数高效微调（PEFT）方法。本次重点是利用QLoRA技术在单块AMD GPU上，使用ROCm微调Llama-2 7B模型。通过使用QLoRA，可以解决内存和计算能力限制方面的挑战。本次探索旨在展示如何利用QLoRA来增强对开源大型语言模型的可访问性。</p> 
+<p><img alt="" height="1024" src="https://images2.imgbox.com/9f/bc/24f7uG84_o.png" width="1024"></p> 
+<h3>QLoRA微调</h3> 
+<p></p> 
+<p><a class="link-info" href="https://arxiv.org/abs/2305.14314" rel="nofollow" title="QLoRA">QLoRA</a>是一种结合了高精度计算技术和低精度存储方法的微调技术。这有助于在确保模型仍然高性能和精确的同时，保持模型大小的小巧。</p> 
+<h4>QLoRA如何工作？</h4> 
+<p>简而言之，QLoRA在不牺牲性能的前提下，优化了LLM微调的内存使用，与标准的16位模型微调形成了对比。具体来说，QLoRA采用4位量化压缩预训练语言模型。然后冻结语言模型参数，并引入少量的可训练参数，以低秩适配器（Low-Rank Adapters）的形式。在微调过程中，QLoRA通过冻结的4位量化预训练语言模型反向传播梯度到低秩适配器中。值得注意的是，在训练期间，只有LoRA层进行更新。要更深入了解LoRA，请参阅原始的<a class="link-info" href="https://arxiv.org/abs/2106.09685" rel="nofollow" title="LoRA">LoRA</a>论文。</p> 
+<h4>QLoRA与LoRA的比较</h4> 
+<p>QLoRA和LoRA都是两种参数高效的微调技术。LoRA作为一个独立的微调方法运作，而QLoRA则结合了LoRA作为一个辅助机制，以解决量化过程中引入的错误，并在微调期间进一步最小化资源需求。</p> 
+<p><img alt="" height="1024" src="https://images2.imgbox.com/61/41/v7aO9RdD_o.png" width="1024"></p> 
+<h3>一步步使用QLoRA对Llama 2进行微调</h3> 
+<p>本节将指导您通过QLoRA一步步对具有70亿参数的Llama 2模型进行微调，该模型可以在单个AMD GPU上运行。实现这一成就的关键在于QLoRA的关键支持，它在有效减少内存需求方面发挥了不可或缺的作用。<br> 为此，我们将使用以下设置：<br> - 硬件 &amp; 操作系统：请访问<a class="link-info" href="https://rocm.docs.amd.com/projects/install-on-linux/en/latest/reference/system-requirements.html" rel="nofollow" title="此链接">此链接</a>，查看与ROCm兼容的硬件和操作系统列表。<br> - 软件：<br>     - <a class="link-info" href="https://rocm.docs.amd.com/projects/install-on-linux/en/latest/" rel="nofollow" title="ROCm 6.1.0+">ROCm 6.1.0+</a><br>     - <a class="link-info" href="https://rocm.docs.amd.com/projects/install-on-linux/en/latest/how-to/3rd-party/pytorch-install.html" rel="nofollow" title="Pytorch for ROCm 2.0+">Pytorch for ROCm 2.0+</a><br> - 库：`transformers`、`accelerate`、`peft`、`trl`、`bitsandbytes`、`scipy`</p> 
+<p>在这篇博客中，我们使用单个MI250GPU以及Docker镜像<a class="link-info" href="https://hub.docker.com/layers/rocm/pytorch/rocm6.1_ubuntu20.04_py3.9_pytorch_2.1.2/images/sha256-96ba7b33bc7fa37b88c5ed550488960dd1dcedabaa8a9c17a4fd62e6c50e7574?context=explore" rel="nofollow" title="rocm/pytorch:rocm6.1_ubuntu20.04_py3.9_pytorch_2.1.2">rocm/pytorch:rocm6.1_ubuntu20.04_py3.9_pytorch_2.1.2</a>进行了实验。</p> 
+<p></p> 
+<p>您可以在<a class="link-info" href="https://github.com/ROCm/rocm-blogs/tree/release/blogs/artificial-intelligence/llama2-Qlora" title="Github仓库">Github仓库</a>中找到这篇博客中使用的完整代码。</p> 
+<h4>1. 开始</h4> 
+<p>我们的第一步是确认GPU的可用性。</p> 
+<pre><code>!rocm-smi --showproductname
+</code></pre> 
+<pre><code>    ========================= ROCm System Management Interface ========================= 
+    =================================== Product Info ===================================
+    GPU[0]      : 系列：      AMD INSTINCT MI250 (MCM) OAM AC MBA
+    GPU[0]      : 型号：       0x0b0c
+    GPU[0]      : 制造商：      Advanced Micro Devices, Inc. [AMD/ATI]
+    GPU[0]      : SKU:         D65209
+    GPU[1]      : 系列：      AMD INSTINCT MI250 (MCM) OAM AC MBA
+    GPU[1]      : 型号：       0x0b0c
+    GPU[1]      : 制造商：      Advanced Micro Devices, Inc. [AMD/ATI]
+    GPU[1]      : SKU:         D65207
+    ====================================================================================
+    =============================== End of ROCm SMI Log ===============================</code></pre> 
+<p>如果您的AMD机器上有不止一个GCDs或GPUs，让我们只使用一个图形计算模块（GCD）或GPU。</p> 
+<pre><code class="language-python">import os
+os.environ["HIP_VISIBLE_DEVICES"]="0"
+
+import torch
+use_cuda = torch.cuda.is_available()
+if use_cuda:
+    print('__CUDNN VERSION:', torch.backends.cudnn.version())
+    print('__Number CUDA Devices:', torch.cuda.device_count())
+    cunt = torch.cuda.device_count()</code></pre> 
+<pre><code class="language-python">    __CUDNN VERSION: 2020000
+    __Number CUDA Devices: 1</code></pre> 
+<p>接下来我们将安装所需的库。</p> 
+<pre><code class="language-python">!pip install -q pandas peft==0.9.0 transformers==4.31.0 trl==0.4.7 accelerate scipy</code></pre> 
+<h5>安装bitsandbytes</h5> 
+<p>ROCm需要特殊版本的bitsandbytes(<code>bitsandbytes-rocm</code>).</p> 
+<p>1. 使用以下代码安装bitsandbytes。<br>  </p> 
+<pre><code class="language-python">git clone --recurse https://github.com/ROCm/bitsandbytes
+cd bitsandbytes
+git checkout rocm_enabled
+pip install -r requirements-dev.txt
+cmake -DCOMPUTE_BACKEND=hip -S . #Use -DBNB_ROCM_ARCH="gfx90a;gfx942" to target specific gpu arch
+make
+pip install .</code></pre> 
+<p>2. 检查bitsandbytes版本。</p> 
+<p>在撰写本博客时，版本为0.43.0。</p> 
+<pre><code class="language-python">%%bash
+pip list | grep bitsandbytes</code></pre> 
+<p>3. 引入所需的包。</p> 
+<pre><code class="language-python">import torch
+from datasets import load_dataset
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    TrainingArguments,
+    pipeline
+)
+from peft import LoraConfig
+from trl import SFTTrainer</code></pre> 
+<h4>2. 配置模型和数据</h4> 
+<h5>模型配置</h5> 
+<p>在Hugging Face提交请求并等待几天后，您可以访问Meta的官方Llama-2模型。作为替代，我们将使用NousResearch的Llama-2-7b-chat-hf作为我们的基础模型（它与原始模型相同，但更易于访问）。</p> 
+<pre><code class="language-python"># 模型和分词器名称
+base_model_name = "NousResearch/Llama-2-7b-chat-hf"
+new_model_name = "llama-2-7b-enhanced" #您可以为微调后的模型起自己的名字
+
+# 分词器
+llama_tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
+llama_tokenizer.pad_token = llama_tokenizer.eos_token
+llama_tokenizer.padding_side = "right"  </code></pre> 
+<h5>QLoRA 4-bit量化配置</h5> 
+<p>正如论文所述，QLoRA以4位存储权重，允许在16位或32位精度下进行计算。这意呞着每当使用QLoRA权重张量时，我们就将张量去量化到16位或32位精度，然后执行矩阵乘法。可以选择各种组合，例如float16、bfloat16、float32等。可以尝试不同的4位量化变种，包括规范化浮点4（NF4）或纯浮点4量化。然而，根据论文中的理论考量和经验结果，建议选择NF4量化，因为它往往能提供更好的性能。<br> 在我们的案例中，我们选择了以下配置：<br> - 使用NF4类型的4位量化<br> - 16位（float16）进行计算<br> - 双重量化，这在第一次量化后使用第二次量化，可以额外节省每个参数0.3位<br> 量化参数可以通过BitsandbytesConfig控制（参见Hugging Face文档：<a href="https://huggingface.co/docs/transformers/main_classes/quantization#transformers.BitsAndBytesConfig" rel="nofollow" title="https://huggingface.co/docs/transformers/main_classes/quantization#transformers.BitsAndBytesConfig">https://huggingface.co/docs/transformers/main_classes/quantization#transformers.BitsAndBytesConfig</a>）如下：<br> - 通过load_in_4bit激活4位加载<br> - 用bnb_4bit_quant_type指定用于量化的数据类型。注意，支持两种量化数据类型：fp4（四位浮点数）和nf4（规范化四位浮点数）。后者对于正态分布的权重理论上是最优的，因此我们推荐使用nf4。<br> - 用bnb_4bit_compute_dtype指定用于线性层计算的数据类型<br> - 通过bnb_4bit_use_double_quant激活嵌套量化</p> 
+<pre><code class="language-python"># 量化配置
+quant_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_use_double_quant=True
+)</code></pre> 
+<p>加载模型并设置量化配置。</p> 
+<pre><code class="language-python">base_model = AutoModelForCausalLM.from_pretrained(
+    base_model_name,
+    quantization_config=quant_config,
+    device_map="auto"
+)
+base_model.config.use_cache = False
+base_model.config.pretraining_tp = 1</code></pre> 
+<h5>数据集配置</h5> 
+<p>我们使用一个名为<a href="https://huggingface.co/datasets/mlabonne/guanaco-llama2-1k" rel="nofollow" title="mlabonne/guanaco-llama2-1k">mlabonne/guanaco-llama2-1k</a>的小型数据集对我们的基础模型进行了微调，以进行问答任务。这个数据集是<a href="https://huggingface.co/datasets/OpenAssistant/oasst1" rel="nofollow" title="timdettmers/openassistant-guanaco">timdettmers/openassistant-guanaco</a>数据集的一个子集（1000个样本）。该数据集是一个由人类生成、人类标注的助理风格对话语料库，它包含35种不同语言的161443条消息，带有461292个质量评分。这导致超过10000棵完全标注的对话树。</p> 
+<pre><code class="language-python"># Dataset
+data_name = "mlabonne/guanaco-llama2-1k"
+training_data = load_dataset(data_name, split="train")
+# check the data
+print(training_data.shape)
+# #11 is a QA sample in English
+print(training_data[11])</code></pre> 
+<pre><code class="language-python">    (1000, 1)
+    {'text': '&lt;s&gt;[INST] write me a 1000 words essay about deez nuts. [/INST] The Deez Nuts meme first gained popularity in 2015 on the social media platform Vine. The video featured a young man named Rodney Bullard, who recorded himself asking people if they had heard of a particular rapper. When they responded that they had not, he would respond with the phrase "Deez Nuts" and film their reactions. The video quickly went viral, and the phrase became a popular meme. \n\nSince then, Deez Nuts has been used in a variety of contexts to interrupt conversations, derail discussions, or simply add humor to a situation. It has been used in internet memes, in popular music, and even in politics. In the 2016 US presidential election, a 15-year-old boy named Brady Olson registered as an independent candidate under the name Deez Nuts. He gained some traction in the polls and even made appearances on national news programs.\n\nThe Deez Nuts meme has had a significant impact on popular culture. It has become a recognizable catchphrase that people use to add humor to everyday conversations. The meme has also been used to satirize politics and other serious issues. For example, in 2016, a group of activists in the UK used the phrase "Deez Nuts for President" as part of a campaign to encourage young people to vote in the EU referendum. &lt;/s&gt;&lt;s&gt;[INST] Rewrite the essay in a more casual way. Instead of sounding proffesional, sound like a college student who is forced to write the essay but refuses to do so in the propper way. Use casual words and slang when possible. [/INST] Yo, so you want me to write a 1000-word essay about Deez Nuts? Alright, fine. So, this whole thing started on Vine back in 2015. Some dude named Rodney Bullard made a video where he would ask people if they knew a rapper, and when they said no, he would hit them with the classic line: "Deez Nuts!" People loved it, and it became a viral meme.\n\nNowadays, Deez Nuts is used for all kinds of stuff. You can throw it out there to interrupt someone or just to be funny. It\'s all over the internet, in music, and even in politics. In fact, during the 2016 US presidential election, a kid named Brady Olson registered as an independent candidate under the name Deez Nuts. He actually got some attention from the media and made appearances on TV and everything.\n\nThe impact of Deez Nuts on our culture is pretty huge. It\'s become a thing that everyone knows and uses to add some humor to their everyday conversations. Plus, people have used it to make fun of politics and serious issues too. Like, in the UK, some groups of activists used the phrase "Deez Nuts for President" to encourage young people to vote in the EU referendum.\n\nThere you have it, a thousand words about Deez Nuts in a more casual tone. Can I go back to playing video games now? &lt;/s&gt;'}</code></pre> 
+<pre><code class="language-python">## There is a dependency during training
+!pip install tensorboardX</code></pre> 
+<h4>3. 开始微调</h4> 
+<p>使用以下代码设置训练参数：</p> 
+<pre><code class="language-python"># 训练参数
+train_params = TrainingArguments(
+    output_dir="./results_modified",
+    num_train_epochs=1,
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=1,
+    optim="paged_adamw_32bit",
+    save_steps=50,
+    logging_steps=50,
+    learning_rate=2e-4,
+    weight_decay=0.001,
+    fp16=False,
+    bf16=False,
+    max_grad_norm=0.3,
+    max_steps=-1,
+    warmup_ratio=0.03,
+    group_by_length=True,
+    lr_scheduler_type="constant",
+    report_to="tensorboard"
+)</code></pre> 
+<h5>使用QLoRA配置训练</h5> 
+<p>现在您可以将LoRA集成到基准模型中，并评估其附加参数。LoRA实质上是向现有权重中添加了一对秩分解权重矩阵（称为更新矩阵），并且只训练新增加的权重。</p> 
+<pre><code class="language-python">from peft import get_peft_model
+# LoRA配置
+peft_parameters = LoraConfig(
+    lora_alpha=8,
+    lora_dropout=0.1,
+    r=8,
+    bias="none",
+    task_type="CAUSAL_LM"
+)
+model = get_peft_model(base_model, peft_parameters)
+model.print_trainable_parameters()</code></pre> 
+<pre><code class="language-python">    trainable params: 4,194,304 || all params: 6,742,609,920 || trainable%: 0.06220594176090199</code></pre> 
+<p>注意LoRA只增加了0.062%的参数，这只是原始模型的一小部分。我们将通过微调更新这一百分比的参数，如下所示。</p> 
+<pre><code class="language-python"># 带有QLoRA配置的Trainer
+fine_tuning = SFTTrainer(
+    model=base_model,
+    train_dataset=training_data,
+    peft_config=peft_parameters,
+    dataset_text_field="text",
+    tokenizer=llama_tokenizer,
+    args=train_params
+)
+
+# 训练
+fine_tuning.train()</code></pre> 
+<p>输出看起来像这样：</p> 
+<pre><code class="language-python">[250/250 05:31, Epoch 1/1]\
+Step     Training Loss \
+50       1.557800 \
+100      1.348100\
+150      1.277000\
+200      1.324300\
+250      1.347700
+
+TrainOutput(global_step=250, training_loss=1.3709784088134767, metrics={'train_runtime': 335.085, 'train_samples_per_second': 2.984, 'train_steps_per_second': 0.746, 'total_flos': 8679674339426304.0, 'train_loss': 1.3709784088134767, 'epoch': 1.0})</code></pre> 
+<h6>使用QLoRA训练期间检查内存使用</h6> 
+<p>在训练期间，您可以在终端使用“rocm-smi”命令来检查内存使用情况。该命令将产生以下输出，它告诉了内存和GPU的使用情况。</p> 
+<pre><code class="language-python">========================= ROCm System Management Interface =========================
+=================================== Concise Info ===================================
+GPU  Temp (DieEdge)  AvgPwr  SCLK     MCLK     Fan  Perf  PwrCap  VRAM%  GPU%  
+0    50.0c           352.0W  1700Mhz  1600Mhz  0%   auto  560.0W   17%   100%  
+====================================================================================
+=============================== End of ROCm SMI Log ================================</code></pre> 
+<p>为了更全面地理解QLoRA对训练的影响，我们将进行量化分析，比较QLoRA、LoRA和完整参数微调。这项分析将包括内存使用、训练速度、训练损失和其他相关指标，提供它们各自影响的全面评估。</p> 
+<h4>4. QLoRA、LoRA和全参数微调的比较</h4> 
+<p>我们将在前一篇有关如何使用LoRA微调Llama 2模型的博客文章的基础上——该文章展示了用LoRA和全参数方法微调Llama 2模型——增加QLoRA的结果。这旨在提供一个全面概述，结合了使用这三种微调方法所获得的见解。</p> 
+<table><thead><tr><th> <p>Metric</p> </th><th> <p>Full-parameter</p> </th><th> <p>LoRA</p> </th><th> <p><strong>QLoRA</strong></p> </th></tr></thead><tbody><tr><td> <p>Trainable parameters</p> </td><td> <p>6,738,415,616</p> </td><td> <p>4,194,304</p> </td><td> <p>4,194,304</p> </td></tr><tr><td> <p>Mem usage/GB</p> </td><td> <p>128</p> </td><td> <p>83.2</p> </td><td> <p>10.88</p> </td></tr><tr><td> <p>Number of GCDs</p> </td><td> <p>2</p> </td><td> <p>2</p> </td><td> <p>1</p> </td></tr><tr><td> <p>Training Speed</p> </td><td> <p>3 hours</p> </td><td> <p>9 minutes</p> </td><td> <p>6 minutes</p> </td></tr><tr><td> <p>Training Loss</p> </td><td> <p>1.368</p> </td><td> <p>1.377</p> </td><td> <p>1.347</p> </td></tr></tbody></table> 
+<p>• 内存使用量：<br>     ◦ 在全参数微调的情况下，有 <strong>6,738,415,616</strong> 个可训练参数，导致在训练反向传播阶段期间内存消耗显著。<br>     ◦ 相比之下，LoRA和QLoRA只引入了 <strong>4,194,304</strong> 个可训练参数，仅占全参数微调中总可训练参数的 *0.062%*。<br>     ◦ 当监控训练期间的内存使用时，很明显，使用LoRA进行微调仅使用了全参数微调内存使用量的65%。而QLoRA的表现更为出色，将内存消耗大幅降低到只有8%。<br>     ◦ 这为在有限的硬件资源限制下增加批量大小、最大序列长度和在更大的数据集上进行训练提供了机会。<br> • 训练速度：<br>     ◦ 结果表明，全参数微调需要 <strong>几小时</strong> 才能完成，而LoRA和QLoRA的微调仅需 *几分钟*。<br>     ◦ 训练速度加快的几个因素包括：<br>         ▪ LoRA中更少的可训练参数意味着更少的导数计算以及更少的存储和更新权重所需的内存。</p> 
+<p>        ▪ 全参数微调更容易受到内存限制的制约，在数据移动成为训练瓶颈时。这反映在更低的GPU利用率上。虽然调整训练设置可以缓解这一点，但可能需要更多的资源（额外的GPU）和更小的批量大小。<br> • 准确度：<br>     ◦ 在两次训练会话中，都观察到了训练损失的显著降低。我们对于三种微调方法都达到了相差无几的训练损失。<br>     ◦ 在QLoRA的原始研究中，作者提到了由于量化不精确而导致的性能损失，可以通过量化后的适配器微调完全恢复。与这个见解一致，我们的实验验证并呼应了这一观察，强调了在量化过程后恢复性能的适配器微调的有效性。 </p> 
+<h4>5. 使用QLoRA微调后的模型进行测试</h4> 
+<pre><code class="language-python"># 以FP16重新加载模型，并与微调后的权重合并
+base_model = AutoModelForCausalLM.from_pretrained(
+    base_model_name,
+    low_cpu_mem_usage=True,
+    return_dict=True,
+    torch_dtype=torch.float16,
+    device_map="auto"
+)
+from peft import LoraConfig, PeftModel
+model = PeftModel.from_pretrained(base_model, new_model_name)
+model = model.merge_and_unload()
+
+# 重新加载分词器以便保存
+tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
+tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = "right"</code></pre> 
+<p>现在，让我们上传模型到Hugging Face，这样我们就可以进行后续测试或与他人分享。要进行此步骤，您需要一个有效的Hugging Face账户。</p> 
+<p>现在我们可以使用基础模型（原始的）和微调后的模型进行测试。</p> 
+<h5>测试基础模型</h5> 
+<pre><code class="language-python"># Generate Text using base model
+query = "What do you think is the most important part of building an AI chatbot?"
+text_gen = pipeline(task="text-generation", model=base_model_name, tokenizer=llama_tokenizer, max_length=200)
+output = text_gen(f"&lt;s&gt;[INST] {query} [/INST]")
+print(output[0]['generated_text'])</code></pre> 
+<h5 style="background-color:transparent;">测试微调后的模型</h5> 
+<pre><code class="language-python"># Generate Text using fine-tuned model
+query = "What do you think is the most important part of building an AI chatbot?"
+text_gen = pipeline(task="text-generation", model=new_model_name, tokenizer=llama_tokenizer, max_length=200)
+output = text_gen(f"&lt;s&gt;[INST] {query} [/INST]")
+print(output[0]['generated_text'])</code></pre> 
+<pre><code class="language-python">    &lt;s&gt;[INST] What do you think is the most important part of building an AI chatbot? [/INST] The most important part of building an AI chatbot is to ensure that it is able to understand and respond to user input in a way that is both accurate and natural-sounding.
+    
+    To achieve this, you will need to use a combination of natural language processing (NLP) techniques and machine learning algorithms to enable the chatbot to understand and interpret user input, and to generate appropriate responses.
+    
+    Some of the key considerations when building an AI chatbot include:
+    
+    1. Defining the scope and purpose of the chatbot: What kind of tasks or questions will the chatbot be able to handle? What kind of user input will it be able to understand?
+    2. Choosing the right NLP and machine learning algorithms: There are many different NLP and machine learning algorithms available, and the right ones will depend on the</code></pre> 
+<p>现在您可以根据给定的查询观察两个模型的输出。正如预期的那样，由于微调过程改变了模型的权重，两个输出显示了微小的差异。</p> 
+<p><img alt="" height="1024" src="https://images2.imgbox.com/eb/74/vdWH86O0_o.png" width="1024"></p> 
+<h2 style="background-color:transparent;">运行结果：</h2> 
+<p>Step 1: Getting started<br> Our first step is to confirm the availability of GPU.</p> 
+<pre><code class="hljs">!rocm-smi --showproductname</code></pre> 
+<pre><code class="hljs">============================ ROCm System Management Interface ============================
+====================================== Product Info ======================================
+GPU[0]		: Card Series: 		0x7448
+GPU[0]		: Card Model: 		0x7448
+GPU[0]		: Card Vendor: 		Advanced Micro Devices, Inc. [AMD/ATI]
+GPU[0]		: Card SKU: 		D7070100
+GPU[0]		: Subsystem ID: 	0x0e0d
+GPU[0]		: Device Rev: 		0x00
+GPU[0]		: Node ID: 		1
+GPU[0]		: GUID: 		19246
+GPU[0]		: GFX Version: 		gfx11000
+==========================================================================================
+================================== End of ROCm SMI Log ===================================</code></pre> 
+<p>Let's use only one Graphics Compute Die (GCD) or GPU, in case you have more than one GCDs or GPUs on your AMD machine.</p> 
+<pre><code class="language-python">import os
+os.environ["HIP_VISIBLE_DEVICES"]="0"
+
+import torch
+use_cuda = torch.cuda.is_available()
+if use_cuda:
+    print('__CUDNN VERSION:', torch.backends.cudnn.version())
+    print('__Number CUDA Devices:', torch.cuda.device_count())
+    cunt = torch.cuda.device_count()</code></pre> 
+<pre><code class="language-python">__CUDNN VERSION: 3000000
+__Number CUDA Devices: 1</code></pre> 
+<p>We will start by installing the required libraries.<br>  </p> 
+<pre><code class="language-python">!pip install -q pandas peft==0.9.0 transformers==4.31.0 trl==0.4.7 accelerate scipy</code></pre> 
+<pre><code class="language-python">
+[notice] A new release of pip is available: 24.0 -&gt; 24.1.1
+[notice] To update, run: python3 -m pip install --upgrade pip
+</code></pre> 
+<p>Installing bitsandbytes</p> 
+<p>ROCm needs a special version of bitsandbytes (bitsandbytes-rocm).</p> 
+<p>    Install bitsandbytes using the following code.</p> 
+<pre><code class="language-python">%%bash
+git clone --recurse https://github.com/ROCm/bitsandbytes
+cd bitsandbytes
+git checkout rocm_enabled
+pip install -r requirements-dev.txt
+cmake -DCOMPUTE_BACKEND=hip -S . #Use -DBNB_ROCM_ARCH="gfx90a;gfx942" to target specific gpu arch
+make
+pip install .</code></pre> 
+<pre><code class="language-python">%%bash
+git clone --recurse https://github.com/ROCm/bitsandbytes
+cd bitsandbytes
+git checkout rocm_enabled
+pip install -r requirements-dev.txt
+cmake -DCOMPUTE_BACKEND=hip -S . #Use -DBNB_ROCM_ARCH="gfx90a;gfx942" to target specific gpu arch
+make
+pip install .
+
+正克隆到 'bitsandbytes'...
+已经位于 'rocm_enabled'
+
+您的分支与上游分支 'origin/rocm_enabled' 一致。
+Defaulting to user installation because normal site-packages is not writeable
+Requirement already satisfied: setuptools&gt;=63 in /usr/local/lib/python3.10/dist-packages (from -r requirements-dev.txt (line 2)) (70.1.0)
+Requirement already satisfied: pytest~=8.2.0 in /usr/local/lib/python3.10/dist-packages (from -r requirements-dev.txt (line 3)) (8.2.2)
+Requirement already satisfied: einops~=0.8.0 in /usr/local/lib/python3.10/dist-packages (from -r requirements-dev.txt (line 4)) (0.8.0)
+Requirement already satisfied: wheel~=0.43.0 in /usr/local/lib/python3.10/dist-packages (from -r requirements-dev.txt (line 5)) (0.43.0)
+Requirement already satisfied: lion-pytorch~=0.1.4 in /usr/local/lib/python3.10/dist-packages (from -r requirements-dev.txt (line 6)) (0.1.4)
+Requirement already satisfied: scipy~=1.13.0 in /usr/local/lib/python3.10/dist-packages (from -r requirements-dev.txt (line 7)) (1.13.1)
+Requirement already satisfied: pandas~=2.2.2 in /usr/local/lib/python3.10/dist-packages (from -r requirements-dev.txt (line 8)) (2.2.2)
+Requirement already satisfied: matplotlib~=3.8.4 in /usr/local/lib/python3.10/dist-packages (from -r requirements-dev.txt (line 9)) (3.8.4)
+Requirement already satisfied: iniconfig in /usr/local/lib/python3.10/dist-packages (from pytest~=8.2.0-&gt;-r requirements-dev.txt (line 3)) (2.0.0)
+Requirement already satisfied: packaging in /usr/local/lib/python3.10/dist-packages (from pytest~=8.2.0-&gt;-r requirements-dev.txt (line 3)) (24.0)
+Requirement already satisfied: pluggy&lt;2.0,&gt;=1.5 in /usr/local/lib/python3.10/dist-packages (from pytest~=8.2.0-&gt;-r requirements-dev.txt (line 3)) (1.5.0)
+Requirement already satisfied: exceptiongroup&gt;=1.0.0rc8 in /usr/local/lib/python3.10/dist-packages (from pytest~=8.2.0-&gt;-r requirements-dev.txt (line 3)) (1.2.1)
+Requirement already satisfied: tomli&gt;=1 in /usr/local/lib/python3.10/dist-packages (from pytest~=8.2.0-&gt;-r requirements-dev.txt (line 3)) (2.0.1)
+Requirement already satisfied: torch&gt;=1.6 in /usr/local/lib/python3.10/dist-packages (from lion-pytorch~=0.1.4-&gt;-r requirements-dev.txt (line 6)) (2.4.0.dev20240424+rocm6.0)
+Requirement already satisfied: numpy&lt;2.3,&gt;=1.22.4 in /home/yong/.local/lib/python3.10/site-packages (from scipy~=1.13.0-&gt;-r requirements-dev.txt (line 7)) (1.23.5)
+Requirement already satisfied: python-dateutil&gt;=2.8.2 in /home/yong/.local/lib/python3.10/site-packages (from pandas~=2.2.2-&gt;-r requirements-dev.txt (line 8)) (2.9.0.post0)
+Requirement already satisfied: pytz&gt;=2020.1 in /usr/lib/python3/dist-packages (from pandas~=2.2.2-&gt;-r requirements-dev.txt (line 8)) (2022.1)
+Requirement already satisfied: tzdata&gt;=2022.7 in /home/yong/.local/lib/python3.10/site-packages (from pandas~=2.2.2-&gt;-r requirements-dev.txt (line 8)) (2024.1)
+Requirement already satisfied: contourpy&gt;=1.0.1 in /home/yong/.local/lib/python3.10/site-packages (from matplotlib~=3.8.4-&gt;-r requirements-dev.txt (line 9)) (1.2.1)
+Requirement already satisfied: cycler&gt;=0.10 in /home/yong/.local/lib/python3.10/site-packages (from matplotlib~=3.8.4-&gt;-r requirements-dev.txt (line 9)) (0.12.1)
+Requirement already satisfied: fonttools&gt;=4.22.0 in /home/yong/.local/lib/python3.10/site-packages (from matplotlib~=3.8.4-&gt;-r requirements-dev.txt (line 9)) (4.51.0)
+Requirement already satisfied: kiwisolver&gt;=1.3.1 in /home/yong/.local/lib/python3.10/site-packages (from matplotlib~=3.8.4-&gt;-r requirements-dev.txt (line 9)) (1.4.5)
+Requirement already satisfied: pillow&gt;=8 in /usr/local/lib/python3.10/dist-packages (from matplotlib~=3.8.4-&gt;-r requirements-dev.txt (line 9)) (9.3.0)
+Requirement already satisfied: pyparsing&gt;=2.3.1 in /usr/lib/python3/dist-packages (from matplotlib~=3.8.4-&gt;-r requirements-dev.txt (line 9)) (2.4.7)
+Requirement already satisfied: six&gt;=1.5 in /usr/lib/python3/dist-packages (from python-dateutil&gt;=2.8.2-&gt;pandas~=2.2.2-&gt;-r requirements-dev.txt (line 8)) (1.16.0)
+Requirement already satisfied: filelock in /usr/local/lib/python3.10/dist-packages (from torch&gt;=1.6-&gt;lion-pytorch~=0.1.4-&gt;-r requirements-dev.txt (line 6)) (3.13.1)
+Requirement already satisfied: typing-extensions&gt;=4.8.0 in /usr/local/lib/python3.10/dist-packages (from torch&gt;=1.6-&gt;lion-pytorch~=0.1.4-&gt;-r requirements-dev.txt (line 6)) (4.8.0)
+Requirement already satisfied: sympy in /usr/local/lib/python3.10/dist-packages (from torch&gt;=1.6-&gt;lion-pytorch~=0.1.4-&gt;-r requirements-dev.txt (line 6)) (1.12)
+Requirement already satisfied: networkx in /usr/local/lib/python3.10/dist-packages (from torch&gt;=1.6-&gt;lion-pytorch~=0.1.4-&gt;-r requirements-dev.txt (line 6)) (3.2.1)
+Requirement already satisfied: jinja2 in /usr/local/lib/python3.10/dist-packages (from torch&gt;=1.6-&gt;lion-pytorch~=0.1.4-&gt;-r requirements-dev.txt (line 6)) (3.1.3)
+Requirement already satisfied: fsspec in /usr/local/lib/python3.10/dist-packages (from torch&gt;=1.6-&gt;lion-pytorch~=0.1.4-&gt;-r requirements-dev.txt (line 6)) (2024.2.0)
+Requirement already satisfied: pytorch-triton-rocm==3.0.0+0a22a91d04 in /usr/local/lib/python3.10/dist-packages (from torch&gt;=1.6-&gt;lion-pytorch~=0.1.4-&gt;-r requirements-dev.txt (line 6)) (3.0.0+0a22a91d04)
+Requirement already satisfied: MarkupSafe&gt;=2.0 in /usr/local/lib/python3.10/dist-packages (from jinja2-&gt;torch&gt;=1.6-&gt;lion-pytorch~=0.1.4-&gt;-r requirements-dev.txt (line 6)) (2.1.5)
+Requirement already satisfied: mpmath&gt;=0.19 in /usr/local/lib/python3.10/dist-packages (from sympy-&gt;torch&gt;=1.6-&gt;lion-pytorch~=0.1.4-&gt;-r requirements-dev.txt (line 6)) (1.2.1)
+
+
+[notice] A new release of pip is available: 24.0 -&gt; 24.1.1
+[notice] To update, run: python3 -m pip install --upgrade pip
+
+-- The CXX compiler identification is GNU 11.4.0
+-- Detecting CXX compiler ABI info
+-- Detecting CXX compiler ABI info - done
+-- Check for working CXX compiler: /usr/bin/c++ - skipped
+-- Detecting CXX compile features
+-- Detecting CXX compile features - done
+-- Configuring bitsandbytes (Backend: hip)
+-- NO_CUBLASLT := OFF
+-- The HIP compiler identification is Clang 17.0.0
+-- Detecting HIP compiler ABI info
+-- Detecting HIP compiler ABI info - done
+-- Check for working HIP compiler: /home/yong/llvm/bin/clang++ - skipped
+-- Detecting HIP compile features
+-- Detecting HIP compile features - done
+-- HIP Compiler: /home/yong/llvm/bin/clang++
+-- HIP Targets: gfx900;gfx906;gfx908;gfx90a;gfx1030;gfx1100;gfx1101;gfx940;gfx941;gfx942
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD
+-- Performing Test CMAKE_HAVE_LIBC_PTHREAD - Success
+-- Found Threads: TRUE
+
+hipblas VERSION: 2.1.0
+hiprand VERSION: 2.10.16
+hipsparse VERSION: 3.0.1
+
+-- Configuring done (8.2s)
+-- Generating done (0.0s)
+-- Build files have been written to: /home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes
+[ 16%] Building CXX object CMakeFiles/bitsandbytes.dir/csrc/common.cpp.o
+[ 33%] Building CXX object CMakeFiles/bitsandbytes.dir/csrc/cpu_ops.cpp.o
+[ 50%] Building CXX object CMakeFiles/bitsandbytes.dir/csrc/pythonInterface.cpp.o
+[ 66%] Building HIP object CMakeFiles/bitsandbytes.dir/csrc/ops.hip.o
+[ 83%] Building HIP object CMakeFiles/bitsandbytes.dir/csrc/kernels.hip.o
+
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+__global__ void kspmm_coo_very_sparse_naive(int *max_count, int *max_idx, int *offset_rowidx, int *rowidx, int *colidx, half *values, T *B, half *out, float * __restrict__ const dequant_stats, int nnz, int rowsA, int rowsB, int colsB)
+                ^
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+6 warnings generated when compiling for gfx1030.
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+__global__ void kspmm_coo_very_sparse_naive(int *max_count, int *max_idx, int *offset_rowidx, int *rowidx, int *colidx, half *values, T *B, half *out, float * __restrict__ const dequant_stats, int nnz, int rowsA, int rowsB, int colsB)
+                ^
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+6 warnings generated when compiling for gfx1100.
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+__global__ void kspmm_coo_very_sparse_naive(int *max_count, int *max_idx, int *offset_rowidx, int *rowidx, int *colidx, half *values, T *B, half *out, float * __restrict__ const dequant_stats, int nnz, int rowsA, int rowsB, int colsB)
+                ^
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+6 warnings generated when compiling for gfx1101.
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+__global__ void kspmm_coo_very_sparse_naive(int *max_count, int *max_idx, int *offset_rowidx, int *rowidx, int *colidx, half *values, T *B, half *out, float * __restrict__ const dequant_stats, int nnz, int rowsA, int rowsB, int colsB)
+                ^
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+6 warnings generated when compiling for gfx900.
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+__global__ void kspmm_coo_very_sparse_naive(int *max_count, int *max_idx, int *offset_rowidx, int *rowidx, int *colidx, half *values, T *B, half *out, float * __restrict__ const dequant_stats, int nnz, int rowsA, int rowsB, int colsB)
+                ^
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+6 warnings generated when compiling for gfx906.
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+__global__ void kspmm_coo_very_sparse_naive(int *max_count, int *max_idx, int *offset_rowidx, int *rowidx, int *colidx, half *values, T *B, half *out, float * __restrict__ const dequant_stats, int nnz, int rowsA, int rowsB, int colsB)
+                ^
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+6 warnings generated when compiling for gfx908.
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+__global__ void kspmm_coo_very_sparse_naive(int *max_count, int *max_idx, int *offset_rowidx, int *rowidx, int *colidx, half *values, T *B, half *out, float * __restrict__ const dequant_stats, int nnz, int rowsA, int rowsB, int colsB)
+                ^
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+6 warnings generated when compiling for gfx90a.
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+__global__ void kspmm_coo_very_sparse_naive(int *max_count, int *max_idx, int *offset_rowidx, int *rowidx, int *colidx, half *values, T *B, half *out, float * __restrict__ const dequant_stats, int nnz, int rowsA, int rowsB, int colsB)
+                ^
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+6 warnings generated when compiling for gfx940.
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+__global__ void kspmm_coo_very_sparse_naive(int *max_count, int *max_idx, int *offset_rowidx, int *rowidx, int *colidx, half *values, T *B, half *out, float * __restrict__ const dequant_stats, int nnz, int rowsA, int rowsB, int colsB)
+                ^
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+6 warnings generated when compiling for gfx941.
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+__global__ void kspmm_coo_very_sparse_naive(int *max_count, int *max_idx, int *offset_rowidx, int *rowidx, int *colidx, half *values, T *B, half *out, float * __restrict__ const dequant_stats, int nnz, int rowsA, int rowsB, int colsB)
+                ^
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+/home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes/csrc/kernels.hip:2758:17: warning: loop not unrolled: the optimizer was unable to perform the requested transformation; the transformation might be disabled or specified as part of an unsupported transformation ordering [-Wpass-failed=transform-warning]
+6 warnings generated when compiling for gfx942.
+
+[100%] Linking CXX shared library bitsandbytes/libbitsandbytes_hip_nohipblaslt.so
+[100%] Built target bitsandbytes
+Defaulting to user installation because normal site-packages is not writeable
+Processing /home/yong/rocm-blogs/blogs/artificial-intelligence/llama2-Qlora/src/bitsandbytes
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Requirement already satisfied: torch in /usr/local/lib/python3.10/dist-packages (from bitsandbytes==0.43.2.dev0) (2.4.0.dev20240424+rocm6.0)
+Requirement already satisfied: numpy in /home/yong/.local/lib/python3.10/site-packages (from bitsandbytes==0.43.2.dev0) (1.23.5)
+Requirement already satisfied: filelock in /usr/local/lib/python3.10/dist-packages (from torch-&gt;bitsandbytes==0.43.2.dev0) (3.13.1)
+Requirement already satisfied: typing-extensions&gt;=4.8.0 in /usr/local/lib/python3.10/dist-packages (from torch-&gt;bitsandbytes==0.43.2.dev0) (4.8.0)
+Requirement already satisfied: sympy in /usr/local/lib/python3.10/dist-packages (from torch-&gt;bitsandbytes==0.43.2.dev0) (1.12)
+Requirement already satisfied: networkx in /usr/local/lib/python3.10/dist-packages (from torch-&gt;bitsandbytes==0.43.2.dev0) (3.2.1)
+Requirement already satisfied: jinja2 in /usr/local/lib/python3.10/dist-packages (from torch-&gt;bitsandbytes==0.43.2.dev0) (3.1.3)
+Requirement already satisfied: fsspec in /usr/local/lib/python3.10/dist-packages (from torch-&gt;bitsandbytes==0.43.2.dev0) (2024.2.0)
+Requirement already satisfied: pytorch-triton-rocm==3.0.0+0a22a91d04 in /usr/local/lib/python3.10/dist-packages (from torch-&gt;bitsandbytes==0.43.2.dev0) (3.0.0+0a22a91d04)
+Requirement already satisfied: MarkupSafe&gt;=2.0 in /usr/local/lib/python3.10/dist-packages (from jinja2-&gt;torch-&gt;bitsandbytes==0.43.2.dev0) (2.1.5)
+Requirement already satisfied: mpmath&gt;=0.19 in /usr/local/lib/python3.10/dist-packages (from sympy-&gt;torch-&gt;bitsandbytes==0.43.2.dev0) (1.2.1)
+Building wheels for collected packages: bitsandbytes
+  Building wheel for bitsandbytes (pyproject.toml): started
+  Building wheel for bitsandbytes (pyproject.toml): finished with status 'done'
+  Created wheel for bitsandbytes: filename=bitsandbytes-0.43.2.dev0-cp310-cp310-linux_x86_64.whl size=2686797 sha256=77f00c80c2ed346bf1e74a841cad65a3fbca9faecb0114ed04d1129b175e4235
+  Stored in directory: /tmp/pip-ephem-wheel-cache-ee2fao5j/wheels/d9/69/ae/c69fa5ff700a71615645b1dec2bd1bb1eb18b0c50110020499
+Successfully built bitsandbytes
+Installing collected packages: bitsandbytes
+Successfully installed bitsandbytes-0.43.2.dev0
+
+
+[notice] A new release of pip is available: 24.0 -&gt; 24.1.1
+[notice] To update, run: python3 -m pip install --upgrade pip
+</code></pre> 
+<p>Check the bitsandbytes version. At the time of writing this blog, the version is 0.43.0.</p> 
+<pre><code class="language-python">%%bash
+pip list | grep bitsandbytes</code></pre> 
+<pre><code class="language-python">
+[notice] A new release of pip is available: 24.0 -&gt; 24.1.1
+[notice] To update, run: python3 -m pip install --upgrade pip
+
+bitsandbytes              0.43.2.dev0
+</code></pre> 
+<p>    Import the required packages.</p> 
+<pre><code class="language-python">import torch
+from datasets import load_dataset
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    BitsAndBytesConfig,
+    TrainingArguments,
+    pipeline
+)
+from peft import LoraConfig
+from trl import SFTTrainer</code></pre> 
+<p>2. Configuring the model and data</p> 
+<p>Model configuration</p> 
+<p>You can access Meta's official Llama-2 model from Hugging Face after making a request, which can take a couple of days. Instead of waiting, we'll use NousResearch’s Llama-2-7b-chat-hf as our base model (it's the same as the original, but quicker to access).</p> 
+<pre><code class="language-python"># Model and tokenizer names
+base_model_name = "/home/yong/Llama-2-7b-chat-hf"
+new_model_name = "llama-2-7b-enhanced" #You can give your own name for fine tuned model
+
+# Tokenizer
+llama_tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
+llama_tokenizer.pad_token = llama_tokenizer.eos_token
+llama_tokenizer.padding_side = "right"  </code></pre> 
+<p>QLoRA 4-bit quantization configuration</p> 
+<p>As outlined in the paper, QLoRA stores weights in 4-bits, allowing computation to occur in 16 or 32-bit precision. This means whenever a QLoRA weight tensor is used, we dequantize the tensor to 16 or 32-bit precision, and then perform a matrix multiplication. Various combinations, such as float16, bfloat16, float32, etc., can be chosen. Experimentation with different 4-bit quantization variants, including normalized float 4 (NF4), or pure float4 quantization, is possible. However, guided by theoretical considerations and empirical findings from the paper, the recommendation is to opt for NF4 quantization, as it tends to deliver better performance.</p> 
+<p>In our case, we chose the following configuration:</p> 
+<p>    4-bit quantization with NF4 type<br>     16-bit (float16) for computation<br>     Double quantization, which uses a second quantization after the first one to save an additional 0.3 bits per parameters</p> 
+<p>Quantization parameters are controlled from the BitsandbytesConfig (see Hugging Face documentation) as follows:</p> 
+<p>    Loading in 4 bits is activated through load_in_4bit<br>     The datatype used for quantization is specified with bnb_4bit_quant_type. Note that there are two supported quantization datatypes fp4 (four bit float) and nf4 (normal four bit float). The latter is theoretically optimal for normally distributed weights and we recommend using nf4<br>     The datatype used for the linear layer computations with bnb_4bit_compute_dtype<br>     Nested quantization is activated through bnb_4bit_use_double_quant</p> 
+<pre><code class="language-python"># Quantization Config
+quant_config = BitsAndBytesConfig(
+    load_in_4bit=True,
+    bnb_4bit_quant_type="nf4",
+    bnb_4bit_compute_dtype=torch.float16,
+    bnb_4bit_use_double_quant=True
+)</code></pre> 
+<pre><code class="language-python"># Model
+base_model = AutoModelForCausalLM.from_pretrained(
+    base_model_name,
+    quantization_config=quant_config,
+    device_map="auto"
+)
+base_model.config.use_cache = False
+base_model.config.pretraining_tp = 1</code></pre> 
+<pre><code class="language-python">Loading checkpoint shards: 100%
+ 2/2 [01:07&lt;00:00, 31.14s/it]</code></pre> 
+<p>Dataset configuration</p> 
+<p>We fine-tune our base model for a question-and-answer task using a small data set called mlabonne/guanaco-llama2-1k, which is a subset (1,000 samples) of the timdettmers/openassistant-guanaco data set. This data set is a human-generated, human-annotated, assistant-style conversation corpus that contains 161,443 messages in 35 different languages, annotated with 461,292 quality ratings. This results in over 10,000 fully annotated conversation trees.<br>  </p> 
+<pre><code class="language-python"># Dataset
+data_name = "/home/yong/guanaco-llama2-1k"
+training_data = load_dataset(data_name, split="train")
+# check the data
+print(training_data.shape)
+# #11 is a QA sample in English
+print(training_data[11])</code></pre> 
+<pre><code class="language-python">
+(1000, 1)
+{'text': '&lt;s&gt;[INST] write me a 1000 words essay about deez nuts. [/INST] The Deez Nuts meme first gained popularity in 2015 on the social media platform Vine. The video featured a young man named Rodney Bullard, who recorded himself asking people if they had heard of a particular rapper. When they responded that they had not, he would respond with the phrase "Deez Nuts" and film their reactions. The video quickly went viral, and the phrase became a popular meme. \n\nSince then, Deez Nuts has been used in a variety of contexts to interrupt conversations, derail discussions, or simply add humor to a situation. It has been used in internet memes, in popular music, and even in politics. In the 2016 US presidential election, a 15-year-old boy named Brady Olson registered as an independent candidate under the name Deez Nuts. He gained some traction in the polls and even made appearances on national news programs.\n\nThe Deez Nuts meme has had a significant impact on popular culture. It has become a recognizable catchphrase that people use to add humor to everyday conversations. The meme has also been used to satirize politics and other serious issues. For example, in 2016, a group of activists in the UK used the phrase "Deez Nuts for President" as part of a campaign to encourage young people to vote in the EU referendum. &lt;/s&gt;&lt;s&gt;[INST] Rewrite the essay in a more casual way. Instead of sounding proffesional, sound like a college student who is forced to write the essay but refuses to do so in the propper way. Use casual words and slang when possible. [/INST] Yo, so you want me to write a 1000-word essay about Deez Nuts? Alright, fine. So, this whole thing started on Vine back in 2015. Some dude named Rodney Bullard made a video where he would ask people if they knew a rapper, and when they said no, he would hit them with the classic line: "Deez Nuts!" People loved it, and it became a viral meme.\n\nNowadays, Deez Nuts is used for all kinds of stuff. You can throw it out there to interrupt someone or just to be funny. It\'s all over the internet, in music, and even in politics. In fact, during the 2016 US presidential election, a kid named Brady Olson registered as an independent candidate under the name Deez Nuts. He actually got some attention from the media and made appearances on TV and everything.\n\nThe impact of Deez Nuts on our culture is pretty huge. It\'s become a thing that everyone knows and uses to add some humor to their everyday conversations. Plus, people have used it to make fun of politics and serious issues too. Like, in the UK, some groups of activists used the phrase "Deez Nuts for President" to encourage young people to vote in the EU referendum.\n\nThere you have it, a thousand words about Deez Nuts in a more casual tone. Can I go back to playing video games now? &lt;/s&gt;'}
+</code></pre> 
+<pre><code class="language-python">## There is a dependency during training
+!pip install tensorboardX</code></pre> 
+<pre><code class="language-python">## There is a dependency during training
+!pip install tensorboardX
+
+Defaulting to user installation because normal site-packages is not writeable
+Requirement already satisfied: tensorboardX in /usr/local/lib/python3.10/dist-packages (2.6.2.2)
+Requirement already satisfied: numpy in /home/yong/.local/lib/python3.10/site-packages (from tensorboardX) (1.23.5)
+Requirement already satisfied: packaging in /usr/local/lib/python3.10/dist-packages (from tensorboardX) (24.0)
+Requirement already satisfied: protobuf&gt;=3.20 in /usr/local/lib/python3.10/dist-packages (from tensorboardX) (3.20.2)
+
+[notice] A new release of pip is available: 24.0 -&gt; 24.1.1
+[notice] To update, run: python3 -m pip install --upgrade pip
+</code></pre> 
+<p>3. Start fine-tuning</p> 
+<p>To set your training parameters, use the following code:<br>  </p> 
+<pre><code class="language-python"># Training Params
+train_params = TrainingArguments(
+    output_dir="./results_modified",
+    num_train_epochs=1,
+    per_device_train_batch_size=4,
+    gradient_accumulation_steps=1,
+    optim="paged_adamw_32bit",
+    save_steps=50,
+    logging_steps=50,
+    learning_rate=2e-4,
+    weight_decay=0.001,
+    fp16=False,
+    bf16=False,
+    max_grad_norm=0.3,
+    max_steps=-1,
+    warmup_ratio=0.03,
+    group_by_length=True,
+    lr_scheduler_type="constant",
+    report_to="tensorboard"
+) </code></pre> 
+<p>Training with QLoRA configuration<br> Now you can integrate LoRA into the base model and assess its additional parameters. LoRA essentially adds pairs of rank-decomposition weight matrices (called update matrices) to existing weights, and only trains the newly added weights.<br>  </p> 
+<pre><code class="language-python">from peft import get_peft_model
+# LoRA Config
+peft_parameters = LoraConfig(
+    lora_alpha=8,
+    lora_dropout=0.1,
+    r=8,
+    bias="none",
+    task_type="CAUSAL_LM"
+)
+model = get_peft_model(base_model, peft_parameters)
+model.print_trainable_parameters()</code></pre> 
+<pre><code class="language-python">trainable params: 4,194,304 || all params: 6,742,609,920 || trainable%: 0.06220594176090199</code></pre> 
+<p>Note that there are only 0.062% parameters added by LoRA, which is a tiny portion of the original model. This is the percentage we'll update through fine-tuning, as follows.<br>  </p> 
+<pre><code class="language-python"># Trainer with QLoRA configuration
+fine_tuning = SFTTrainer(
+    model=base_model,
+    train_dataset=training_data,
+    peft_config=peft_parameters,
+    dataset_text_field="text",
+    tokenizer=llama_tokenizer,
+    args=train_params
+)
+
+# Training
+fine_tuning.train()</code></pre> 
+<pre><code class="language-python">/usr/local/lib/python3.10/dist-packages/peft/utils/other.py:145: FutureWarning: prepare_model_for_int8_training is deprecated and will be removed in a future version. Use prepare_model_for_kbit_training instead.
+  warnings.warn(
+/usr/local/lib/python3.10/dist-packages/trl/trainer/sft_trainer.py:159: UserWarning: You didn't pass a `max_seq_length` argument to the SFTTrainer, this will default to 1024
+  warnings.warn(
+
+Map: 100%
+ 1000/1000 [00:00&lt;00:00, 4212.19 examples/s]
+
+You're using a LlamaTokenizerFast tokenizer. Please note that with a fast tokenizer, using the `__call__` method is faster than using a method to encode the text followed by a call to the `pad` method to get a padded encoding.
+/usr/local/lib/python3.10/dist-packages/torch/_dynamo/external_utils.py:36: UserWarning: torch.utils.checkpoint: the use_reentrant parameter should be passed explicitly. In version 2.4 we will raise an exception if use_reentrant is not passed. use_reentrant=False is recommended, but if you need to preserve the current default behavior, you can pass use_reentrant=True. Refer to docs for more details on the differences between the two variants.
+  return fn(*args, **kwargs)
+
+[250/250 18:43, Epoch 1/1]
+Step 	Training Loss
+50 	1.566100
+100 	1.349400
+150 	1.278100
+200 	1.325100
+250 	1.347800
+
+/usr/local/lib/python3.10/dist-packages/peft/utils/save_and_load.py:154: UserWarning: Could not find a config file in /home/yong/Llama-2-7b-chat-hf - will assume that the vocabulary was not modified.
+  warnings.warn(
+/usr/local/lib/python3.10/dist-packages/peft/utils/save_and_load.py:154: UserWarning: Could not find a config file in /home/yong/Llama-2-7b-chat-hf - will assume that the vocabulary was not modified.
+  warnings.warn(
+/usr/local/lib/python3.10/dist-packages/torch/_dynamo/external_utils.py:36: UserWarning: torch.utils.checkpoint: the use_reentrant parameter should be passed explicitly. In version 2.4 we will raise an exception if use_reentrant is not passed. use_reentrant=False is recommended, but if you need to preserve the current default behavior, you can pass use_reentrant=True. Refer to docs for more details on the differences between the two variants.
+  return fn(*args, **kwargs)
+/usr/local/lib/python3.10/dist-packages/peft/utils/save_and_load.py:154: UserWarning: Could not find a config file in /home/yong/Llama-2-7b-chat-hf - will assume that the vocabulary was not modified.
+  warnings.warn(
+/usr/local/lib/python3.10/dist-packages/torch/_dynamo/external_utils.py:36: UserWarning: torch.utils.checkpoint: the use_reentrant parameter should be passed explicitly. In version 2.4 we will raise an exception if use_reentrant is not passed. use_reentrant=False is recommended, but if you need to preserve the current default behavior, you can pass use_reentrant=True. Refer to docs for more details on the differences between the two variants.
+  return fn(*args, **kwargs)
+/usr/local/lib/python3.10/dist-packages/peft/utils/save_and_load.py:154: UserWarning: Could not find a config file in /home/yong/Llama-2-7b-chat-hf - will assume that the vocabulary was not modified.
+  warnings.warn(
+/usr/local/lib/python3.10/dist-packages/torch/_dynamo/external_utils.py:36: UserWarning: torch.utils.checkpoint: the use_reentrant parameter should be passed explicitly. In version 2.4 we will raise an exception if use_reentrant is not passed. use_reentrant=False is recommended, but if you need to preserve the current default behavior, you can pass use_reentrant=True. Refer to docs for more details on the differences between the two variants.
+  return fn(*args, **kwargs)
+/usr/local/lib/python3.10/dist-packages/peft/utils/save_and_load.py:154: UserWarning: Could not find a config file in /home/yong/Llama-2-7b-chat-hf - will assume that the vocabulary was not modified.
+  warnings.warn(
+/usr/local/lib/python3.10/dist-packages/torch/_dynamo/external_utils.py:36: UserWarning: torch.utils.checkpoint: the use_reentrant parameter should be passed explicitly. In version 2.4 we will raise an exception if use_reentrant is not passed. use_reentrant=False is recommended, but if you need to preserve the current default behavior, you can pass use_reentrant=True. Refer to docs for more details on the differences between the two variants.
+  return fn(*args, **kwargs)
+/usr/local/lib/python3.10/dist-packages/peft/utils/save_and_load.py:154: UserWarning: Could not find a config file in /home/yong/Llama-2-7b-chat-hf - will assume that the vocabulary was not modified.
+  warnings.warn(
+
+TrainOutput(global_step=250, training_loss=1.373295639038086, metrics={'train_runtime': 1135.0078, 'train_samples_per_second': 0.881, 'train_steps_per_second': 0.22, 'total_flos': 8679674339426304.0, 'train_loss': 1.373295639038086, 'epoch': 1.0})
+
+</code></pre> 
+<pre><code class="language-python"># Save Model
+fine_tuning.model.save_pretrained(new_model_name)</code></pre> 
+<p>5. Test the fine-tuned model with LoRA</p> 
+<pre><code class="language-python"># Reload model in FP16 and merge it with LoRA weights
+base_model = AutoModelForCausalLM.from_pretrained(
+    base_model_name,
+    low_cpu_mem_usage=True,
+    return_dict=True,
+    torch_dtype=torch.float16,
+    device_map="auto"
+)
+from peft import LoraConfig, PeftModel
+model = PeftModel.from_pretrained(base_model, new_model_name)
+model = model.merge_and_unload()
+
+# Reload tokenizer to save it
+tokenizer = AutoTokenizer.from_pretrained(base_model_name, trust_remote_code=True)
+tokenizer.pad_token = tokenizer.eos_token
+tokenizer.padding_side = "right"</code></pre> 
+<pre><code class="language-python">Loading checkpoint shards: 100%
+ 2/2 [00:04&lt;00:00,  2.13s/it]</code></pre> 
+<p>Test the base model</p> 
+<pre><code class="language-python"># Generate Text using base model
+query = "What do you think is the most important part of building an AI chatbot?"
+text_gen = pipeline(task="text-generation", model=base_model_name, tokenizer=llama_tokenizer, max_length=200)
+output = text_gen(f"&lt;s&gt;[INST] {query} [/INST]")
+print(output[0]['generated_text'])</code></pre> 
+<pre><code class="language-python">Loading checkpoint shards: 100%
+ 2/2 [00:03&lt;00:00,  1.73s/it]
+
+Xformers is not installed correctly. If you want to use memory_efficient_attention to accelerate training use the following command to install Xformers
+pip install xformers.
+/usr/local/lib/python3.10/dist-packages/transformers/generation/utils.py:1270: UserWarning: You have modified the pretrained model configuration to control generation. This is a deprecated strategy to control generation and will be removed soon, in a future version. Please use a generation configuration file (see https://huggingface.co/docs/transformers/main_classes/text_generation )
+  warnings.warn(
+
+&lt;s&gt;[INST] What do you think is the most important part of building an AI chatbot? [/INST]  There are several important aspects to consider when building an AI chatbot, but here are some of the most critical elements:
+
+1. Natural Language Processing (NLP): A chatbot's ability to understand and interpret human language is crucial for effective communication. NLP is the foundation of any chatbot, and it involves training the AI model to recognize patterns in language, interpret meaning, and generate responses.
+2. Conversational Flow: A chatbot's conversational flow refers to the way it interacts with users. A well-designed conversational flow should be intuitive, easy to follow, and adaptable to different user scenarios. This involves creating a dialogue flowchart that guides the conversation and ensures the chatbot responds appropriately to user inputs.
+3. Domain Knowledge: A chat
+
+</code></pre> 
+<p>Test the fine-tuned model</p> 
+<pre><code class="language-python"># Generate Text using fine-tuned model
+query = "What do you think is the most important part of building an AI chatbot?"
+text_gen = pipeline(task="text-generation", model=new_model_name, tokenizer=llama_tokenizer, max_length=200)
+output = text_gen(f"&lt;s&gt;[INST] {query} [/INST]")
+print(output[0]['generated_text'])</code></pre> 
+<pre><code class="language-python">---------------------------------------------------------------------------
+OSError                                   Traceback (most recent call last)
+Cell In[19], line 3
+      1 # Generate Text using fine-tuned model
+      2 query = "What do you think is the most important part of building an AI chatbot?"
+----&gt; 3 text_gen = pipeline(task="text-generation", model=new_model_name, tokenizer=llama_tokenizer, max_length=200)
+      4 output = text_gen(f"&lt;s&gt;[INST] {query} [/INST]")
+      5 print(output[0]['generated_text'])
+
+File /usr/local/lib/python3.10/dist-packages/transformers/pipelines/__init__.py:705, in pipeline(task, model, config, tokenizer, feature_extractor, image_processor, framework, revision, use_fast, use_auth_token, device, device_map, torch_dtype, trust_remote_code, model_kwargs, pipeline_class, **kwargs)
+    703     hub_kwargs["_commit_hash"] = config._commit_hash
+    704 elif config is None and isinstance(model, str):
+--&gt; 705     config = AutoConfig.from_pretrained(model, _from_pipeline=task, **hub_kwargs, **model_kwargs)
+    706     hub_kwargs["_commit_hash"] = config._commit_hash
+    708 custom_tasks = {}
+
+File /usr/local/lib/python3.10/dist-packages/transformers/models/auto/configuration_auto.py:983, in AutoConfig.from_pretrained(cls, pretrained_model_name_or_path, **kwargs)
+    981 kwargs["name_or_path"] = pretrained_model_name_or_path
+    982 trust_remote_code = kwargs.pop("trust_remote_code", None)
+--&gt; 983 config_dict, unused_kwargs = PretrainedConfig.get_config_dict(pretrained_model_name_or_path, **kwargs)
+    984 has_remote_code = "auto_map" in config_dict and "AutoConfig" in config_dict["auto_map"]
+    985 has_local_code = "model_type" in config_dict and config_dict["model_type"] in CONFIG_MAPPING
+
+File /usr/local/lib/python3.10/dist-packages/transformers/configuration_utils.py:617, in PretrainedConfig.get_config_dict(cls, pretrained_model_name_or_path, **kwargs)
+    615 original_kwargs = copy.deepcopy(kwargs)
+    616 # Get config dict associated with the base config file
+--&gt; 617 config_dict, kwargs = cls._get_config_dict(pretrained_model_name_or_path, **kwargs)
+    618 if "_commit_hash" in config_dict:
+    619     original_kwargs["_commit_hash"] = config_dict["_commit_hash"]
+
+File /usr/local/lib/python3.10/dist-packages/transformers/configuration_utils.py:672, in PretrainedConfig._get_config_dict(cls, pretrained_model_name_or_path, **kwargs)
+    668 configuration_file = kwargs.pop("_configuration_file", CONFIG_NAME)
+    670 try:
+    671     # Load from local folder or from cache or download from model Hub and cache
+--&gt; 672     resolved_config_file = cached_file(
+    673         pretrained_model_name_or_path,
+    674         configuration_file,
+    675         cache_dir=cache_dir,
+    676         force_download=force_download,
+    677         proxies=proxies,
+    678         resume_download=resume_download,
+    679         local_files_only=local_files_only,
+    680         use_auth_token=use_auth_token,
+    681         user_agent=user_agent,
+    682         revision=revision,
+    683         subfolder=subfolder,
+    684         _commit_hash=commit_hash,
+    685     )
+    686     commit_hash = extract_commit_hash(resolved_config_file, commit_hash)
+    687 except EnvironmentError:
+    688     # Raise any environment error raise by `cached_file`. It will have a helpful error message adapted to
+    689     # the original exception.
+
+File /usr/local/lib/python3.10/dist-packages/transformers/utils/hub.py:388, in cached_file(path_or_repo_id, filename, cache_dir, force_download, resume_download, proxies, use_auth_token, revision, local_files_only, subfolder, repo_type, user_agent, _raise_exceptions_for_missing_entries, _raise_exceptions_for_connection_errors, _commit_hash)
+    386 if not os.path.isfile(resolved_file):
+    387     if _raise_exceptions_for_missing_entries:
+--&gt; 388         raise EnvironmentError(
+    389             f"{path_or_repo_id} does not appear to have a file named {full_filename}. Checkout "
+    390             f"'https://huggingface.co/{path_or_repo_id}/{revision}' for available files."
+    391         )
+    392     else:
+    393         return None
+
+OSError: llama-2-7b-enhanced does not appear to have a file named config.json. Checkout 'https://huggingface.co/llama-2-7b-enhanced/None' for available files.
+
+</code></pre> 
+<p></p> 
+<p></p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/26758b7df174adcae70a225f91449f3f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Spring Boot中使用Thymeleaf进行页面渲染</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8b4f5cc7ce3367b5c519e13daee0691e/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">基于SpringBoot养老院管理系统设计和实现(源码&#43;LW&#43;调试文档&#43;讲解等)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

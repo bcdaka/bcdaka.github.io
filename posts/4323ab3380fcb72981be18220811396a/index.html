@@ -1,0 +1,598 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【Redis】Redis 的学习教程（十）之使用 Redis 实现消息队列 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/4323ab3380fcb72981be18220811396a/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【Redis】Redis 的学习教程（十）之使用 Redis 实现消息队列">
+  <meta property="og:description" content="消息队列需要满足的要求：
+顺序一致：要保证消息发送的顺序和消费的顺序是一致的，不一致的话可能会导致业务上的错误消息确认机制：对于一个已经被消费的消息(已经收到ACK)不能再次被消费消息持久化：要具有持久化的能力，避免消息丢失，这样当消费者异常宕机导致再次重启后需要重新消费消息时可以再次获取 Redis 提供了三种不同的方式来实现消息队列：
+list 结构：基于 list 结构模拟消息队列pubsub：点对点消息模型stream：比较完善的消息队列模型 1. 基于 list 结构 因为 list 底层的实现就是一个「链表」，在头部和尾部操作元素，时间复杂度都是 O(1)，这意味着它非常符合消息队列的模型
+如果你的业务需求足够简单，想把 Redis 当作队列来使用，肯定最先想到的就是使用 list 这个数据类型
+常用的命令：
+lpush：发布消息rpop：拉取消息brpop：阻塞拉取消息 生产者：
+消费者：
+这个模型非常简单，如下图：
+当队列中已经没有消息了，消费者在执行 RPOP 时，会返回 NULL
+我们在编写消费者逻辑时，一般是一个「死循环」，这个逻辑需要不断地从队列中拉取消息进行处理，伪代码一般会这么写：
+while true: msg = redis.rpop(&#34;queue&#34;) // 没有消息，继续循环 if msg == null: continue // 处理消息 handle(msg) 问题 1：如果此时队列为空，那消费者依旧会频繁拉取消息，这会造成「CPU 空转」，不仅浪费 CPU 资源，还会对 Redis 造成压力
+怎么解决这个问题呢？
+当队列为空时，我们可以「休眠」一会，再去尝试拉取消息。代码可以修改成这样：
+while true: msg = redis.rpop(&#34;queue&#34;) // 没有消息，休眠2s if msg == null: sleep(2) continue // 处理消息 handle(msg) 这就解决了 CPU 空转问题">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2023-09-18T16:00:07+08:00">
+    <meta property="article:modified_time" content="2023-09-18T16:00:07+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【Redis】Redis 的学习教程（十）之使用 Redis 实现消息队列</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>消息队列需要满足的要求：</p> 
+<ol><li>顺序一致：要保证消息发送的顺序和消费的顺序是一致的，不一致的话可能会导致业务上的错误</li><li>消息确认机制：对于一个已经被消费的消息(已经收到ACK)不能再次被消费</li><li>消息持久化：要具有持久化的能力，避免消息丢失，这样当消费者异常宕机导致再次重启后需要重新消费消息时可以再次获取</li></ol> 
+<p>Redis 提供了三种不同的方式来实现消息队列：</p> 
+<ol><li>list 结构：基于 list 结构模拟消息队列</li><li>pubsub：点对点消息模型</li><li>stream：比较完善的消息队列模型</li></ol> 
+<h2><a id="1__list__11"></a>1. 基于 list 结构</h2> 
+<p>因为 list 底层的实现就是一个「链表」，在头部和尾部操作元素，时间复杂度都是 O(1)，这意味着它非常符合消息队列的模型</p> 
+<p>如果你的业务需求足够简单，想把 Redis 当作队列来使用，肯定最先想到的就是使用 list 这个数据类型</p> 
+<p>常用的命令：</p> 
+<ul><li><code>lpush</code>：发布消息</li><li><code>rpop</code>：拉取消息</li><li><code>brpop</code>：阻塞拉取消息</li></ul> 
+<p><strong>生产者：</strong></p> 
+<p><img src="https://images2.imgbox.com/5e/16/B0dfM8Ws_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>消费者：</strong></p> 
+<p><img src="https://images2.imgbox.com/39/c8/7myFhuBZ_o.png" alt="在这里插入图片描述"></p> 
+<p>这个模型非常简单，如下图：</p> 
+<p><img src="https://images2.imgbox.com/b4/96/hqtwsBCv_o.png" alt="在这里插入图片描述"></p> 
+<p>当队列中已经没有消息了，消费者在执行 RPOP 时，会返回 NULL</p> 
+<p><img src="https://images2.imgbox.com/b4/a8/NpnlRknw_o.png" alt="在这里插入图片描述"></p> 
+<p>我们在编写消费者逻辑时，一般是一个「死循环」，这个逻辑需要不断地从队列中拉取消息进行处理，伪代码一般会这么写：</p> 
+<pre><code class="prism language-java"><span class="token keyword">while</span> <span class="token boolean">true</span><span class="token operator">:</span>
+    msg <span class="token operator">=</span> redis<span class="token punctuation">.</span><span class="token function">rpop</span><span class="token punctuation">(</span><span class="token string">"queue"</span><span class="token punctuation">)</span>
+    <span class="token comment">// 没有消息，继续循环</span>
+    <span class="token keyword">if</span> msg <span class="token operator">==</span> <span class="token keyword">null</span><span class="token operator">:</span>
+        <span class="token keyword">continue</span>
+    <span class="token comment">// 处理消息</span>
+    <span class="token function">handle</span><span class="token punctuation">(</span>msg<span class="token punctuation">)</span>
+</code></pre> 
+<blockquote> 
+ <p>问题 1：如果此时队列为空，那消费者依旧会频繁拉取消息，这会造成「CPU 空转」，不仅浪费 CPU 资源，还会对 Redis 造成压力</p> 
+</blockquote> 
+<p>怎么解决这个问题呢？</p> 
+<p>当队列为空时，我们可以「休眠」一会，再去尝试拉取消息。代码可以修改成这样：</p> 
+<pre><code class="prism language-java"><span class="token keyword">while</span> <span class="token boolean">true</span><span class="token operator">:</span>
+    msg <span class="token operator">=</span> redis<span class="token punctuation">.</span><span class="token function">rpop</span><span class="token punctuation">(</span><span class="token string">"queue"</span><span class="token punctuation">)</span>
+    <span class="token comment">// 没有消息，休眠2s</span>
+    <span class="token keyword">if</span> msg <span class="token operator">==</span> <span class="token keyword">null</span><span class="token operator">:</span>
+        <span class="token function">sleep</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span>
+        <span class="token keyword">continue</span>
+    <span class="token comment">// 处理消息        </span>
+    <span class="token function">handle</span><span class="token punctuation">(</span>msg<span class="token punctuation">)</span>
+</code></pre> 
+<p>这就解决了 CPU 空转问题</p> 
+<blockquote> 
+ <p>问题 2：但又带来另外一个问题：当消费者在休眠等待时，有新消息来了，那消费者处理新消息就会存在「延迟」</p> 
+</blockquote> 
+<p>假设设置的休眠时间是 2s，那新消息最多存在 2s 的延迟。</p> 
+<p>要想缩短这个延迟，只能减小休眠的时间。但休眠时间越小，又有可能引发 CPU 空转问题</p> 
+<p><strong>Redis 确实提供了「阻塞式」拉取消息的命令：BRPOP / BLPOP</strong>。这里的 B 指的是阻塞（Block）</p> 
+<p><img src="https://images2.imgbox.com/ab/cb/XmQahgi7_o.png" alt="在这里插入图片描述"><br> 现在，你可以这样来拉取消息了：</p> 
+<pre><code class="prism language-java"><span class="token keyword">while</span> <span class="token boolean">true</span><span class="token operator">:</span>
+    <span class="token comment">// 没消息阻塞等待，0表示不设置超时时间</span>
+    msg <span class="token operator">=</span> redis<span class="token punctuation">.</span><span class="token function">brpop</span><span class="token punctuation">(</span><span class="token string">"queue"</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span>
+    <span class="token keyword">if</span> msg <span class="token operator">==</span> <span class="token keyword">null</span><span class="token operator">:</span>
+        <span class="token keyword">continue</span>
+    <span class="token comment">// 处理消息</span>
+    <span class="token function">handle</span><span class="token punctuation">(</span>msg<span class="token punctuation">)</span>
+</code></pre> 
+<p>使用 BRPOP 这种阻塞式方式拉取消息时，还支持传入一个「超时时间」，如果设置为 0，则表示不设置超时，直到有新消息才返回，否则会在指定的超时时间后返回 NULL</p> 
+<blockquote> 
+ <p>注意：如果设置的超时时间太长，这个连接太久没有活跃过，可能会被 Redis Server 判定为无效连接，之后 Redis Server 会强制把这个客户端踢下线。所以，采用这种方案，客户端要有重连机制</p> 
+</blockquote> 
+<p>使用 Jedis 实现：<a href="https://blog.csdn.net/jam_yin/article/details/130967040">https://blog.csdn.net/jam_yin/article/details/130967040</a></p> 
+<p><strong>优点：</strong></p> 
+<ul><li>利用 Redis 存储，不受 JVM 内存上限</li><li>基于 Redis 的持久化机制，数据安全有保证</li><li>可以满足消息有序性</li></ul> 
+<p><strong>缺点：</strong></p> 
+<ul><li><strong>不支持重复消费</strong>：消费者拉取消息后，这条消息就从 List 中删除了，无法被其它消费者再次消费，即不支持多个消费者消费同一批数据</li><li><strong>消息丢失</strong>：消费者拉取到消息后，如果发生异常宕机，那这条消息就丢失了（因为从 List 中 POP 一条消息出来后，这条消息就会立即从链表中删除了。也就是说，无论消费者是否处理成功，这条消息都没办法再次消费了）</li></ul> 
+<h2><a id="2__PubSub__100"></a>2. 基于 Pub-Sub 模式</h2> 
+<p><a href="https://blog.csdn.net/sco5282/article/details/132800836?spm=1001.2014.3001.5501">【Redis】Redis 的学习教程（九）之 发布 Pub、订阅 Sub</a></p> 
+<p>Redis 提供了以下命令来完成发布、订阅的操作：</p> 
+<ul><li><code>SUBSCRIBE</code>：订阅一个或多个频道</li><li><code>UNSUBSCRIBE</code>：取消订阅一个或多个频道</li><li><code>PSUBSCRIBE</code>：订阅一个或多个模式</li><li><code>PUNSUBSCRIBE</code>：取消订阅一个或多个模式</li></ul> 
+<h3><a id="21_Channel_109"></a>2.1 通过频道（Channel）进行发布订阅</h3> 
+<p><img src="https://images2.imgbox.com/5b/a5/LY4JFXZW_o.png" alt="在这里插入图片描述"><br> <strong>1、消费者订阅队列</strong></p> 
+<p>使用 SUBSCRIBE 命令，启动 2 个消费者，并「订阅」同一个队列</p> 
+<p><img src="https://images2.imgbox.com/ff/0f/1w6CdxMD_o.png" alt="在这里插入图片描述"></p> 
+<p>此时，2 个消费者都会被阻塞住，等待新消息的到来</p> 
+<p><strong>2、生产者发布消息</strong></p> 
+<p><img src="https://images2.imgbox.com/0f/c1/wbeBBqox_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>3、消费者解除阻塞，接收消息</strong></p> 
+<p><img src="https://images2.imgbox.com/78/9d/2hr0RDIY_o.png" alt="在这里插入图片描述"></p> 
+<p>使用 Pub/Sub 这种方案，既支持阻塞式拉取消息，还很好地满足了多组消费者，消费同一批数据的业务需求</p> 
+<h3><a id="22_Pattern_129"></a>2.2 使用模式（Pattern）匹配实现发布订阅</h3> 
+<p><img src="https://images2.imgbox.com/d1/a8/A0crC1aF_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>1、消费者订阅队列</strong></p> 
+<p>消费者订阅 queue.* 相关的队列消息</p> 
+<p><img src="https://images2.imgbox.com/37/03/q6tVf2ST_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>2、生产者发布消息</strong></p> 
+<p>生产者分别向 queue.p1 和 queue.p2 发布消息</p> 
+<p><img src="https://images2.imgbox.com/2f/dd/L6MBPVY7_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>3、消费者解除阻塞，接收消息</strong></p> 
+<p>消费者接收到这 2 个生产者的消息</p> 
+<p><img src="https://images2.imgbox.com/b0/a7/LCtekkoG_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>Pub/Sub 最大的优势就是，支持多组生产者、消费者处理消息；最大问题是：丢数据</strong></p> 
+<p>如果发生以下场景，就有可能导致数据丢失：</p> 
+<ul><li>消费者下线</li><li>Redis 宕机</li><li>消息堆积</li></ul> 
+<p>Pub/Sub 在实现时非常简单，它没有基于任何数据类型，也没有做任何的数据存储，它只是单纯地为生产者、消费者建立「数据转发通道」，把符合规则的数据，从一端转发到另一端</p> 
+<p>一个完整的发布、订阅消息处理流程是这样的：</p> 
+<ol><li>消费者订阅指定队列，Redis 就会记录一个映射关系：队列-&gt;消费者</li><li>生产者向这个队列发布消息，那 Redis 就从映射关系中找出对应的消费者，把消息转发给它</li></ol> 
+<p><img src="https://images2.imgbox.com/62/1f/VV7vCR8K_o.png" alt="在这里插入图片描述"></p> 
+<p>整个过程中，没有任何的数据存储，一切都是实时转发的</p> 
+<p>这种设计方案，就导致了上面提到的那些问题：例如，<strong>如果一个消费者异常挂掉了，它再重新上线后，只能接收新的消息，在下线期间生产者发布的消息，因为找不到消费者，都会被丢弃掉。如果所有消费者都下线了，那生产者发布的消息，因为找不到任何一个消费者，也会全部「丢弃」</strong></p> 
+<p>所以，<mark>当你在使用 Pub/Sub 时，一定要注意：消费者必须先订阅队列，生产者才能发布消息，否则消息会丢失。Pub/Sub 的相关操作，不会写入到 RDB 和 AOF 中，当 Redis 宕机重启，Pub/Sub 的数据也会全部丢失</mark></p> 
+<h5><a id="PubSub__174"></a>Pub/Sub 在处理「消息积压」时，为什么也会丢数据？</h5> 
+<p>当消费者的速度，跟不上生产者时，就会导致数据积压的情况发生。</p> 
+<p>如果采用 list 当作队列，消息积压时，会导致这个链表很长，最直接的影响就是，Redis 内存会持续增长，直到消费者把所有数据都从链表中取出</p> 
+<p>但 Pub/Sub 的处理方式却不一样，当消息积压时，有可能会导致<strong>消费失败和消息丢失！</strong></p> 
+<p><strong>从 Pub/Sub 的实现细节上来说</strong>：每个消费者订阅一个队列时，Redis 都会在 Server 上给这个消费者在分配一个「缓冲区」，这个缓冲区其实就是一块内存。当生产者发布消息时，Redis 先把消息写到对应消费者的缓冲区中。之后，消费者不断地从缓冲区读取消息，处理消息。</p> 
+<p><img src="https://images2.imgbox.com/b4/a3/DQ6Dlk3W_o.png" alt="在这里插入图片描述"><br> 但是，问题就出在这个缓冲区上。</p> 
+<p>因为这个缓冲区其实是有「上限」的（可配置），如果消费者拉取消息很慢，就会造成生产者发布到缓冲区的消息开始积压，缓冲区内存持续增长。如果超过了缓冲区配置的上限，此时，Redis 就会「强制」把这个消费者踢下线。这时消费者就会消费失败，也会丢失数据。</p> 
+<p>从 Redis 的配置文件可以看到这个缓冲区的默认配置：<code>client-output-buffer-limit pubsub 32mb 8mb 60</code></p> 
+<ul><li>32mb：缓冲区一旦超过 32MB，Redis 直接强制把消费者踢下线</li><li>8mb + 60：缓冲区超过 8MB，并且持续 60 秒，Redis 也会把消费者踢下线</li></ul> 
+<p>Pub/Sub 的这一点特点，是与 list 作队列差异比较大的：<strong>list 其实是属于「拉」模型，而 Pub/Sub 其实属于「推」模型。</strong></p> 
+<ul><li>list 中的数据可以一直积压在内存中，消费者什么时候来「拉」都可以</li><li>Pub/Sub 是把消息先「推」到消费者在 Redis Server 上的缓冲区中，然后等消费者再来取。当生产、消费速度不匹配时，就会导致缓冲区的内存开始膨胀，Redis 为了控制缓冲区的上限，强制把消费者踢下线的机制</li></ul> 
+<p><strong>优点：</strong></p> 
+<ol><li>支持发布 / 订阅，支持多组生产者、消费者处理消息</li></ol> 
+<p><strong>缺点：</strong></p> 
+<ol><li>消费者下线，数据会丢失</li><li>不支持数据持久化，Redis 宕机，数据也会丢失</li><li>消息堆积，缓冲区溢出，消费者会被强制踢下线，数据也会丢失</li></ol> 
+<h2><a id="3__Stream__207"></a>3. 基于 Stream 的消息队列</h2> 
+<p>Redis 作者在开发 Redis 期间，还另外开发了一个开源项目 disque。这个项目的定位，就是一个基于内存的分布式消息队列中间件。但由于种种原因，这个项目一直不温不火。终于，在 Redis 5.0 版本，作者把 disque 功能移植到了 Redis 中，并给它定义了一个新的数据类型：Stream</p> 
+<p>Stream 本质上是 Redis 中的 key，相关指令根据可以分为两类，分别是消息队列相关指令，消费组相关指令。</p> 
+<p><strong>消息队列相关指令：</strong></p> 
+<table><thead><tr><th>指令名称</th><th>指令作用</th></tr></thead><tbody><tr><td>XADD</td><td>添加消息到队列末尾</td></tr><tr><td>XREAD</td><td>获取消息（阻塞/非阻塞），返回大于指定 ID 的消息</td></tr><tr><td>XLEN</td><td>获取 Stream 中的消息长度</td></tr><tr><td>XDEL</td><td>删除消息</td></tr><tr><td>XRANGE</td><td>获取消息列表（可以指定范围），忽略删除的消息</td></tr><tr><td>XREVRANGE</td><td>和XRANGE相比区别在于反向获取，ID从大到小</td></tr><tr><td>XTRIM</td><td>限制 Stream 的长度，如果已经超长会进行截取</td></tr></tbody></table> 
+<p><strong>消费组相关指令：</strong></p> 
+<table><thead><tr><th>指令名称</th><th>指令作用</th></tr></thead><tbody><tr><td>XGROUP CREATE</td><td>创建消费者组</td></tr><tr><td>XREADGROUP</td><td>读取消费者组中的消息</td></tr><tr><td>XACK</td><td>ack 消息，消息被标记为“已处理”</td></tr><tr><td>XGROUP SETID</td><td>设置消费者组最后递送消息的ID</td></tr><tr><td>XGROUP DELCONSUMER</td><td>删除消费者组</td></tr><tr><td>XPENDING</td><td>打印待处理消息的详细信息</td></tr><tr><td>XCLAIM</td><td>转移消息的∂归属权（长期未被处理/无法处理的消息，转交给其他消费者组进行处理）</td></tr><tr><td>XINFO</td><td>打印 Stream\Consumer\Group 的详细信息</td></tr><tr><td>XINFO GROUPS</td><td>打印消费者组的详细信息</td></tr><tr><td>XINFO STREAM</td><td>打印 Stream 的详细信息</td></tr></tbody></table> 
+<h3><a id="31__XREAD__239"></a>3.1 通过 XREAD 命令读取消息</h3> 
+<p>命令如下：</p> 
+<ul><li><strong><code>XADD</code></strong>：发布消息。<code>XADD key [NOMKSTREAM] [MAXLEN|MINID [= | ~] threshold [LIMIT count]] *|ID field value [field value ...]</code> 
+  <ul><li>[NOMKSTREAM]：如果队列不存在，是否自动创建队列。默认 是</li><li>[MAXLEN|MINID [= | ~] threshold [LIMIT count]]：设置消息队列的最大消息数量</li><li><em>|ID：消息的唯一 ID。</em> 表示由 Redis 自动生成，格式：时间戳-递增数字</li><li>field value [field value …]：发送到队列中的消息 Entry，格式是 key-value</li></ul> </li></ul> 
+<p>如：创建一个名为 mystream 的队列，并向其发送消息 {“name”:“zzc”, “age”: 26}，使用 Redis 的递增 ID</p> 
+<pre><code class="prism language-shell">xadd mystream * name zzc age <span class="token number">26</span>
+</code></pre> 
+<ul><li><strong><code>XREAD</code></strong>：读取消息。<code>XREAD [COUNT count] [BLOCK milliseconds] STREAMS key [key...] ID [ID ...]</code> 
+  <ul><li>[COUNT count]：每次读取消息的最大数量</li><li>[BLOCK milliseconds]：当没有消息时，是否阻塞、阻塞时长</li><li>STREAMS key [key…]：要从哪个队列读取消息，key 就是队列名</li><li>ID [ID …]：起始 ID，只返回大于该 ID 的消息。0：从第一个消息开始；$：从最新的消息开始</li></ul> </li></ul> 
+<p>如：从名为 mystream 的队列读取最新的消息，每次读取 1 条</p> 
+<pre><code class="prism language-shell">XREAD COUNT <span class="token number">1</span> BLOCK <span class="token number">0</span> STREAMS mystream $
+</code></pre> 
+<p><strong>生产者：</strong></p> 
+<p><img src="https://images2.imgbox.com/d0/04/51i684hA_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>消费者：</strong></p> 
+<p><img src="https://images2.imgbox.com/4e/f8/ATVIr770_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="32____269"></a>3.2 通过 消费者组 命令读取消息</h3> 
+<p>消费者组：将多个消费者划分到一个组，监听同一个队列，具备如下特点：</p> 
+<ul><li>消息分流：队列中的消息会分流给组内的不同消费者，而不是重复消费，从而加快消息处理的速度</li><li>消息标识：消费者组会维护一个标识：记录最后一个被处理的消息。哪怕消费者宕机重启，还会从标识之后读取消息，确保每一个消息都会被消费</li><li>消息确认：消费者读取消息之后，消息处于 pending 状态，并存入一个 pending-list。当处理完成后，需要通过 ACK 来确认消息，标记为已处理，才会从 pending-list 移除</li></ul> 
+<p>命令如下：</p> 
+<ul><li><strong><code>XGROUP CREATE</code></strong>：创建消费者组。<code>XGROUP CREATE key groupName ID|$ [NOMKSTREAM]</code> 
+  <ul><li>key：队列名称</li><li>groupName：消费者组名称</li><li>ID：起始 ID 标识。0：第一个消息；$：从最新的消息</li><li>NOMKSTREAM：如果队列不存在，是否自动创建队列。默认 是</li></ul> </li></ul> 
+<p>创建消费者组：在队列 mystream 创建一个消费者组 mystreamGroup，从第一个消息开始读取</p> 
+<pre><code class="prism language-shell">XGROUP CREATE mystream mystreamGroup <span class="token number">0</span>
+</code></pre> 
+<ul><li><strong><code>XREADGROUP</code></strong>：从消费者组读取消息。<code>XREADGROUP GROUP group consumer [COUNT count] [BLOCK milliseconds] [NOACK] STREAMS key [key ...] ID [ID ...]</code> 
+  <ul><li>group：消费者组名称</li><li>consumer：消费者名称。如果消费者名称不存在，会自动创建一个消费者</li><li>count：本次查询的最大数量</li><li>milliseconds：当没有消息时最长等待时间</li><li>NOACK：无需手动 ACK，获取到消息时自动确认</li><li>STREAMS key：指定队列名称</li><li>ID：获取消息的起始 ID。“&gt;”：从下一个未消费的消息开始（正常情况下推荐）；其它：根据指定 id 从 pending-list 中获取已消费但未确认的消息。例如：0 是从 pending-list 中第一个消息开始</li></ul> </li></ul> 
+<p>消费者 c1 从队列 mystream 中的消费者组 mystreamGroup 读取消息，2000 毫秒内读取不到返回</p> 
+<pre><code class="prism language-shell">XREADGROUP GROUP mystreamGroup c1 COUNT <span class="token number">1</span> BLOCK <span class="token number">2000</span> STREAMS mystream
+</code></pre> 
+<p>其它命令：</p> 
+<pre><code class="prism language-shell">// 删除指定的消费者组
+XGROUP DESTROY key groupName
+// 给指定的消费者组添加消费者
+XGROUP CREATECONSUMER key groupName consumername
+// 删除消费者组中指定的消费者
+XGROUP DELCONSUMER key groupName consumername
+</code></pre> 
+<p><strong>生产者：</strong></p> 
+<p>生产者发送两条消息：</p> 
+<p><img src="https://images2.imgbox.com/fc/62/RE3jGTR9_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>创建消费者组：</strong></p> 
+<p>开启 2 组消费者处理同一批数据，就需要创建 2 个消费者组。0-0：从头拉取消息</p> 
+<p><img src="https://images2.imgbox.com/22/ad/mUlTtfEm_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>消费者：</strong></p> 
+<p>消费者组创建好之后，我们可以给每个「消费者组」下面挂一个「消费者」，让它们分别处理同一批数据</p> 
+<p>第一个消费组开始消费：</p> 
+<p><img src="https://images2.imgbox.com/40/d5/r4OcNOzx_o.png" alt="在这里插入图片描述"></p> 
+<p>第二个消费组开始消费：</p> 
+<p><img src="https://images2.imgbox.com/ba/b3/A7BqeRYV_o.png" alt="在这里插入图片描述"></p> 
+<p>可以看到，这 2 组消费者，都可以获取同一批数据进行处理了。这样一来，就达到了多组消费者「订阅」消费的目的</p> 
+<p><img src="https://images2.imgbox.com/02/24/321xB5Ah_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="321_Stream__338"></a>3.2.1 消息处理时异常，Stream 保证消息不丢失，重新消费</h4> 
+<p>若某个消费者，消费了某条消息，但是并没有处理成功时（例如消费者进程宕机），这条消息可能会丢失，因为组内其他消费者不能再次消费到该消息了</p> 
+<p>当一组消费者处理完消息后，需要执行 XACK 命令告知 Redis，这时 Redis 就会把这条消息标记为「处理完成」</p> 
+<ul><li><strong><code>XPENDING</code></strong>：为了解决组内消息读取但处理期间消费者崩溃带来的消息丢失问题，Stream 设计了 Pending 列表，用于记录读取但并未确认完毕的消息。<code>XPENDING key group [start end count] [consumer]</code> 
+  <ul><li>key：队列名</li><li>group：消费者组名称</li><li>start：开始值。-：最小值</li><li>end：结束值。+：最大值</li><li>count 数量</li></ul> </li><li><strong><code>XACK</code></strong>：对于已读取未处理的消息，使用命令 XACK 完成告知消息处理完成。XACK 命令确认消费的信息，一旦信息被确认处理，就表示信息被完善处理。<code>XACK key group ID [ID ...]</code></li></ul> 
+<p><strong>查询已经消费但未处理（未 ACK）的消息：</strong></p> 
+<p><img src="https://images2.imgbox.com/74/11/cUZnIYrf_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>ACK 消息：</strong></p> 
+<p><img src="https://images2.imgbox.com/5f/15/ipLyPpxG_o.png" alt="在这里插入图片描述"></p> 
+<p>如果消费者异常宕机，肯定不会发送 XACK，那么 Redis 就会依旧保留这条消息。</p> 
+<p>待这组消费者重新上线后，Redis 就会把之前没有处理成功的数据，重新发给这个消费者。这样一来，即使消费者异常，也不会丢失数据了</p> 
+<h4><a id="322__363"></a>3.2.2 代码实现</h4> 
+<p>①：引入 redis 依赖</p> 
+<pre><code class="prism language-xml"><span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>org.springframework.boot<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>spring-boot-starter-data-redis<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+<p>②：配置</p> 
+<pre><code class="prism language-yml"><span class="token key atrule">spring</span><span class="token punctuation">:</span>
+  <span class="token key atrule">redis</span><span class="token punctuation">:</span>
+    <span class="token key atrule">host</span><span class="token punctuation">:</span> localhost
+    <span class="token key atrule">port</span><span class="token punctuation">:</span> <span class="token number">6379</span>
+    <span class="token key atrule">password</span><span class="token punctuation">:</span>
+    <span class="token key atrule">timeout</span><span class="token punctuation">:</span> 2000s
+    <span class="token comment"># 配置文件中添加 lettuce.pool 相关配置，则会使用到lettuce连接池</span>
+    <span class="token key atrule">lettuce</span><span class="token punctuation">:</span>
+      <span class="token key atrule">pool</span><span class="token punctuation">:</span>
+        <span class="token key atrule">max-active</span><span class="token punctuation">:</span> <span class="token number">8</span>  <span class="token comment"># 连接池最大连接数(使用负值表示没有限制) 默认为8</span>
+        <span class="token key atrule">max-wait</span><span class="token punctuation">:</span> <span class="token punctuation">-</span>1ms <span class="token comment"># 接池最大阻塞等待时间(使用负值表示没有限制) 默认为-1ms</span>
+        <span class="token key atrule">max-idle</span><span class="token punctuation">:</span> <span class="token number">8</span>    <span class="token comment"># 连接池中的最大空闲连接 默认为8</span>
+        <span class="token key atrule">min-idle</span><span class="token punctuation">:</span> <span class="token number">0</span>    <span class="token comment"># 连接池中的最小空闲连接 默认为 0</span>
+  <span class="token key atrule">main</span><span class="token punctuation">:</span>
+    <span class="token key atrule">allow-circular-references</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+
+<span class="token key atrule">redis</span><span class="token punctuation">:</span>
+  <span class="token key atrule">mq</span><span class="token punctuation">:</span>
+    <span class="token key atrule">streams</span><span class="token punctuation">:</span>
+      <span class="token comment"># key名称</span>
+      <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> redis<span class="token punctuation">:</span>mq<span class="token punctuation">:</span>streams<span class="token punctuation">:</span>key1
+        <span class="token key atrule">groups</span><span class="token punctuation">:</span>
+          <span class="token comment"># 消费者组名称</span>
+          <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> group1
+            <span class="token comment"># 消费者名称</span>
+            <span class="token key atrule">consumers</span><span class="token punctuation">:</span> group1<span class="token punctuation">-</span>con1<span class="token punctuation">,</span> group1<span class="token punctuation">-</span>con2
+      <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> redis<span class="token punctuation">:</span>mq<span class="token punctuation">:</span>streams<span class="token punctuation">:</span>key2
+        <span class="token key atrule">groups</span><span class="token punctuation">:</span>
+          <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> group2
+            <span class="token key atrule">consumers</span><span class="token punctuation">:</span> group2<span class="token punctuation">-</span>con1<span class="token punctuation">,</span> group2<span class="token punctuation">-</span>con2
+      <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> redis<span class="token punctuation">:</span>mq<span class="token punctuation">:</span>streams<span class="token punctuation">:</span>key3
+        <span class="token key atrule">groups</span><span class="token punctuation">:</span>
+          <span class="token punctuation">-</span> <span class="token key atrule">name</span><span class="token punctuation">:</span> group3
+            <span class="token key atrule">consumers</span><span class="token punctuation">:</span> group3<span class="token punctuation">-</span>con1<span class="token punctuation">,</span> group3<span class="token punctuation">-</span>con2
+
+</code></pre> 
+<p>队列、消费者组、消费者 通过配置文件进行配置</p> 
+<p>③：Redis 配置类</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Slf4j</span>
+<span class="token annotation punctuation">@Configuration</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">RedisConfig</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token annotation punctuation">@Resource</span>
+    <span class="token keyword">private</span> <span class="token class-name">RedisMqProperties</span> redisMqProperties<span class="token punctuation">;</span>
+
+    <span class="token annotation punctuation">@Resource</span>
+    <span class="token keyword">private</span> <span class="token class-name">RedisStreamUtil</span> redisStreamUtil<span class="token punctuation">;</span>
+
+    <span class="token annotation punctuation">@Bean</span>
+    <span class="token keyword">public</span> <span class="token class-name">RedisTemplate</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> <span class="token function">redisTemplate</span><span class="token punctuation">(</span><span class="token class-name">RedisConnectionFactory</span> redisConnectionFactory<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">RedisTemplate</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> template <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">RedisTemplate</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        template<span class="token punctuation">.</span><span class="token function">setConnectionFactory</span><span class="token punctuation">(</span>redisConnectionFactory<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">ObjectMapper</span> om <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ObjectMapper</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        om<span class="token punctuation">.</span><span class="token function">setVisibility</span><span class="token punctuation">(</span><span class="token class-name">PropertyAccessor</span><span class="token punctuation">.</span><span class="token constant">ALL</span><span class="token punctuation">,</span> <span class="token class-name">JsonAutoDetect<span class="token punctuation">.</span>Visibility</span><span class="token punctuation">.</span><span class="token constant">ANY</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        om<span class="token punctuation">.</span><span class="token function">enableDefaultTyping</span><span class="token punctuation">(</span><span class="token class-name">ObjectMapper<span class="token punctuation">.</span>DefaultTyping</span><span class="token punctuation">.</span><span class="token constant">NON_FINAL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// json 序列化配置</span>
+        <span class="token class-name">Jackson2JsonRedisSerializer</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> jackson2JsonRedisSerializer <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Jackson2JsonRedisSerializer</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token class-name">Object</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        jackson2JsonRedisSerializer<span class="token punctuation">.</span><span class="token function">setObjectMapper</span><span class="token punctuation">(</span>om<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// String 序列化</span>
+        <span class="token class-name">StringRedisSerializer</span> stringRedisSerializer <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">StringRedisSerializer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 所有的 key 采用 string 的序列化</span>
+        template<span class="token punctuation">.</span><span class="token function">setKeySerializer</span><span class="token punctuation">(</span>stringRedisSerializer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 所有的 value 采用 jackson 的序列化</span>
+        template<span class="token punctuation">.</span><span class="token function">setValueSerializer</span><span class="token punctuation">(</span>jackson2JsonRedisSerializer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// hash 的 key 采用 string 的序列化</span>
+        template<span class="token punctuation">.</span><span class="token function">setHashKeySerializer</span><span class="token punctuation">(</span>stringRedisSerializer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// hash 的 value 采用 jackson 的序列化</span>
+        template<span class="token punctuation">.</span><span class="token function">setHashValueSerializer</span><span class="token punctuation">(</span>jackson2JsonRedisSerializer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        template<span class="token punctuation">.</span><span class="token function">afterPropertiesSet</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> template<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Bean</span>
+    <span class="token keyword">public</span> <span class="token class-name">RedisMessageListenerContainer</span> <span class="token function">container</span><span class="token punctuation">(</span><span class="token class-name">RedisConnectionFactory</span> redisConnectionFactory<span class="token punctuation">,</span> <span class="token class-name">RedisMessageListener</span> listener<span class="token punctuation">,</span> <span class="token class-name">MessageListenerAdapter</span> adapter<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">RedisMessageListenerContainer</span> container <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">RedisMessageListenerContainer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 设置连接工厂</span>
+        container<span class="token punctuation">.</span><span class="token function">setConnectionFactory</span><span class="token punctuation">(</span>redisConnectionFactory<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 所有的订阅消息，都需要在这里进行注册绑定,new PatternTopic("topic")表示发布的主题信息。可以添加多个 messageListener，配置不同的通道</span>
+        container<span class="token punctuation">.</span><span class="token function">addMessageListener</span><span class="token punctuation">(</span>listener<span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token class-name">PatternTopic</span><span class="token punctuation">(</span><span class="token string">"topic1"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        container<span class="token punctuation">.</span><span class="token function">addMessageListener</span><span class="token punctuation">(</span>adapter<span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token class-name">PatternTopic</span><span class="token punctuation">(</span><span class="token string">"topic2"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 设置序列化对象：① 发布的时候需要设置序列化；订阅方也需要设置序列化；② 设置序列化对象必须放在[加入消息监听器]这一步后面，否则会导致接收器接收不到消息</span>
+        <span class="token class-name">Jackson2JsonRedisSerializer</span> seria <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Jackson2JsonRedisSerializer</span><span class="token punctuation">(</span><span class="token class-name">Object</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">ObjectMapper</span> objectMapper <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ObjectMapper</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        objectMapper<span class="token punctuation">.</span><span class="token function">setVisibility</span><span class="token punctuation">(</span><span class="token class-name">PropertyAccessor</span><span class="token punctuation">.</span><span class="token constant">ALL</span><span class="token punctuation">,</span> <span class="token class-name">JsonAutoDetect<span class="token punctuation">.</span>Visibility</span><span class="token punctuation">.</span><span class="token constant">ANY</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        objectMapper<span class="token punctuation">.</span><span class="token function">enableDefaultTyping</span><span class="token punctuation">(</span><span class="token class-name">ObjectMapper<span class="token punctuation">.</span>DefaultTyping</span><span class="token punctuation">.</span><span class="token constant">NON_FINAL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        seria<span class="token punctuation">.</span><span class="token function">setObjectMapper</span><span class="token punctuation">(</span>objectMapper<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        container<span class="token punctuation">.</span><span class="token function">setTopicSerializer</span><span class="token punctuation">(</span>seria<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> container<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Bean</span>
+    <span class="token keyword">public</span> <span class="token class-name">MessageListenerAdapter</span> <span class="token function">listenerAdapter</span><span class="token punctuation">(</span><span class="token class-name">PrintMessageReceiver</span> printMessageReceiver<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">MessageListenerAdapter</span> receiveMessage <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">MessageListenerAdapter</span><span class="token punctuation">(</span>printMessageReceiver<span class="token punctuation">,</span> <span class="token string">"receiveMessage"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">Jackson2JsonRedisSerializer</span> seria <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Jackson2JsonRedisSerializer</span><span class="token punctuation">(</span><span class="token class-name">Object</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">ObjectMapper</span> objectMapper <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ObjectMapper</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        objectMapper<span class="token punctuation">.</span><span class="token function">setVisibility</span><span class="token punctuation">(</span><span class="token class-name">PropertyAccessor</span><span class="token punctuation">.</span><span class="token constant">ALL</span><span class="token punctuation">,</span> <span class="token class-name">JsonAutoDetect<span class="token punctuation">.</span>Visibility</span><span class="token punctuation">.</span><span class="token constant">ANY</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        objectMapper<span class="token punctuation">.</span><span class="token function">enableDefaultTyping</span><span class="token punctuation">(</span><span class="token class-name">ObjectMapper<span class="token punctuation">.</span>DefaultTyping</span><span class="token punctuation">.</span><span class="token constant">NON_FINAL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        seria<span class="token punctuation">.</span><span class="token function">setObjectMapper</span><span class="token punctuation">(</span>objectMapper<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        receiveMessage<span class="token punctuation">.</span><span class="token function">setSerializer</span><span class="token punctuation">(</span>seria<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> receiveMessage<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Bean</span>
+    <span class="token keyword">public</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Subscription</span><span class="token punctuation">&gt;</span></span> <span class="token function">subscription</span><span class="token punctuation">(</span><span class="token class-name">RedisConnectionFactory</span> factory<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Subscription</span><span class="token punctuation">&gt;</span></span> resultList <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ArrayList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">AtomicInteger</span> index <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">AtomicInteger</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">int</span> processors <span class="token operator">=</span> <span class="token class-name">Runtime</span><span class="token punctuation">.</span><span class="token function">getRuntime</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">availableProcessors</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">ThreadPoolExecutor</span> executor <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ThreadPoolExecutor</span><span class="token punctuation">(</span>processors<span class="token punctuation">,</span> processors<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token class-name">TimeUnit</span><span class="token punctuation">.</span><span class="token constant">SECONDS</span><span class="token punctuation">,</span>
+                <span class="token keyword">new</span> <span class="token class-name">LinkedBlockingDeque</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> r <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">Thread</span> thread <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Thread</span><span class="token punctuation">(</span>r<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            thread<span class="token punctuation">.</span><span class="token function">setName</span><span class="token punctuation">(</span><span class="token string">"async-stream-consumer-"</span> <span class="token operator">+</span> index<span class="token punctuation">.</span><span class="token function">getAndIncrement</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            thread<span class="token punctuation">.</span><span class="token function">setDaemon</span><span class="token punctuation">(</span><span class="token boolean">true</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span> thread<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">StreamMessageListenerContainer<span class="token punctuation">.</span>StreamMessageListenerContainerOptions</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">MapRecord</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> options <span class="token operator">=</span>
+                <span class="token class-name">StreamMessageListenerContainer
+                        <span class="token punctuation">.</span>StreamMessageListenerContainerOptions</span>
+                        <span class="token punctuation">.</span><span class="token function">builder</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+                        <span class="token comment">// 一次最多获取多少条消息</span>
+                        <span class="token punctuation">.</span><span class="token function">batchSize</span><span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">)</span>
+                        <span class="token punctuation">.</span><span class="token function">executor</span><span class="token punctuation">(</span>executor<span class="token punctuation">)</span>
+                        <span class="token punctuation">.</span><span class="token function">pollTimeout</span><span class="token punctuation">(</span><span class="token class-name">Duration</span><span class="token punctuation">.</span><span class="token function">ofSeconds</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                        <span class="token punctuation">.</span><span class="token function">errorHandler</span><span class="token punctuation">(</span>throwable <span class="token operator">-&gt;</span> log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">"[MQ handler exception]"</span> <span class="token operator">+</span> throwable<span class="token punctuation">.</span><span class="token function">getMessage</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                        <span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">RedisMqStream</span> redisMqStream <span class="token operator">:</span> redisMqProperties<span class="token punctuation">.</span><span class="token function">getStreams</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">String</span> streamName <span class="token operator">=</span> redisMqStream<span class="token punctuation">.</span><span class="token function">getName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token class-name">RedisMqGroup</span> redisMqGroup <span class="token operator">=</span> redisMqStream<span class="token punctuation">.</span><span class="token function">getGroups</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token function">initStream</span><span class="token punctuation">(</span>streamName<span class="token punctuation">,</span>redisMqGroup<span class="token punctuation">.</span><span class="token function">getName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">var</span> listenerContainer <span class="token operator">=</span> <span class="token class-name">StreamMessageListenerContainer</span><span class="token punctuation">.</span><span class="token function">create</span><span class="token punctuation">(</span>factory<span class="token punctuation">,</span>options<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">// 手动ask消息</span>
+            <span class="token class-name">Subscription</span> subscription <span class="token operator">=</span> listenerContainer<span class="token punctuation">.</span><span class="token function">receive</span><span class="token punctuation">(</span><span class="token class-name">Consumer</span><span class="token punctuation">.</span><span class="token function">from</span><span class="token punctuation">(</span>redisMqGroup<span class="token punctuation">.</span><span class="token function">getName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> redisMqGroup<span class="token punctuation">.</span><span class="token function">getConsumers</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                    <span class="token class-name">StreamOffset</span><span class="token punctuation">.</span><span class="token function">create</span><span class="token punctuation">(</span>streamName<span class="token punctuation">,</span> <span class="token class-name">ReadOffset</span><span class="token punctuation">.</span><span class="token function">lastConsumed</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token class-name">ReportReadMqListener</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">// 自动ask消息</span>
+           <span class="token comment">/* Subscription subscription = listenerContainer.receiveAutoAck(Consumer.from(redisMqGroup.getName(), redisMqGroup.getConsumers()[0]),
+                    StreamOffset.create(streamName, ReadOffset.lastConsumed()), new ReportReadMqListener());*/</span>
+            resultList<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>subscription<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            listenerContainer<span class="token punctuation">.</span><span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">ReportReadMqListener</span><span class="token punctuation">.</span>redisStreamUtil <span class="token operator">=</span> redisStreamUtil<span class="token punctuation">;</span>
+        <span class="token keyword">return</span> resultList<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">initStream</span><span class="token punctuation">(</span><span class="token class-name">String</span> key<span class="token punctuation">,</span> <span class="token class-name">String</span> group<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">boolean</span> hasKey <span class="token operator">=</span> redisStreamUtil<span class="token punctuation">.</span><span class="token function">hasKey</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token operator">!</span>hasKey<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span><span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> map <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            map<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token string">"field"</span><span class="token punctuation">,</span><span class="token string">"value"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//创建主题</span>
+            <span class="token class-name">String</span> result <span class="token operator">=</span> redisStreamUtil<span class="token punctuation">.</span><span class="token function">addMap</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> map<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//创建消费组</span>
+            redisStreamUtil<span class="token punctuation">.</span><span class="token function">createGroup</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> group<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token comment">//将初始化的值删除掉</span>
+            redisStreamUtil<span class="token punctuation">.</span><span class="token function">del</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> result<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"stream:{}-group:{} initialize success"</span><span class="token punctuation">,</span>key<span class="token punctuation">,</span> group<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>④：消费者组的配置对应的 Java 类</p> 
+<p><code>RedisMqProperties</code>：所有的 队列</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Data</span>
+<span class="token annotation punctuation">@Configuration</span>
+<span class="token annotation punctuation">@EnableConfigurationProperties</span>
+<span class="token annotation punctuation">@ConfigurationProperties</span><span class="token punctuation">(</span>prefix <span class="token operator">=</span> <span class="token string">"redis.mq"</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">RedisMqProperties</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">// 所有队列</span>
+    <span class="token keyword">public</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">RedisMqStream</span><span class="token punctuation">&gt;</span></span> streams<span class="token punctuation">;</span>
+    
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><code>RedisMqStream</code>：队列封装类</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Data</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">RedisMqStream</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">// 队列</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> name<span class="token punctuation">;</span>
+
+    <span class="token comment">// 消费者组</span>
+    <span class="token keyword">public</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">RedisMqGroup</span><span class="token punctuation">&gt;</span></span> groups<span class="token punctuation">;</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><code>RedisMqGroup</code>：消费者组</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Data</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">RedisMqGroup</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">// 消费者组名</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> name<span class="token punctuation">;</span>
+
+    <span class="token comment">// 消费者</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> consumers<span class="token punctuation">;</span>
+    
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>⑤：RedisStreamUtil：操作 Stream 的工具类</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Component</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">RedisStreamUtil</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token annotation punctuation">@Autowired</span>
+    <span class="token keyword">private</span> <span class="token class-name">RedisTemplate</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> redisTemplate<span class="token punctuation">;</span>
+
+    <span class="token comment">// 创建消费组</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">createGroup</span><span class="token punctuation">(</span><span class="token class-name">String</span> key<span class="token punctuation">,</span> <span class="token class-name">String</span> group<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> redisTemplate<span class="token punctuation">.</span><span class="token function">opsForStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">createGroup</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> group<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 获取消费者信息</span>
+    <span class="token keyword">public</span> <span class="token class-name">StreamInfo<span class="token punctuation">.</span>XInfoConsumers</span> <span class="token function">queryConsumers</span><span class="token punctuation">(</span><span class="token class-name">String</span> key<span class="token punctuation">,</span> <span class="token class-name">String</span> group<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> redisTemplate<span class="token punctuation">.</span><span class="token function">opsForStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">consumers</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> group<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">StreamInfo<span class="token punctuation">.</span>XInfoGroups</span> <span class="token function">queryGroups</span><span class="token punctuation">(</span><span class="token class-name">String</span> key<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> redisTemplate<span class="token punctuation">.</span><span class="token function">opsForStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">groups</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 添加Map消息</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">addMap</span><span class="token punctuation">(</span><span class="token class-name">String</span> key<span class="token punctuation">,</span> <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> value<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> redisTemplate<span class="token punctuation">.</span><span class="token function">opsForStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> value<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getValue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+   <span class="token comment">// 读取消息</span>
+    <span class="token keyword">public</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">MapRecord</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> <span class="token function">read</span><span class="token punctuation">(</span><span class="token class-name">String</span> key<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> redisTemplate<span class="token punctuation">.</span><span class="token function">opsForStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">read</span><span class="token punctuation">(</span><span class="token class-name">StreamOffset</span><span class="token punctuation">.</span><span class="token function">fromStart</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 确认消费</span>
+    <span class="token keyword">public</span> <span class="token class-name">Long</span> <span class="token function">ack</span><span class="token punctuation">(</span><span class="token class-name">String</span> key<span class="token punctuation">,</span> <span class="token class-name">String</span> group<span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> recordIds<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> redisTemplate<span class="token punctuation">.</span><span class="token function">opsForStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">acknowledge</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> group<span class="token punctuation">,</span> recordIds<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 删除消息。当一个节点的所有消息都被删除，那么该节点会自动销毁</span>
+    <span class="token keyword">public</span> <span class="token class-name">Long</span> <span class="token function">del</span><span class="token punctuation">(</span><span class="token class-name">String</span> key<span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span> recordIds<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> redisTemplate<span class="token punctuation">.</span><span class="token function">opsForStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">delete</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> recordIds<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 判断是否存在key</span>
+    <span class="token keyword">public</span> <span class="token keyword">boolean</span> <span class="token function">hasKey</span><span class="token punctuation">(</span><span class="token class-name">String</span> key<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">Boolean</span> aBoolean <span class="token operator">=</span> redisTemplate<span class="token punctuation">.</span><span class="token function">hasKey</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> aBoolean <span class="token operator">!=</span> <span class="token keyword">null</span> <span class="token operator">&amp;&amp;</span> aBoolean<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>⑥：消费者</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Slf4j</span>
+<span class="token annotation punctuation">@Component</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">ReportReadMqListener</span> <span class="token keyword">implements</span> <span class="token class-name">StreamListener</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">MapRecord</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token class-name">RedisStreamUtil</span> redisStreamUtil<span class="token punctuation">;</span>
+
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">onMessage</span><span class="token punctuation">(</span><span class="token class-name">MapRecord</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> message<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// stream的key值</span>
+        <span class="token class-name">String</span> streamKey <span class="token operator">=</span> message<span class="token punctuation">.</span><span class="token function">getStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//消息ID</span>
+        <span class="token class-name">RecordId</span> recordId <span class="token operator">=</span> message<span class="token punctuation">.</span><span class="token function">getId</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//消息内容</span>
+        <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> msg <span class="token operator">=</span> message<span class="token punctuation">.</span><span class="token function">getValue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//TODO 处理逻辑</span>
+
+        log<span class="token punctuation">.</span><span class="token function">info</span><span class="token punctuation">(</span><span class="token string">"【streamKey】= "</span> <span class="token operator">+</span> streamKey <span class="token operator">+</span> <span class="token string">",【recordId】= "</span> <span class="token operator">+</span> recordId <span class="token operator">+</span> <span class="token string">",【msg】="</span> <span class="token operator">+</span> msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//逻辑处理完成后，ack消息，删除消息，group为消费组名称</span>
+        <span class="token class-name">StreamInfo<span class="token punctuation">.</span>XInfoGroups</span> xInfoGroups <span class="token operator">=</span> redisStreamUtil<span class="token punctuation">.</span><span class="token function">queryGroups</span><span class="token punctuation">(</span>streamKey<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        xInfoGroups<span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span>xInfoGroup <span class="token operator">-&gt;</span> redisStreamUtil<span class="token punctuation">.</span><span class="token function">ack</span><span class="token punctuation">(</span>streamKey<span class="token punctuation">,</span> xInfoGroup<span class="token punctuation">.</span><span class="token function">groupName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> recordId<span class="token punctuation">.</span><span class="token function">getValue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        redisStreamUtil<span class="token punctuation">.</span><span class="token function">del</span><span class="token punctuation">(</span>streamKey<span class="token punctuation">,</span> recordId<span class="token punctuation">.</span><span class="token function">getValue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>⑦：发布消息</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/testStream"</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">testStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">HashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> message <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    message<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token string">"body"</span><span class="token punctuation">,</span> <span class="token string">"消息主题"</span> <span class="token punctuation">)</span><span class="token punctuation">;</span>
+    message<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token string">"sendTime"</span><span class="token punctuation">,</span> <span class="token string">"消息发送时间"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name">String</span> streamKey <span class="token operator">=</span> <span class="token string">"redis:mq:streams:key2"</span><span class="token punctuation">;</span>
+    redisStreamUtil<span class="token punctuation">.</span><span class="token function">addMap</span><span class="token punctuation">(</span>streamKey<span class="token punctuation">,</span> message<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token string">"testStream"</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="4__664"></a>4. 总结</h2> 
+<p><img src="https://images2.imgbox.com/1f/7e/8CQUrODw_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f3b0340396594a6bf0e05e24ec50473b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">腾讯轻联：带你创造属于自己的AI小助手</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8e387dd5164a23e810d1b74477deb3aa/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">如何在本地 Linux 主机上实现 Yearning SQL 审核平台的远程访问？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

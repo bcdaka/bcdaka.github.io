@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>关于克拉美罗下界(CRLB)-及不同DOA估计算法下的方差(性能)对比 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/6754b317553d00830288c86907ae5c21/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="关于克拉美罗下界(CRLB)-及不同DOA估计算法下的方差(性能)对比">
+  <meta property="og:description" content="说明 参数估计在科研、工程乃至生活中都有广泛的应用。参数估计要解决的问题简单来说就是：基于一组观测数据，通过某种方法来获得我们想要的，与观测数据相关的一个或多个参数。
+克拉美-罗界(Cramr-Rao Bound, CRB)是无偏估计里我们常用的且十分重要的一种对不同参数估计方法性能评价的参考(对比)指标：对于同一组观测数据，可能会有很多不同的方法来做估计 并得到各自的估计结果，那么，这些方法的优劣(包括其相对优劣、以及参数估计结果与真实值的逼近程度)如何，需要我们提出一种客观的评价指标(参考)，克拉美罗界就是这样一个指标。
+当然，克拉美罗界的用处不止于此，以及关于什么是无偏估计，我将在本博文中做出更详细的说明。 克拉美罗界是参数估计相关paper中不可或缺的元素，在去年一个老哥带我发的一篇文章中，审稿人之一对我们提了这样的要求：“The CRLB should be also include to show the performance benchmark for the estimation algorithms.”那会儿对CRLB还没有什么概念…,初看了一下觉得蛮繁琐，匆匆写了个理由忽悠过去了(可能主要是期刊比较水所以能忽悠过去…)，后面就一直拖到现在才得空来对这个概念做一些学习和梳理，并形成了本篇博文。
+关于CRLB，网上确实有一些比较好的资料，但是读者若要系统以及细节地理解参数估计以及关于CRLB的概念，建议看看参考资料[1]。本文的内容相对简单，主要是试图理清楚关于参数估计、无偏估计、CRLB的由来和原理等概念，并以一维线阵为例，给出线阵DOA估计的CRLB、不同DOA估计算法的性能比较。可能会有一些错误，欢迎读者评论指正，我会不定期补充维护。
+Blog 2024.3.25 博文第一次撰写
+目录 说明
+目录
+一、参数估计&amp;克拉美罗下界基本概念
+二、线阵&amp;单目标下 不同DOA估计算法方差结果及其与CRLB对比
+2.1 不同SNR下的结果
+2.2 不同角度下的结果
+2.3 小结
+三、总结
+四、参考资料
+五、代码
+一、参数估计&amp;克拉美罗下界基本概念 参数估计要解决的问题简单来说就是：基于一组观测数据，通过某种方法来获得我们想要的与观测数据相关的一个或多个参数。现在计算机技术、AD转换等技术已经发展得足够成熟了，在雷达、声呐、通信等各类系统中，我们一般都会将各类模拟量采样并存储为离散时间波形，因此，参数估计问题就是从得到的离散时间波形或数据集中提取参数的问题。用数学语言来表达就是：假设我们有N点的数据集合：{x[0],x[1],x[2],…x[N-1]}，它与未知参数y有关，我们希望基于该数据集合来确定估计量y:
+(1-1)
+式中，g是某个函数(某种参数估计方法)。是参数y在g方法下的估测值。对应到本博文后面将要探讨的一维线阵的DOA估计问题：这里的x就可以理解成每个接收通道采集的数据，y是目标角度，我们做DOA估计的方法有很多(关于DOA估计，读者可以参考我之前写过的一篇博文[2]：车载毫米波雷达DOA估计综述-CSDN博客)。比如有经典的FFT、DBF、Music、Capon等。
+这便是参数估计问题。
+而无偏估计是指估计量的平均值为未知参数的真值。对应到前面的数学语言上，即假设我们有M组N点的数据集合：第一组为 X_1:{x_1[0],x_1[1],x_1[2],…x_1[N-1]}、第二组为X_2: {x_1[0],x_1[1],x_1[2],…x_1[N-1]}、以此类推一直到第M组。我们用方法g对这M组的数据进行估计，可以得到M个，此时，如果：
+(1-2)
+式中y为参数的真值，则我们称该估计为无偏估计。我们基于FFT、DBF、Music、Capon的方法做线阵的DOA估计都属于无偏估计。
+如前文说明中所述，对于同一组观测数据，可能会有很多不同的方法来做估计并得到各自的估计结果，那么此时我们会感兴趣的一个问题是：大多数情况下，哪一种估计方法得到的估计量是更优的？ 一个很自然的想法是：均方误差(mean square error, MSE),其定义为：
+(1-3)
+均方误差度量了估计量偏离真值的平方偏差的统计平均值，对于同一个参数，如果某种估测方法下得到估测值的均方误差越小，我们可以认为其更优！但遗憾的是，该准则的采用导致我们无法得到最优估计量，因为这个估计量不能写成数据的唯一函数，我们可以将上式重写： （1-4）
+进一步地：
+（1-5）
+上式表明，MSE是由估计量的方差 (方差是针对估计量的均值，而均方差是针对真值)以及偏差引起的误差组成的。这里面包含了参数真值，我们无法求得使MSE最小的参数估计值。
+但是，如果我们将问题约束(限定)为无偏估计问题呢？由前文对无偏估计的讨论我们知道，无偏估计下，此时跳开了真值，最小MSE(也就对应了最小方差)对应的估计量是可以实现的！这样的估计量被称为最小方差无偏(minimum variance unbiased, MVU)估计量。
+此时新产生的一个问题是：对于任意一个参数无偏估计问题，我们使用不同的参数估计方法得到的参数估计值的最小方差能小到多少？ 这个最小的方差值，就是所谓的克拉美罗下界(Cramer-Rao Lower Bound, CRLB)。如果某种参数估计方法下得到的参数估计值，其方差值等于克拉美罗下界，我们认为该估计方法是最优的(至少是最小方差无偏估计)。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-03-25T18:19:38+08:00">
+    <meta property="article:modified_time" content="2024-03-25T18:19:38+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">关于克拉美罗下界(CRLB)-及不同DOA估计算法下的方差(性能)对比</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2 id="%E8%AF%B4%E6%98%8E" style="margin-left:0;text-align:center;">说明</h2> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>    参数估计</strong>在科研、工程乃至生活中都有广泛的应用。参数估计要解决的问题简单来说就是：基于一组观测数据，通过某种方法来获得我们想要的，与观测数据相关的一个或多个参数。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>    克拉美-罗界(Cramr-Rao Bound, CRB)</strong>是<strong>无偏估计</strong>里我们常用的且十分重要的<strong>一种对不同参数估计方法性能评价的参考(对比)指标</strong>：对于同一组观测数据，可能会有很多不同的方法来做估计 并得到各自的估计结果，那么，这些方法的优劣(包括其相对优劣、以及参数估计结果与真实值的逼近程度)如何，需要我们提出一种客观的评价指标(参考)，克拉美罗界就是这样一个指标。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    当然，克拉美罗界的用处不止于此，以及关于什么是无偏估计，我将在本博文中做出更详细的说明。  <strong>克拉美罗界是参数估计相关paper中不可或缺的元素</strong>，在去年一个老哥带我发的一篇文章中，审稿人之一对我们提了这样的要求：“The CRLB should be also include to show the performance benchmark for the estimation algorithms.”那会儿对CRLB还没有什么概念…,初看了一下觉得蛮繁琐，匆匆写了个理由忽悠过去了(可能主要是期刊比较水所以能忽悠过去…)，后面就一直拖到现在才得空来对这个概念做一些学习和梳理，并形成了本篇博文。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    关于CRLB，网上确实有一些比较好的资料，但是读者若要系统以及细节地理解参数估计以及关于CRLB的概念，建议看看参考资料[1]。本文的内容相对简单，<strong>主要是试图理清楚关于参数估计、无偏估计、CRLB的由来和原理</strong>等概念，<strong>并以一维线阵为例，给出线阵DOA估计的CRLB、不同DOA估计算法的性能比较</strong>。可能会有一些错误，欢迎读者评论指正，我会不定期补充维护。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>Blog </strong></p> 
+<p style="margin-left:.0001pt;text-align:justify;">2024.3.25 博文第一次撰写</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h2 id="%E7%9B%AE%E5%BD%95" style="margin-left:.0001pt;text-align:center;"><strong>目录</strong></h2> 
+<p id="%E8%AF%B4%E6%98%8E-toc" style="margin-left:0px;"><a href="#%E8%AF%B4%E6%98%8E" rel="nofollow">说明</a></p> 
+<p id="%E7%9B%AE%E5%BD%95-toc" style="margin-left:0px;"><a href="#%E7%9B%AE%E5%BD%95" rel="nofollow">目录</a></p> 
+<p id="%E4%B8%80%E3%80%81%E5%8F%82%E6%95%B0%E4%BC%B0%E8%AE%A1%26%E5%85%8B%E6%8B%89%E7%BE%8E%E7%BD%97%E4%B8%8B%E7%95%8C%E5%9F%BA%E6%9C%AC%E6%A6%82%E5%BF%B5-toc" style="margin-left:0px;"><a href="#%E4%B8%80%E3%80%81%E5%8F%82%E6%95%B0%E4%BC%B0%E8%AE%A1%26%E5%85%8B%E6%8B%89%E7%BE%8E%E7%BD%97%E4%B8%8B%E7%95%8C%E5%9F%BA%E6%9C%AC%E6%A6%82%E5%BF%B5" rel="nofollow">一、参数估计&amp;克拉美罗下界基本概念</a></p> 
+<p id="%E4%BA%8C%E3%80%81%E7%BA%BF%E9%98%B5%26%E5%8D%95%E7%9B%AE%E6%A0%87%E4%B8%8B%20%E4%B8%8D%E5%90%8CDOA%E4%BC%B0%E8%AE%A1%E7%AE%97%E6%B3%95%E6%96%B9%E5%B7%AE%E7%BB%93%E6%9E%9C%E5%8F%8A%E5%85%B6%E4%B8%8ECRLB%E5%AF%B9%E6%AF%94-toc" style="margin-left:0px;"><a href="#%E4%BA%8C%E3%80%81%E7%BA%BF%E9%98%B5%26%E5%8D%95%E7%9B%AE%E6%A0%87%E4%B8%8B%20%E4%B8%8D%E5%90%8CDOA%E4%BC%B0%E8%AE%A1%E7%AE%97%E6%B3%95%E6%96%B9%E5%B7%AE%E7%BB%93%E6%9E%9C%E5%8F%8A%E5%85%B6%E4%B8%8ECRLB%E5%AF%B9%E6%AF%94" rel="nofollow">二、线阵&amp;单目标下 不同DOA估计算法方差结果及其与CRLB对比</a></p> 
+<p id="2.1%20%C2%A0%E4%B8%8D%E5%90%8CSNR%E4%B8%8B%E7%9A%84%E7%BB%93%E6%9E%9C-toc" style="margin-left:40px;"><a href="#2.1%20%C2%A0%E4%B8%8D%E5%90%8CSNR%E4%B8%8B%E7%9A%84%E7%BB%93%E6%9E%9C" rel="nofollow">2.1  不同SNR下的结果</a></p> 
+<p id="2.2%C2%A0%20%E4%B8%8D%E5%90%8C%E8%A7%92%E5%BA%A6%E4%B8%8B%E7%9A%84%E7%BB%93%E6%9E%9C-toc" style="margin-left:40px;"><a href="#2.2%C2%A0%20%E4%B8%8D%E5%90%8C%E8%A7%92%E5%BA%A6%E4%B8%8B%E7%9A%84%E7%BB%93%E6%9E%9C" rel="nofollow">2.2  不同角度下的结果</a></p> 
+<p id="2.3%C2%A0%20%E5%B0%8F%E7%BB%93-toc" style="margin-left:40px;"><a href="#2.3%C2%A0%20%E5%B0%8F%E7%BB%93" rel="nofollow">2.3  小结</a></p> 
+<p id="%E4%B8%89%E3%80%81%E6%80%BB%E7%BB%93-toc" style="margin-left:0px;"><a href="#%E4%B8%89%E3%80%81%E6%80%BB%E7%BB%93" rel="nofollow">三、总结</a></p> 
+<p id="%E5%9B%9B%E3%80%81%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99-toc" style="margin-left:0px;"><a href="#%E5%9B%9B%E3%80%81%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99" rel="nofollow">四、参考资料</a></p> 
+<p id="%E4%BA%94%E3%80%81%E4%BB%A3%E7%A0%81-toc" style="margin-left:0px;"><a href="#%E4%BA%94%E3%80%81%E4%BB%A3%E7%A0%81" rel="nofollow">五、代码</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h2 id="%E4%B8%80%E3%80%81%E5%8F%82%E6%95%B0%E4%BC%B0%E8%AE%A1%26%E5%85%8B%E6%8B%89%E7%BE%8E%E7%BD%97%E4%B8%8B%E7%95%8C%E5%9F%BA%E6%9C%AC%E6%A6%82%E5%BF%B5" style="margin-left:0;text-align:justify;">一、参数估计&amp;克拉美罗下界基本概念</h2> 
+<p style="margin-left:.0001pt;text-align:justify;">    参数估计要解决的问题简单来说就是：<strong>基于一组观测数据，通过某种方法来获得我们想要的与观测数据相关的一个或多个参数</strong>。现在计算机技术、AD转换等技术已经发展得足够成熟了，在雷达、声呐、通信等各类系统中，我们一般都会将各类模拟量采样并存储为离散时间波形，因此，参数估计问题就是<strong>从得到的离散时间波形或数据集中提取参数的问题</strong>。<strong>用数学语言来表达就是</strong>：假设我们有N点的数据集合：{x[0],x[1],x[2],…x[N-1]}，它与未知参数y有关，我们希望基于该数据集合来确定估计量y:</p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="23" src="https://images2.imgbox.com/10/77/CSJsKP76_o.png" width="292">                               (1-1)</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    式中，g是某个函数(某种参数估计方法)。<img alt="" height="23" src="https://images2.imgbox.com/da/3d/7hBSbhHs_o.png" width="12">是参数y在g方法下的估测值。对应到本博文后面将要探讨的一维线阵的DOA估计问题：这里的x就可以理解成每个接收通道采集的数据，y是目标角度，我们做DOA估计的方法有很多(关于DOA估计，读者可以参考我之前写过的一篇博文[2]：<a href="https://blog.csdn.net/xhblair/article/details/128893343" title="车载毫米波雷达DOA估计综述-CSDN博客">车载毫米波雷达DOA估计综述-CSDN博客</a>)。比如有经典的FFT、DBF、Music、Capon等。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>    这便是参数估计问题</strong>。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>    而无偏估计是指估计量的平均值为未知参数的真值。</strong>对应到前面的数学语言上，即假设我们有M组N点的数据集合：第一组为 X_1:{x_1[0],x_1[1],x_1[2],…x_1[N-1]}、第二组为X_2: {x_1[0],x_1[1],x_1[2],…x_1[N-1]}、以此类推一直到第M组。我们用方法g对这M组的数据进行估计，可以得到M个<img alt="" height="23" src="https://images2.imgbox.com/9a/d2/flyWn15c_o.png" width="12">，此时，如果：</p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="34" src="https://images2.imgbox.com/1e/4a/rFxU8ZTI_o.png" width="116">                                                        (1-2)</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    式中y为参数的真值，则<strong>我们称该估计为无偏估计</strong>。我们基于FFT、DBF、Music、Capon的方法做线阵的DOA估计都属于无偏估计。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">    如前文说明中所述，对于同一组观测数据，可能会有很多不同的方法来做估计并得到各自的估计结果，那么此时我们会感兴趣的一个问题是：<strong>大多数情况下，哪一种估计方法得到的估计量是更优的</strong>？ 一个很自然的想法是：均方误差(mean square error, MSE),其定义为：</p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="24" src="https://images2.imgbox.com/59/53/9mXnly6a_o.png" width="198">                                               (1-3)</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    均方误差度量了估计量偏离真值的平方偏差的统计平均值，对于同一个参数，<strong>如果某种估测方法下得到估测值的均方误差越小，我们可以认为其更优</strong>！但遗憾的是，<strong>该准则的采用导致我们无法得到最优估计量，因为这个估计量不能写成数据的唯一函数</strong>，我们可以将上式重写：<strong> </strong></p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="27" src="https://images2.imgbox.com/46/2d/jZnydoTm_o.png" width="366">                （1-4）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    进一步地：</p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="24" src="https://images2.imgbox.com/38/5e/Xy69ZEfq_o.png" width="298">                            （1-5）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    上式表明，MSE是由估计量的<strong>方差 </strong><img alt="" height="23" src="https://images2.imgbox.com/ac/5b/XWGNTbzi_o.png" width="60"><strong> </strong><strong> (</strong><strong>方差是针对估计量的均值，而均方差是针对真值)</strong>以及<strong>偏差引起的误差</strong>组成的。<strong>这里面包含了参数真值，我们无法求得使MSE最小的参数估计值</strong>。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">但是，如果我们将问题<strong>约束</strong>(限定)为无偏估计问题呢？由前文对无偏估计的讨论我们知道，无偏估计下<img alt="" height="23" src="https://images2.imgbox.com/64/7c/0sRp0KLi_o.png" width="135">，此时跳开了真值，最小MSE(也就对应了最小方差)对应的估计量是可以实现的！<strong>这样的估计量被称为最小方差无偏(minimum variance unbiased, MVU)估计量</strong>。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">    此时新产生的一个问题是：对于任意一个参数无偏估计问题，我们使用不同的参数估计方法得到的参数估计值的<strong>最小方差能小到多少</strong>？ <strong>这个最小的方差值，就是所谓的克拉美罗下界(Cramer-Rao Lower Bound, CRLB)</strong>。如果某种参数估计方法下得到的参数估计值，其方差值等于克拉美罗下界，我们认为该估计方法是最优的(至少是最小方差无偏估计)。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    【CRLB可以帮助我们确定所使用的估计方法得到的参数效果如何(对比较无偏估计量的性能提供了一个标准)、是否是MVU估计量？、此外，也<strong>提醒我们</strong>不可能求得方差小于下限的无偏估计量，这在信号处理的可行性研究中通常是有用的。】</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">    那么，<strong>如何得到无偏估计下的CRLB</strong>？无偏估计下我们假定所估测参数的似然函数(似然函数表征参数取不同值下的概率)的表达式满足高斯分布：</p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="42" src="https://images2.imgbox.com/f1/de/z6oKgpJa_o.png" width="255">                               （1-6）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    我们对其取自然对数：</p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="37" src="https://images2.imgbox.com/00/8d/rgvutW5F_o.png" width="290">                             （1-7）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    则其一阶导数为：</p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="38" src="https://images2.imgbox.com/30/f0/KCoVNcHP_o.png" width="194">                                      （1-8）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    负的二阶导数为：</p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="40" src="https://images2.imgbox.com/0b/b7/xHCJvJG1_o.png" width="154">                                             （1-9）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    二阶导数衡量的是曲率，由上式可知，曲率随着<img alt="" height="24" src="https://images2.imgbox.com/99/74/b5v8wZcA_o.png" width="22">的减小而增加。我们已经知道估计量y的方差为：<em>σ</em><em>2</em>，那么对于该例子，其方差为：</p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="47" src="https://images2.imgbox.com/72/e0/F7NshqNd_o.png" width="177">                                                 (1-10)</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    尽管在本例中二阶导数并不依赖x,但一般来说是和x有关的，这样，曲率更一般的度量是(取均值)：</p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="40" src="https://images2.imgbox.com/c6/7c/2WDMQGv5_o.png" width="128">                                                        (1-11)</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    它度量的是对数自然函数的平均曲率(此时曲率随着x的变化而变化)。该值越大，则估计的方差越小。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    假定p(x;θ)满足“正则”条件：</p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="40" src="https://images2.imgbox.com/30/56/1H6l72m3_o.png" width="147">                                                     (1-12)</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    那么任何无偏估计量<img alt="" height="23" src="https://images2.imgbox.com/3a/70/VVlaWXEI_o.png" width="12">的方差必定满足：</p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="52" src="https://images2.imgbox.com/ec/f6/q03iOuri_o.png" width="195"><strong>   </strong>                                             (1-13)</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    由于二阶导数是与x有关的随机变量(我们之前的例子不是，但是大多数情况下是的)，所以上式的数学期望由下式给出：</p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="40" src="https://images2.imgbox.com/4c/4c/z8mPFf7T_o.png" width="330">                               (1-14)</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"><strong>    以前述讨论和得到的公式为基础，在参考资料[1]中，给出了不同参数估计问题下的CRLB的表达式</strong>（这部分内容更具体的读者还是看参考资料[1],其实我也不是很理解）。如一维线阵、单目标下的方位估计，其CRLB表达式为：</p> 
+<p style="margin-left:.0001pt;text-align:right;"><img alt="" height="47" src="https://images2.imgbox.com/8a/a3/78Jh00tR_o.png" width="281">                              （1-15）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    (对于接收到的数据为复数的情况下，如果是实数，则上面的分子为12),这里的θ对应的是线阵所在直线与 目标位置和第一个阵元连线的 夹角。M是阵元个数，L是阵列孔径，对于间隔为d的均匀线阵，L = （M-1）*d 。后文的仿真将基于该公式。 <strong>对于DOA估计，其CRLB是由阵元个数、孔径、SNR唯一确定的</strong>。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h2 id="%E4%BA%8C%E3%80%81%E7%BA%BF%E9%98%B5%26%E5%8D%95%E7%9B%AE%E6%A0%87%E4%B8%8B%20%E4%B8%8D%E5%90%8CDOA%E4%BC%B0%E8%AE%A1%E7%AE%97%E6%B3%95%E6%96%B9%E5%B7%AE%E7%BB%93%E6%9E%9C%E5%8F%8A%E5%85%B6%E4%B8%8ECRLB%E5%AF%B9%E6%AF%94" style="margin-left:0;text-align:justify;">二、线阵&amp;单目标下 不同DOA估计算法方差结果及其与CRLB对比</h2> 
+<p style="margin-left:.0001pt;text-align:justify;">    本章基于蒙特卡罗方法，评估：</p> 
+<p style="margin-left:.0001pt;text-align:justify;">1. 线阵、单目标、且目标角度确定的情况下，不同SNR下不同DOA估计算法的方差，及其与CRLB的对比。（只使用单快拍数据）</p> 
+<p style="margin-left:.0001pt;text-align:justify;">2. 线阵、单目标、且目标SNR确定的情况下，不同角度下不同DOA估计算法的方差，及其与CRLB的对比。(只使用单快拍数据)</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    本章的DOA估计算法在原代码中我写了三种：<strong>DBF、Music、Capon</strong>，但是Capon在单快拍下效果太差了(其测量结果抖动很厉害，实在没眼看…，<strong>不过多快拍下还不错</strong>。),所以后面的图中我没有给出Capon的测量结果(不过我提供的代码中还是有的，只是注释了，<strong>读者可以关闭注释，自己试试</strong>)。关于DOA估计方法和细节，这里不做说明，读者可以参看资料[2],此外，关于蒙特卡罗方法，读者可以参考我之前写的另一篇博文[3]：<span style="color:#0000FF;"><u><a href="https://blog.csdn.net/xhblair/article/details/130782205?spm=1001.2014.3001.5502" title="关于蒙特卡罗方法及其在信号处理中的应用-CSDN博客">关于蒙特卡罗方法及其在信号处理中的应用-CSDN博客</a></u></span>，这里也不给出具体的使用说明。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    本章仿真中，所使用的主要参数列表如下：</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:center;"><strong>表2.1 仿真参数列表</strong></p> 
+<table align="center" border="1" cellspacing="0"><tbody><tr><td style="border-color:#000000;vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;"></p> </td><td style="border-color:#000000;vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">参数</p> </td><td style="border-color:#000000;vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:justify;">值</p> </td></tr><tr><td rowspan="6" style="border-color:#000000;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">不同SNR下  不同DOA算法参数估计方差对比</p> </td><td style="vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">阵元数</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:justify;">8</p> </td></tr><tr><td style="vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">阵元相对位置关系</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:justify;">(0:1:7)*0.5*λ</p> </td></tr><tr><td style="vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">目标角度</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:justify;">5°</p> </td></tr><tr><td style="vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">快拍数</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:justify;">1</p> </td></tr><tr><td style="vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">SNR</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:justify;">(15:2:35)</p> </td></tr><tr><td style="vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">蒙特卡罗次数</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:justify;">1000</p> </td></tr><tr><td style="border-color:#000000;vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;"></p> </td><td style="vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;"></p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:justify;"></p> </td></tr><tr><td rowspan="6" style="border-color:#000000;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">不同角度下  不同DOA算法参数估计方差对比</p> </td><td style="vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">阵元数</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:justify;">8</p> </td></tr><tr><td style="vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">阵元相对位置关系</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:justify;">(0:1:7)*0.5*λ</p> </td></tr><tr><td style="vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">目标角度</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:justify;">(0:5:70)</p> </td></tr><tr><td style="vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">快拍数</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:justify;">1</p> </td></tr><tr><td style="vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">SNR</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:justify;">25</p> </td></tr><tr><td style="vertical-align:top;width:138.25pt;"> <p style="margin-left:.0001pt;text-align:justify;">蒙特卡罗次数</p> </td><td style="vertical-align:top;width:138.3pt;"> <p style="margin-left:.0001pt;text-align:justify;">1000</p> </td></tr></tbody></table> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h3 id="2.1%20%C2%A0%E4%B8%8D%E5%90%8CSNR%E4%B8%8B%E7%9A%84%E7%BB%93%E6%9E%9C" style="margin-left:0;text-align:justify;">2.1  不同SNR下的结果</h3> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:center;"><img alt="" height="420" src="https://images2.imgbox.com/9a/54/InTcGga0_o.png" width="757"></p> 
+<p style="margin-left:.0001pt;text-align:center;">图2.1  不同SNR下各DOA估计方法的方差对比(1)</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">    趋势上是没有问题的、各DOA算法的方差与CRLB的位置关系上也没有问题。不过感觉有问题的两点是：1. DBF和单快拍Music的结果一样？？ 2.CRLB有那么小吗（还是说上面的公式有问题？）…   <strong>同样的结论可以给到2.2节</strong>。</p> 
+<p style="margin-left:.0001pt;text-align:justify;">    有鉴于此，<strong>我尝试将快拍数改成10</strong>，得到结果如下(我没有提供代码，不过读者可以基于上面的代码做一点点修改即可)：</p> 
+<p style="margin-left:.0001pt;text-align:center;"><img alt="" height="497" src="https://images2.imgbox.com/dd/47/tLq9gcDI_o.png" width="805"></p> 
+<p style="margin-left:.0001pt;text-align:center;">图2.1  不同SNR下各DOA估计方法的方差对比(2)</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">    快拍数的改变没有影响CRLB(按理说应该会影响的？)，不过此时可以看到不同DOA算法下的对比了。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h3 id="2.2%C2%A0%20%E4%B8%8D%E5%90%8C%E8%A7%92%E5%BA%A6%E4%B8%8B%E7%9A%84%E7%BB%93%E6%9E%9C" style="margin-left:0;text-align:justify;">2.2  不同角度下的结果</h3> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:center;"><img alt="" height="383" src="https://images2.imgbox.com/9b/d1/jbrlFEfz_o.png" width="772"></p> 
+<p style="margin-left:.0001pt;text-align:center;">图2.3  不同角度下各DOA估计方法的方差对比(1)</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:center;"><img alt="" height="507" src="https://images2.imgbox.com/7f/32/imuQp8iP_o.png" width="757"></p> 
+<p style="margin-left:.0001pt;text-align:center;">图2.4  不同角度下各DOA估计方法的方差对比(2)</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;">    图示结果符合预期，但是又有点不符合预期，讨论同2.1。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h3 id="2.3%C2%A0%20%E5%B0%8F%E7%BB%93" style="margin-left:0;text-align:justify;">2.3  小结</h3> 
+<p style="margin-left:.0001pt;text-align:justify;">    本章基于第一章中的结论以及本人之前的工作积累(包括DOA[2]和蒙特卡罗方法[3])，评估了不同DOA估计算法的估测方差及其与CRLB的对比，具体地：分成了同一目标角度，不同SNR和同一SNR，不同角度两种情况。仿真的结果与预期基本吻合，但是CRLB计算方法的正确性似乎有待商榷(欢迎读者指正)。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h2 id="%E4%B8%89%E3%80%81%E6%80%BB%E7%BB%93" style="margin-left:0;text-align:justify;">三、总结</h2> 
+<p style="margin-left:.0001pt;text-align:justify;">    本博文的内容相对简单，主要是试图理清楚关于参数估计、无偏估计、CRLB的由来和原理等概念，并以一维线阵为例，给出线阵DOA估计的CRLB、不同DOA估计算法的性能比较。后续有更多的细节和拓展我再不定期补充。</p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h2 id="%E5%9B%9B%E3%80%81%E5%8F%82%E8%80%83%E8%B5%84%E6%96%99" style="margin-left:0;text-align:justify;">四、参考资料</h2> 
+<p style="margin-left:.0001pt;text-align:justify;">[1] 《统计信号处理基础-估计与检测理论》 <a href="https://book.douban.com/search/Steven%20M.%20Kay" rel="nofollow" title="Steven M. Kay">Steven M. Kay</a></p> 
+<p style="margin-left:.0001pt;text-align:justify;">[2] <span style="color:#0000FF;"><u><a href="https://blog.csdn.net/xhblair/article/details/128893343" title="车载毫米波雷达DOA估计综述-CSDN博客">车载毫米波雷达DOA估计综述-CSDN博客</a></u></span></p> 
+<p style="margin-left:.0001pt;text-align:justify;">[3] <span style="color:#0000FF;"><u><a href="https://blog.csdn.net/xhblair/article/details/130782205?spm=1001.2014.3001.5502" title="关于蒙特卡罗方法及其在信号处理中的应用-CSDN博客">关于蒙特卡罗方法及其在信号处理中的应用-CSDN博客</a></u></span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<h2 id="%E4%BA%94%E3%80%81%E4%BB%A3%E7%A0%81" style="margin-left:0;text-align:justify;">五、代码</h2> 
+<p style="margin-left:.0001pt;text-align:justify;"><span style="color:#0000FF;"><u><a href="https://download.csdn.net/download/xhblair/89030759" title="关于克拉美罗下界(CRLB)-及不同DOA估计算法下的方差(性能)对比博文对应的代码资源-CSDN文库">关于克拉美罗下界(CRLB)-及不同DOA估计算法下的方差(性能)对比博文对应的代码资源-CSDN文库</a></u></span></p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p> 
+<p style="margin-left:.0001pt;text-align:justify;"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/dcd8c0fdcfa660f265802cbf2ce3a0ec/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【中间件】docker数据卷</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/24b3380fdc9c27c9b8e61167446577ea/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">企业数字化转型之数据中台架构、大数据支撑平台、资源库建设方案</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

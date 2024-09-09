@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【SpringCloud】借助Redis手动更新Ribbon缓存来解决Eureka微服务架构中服务下线感知的问题 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/c95120347719b85dbcf68aa461ca0c2c/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【SpringCloud】借助Redis手动更新Ribbon缓存来解决Eureka微服务架构中服务下线感知的问题">
+  <meta property="og:description" content="文章目录 前言1.第一次尝试1.1服务被调用方更新1.2压测第一次尝试1.3 问题分析1.4 同步的不是最新列表 2.第二次尝试2.1调用方过滤下线服务2.2压测第二次尝试2.3优化 写到最后 前言 在上文的基础上，通过压测的结果可以看出，使用DiscoveryManager下线服务之后进行压测是不会出现异常情况的，但唯一缺点就是下线服务的方式是取消注册与续约，之后并没有结束进程。也就使得在调用api下线后的服务其实是还存在处理请求的能力的。加之eureka三种级别的缓存同步需要一定时间，Eureka-Client从三级缓存中拉取的并不是实时的服务列表，进而使得Ribbon从Eureka-Client拉取的也不是实时的服务列表。最终导致Ribbon负载均衡到了已经下线的服务实例，并且此时该实例（进程还未关闭）刚好能处理请求！就造成了下线了两个端口的服务实例，但是却还是被负载均衡到来处理请求！
+按照这个思路，再去看这张图：
+可不可以通过某种手段，当服务下线后去越过三级缓存直接去更新Ribbon缓存来缩短感知时间？
+我先说答案——是可以的
+1.第一次尝试 1.1服务被调用方更新 手动从Eureka-Client同步服务缓存信息：
+在之前分析Ribbon源码的时候，说到了接口路径从http://服务名称/接口路径——&gt;http://服务地址/接口路径，这个过程中调用方的请求被Ribbon拦截器拦截，并且通过负载均衡最终被改写成为了一个准确的服务地址，其中有一个非常重要的方法，getLoadBalancer(“服务名称”)
+可见，他通过服务名称就拿到了该服务名称下的所有服务列表（allServerList）和可用服务列表(upServerList)，我们通过这个操作可不可以直接获取到最新一手的可用服务列表并且手动去set进Ribbon的可用服务列表缓存里，让他不再去每过30S同步？
+Tips:在我们的SpringCloud项目中有一个非常重要的组件SpringClientFactory是Spring Cloud中用于管理和获取客户端实例的工厂类。在这里面可以获取特定服务的负载均衡器（即ILoadBalancer）
+于是，便有了下面的操作，专门配置一个Bean去更新Ribbon缓存，每当调用服务下线接口去下线指定服务后就去自动同步Ribbon缓存，不用再Ribbon每隔30S去自动同步：
+@Configuration @Slf4j public class ClearRibbonCache { public void clearRibbonCache(SpringClientFactory clientFactory, List&lt;Integer&gt; portParams) { // 获取指定服务的负载均衡器 ILoadBalancer loadBalancer = clientFactory.getLoadBalancer(&#34;user-service&#34;); //在主动拉取可用列表，而不是走拦截器被动的方式——这里 List&lt;Server&gt; reachableServers = loadBalancer.getReachableServers();//这里从客户端获取，会等待客户端同步三级缓存 // 在某个时机需要清除Ribbon缓存 ((BaseLoadBalancer) loadBalancer).setServersList(ableServers); // 清除Ribbon负载均衡器的缓存 } } 于是在下线服务的接口中，就多了一步自动更新缓存的操作（不熟悉这个接口的可以去看上一篇文章）：
+@GetMapping(value = &#34;/service-down-list&#34;) public String offLine(@RequestParam List&lt;Integer&gt; portParams) { List&lt;Integer&gt; successList = new ArrayList&lt;&gt;(); //得到服务信息 List&lt;InstanceInfo&gt; instances = eurekaClient.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-21T15:45:07+08:00">
+    <meta property="article:modified_time" content="2024-06-21T15:45:07+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【SpringCloud】借助Redis手动更新Ribbon缓存来解决Eureka微服务架构中服务下线感知的问题</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><ul><li><a href="#_1" rel="nofollow">前言</a></li><li><a href="#1_8" rel="nofollow">1.第一次尝试</a></li><li><ul><li><a href="#11_9" rel="nofollow">1.1服务被调用方更新</a></li><li><a href="#12_67" rel="nofollow">1.2压测第一次尝试</a></li><li><a href="#13__83" rel="nofollow">1.3 问题分析</a></li><li><a href="#14__85" rel="nofollow">1.4 同步的不是最新列表</a></li></ul> 
+   </li><li><a href="#2_103" rel="nofollow">2.第二次尝试</a></li><li><ul><li><a href="#21_104" rel="nofollow">2.1调用方过滤下线服务</a></li><li><a href="#22_169" rel="nofollow">2.2压测第二次尝试</a></li><li><a href="#23_176" rel="nofollow">2.3优化</a></li></ul> 
+   </li><li><a href="#_205" rel="nofollow">写到最后</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="_1"></a>前言</h3> 
+<p>在上文的基础上，通过压测的结果可以看出，使用DiscoveryManager下线服务之后进行压测是不会出现异常情况的，但唯一缺点就是下线服务的方式是取消注册与续约，之后并没有结束进程。也就<strong>使得在调用api下线后的服务其实是还存在处理请求的能力的</strong>。加之eureka三种级别的缓存同步需要一定时间，Eureka-Client从三级缓存中拉取的并不是实时的服务列表，进而使得Ribbon从Eureka-Client拉取的也不是实时的服务列表。<strong>最终导致Ribbon负载均衡到了已经下线的服务实例，并且此时该实例（进程还未关闭）刚好能处理请求！就造成了下线了两个端口的服务实例，但是却还是被负载均衡到来处理请求！</strong><br> 按照这个思路，再去看这张图：<br> <img src="https://images2.imgbox.com/73/1f/yeaGUsmc_o.png" alt="在这里插入图片描述"><br> <strong>可不可以通过某种手段，当服务下线后去越过三级缓存直接去更新Ribbon缓存来缩短感知时间？</strong></p> 
+<p>我先说答案——是可以的</p> 
+<h3><a id="1_8"></a>1.第一次尝试</h3> 
+<h4><a id="11_9"></a>1.1服务被调用方更新</h4> 
+<p>手动从Eureka-Client同步服务缓存信息：</p> 
+<p>在之前分析Ribbon源码的时候，说到了接口路径从http://服务名称/接口路径——&gt;http://服务地址/接口路径，这个过程中调用方的请求被Ribbon拦截器拦截，并且通过负载均衡最终被改写成为了一个准确的服务地址，其中有一个非常重要的方法，getLoadBalancer(“服务名称”)<br> <img src="https://images2.imgbox.com/4f/fe/0oLgtpl1_o.png" alt="在这里插入图片描述"><br> 可见，他通过服务名称就拿到了该服务名称下的所有服务列表（allServerList）和可用服务列表(upServerList)，我们通过这个操作可不可以直接获取到最新一手的可用服务列表并且手动去set进Ribbon的可用服务列表缓存里，让他不再去每过30S同步？</p> 
+<p><font color="green"><strong>Tips:在我们的SpringCloud项目中有一个非常重要的组件<code>SpringClientFactory</code>是Spring Cloud中用于管理和获取客户端实例的工厂类。在这里面可以获取特定服务的负载均衡器（即<code>ILoadBalancer</code>）</strong></font></p> 
+<p>于是，便有了下面的操作，专门配置一个Bean去更新Ribbon缓存，每当调用服务下线接口去下线指定服务后就去自动同步Ribbon缓存，不用再Ribbon每隔30S去自动同步：</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Configuration</span>
+<span class="token annotation punctuation">@Slf4j</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">ClearRibbonCache</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">clearRibbonCache</span><span class="token punctuation">(</span><span class="token class-name">SpringClientFactory</span> clientFactory<span class="token punctuation">,</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> portParams<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 获取指定服务的负载均衡器</span>
+        <span class="token class-name">ILoadBalancer</span> loadBalancer <span class="token operator">=</span> clientFactory<span class="token punctuation">.</span><span class="token function">getLoadBalancer</span><span class="token punctuation">(</span><span class="token string">"user-service"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//在主动拉取可用列表，而不是走拦截器被动的方式——这里</span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> reachableServers <span class="token operator">=</span> loadBalancer<span class="token punctuation">.</span><span class="token function">getReachableServers</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//这里从客户端获取，会等待客户端同步三级缓存</span>
+        <span class="token comment">// 在某个时机需要清除Ribbon缓存</span>
+        <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">BaseLoadBalancer</span><span class="token punctuation">)</span> loadBalancer<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">setServersList</span><span class="token punctuation">(</span>ableServers<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 清除Ribbon负载均衡器的缓存</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>于是在下线服务的接口中，就多了一步自动更新缓存的操作（不熟悉这个接口的可以去看上一篇文章）：</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"/service-down-list"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">offLine</span><span class="token punctuation">(</span><span class="token annotation punctuation">@RequestParam</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> portParams<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> successList <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ArrayList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//得到服务信息</span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">InstanceInfo</span><span class="token punctuation">&gt;</span></span> instances <span class="token operator">=</span> eurekaClient<span class="token punctuation">.</span><span class="token function">getInstancesByVipAddress</span><span class="token punctuation">(</span>appName<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> servicePorts <span class="token operator">=</span> instances<span class="token punctuation">.</span><span class="token function">stream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span><span class="token class-name">InstanceInfo</span><span class="token operator">::</span><span class="token function">getPort</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span><span class="token class-name">Collectors</span><span class="token punctuation">.</span><span class="token function">toList</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">//去服务列表里挨个下线</span>
+        <span class="token class-name">OkHttpClient</span> client <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">OkHttpClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">"开始时间：{}"</span><span class="token punctuation">,</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        portParams<span class="token punctuation">.</span><span class="token function">parallelStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span>temp <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>servicePorts<span class="token punctuation">.</span><span class="token function">contains</span><span class="token punctuation">(</span>temp<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token class-name">String</span> url <span class="token operator">=</span> <span class="token string">"http://"</span> <span class="token operator">+</span> ipAddress <span class="token operator">+</span> <span class="token string">":"</span> <span class="token operator">+</span> temp <span class="token operator">+</span> <span class="token string">"/control/service-down"</span><span class="token punctuation">;</span>
+                <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token class-name">Response</span> response <span class="token operator">=</span> client<span class="token punctuation">.</span><span class="token function">newCall</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Request<span class="token punctuation">.</span>Builder</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">url</span><span class="token punctuation">(</span>url<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>response<span class="token punctuation">.</span><span class="token function">code</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">200</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        log<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span>temp <span class="token operator">+</span> <span class="token string">"服务下线成功"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        successList<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>temp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                        log<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span>temp <span class="token operator">+</span> <span class="token string">"服务下线失败"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span>e<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        log<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"开始清除Ribbon缓存"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        clearRibbonCache<span class="token punctuation">.</span><span class="token function">clearRibbonCache</span><span class="token punctuation">(</span>clientFactory<span class="token punctuation">,</span>portParams<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> successList <span class="token operator">+</span> <span class="token string">"优雅下线成功"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="12_67"></a>1.2压测第一次尝试</h4> 
+<p>同样我们采用(100线程-3S)的JMeter压测模型去在调用服务下线接口后的15S,30S后压测，压测的接口即为一个普通的跨服务调用接口<br> 下线服务：<br> <img src="https://images2.imgbox.com/8e/bb/oeNGhohf_o.png" alt="在这里插入图片描述"><br> 下线服务的15S：<br> <img src="https://images2.imgbox.com/fd/87/WBK6Hms6_o.png" alt="在这里插入图片描述"><br> 此时,观察控制台的日志输出可以发现，<strong>已经下线的服务实例还是被负载均衡到了（已下线但进程未退出）</strong>，好像更新了缓存没有任何效果诶。<br> <img src="https://images2.imgbox.com/40/57/Sk0nVqSf_o.png" alt="在这里插入图片描述"><br> 下线服务的30S：<br> <img src="https://images2.imgbox.com/b3/f8/Tb8om6gA_o.png" alt="在这里插入图片描述"><br> 情况和15S如出一辙，并且请求负载均衡到了已下线但进程未退出的服务上。</p> 
+<p>下线服务的45S：<br> <img src="https://images2.imgbox.com/f7/21/5yan2XYV_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/ec/54/h6ZlurqS_o.png" alt="在这里插入图片描述"><br> 可见调用api下线服务直到45S左右，已经下线的服务才从每层缓存信息中完全清除，<strong>这个时间是非常致命的！</strong></p> 
+<h4><a id="13__83"></a>1.3 问题分析</h4> 
+<p>在服务发布的场景就会出现这样一个业务问题：<font color="red"><strong>开发调用api下线了某个服务，通知运维可以去关闭这个服务进程了，运维kill-9杀掉了这个进程准备发布新服务。但此时客户端（用户）向服务端发送了请求，刚好该请求涉及跨服务调用，并且由于Ribbon同步Eureka-Client缓存，Eureka-Client同步Eurek-Server中的三级缓存需要一定时间，Ribbon缓存中的可用服务列表不是最新的，同步过来已下线（进程也被kill）的服务。最后请求受到Ribbon负载均衡落到了一个开发通过api下线的服务实例，分发到了一个运维kill-9的服务实例上，造成接口返回500、404、connect time out、connect refused…等错误，造成频繁告警。</strong></font></p> 
+<h4><a id="14__85"></a>1.4 同步的不是最新列表</h4> 
+<p>透过现象看本质：</p> 
+<p>为什么手动同步Ribbon缓存没有起到效果？是不是同步的内容出了问题？下面打断点开启debug，看看服务下线后到底拿到的是什么服务列表：<br> <img src="https://images2.imgbox.com/2e/bb/DO5wO0zS_o.png" alt="在这里插入图片描述"><br> 意外发现，曾经天真以为可以拿到的实时的服务列表，到头来确实一场空，小丑竟是我自己。<strong>明明8083已经下线可为什么还在可用服务列表里，并且还set到了Ribbon缓存中</strong></p> 
+<p>原来啊，通过那个方法获取服务列表是从Eureka-client拿的，而这其实就是client去三级缓存那里同步的问题。 你说到为什么手动更新了缓存还是会有一段同步时间？ 那就是client从三级缓存同步来的服务列表还存在没下线的服务，所以导致手动更新到ribbon缓存里的列表也还存在没下线的服务。看到这里，<strong>Eureka的“牺牲一致性保证高可用”是不是体现的淋漓尽致呢？</strong></p> 
+<p>这个一致性难道真的不能解决了吗？<br> 其实我还有一招<br> 同时结合Eureka-Ribbon架构的服务调用链路，其实在服务调用方去更新Ribbon缓存才能更好保证Ribbon负载均衡的服务列表是我所控制的!<br> <font color="red"><strong>PS：（这里节省了一次尝试，即在服务被调用方去引入过滤操作，尝试过压测结果还是和以前一样，所以就忽略了。直接去服务调用方尝试）</strong><br> <img src="https://images2.imgbox.com/09/60/KYTmE79U_o.png" alt="在这里插入图片描述"></font></p> 
+<p>图析：<br> <strong>关于Eureka-Client，Eureka-Server，Ribbon三者间的关系补充</strong>：Eureka-Client会定时向Eureka-Server发送心跳注册续约，并且会定时向Eureka-Server拉取服务列表（可以通过<code>registry-fetch-interval-seconds</code>属性来配置时间间隔），与此同时Ribbon也会定时同步Eureka-Client那里来的服务信息存储到Ribbon缓存中。也就是说，Ribbon的服务列表是从Eureka-Server间接获取的。</p> 
+<h3><a id="2_103"></a>2.第二次尝试</h3> 
+<h4><a id="21_104"></a>2.1调用方过滤下线服务</h4> 
+<p>从拿到的服务列表中过滤下线服务，并且在调用方执行：<br> 在调用方执行？那被调用方下线的端口信息怎么让调用方知道呢，跨进程通信你选择MQ？还是Redis？这里我选择Redis<br> 在上述更新缓存的操作中稍作更改，把更新操作移动到服务调用方，并且引入Redis来作为通信支持（这里采用hash的数据结结构），那么被调用方现在所需要的就是更新下线的端口信息到redis中：<br> <img src="https://images2.imgbox.com/f0/f1/cFx0Pb2Z_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-java">    <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"/service-down-list"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">offLine</span><span class="token punctuation">(</span><span class="token annotation punctuation">@RequestParam</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> portParams<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> successList <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ArrayList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//得到服务信息</span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">InstanceInfo</span><span class="token punctuation">&gt;</span></span> instances <span class="token operator">=</span> eurekaClient<span class="token punctuation">.</span><span class="token function">getInstancesByVipAddress</span><span class="token punctuation">(</span>appName<span class="token punctuation">,</span> <span class="token boolean">false</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> servicePorts <span class="token operator">=</span> instances<span class="token punctuation">.</span><span class="token function">stream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span><span class="token class-name">InstanceInfo</span><span class="token operator">::</span><span class="token function">getPort</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span><span class="token class-name">Collectors</span><span class="token punctuation">.</span><span class="token function">toList</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">//去服务列表里挨个下线</span>
+        <span class="token class-name">OkHttpClient</span> client <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">OkHttpClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span><span class="token string">"开始时间：{}"</span><span class="token punctuation">,</span> <span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        portParams<span class="token punctuation">.</span><span class="token function">parallelStream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span>temp <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>servicePorts<span class="token punctuation">.</span><span class="token function">contains</span><span class="token punctuation">(</span>temp<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token class-name">String</span> url <span class="token operator">=</span> <span class="token string">"http://"</span> <span class="token operator">+</span> ipAddress <span class="token operator">+</span> <span class="token string">":"</span> <span class="token operator">+</span> temp <span class="token operator">+</span> <span class="token string">"/control/service-down"</span><span class="token punctuation">;</span>
+                <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token class-name">Response</span> response <span class="token operator">=</span> client<span class="token punctuation">.</span><span class="token function">newCall</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Request<span class="token punctuation">.</span>Builder</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">url</span><span class="token punctuation">(</span>url<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>response<span class="token punctuation">.</span><span class="token function">code</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">200</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        log<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span>temp <span class="token operator">+</span> <span class="token string">"服务下线成功"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        successList<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>temp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                        log<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span>temp <span class="token operator">+</span> <span class="token string">"服务下线失败"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    log<span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span>e<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// todo Redis通知</span>
+        stringRedisTemplate<span class="token punctuation">.</span><span class="token function">opsForHash</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token string">"port-map"</span><span class="token punctuation">,</span><span class="token string">"down-ports"</span><span class="token punctuation">,</span>portParams<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> successList <span class="token operator">+</span> <span class="token string">"优雅下线成功"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>并且以前更新Ribbon可用服务列表操作也有稍微变化，即新增了一个手动过滤操作：</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Configuration</span>
+<span class="token annotation punctuation">@Slf4j</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">ClearRibbonCache</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">/**
+     * 削减
+     */</span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">boolean</span> <span class="token function">cutDown</span><span class="token punctuation">(</span><span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> ports<span class="token punctuation">,</span> <span class="token class-name">Server</span> index<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> ports<span class="token punctuation">.</span><span class="token function">contains</span><span class="token punctuation">(</span>index<span class="token punctuation">.</span><span class="token function">getPort</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+   <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">clearRibbonCache</span><span class="token punctuation">(</span><span class="token class-name">SpringClientFactory</span> clientFactory<span class="token punctuation">,</span> <span class="token class-name">String</span> portParams<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 获取指定服务的负载均衡器</span>
+        <span class="token class-name">ILoadBalancer</span> loadBalancer <span class="token operator">=</span> clientFactory<span class="token punctuation">.</span><span class="token function">getLoadBalancer</span><span class="token punctuation">(</span><span class="token string">"user-service"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//在主动拉取可用列表，而不是走拦截器被动的方式——这里</span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> reachableServers <span class="token operator">=</span> loadBalancer<span class="token punctuation">.</span><span class="token function">getReachableServers</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//这里从客户端获取，会等待客户端同步三级缓存</span>
+        <span class="token comment">//过滤掉已经下线的端口，符合条件端口的服务过滤出来</span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> portList <span class="token operator">=</span> <span class="token class-name">StringChange</span><span class="token punctuation">.</span><span class="token function">stringToList</span><span class="token punctuation">(</span>portParams<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Server</span><span class="token punctuation">&gt;</span></span> ableServers <span class="token operator">=</span> reachableServers<span class="token punctuation">.</span><span class="token function">stream</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">filter</span><span class="token punctuation">(</span>temp <span class="token operator">-&gt;</span> <span class="token operator">!</span><span class="token function">cutDown</span><span class="token punctuation">(</span>portList<span class="token punctuation">,</span> temp<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">collect</span><span class="token punctuation">(</span><span class="token class-name">Collectors</span><span class="token punctuation">.</span><span class="token function">toList</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        log<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"可用服务列表：{}"</span><span class="token punctuation">,</span> ableServers<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 在某个时机需要清除Ribbon缓存</span>
+        <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">BaseLoadBalancer</span><span class="token punctuation">)</span> loadBalancer<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">setServersList</span><span class="token punctuation">(</span>ableServers<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 清除Ribbon负载均衡器的缓存</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在服务调用方，每次进行跨服务调用前都去从Redis中获取出实时下线的端口并且去更新Ribbon缓存：<br> <img src="https://images2.imgbox.com/e0/0c/nD2N5SI2_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="22_169"></a>2.2压测第二次尝试</h4> 
+<p>当下线完服务，<strong>立即进行压测</strong>，可以看到所有的跨服务调用请求都落在了还未下线的实例上，并且已下线但进程未关闭的服务实例没有再处理请求，并且测试结果完全没有异常：<br> <img src="https://images2.imgbox.com/49/6b/pjlnytSL_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/5b/45/E34p2igr_o.png" alt="在这里插入图片描述"><br> 并且15S，30S的时间节点上，也没有任何异常：<br> <img src="https://images2.imgbox.com/58/c6/oDwPBciS_o.png" alt="在这里插入图片描述"><br> 可见通过此种方式来主动更新Ribbon可用服务列表确实可行，<strong>特别是在运维那边发布新服务的一个特定场景下可以解决Eureka感知下线服务迟钝从而影响Ribbon负载到不可用的服务实例上这一问题。</strong></p> 
+<h4><a id="23_176"></a>2.3优化</h4> 
+<p>其实，如果每次在新发布服务的场景下告警的接口都可以精确定位到，并且数量不多的情况我觉得在那几个业务接口里去手动同步一下Ribbon缓存没有什么大问题也可以解决问题。但是如果每次告警的接口有很多，并且不固定那上述的方法就显得有些许臃肿。而且这也是一种入侵式编程，我其实是不推荐的！<br> <strong>说起入侵式编程不禁就会想到无入侵式编程——Aop</strong><br> 直接把出现错误的模块作为切面，并把更新Ribbon的操作作为切入点写到表达式里，就完美做到了不改变已有业务而实现了更新功能，就像这样：</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Aspect</span>
+<span class="token annotation punctuation">@Component</span>
+<span class="token annotation punctuation">@Slf4j</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">RequestAspect</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token annotation punctuation">@Resource</span>
+    <span class="token class-name">SpringClientFactory</span> springClientFactory<span class="token punctuation">;</span>
+    <span class="token annotation punctuation">@Resource</span>
+    <span class="token class-name">ClearRibbonCacheBean</span> clearRibbonCacheBean<span class="token punctuation">;</span>
+    <span class="token annotation punctuation">@Resource</span>
+    <span class="token keyword">private</span> <span class="token class-name">StringRedisTemplate</span> stringRedisTemplate<span class="token punctuation">;</span>
+
+    <span class="token annotation punctuation">@Before</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"execution(* com.yu7.order.web.*.*(..))"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">refreshBefore</span><span class="token punctuation">(</span><span class="token class-name">JoinPoint</span> joinPoint<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">String</span> ports <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">)</span> stringRedisTemplate<span class="token punctuation">.</span><span class="token function">opsForHash</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token string">"port-map"</span><span class="token punctuation">,</span> <span class="token string">"down-ports"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        log<span class="token punctuation">.</span><span class="token function">debug</span><span class="token punctuation">(</span><span class="token string">"从Redis获取的端口为：{}"</span><span class="token punctuation">,</span> ports<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">//下线了才会有值，没有值说明没下线不用更新</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">ObjectUtils</span><span class="token punctuation">.</span><span class="token function">isNotEmpty</span><span class="token punctuation">(</span>ports<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            clearRibbonCacheBean<span class="token punctuation">.</span><span class="token function">clearRibbonCache</span><span class="token punctuation">(</span>springClientFactory<span class="token punctuation">,</span> ports<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>进行压测，结果和预期完全一致~</p> 
+<h3><a id="_205"></a>写到最后</h3> 
+<p>我想说：其实我的方案只是相当于提出了一个大体框架和构想，粗略地实现了基于Eureka的微服务架构中服务状态感知的问题，当业务里存在不止一种调用关系，下线服务类型不一致，服务断断续续下线会造成value值丢失…方案就需要进一步细化（还存在硬编码问题，嘻嘻），并且为了切面不影响业务还应该给存到Redis的数据加上TTL等其他保险措施，总而言之也欢迎大家提出建议，共同精进，一起解决这一难题！</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/1d0b45a6746c15ca40c6702576e3b27a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">万字长文慎入！AI 智能体架构在推理、规划和工具调用方面的现状揭秘！</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/9cade047ddc1338c2a405a353537d571/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">泽众云真机-平台即将升级支持华为机型HarmonyOS NEXT系统</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

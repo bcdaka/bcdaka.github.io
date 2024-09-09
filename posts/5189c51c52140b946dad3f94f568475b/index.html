@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Android 14 Audio模块 音量增益 framework到HAL 层加载流程 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/5189c51c52140b946dad3f94f568475b/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Android 14 Audio模块 音量增益 framework到HAL 层加载流程">
+  <meta property="og:description" content="目录 背景概念Android Audio调用流程（app-framework-HAL）标记0 libaudioclient标记1 libaudioclient ：aps变量赋值标记1.1 binder变量赋值 标记2 audiopolicy标记4 audiopolicy：mAudioPolicyManager变量赋值 标记5 audiopolicy标记6 audiopolicy：mpClientInterface变量赋值 标记7 audiopolicy标记8 audiopolicy标记10 audioflinger标记11 audioflinger：hwDevice变量赋值 标记12 audioflinger标记12.1 hardware：load_audio_interface 标记13 hardware dumpsys调试 背景 平台：Android 14
+在设备开机的过程中，需要设置用户关机前的音量，因此在开机时可获取当前音量值去设置某个端口的音量增益，来达到设备开机后的音量记忆。
+概念 进入代码分析之前，重温一下平时设置的音量1-100和音量增益(Volume Gain)的关系，有助于更好理解Android音量设置原理。
+平时在音频设备或软件中设置的音量（比如1-100的范围）通常是一个相对的量度，用于提供给用户一个直观的方式来控制音频输出的响度。这个音量设置并不直接对应于特定的分贝值，而是根据设备的硬件或软件配置来确定增益的大小。
+以下是音量设置与增益关系的一般概念：
+相对刻度 ： 音量滑块或旋钮上的1-100通常表示一个从非常安静到非常响亮的相对刻度。音量增益通常以分贝（dB）为单位进行度量，分贝是一个比例单位。具体的分贝值取决于系统的参考音量级别和增益范围。 线性关系 ： 在某些系统中，音量和增益可能呈线性关系，这意味着音量的每次增加或减少对应相同的分贝数。例如，音量每增加10，增益增加1 dB。 对数关系 ： 更常见的是，音量和增益之间存在对数关系，以模拟人耳对声音的感知。在对数刻度中，音量的增加不是均匀的，而是随着音量级别的增加而增加的。 系统校准 ： 音频系统通常会在校准过程中确定1-100音量级别与增益之间的确切映射。这涉及到设置参考音量（通常是0 dBFS，即满刻度信号）和最大音量对应的最大增益。 最大音量与增益 ： 最大音量（例如100）通常对应于系统能够安全输出的最大增益，而不会引起失真。这个最大增益可能是在特定音量级别下不会失真的最高分贝数。 最小音量与增益 ： 最小音量（例如1）则对应于系统可以输出的最小增益，仍然保持可听见的水平。这通常远高于0 dB SPL，因为人耳的听觉阈值非常低。 中间音量级别 ： 中间的音量级别（例如50）通常对应于系统增益的中间点，提供平衡的听感。 设备差异 ： 不同的音频设备和软件可能会有不同的音量和增益映射方式。 音量标准化 ： 有些系统可能会采用音量标准化技术，以确保不同音量级别下的音频输出保持一致的响度。 Android Audio调用流程（app-framework-HAL） 先上图
+应用调用setStreamVolume函数设置音量后会调用mAudioManager.setAudioPortGain来设置硬件增益，达到设备开机后的音量增益记忆。
+frameworks/base/services/core/java/com/android/server/tv/TvInputHardwareManager.java">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-08T09:07:58+08:00">
+    <meta property="article:modified_time" content="2024-06-08T09:07:58+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Android 14 Audio模块 音量增益 framework到HAL 层加载流程</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><a href="#_2" rel="nofollow">背景</a></li><li><a href="#_6" rel="nofollow">概念</a></li><li><a href="#Android_AudioappframeworkHAL_56" rel="nofollow">Android Audio调用流程（app-framework-HAL）</a></li><li><ul><li><a href="#0_libaudioclient_169" rel="nofollow">标记0 libaudioclient</a></li><li><ul><li><a href="#1_libaudioclient_aps_193" rel="nofollow">标记1 libaudioclient ：aps变量赋值</a></li><li><ul><li><a href="#11_binder_239" rel="nofollow">标记1.1 binder变量赋值</a></li></ul> 
+   </li></ul> 
+   </li><li><a href="#2_audiopolicy_262" rel="nofollow">标记2 audiopolicy</a></li><li><ul><li><a href="#4_audiopolicymAudioPolicyManager_283" rel="nofollow">标记4 audiopolicy：mAudioPolicyManager变量赋值</a></li></ul> 
+   </li><li><a href="#5_audiopolicy_345" rel="nofollow">标记5 audiopolicy</a></li><li><ul><li><a href="#6_audiopolicympClientInterface_375" rel="nofollow">标记6 audiopolicy：mpClientInterface变量赋值</a></li></ul> 
+   </li><li><a href="#7_audiopolicy_440" rel="nofollow">标记7 audiopolicy</a></li><li><a href="#8_audiopolicy_497" rel="nofollow">标记8 audiopolicy</a></li><li><a href="#10_audioflinger_524" rel="nofollow">标记10 audioflinger</a></li><li><ul><li><a href="#11_audioflingerhwDevice_550" rel="nofollow">标记11 audioflinger：hwDevice变量赋值</a></li></ul> 
+   </li><li><a href="#12_audioflinger_588" rel="nofollow">标记12 audioflinger</a></li><li><ul><li><a href="#121_hardwareload_audio_interface_621" rel="nofollow">标记12.1 hardware：load_audio_interface</a></li></ul> 
+   </li><li><a href="#13_hardware_673" rel="nofollow">标记13 hardware</a></li></ul> 
+  </li><li><a href="#dumpsys_699" rel="nofollow">dumpsys调试</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_2"></a>背景</h2> 
+<p>平台：Android 14<br> 在设备开机的过程中，需要设置用户关机前的音量，因此在开机时可获取当前音量值去设置某个端口的音量增益，来达到设备开机后的音量记忆。</p> 
+<h2><a id="_6"></a>概念</h2> 
+<p>进入代码分析之前，重温一下平时设置的音量1-100和音量增益(Volume Gain)的关系，有助于更好理解Android音量设置原理。</p> 
+<p>平时在音频设备或软件中设置的音量（比如1-100的范围）通常是一个相对的量度，用于提供给用户一个直观的方式来控制音频输出的响度。这个音量设置并不直接对应于特定的分贝值，而是根据设备的硬件或软件配置来确定增益的大小。</p> 
+<p>以下是音量设置与增益关系的一般概念：</p> 
+<ol><li><strong>相对刻度</strong> ：</li></ol> 
+<ul><li>音量滑块或旋钮上的1-100通常表示一个从非常安静到非常响亮的相对刻度。</li><li>音量增益通常以分贝（dB）为单位进行度量，分贝是一个比例单位。具体的分贝值取决于系统的参考音量级别和增益范围。</li></ul> 
+<ol start="2"><li><strong>线性关系</strong> ：</li></ol> 
+<ul><li>在某些系统中，音量和增益可能呈线性关系，这意味着音量的每次增加或减少对应相同的分贝数。</li><li>例如，音量每增加10，增益增加1 dB。</li></ul> 
+<ol start="3"><li><strong>对数关系</strong> ：</li></ol> 
+<ul><li>更常见的是，音量和增益之间存在对数关系，以模拟人耳对声音的感知。</li><li>在对数刻度中，音量的增加不是均匀的，而是随着音量级别的增加而增加的。</li></ul> 
+<ol start="4"><li><strong>系统校准</strong> ：</li></ol> 
+<ul><li>音频系统通常会在校准过程中确定1-100音量级别与增益之间的确切映射。</li><li>这涉及到设置参考音量（通常是0 dBFS，即满刻度信号）和最大音量对应的最大增益。</li></ul> 
+<ol start="5"><li><strong>最大音量与增益</strong> ：</li></ol> 
+<ul><li>最大音量（例如100）通常对应于系统能够安全输出的最大增益，而不会引起失真。</li><li>这个最大增益可能是在特定音量级别下不会失真的最高分贝数。</li></ul> 
+<ol start="6"><li><strong>最小音量与增益</strong> ：</li></ol> 
+<ul><li>最小音量（例如1）则对应于系统可以输出的最小增益，仍然保持可听见的水平。</li><li>这通常远高于0 dB SPL，因为人耳的听觉阈值非常低。</li></ul> 
+<ol start="7"><li><strong>中间音量级别</strong> ：</li></ol> 
+<ul><li>中间的音量级别（例如50）通常对应于系统增益的中间点，提供平衡的听感。</li></ul> 
+<ol start="8"><li><strong>设备差异</strong> ：</li></ol> 
+<ul><li>不同的音频设备和软件可能会有不同的音量和增益映射方式。</li></ul> 
+<ol start="9"><li><strong>音量标准化</strong> ：</li></ol> 
+<ul><li>有些系统可能会采用音量标准化技术，以确保不同音量级别下的音频输出保持一致的响度。</li></ul> 
+<h2><a id="Android_AudioappframeworkHAL_56"></a>Android Audio调用流程（app-framework-HAL）</h2> 
+<p>先上图<br> <img src="https://images2.imgbox.com/fa/31/bmnrqzWs_o.png" alt="在这里插入图片描述"></p> 
+<p>应用调用setStreamVolume函数设置音量后会调用mAudioManager.setAudioPortGain来设置硬件增益，达到设备开机后的音量增益记忆。<br> frameworks/base/services/core/java/com/android/server/tv/TvInputHardwareManager.java</p> 
+<pre><code>@Override
+public void setStreamVolume(float volume) throws RemoteException {
+    synchronized (mImplLock) {
+	if (mReleased) {
+	    throw new IllegalStateException("Device already released.");
+         }
+	mSourceVolume = volume;
+	//查看updateAudioConfigLocked实现
+	updateAudioConfigLocked();
+     }
+}
+
+
+private float getMediaStreamVolume() {
+        return (float) mCurrentIndex / (float) mCurrentMaxIndex;
+}
+
+private void updateAudioConfigLocked() {
+    float volume = mSourceVolume * getMediaStreamVolume();
+    //转换应用层的音量为音量增益(单位db)
+    gainValue += sourceGain.stepValue() * (int) (volume * steps + 0.5);
+    ......
+    // size of gain values is 1 in MODE_JOINT
+    int[] gainValues = new int[] { gainValue };
+    sourceGainConfig = sourceGain.buildConfig(AudioGain.MODE_JOINT,
+    sourceGain.channelMask(), gainValues, 0);
+    ......
+    //调用audio硬件设置音量增益
+    mAudioManager.setAudioPortGain(mAudioSource, sourceGainConfig);
+}
+
+</code></pre> 
+<p>frameworks/base/media/java/android/media/AudioManager.java</p> 
+<pre><code>    /**
+     * Set the gain on the specified AudioPort. The AudioGainConfig config is build by
+     * AudioGain.buildConfig()
+     * @hide
+     */
+    public static int setAudioPortGain(AudioPort port, AudioGainConfig gain) {
+        if (port == null || gain == null) {
+            return ERROR_BAD_VALUE;
+        }
+        //调用port对象的activeConfig()方法，获取当前活动的音频端口配置。
+        AudioPortConfig activeConfig = port.activeConfig();
+	//使用AudioPortConfig构造函数创建一个新的音频端口配置对象config。
+        AudioPortConfig config = new AudioPortConfig(port, activeConfig.samplingRate(),
+                                        activeConfig.channelMask(), activeConfig.format(), gain);
+	//设置config对象的mConfigMask字段为AudioPortConfig.GAIN。
+	//这指定了配置掩码，表明只更改增益设置，而不是其他配置如采样率、声道掩码或格式。
+        config.mConfigMask = AudioPortConfig.GAIN;
+        //应用新的音频端口配置
+        return AudioSystem.setAudioPortConfig(config);
+    }
+</code></pre> 
+<p>frameworks/base/media/java/android/media/AudioSystem.java</p> 
+<pre><code>//由native 关键字可知使用了本地方法实现函数
+public static native int setAudioPortConfig(AudioPortConfig config);
+</code></pre> 
+<p>frameworks/base/core/jni/android_media_AudioSystem.cpp</p> 
+<pre><code>{"setAudioPortConfig", "(Landroid/media/AudioPortConfig;)I",
+          (void *)android_media_AudioSystem_setAudioPortConfig},
+
+......
+static jint
+android_media_AudioSystem_setAudioPortConfig(JNIEnv *env, jobject clazz,
+                                 jobject jAudioPortConfig)
+{
+    ALOGV("setAudioPortConfig");
+    if (jAudioPortConfig == NULL) {
+        return AUDIO_JAVA_BAD_VALUE;
+    }
+    //确认jAudioPortConfig是一个正确的AudioPortConfig类的实例，如果不是，返回错误码
+    if (!env-&gt;IsInstanceOf(jAudioPortConfig, gAudioPortConfigClass)) {
+        return AUDIO_JAVA_BAD_VALUE;
+    }
+    //定义一个本地audio_port_config结构体实例，用于存储转换后的本地音频端口配置。
+    struct audio_port_config nAudioPortConfig = {};
+    //调用convertAudioPortConfigToNative函数，将Java层的AudioPortConfig对象转换为本地的audio_port_config结构体。
+    //返回值jStatus用于检查转换是否成功。
+    jint jStatus = convertAudioPortConfigToNative(env, &amp;nAudioPortConfig, jAudioPortConfig, true);
+    if (jStatus != AUDIO_JAVA_SUCCESS) {
+        return jStatus;
+    }
+    //调用AudioSystem::setAudioPortConfig方法，传入本地音频端口配置，以应用配置。
+    //标记0
+    status_t status = AudioSystem::setAudioPortConfig(&amp;nAudioPortConfig);
+    ALOGV("AudioSystem::setAudioPortConfig() returned %d", status);
+    //将本地状态码status转换为Java可以理解的状态码jStatus。
+    //返回Java层，这样Java层就可以知道操作是否成功或出现了什么错误。
+    jStatus = nativeToJavaStatus(status);
+    return jStatus;
+}
+</code></pre> 
+<h3><a id="0_libaudioclient_169"></a>标记0 libaudioclient</h3> 
+<p>frameworks/av/media/libaudioclient/AudioSystem.cpp</p> 
+<pre><code>status_t AudioSystem::setAudioPortConfig(const struct audio_port_config* config) {
+    if (config == nullptr) {
+        return BAD_VALUE;
+    }
+    //获取音频策略服务的引用（IAudioPolicyService是一个接口，用于与音频策略服务进行交互） 
+    //标记1 
+    const sp&lt;IAudioPolicyService&gt;&amp; aps = AudioSystem::get_audio_policy_service();
+    if (aps == 0) return PERMISSION_DENIED;
+    //将传入的audio_port_config结构转换为AIDL（Android Interface Definition Language）格式的AudioPortConfigFw对象。
+    //VALUE_OR_RETURN_STATUS是一个宏或模板函数，用于检查转换操作是否成功，并可能返回一个错误状态码。
+    media::AudioPortConfigFw configAidl = VALUE_OR_RETURN_STATUS(
+            legacy2aidl_audio_port_config_AudioPortConfigFw(*config));
+    //标记2
+    return statusTFromBinderStatus(aps-&gt;setAudioPortConfig(configAidl));
+}
+
+
+</code></pre> 
+<h4><a id="1_libaudioclient_aps_193"></a>标记1 libaudioclient ：aps变量赋值</h4> 
+<p>aps的赋值为AudioPolicyService地址指针</p> 
+<pre><code>frameworks/av/media/libaudioclient/AudioSystem.cpp
+// establish binder interface to AudioPolicyService
+const sp&lt;IAudioPolicyService&gt; AudioSystem::get_audio_policy_service() {
+    sp&lt;IAudioPolicyService&gt; ap;
+    sp&lt;AudioPolicyServiceClient&gt; apc;
+    {
+        //创建一个自动锁_l，它在作用域开始时自动加锁，并在作用域结束时自动解锁，用于保护临界区代码。
+	//gLockAPS是全局的互斥锁，用于同步对共享资源的访问。
+        Mutex::Autolock _l(gLockAPS);
+	//检查gAudioPolicyService是否已初始化。如果不为null，表示服务连接已建立，可直接返回服务接口。
+        if (gAudioPolicyService == 0) {
+	    //如果服务尚未连接，它会使用defaultServiceManager()获取系统服务管理器的句柄，并尝试检索"media.audio_policy"服务。如服务未立即可用，它将每半秒重试一次，直到服务出现。
+            sp&lt;IServiceManager&gt; sm = defaultServiceManager();
+            sp&lt;IBinder&gt; binder;
+            do {
+		//标记1.1
+                binder = sm-&gt;getService(String16("media.audio_policy"));
+                if (binder != 0)
+                    break;
+                ALOGW("AudioPolicyService not published, waiting...");
+                usleep(500000); // 0.5 s
+            } while (true);
+            if (gAudioPolicyServiceClient == NULL) {
+		//创建AudioPolicyServiceClient客户端，用于接收来自AudioPolicyService的回调通知
+                gAudioPolicyServiceClient = new AudioPolicyServiceClient();
+            }
+            binder-&gt;linkToDeath(gAudioPolicyServiceClient);
+	    //将binder转换为IAudioPolicyService接口，以便通过定义好的接口与服务交互。
+            gAudioPolicyService = interface_cast&lt;IAudioPolicyService&gt;(binder);
+            LOG_ALWAYS_FATAL_IF(gAudioPolicyService == 0);
+            apc = gAudioPolicyServiceClient;
+            // Make sure callbacks can be received by gAudioPolicyServiceClient
+            ProcessState::self()-&gt;startThreadPool();
+        }
+        ap = gAudioPolicyService;
+    }
+    //返回IAudioPolicyService接口指针，使得调用者能够与音频策略服务进行互动。
+    return ap;
+}
+</code></pre> 
+<h5><a id="11_binder_239"></a>标记1.1 binder变量赋值</h5> 
+<p>binder 变量获取的是media.audio_policy 服务</p> 
+<p>和media.audio_flinger 服务不一样</p> 
+<p>在ServiceManager进程中添加media.audio_flinger服务</p> 
+<pre><code>frameworks/av/services/audioflinger/AudioFlinger.cpp
+void AudioFlinger::instantiate() {
+    sp&lt;IServiceManager&gt; sm(defaultServiceManager());
+    sm-&gt;addService(String16(IAudioFlinger::DEFAULT_SERVICE_NAME),
+                   new AudioFlingerServerAdapter(new AudioFlinger()), false,
+                   IServiceManager::DUMP_FLAG_PRIORITY_DEFAULT);
+}
+
+frameworks/av/media/libaudioclient/include/media/IAudioFlinger.h
+class IAudioFlinger : public virtual RefBase {
+    static constexpr char DEFAULT_SERVICE_NAME[] = "media.audio_flinger";
+}
+</code></pre> 
+<h3><a id="2_audiopolicy_262"></a>标记2 audiopolicy</h3> 
+<p>在AudioPolicyService.cpp中没有setAudioPortConfig函数的具体实现，需要查找哪些文件包含了AudioPolicyService.h，并实现了setAudioPortConfig函数。查看发现AudioPolicyInterfaceImpl.cpp（实现的是 <code>StatusAudioPolicyService::setAudioPortConfig(constmedia::AudioPortConfigFw&amp;configAidl)</code>）、AudioPolicyClientImpl.cpp（实现的是 <code>AudioPolicyService::AudioPolicyClient::setAudioPortConfig</code>），因此查看AudioPolicyInterfaceImpl.cpp中的实现，由此可以AudioPolicyInterfaceImpl实现了AudioPolicyService.中的一部分函数</p> 
+<pre><code>frameworks/av/services/audiopolicy/service/AudioPolicyInterfaceImpl.cpp //实现了AudioPolicyService.中的一部分函数
+#include "AudioPolicyService.h"
+Status AudioPolicyService::setAudioPortConfig(const media::AudioPortConfigFw&amp; configAidl)
+{
+    audio_port_config config = VALUE_OR_RETURN_BINDER_STATUS(
+            aidl2legacy_AudioPortConfigFw_audio_port_config(configAidl));
+    RETURN_IF_BINDER_ERROR(
+            binderStatusFromStatusT(AudioValidator::validateAudioPortConfig(config)));
+    ......
+    //标记4 mAudioPolicyManager的赋值 //标记5
+    return binderStatusFromStatusT(mAudioPolicyManager-&gt;setAudioPortConfig(&amp;config));
+}
+
+
+</code></pre> 
+<h4><a id="4_audiopolicymAudioPolicyManager_283"></a>标记4 audiopolicy：mAudioPolicyManager变量赋值</h4> 
+<p>mAudioPolicyManager的赋值为AudioPolicyManager</p> 
+<pre><code>frameworks/av/services/audiopolicy/service/AudioPolicyService.h
+AudioPolicyInterface *mAudioPolicyManager;
+
+frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp
+void AudioPolicyService::onFirstRef()
+{
+    ......
+    {
+	......
+        mAudioPolicyClient = new AudioPolicyClient(this);
+        loadAudioPolicyManager();
+	//标记4.1 传入AudioPolicyClient实例
+        mAudioPolicyManager = mCreateAudioPolicyManager(mAudioPolicyClient);
+    }
+    ......
+}
+
+static const char kAudioPolicyManagerCustomPath[] = "libaudiopolicymanagercustom.so";
+
+void AudioPolicyService::loadAudioPolicyManager()
+{
+    //使用dlopen函数打开一个动态链接库（.so文件），这里指定了库文件的路径kAudioPolicyManagerCustomPath和加载时的属 性RTLD_NOW（立即加载）。mLibraryHandle是AudioPolicyService类中的成员变量，用于存储打开的动态链接库的句柄
+    mLibraryHandle = dlopen(kAudioPolicyManagerCustomPath, RTLD_NOW);
+    if (mLibraryHandle != nullptr) {
+        ALOGI("%s loading %s", __func__, kAudioPolicyManagerCustomPath);
+        mCreateAudioPolicyManager = reinterpret_cast&lt;CreateAudioPolicyManagerInstance&gt;
+                                            (dlsym(mLibraryHandle, "createAudioPolicyManager"));
+    }
+}
+
+AudioPolicyService::AudioPolicyService()
+    //使用列表初始化（冒号:）来初始化继承自基类的成员。
+    //这里BnAudioPolicyService()是基类构造函数的调用，
+    //表示AudioPolicyService继承自BnAudioPolicyService。
+    : BnAudioPolicyService(),
+      ......
+      //mCreateAudioPolicyManager是类成员变量，这里被初始化为createAudioPolicyManager，
+      //它是一个函数或函数指针，用于创建音频策略管理器实例。
+      mCreateAudioPolicyManager(createAudioPolicyManager),
+      ......
+}
+
+//标记4.1传入参数new AudioPolicyClient的地址
+static AudioPolicyInterface* createAudioPolicyManager(AudioPolicyClientInterface *clientInterface)
+{
+    auto config = AudioPolicyConfig::loadFromApmXmlConfigWithFallback();  // This can't fail.
+    //此处就是标记4中mAudioPolicyManager的地址指向
+    AudioPolicyManager *apm = new AudioPolicyManager(
+            config, loadApmEngineLibraryAndCreateEngine(config-&gt;getEngineLibraryNameSuffix()),
+            clientInterface);
+    status_t status = apm-&gt;initialize();
+    ......
+    return apm;
+}
+
+</code></pre> 
+<h3><a id="5_audiopolicy_345"></a>标记5 audiopolicy</h3> 
+<pre><code>frameworks/av/services/audiopolicy/managerdefault/AudioPolicyManager.h
+//AudioPolicyManager 继承 AudioPolicyInterface
+class AudioPolicyManager : public AudioPolicyInterface, public AudioPolicyManagerObserver
+{
+    virtual status_t setAudioPortConfig(const struct audio_port_config *config);
+
+    AudioPolicyClientInterface *mpClientInterface;
+}
+
+
+frameworks/av/services/audiopolicy/managerdefault/AudioPolicyManager.cpp
+status_t AudioPolicyManager::setAudioPortConfig(const struct audio_port_config *config)
+{
+    sp&lt;AudioPortConfig&gt; audioPortConfig;
+    ......
+    struct audio_port_config backupConfig = {};
+    status_t status = audioPortConfig-&gt;applyAudioPortConfig(config, &amp;backupConfig);
+    if (status == NO_ERROR) {
+        struct audio_port_config newConfig = {};
+        audioPortConfig-&gt;toAudioPortConfig(&amp;newConfig, config);
+        //标记6 mpClientInterface赋值  //标记7
+        status = mpClientInterface-&gt;setAudioPortConfig(&amp;newConfig, 0);
+    }
+    return status;
+}
+</code></pre> 
+<h4><a id="6_audiopolicympClientInterface_375"></a>标记6 audiopolicy：mpClientInterface变量赋值</h4> 
+<p>mpClientInterface变量的赋值AudioPolicyClient实例：</p> 
+<pre><code>frameworks/av/services/audiopolicy/managerdefault/AudioPolicyManager.cpp
+AudioPolicyManager::AudioPolicyManager(const sp&lt;const AudioPolicyConfig&gt;&amp; config,
+                                       EngineInstance&amp;&amp; engine,
+                                       AudioPolicyClientInterface *clientInterface)
+    :
+    mUidCached(AID_AUDIOSERVER), // no need to call getuid(), there's only one of us running.
+    mConfig(config),
+    //在此处赋值,clientInterface是函数指针，在标记4.1中new AudioPolicyManager实例化传入了clientInterface参数new AudioPolicyClient的地址
+    mpClientInterface(clientInterface),
+    mLimitRingtoneVolume(false), mLastVoiceVolume(-1.0f),
+{
+}
+
+也就是下面函数
+frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp
+static AudioPolicyInterface* createAudioPolicyManager(AudioPolicyClientInterface *clientInterface)
+{
+    auto config = AudioPolicyConfig::loadFromApmXmlConfigWithFallback();  // This can't fail.
+    AudioPolicyManager *apm = new AudioPolicyManager(
+            config, loadApmEngineLibraryAndCreateEngine(config-&gt;getEngineLibraryNameSuffix()),
+            clientInterface);
+    status_t status = apm-&gt;initialize();
+    ......
+    return apm;
+}
+
+AudioPolicyService::AudioPolicyService()
+    //使用列表初始化（冒号:）来初始化继承自基类的成员。
+    //这里BnAudioPolicyService()是基类构造函数的调用，
+    //表示AudioPolicyService继承自BnAudioPolicyService。
+    : BnAudioPolicyService(),
+      //mCreateAudioPolicyManager是类成员变量，这里被初始化为createAudioPolicyManager，
+      //它是一个函数或函数指针，用于创建音频策略管理器实例。
+      mCreateAudioPolicyManager(createAudioPolicyManager),
+}
+
+void AudioPolicyService::onFirstRef()
+{
+    {
+        mAudioPolicyClient = new AudioPolicyClient(this);
+
+        loadAudioPolicyManager();
+	//传入AudioPolicyClient实例
+        mAudioPolicyManager = mCreateAudioPolicyManager(mAudioPolicyClient);
+    }
+
+static const char kAudioPolicyManagerCustomPath[] = "libaudiopolicymanagercustom.so";
+
+void AudioPolicyService::loadAudioPolicyManager()
+{
+    //使用dlopen函数打开一个动态链接库（.so文件），这里指定了库文件的路径kAudioPolicyManagerCustomPath和加载时的属 性RTLD_NOW（立即加载）。mLibraryHandle是AudioPolicyService类中的成员变量，用于存储打开的动态链接库的句柄
+    mLibraryHandle = dlopen(kAudioPolicyManagerCustomPath, RTLD_NOW);
+    if (mLibraryHandle != nullptr) {
+        ALOGI("%s loading %s", __func__, kAudioPolicyManagerCustomPath);
+        mCreateAudioPolicyManager = reinterpret_cast&lt;CreateAudioPolicyManagerInstance&gt;
+                                            (dlsym(mLibraryHandle, "createAudioPolicyManager"));
+    }
+}
+</code></pre> 
+<h3><a id="7_audiopolicy_440"></a>标记7 audiopolicy</h3> 
+<p>AudioPolicyClient继承AudioPolicyClientInterface</p> 
+<pre><code>frameworks/av/services/audiopolicy/service/AudioPolicyService.h
+class AudioPolicyClient : public AudioPolicyClientInterface{
+        /* Set audio port configuration */
+        virtual status_t setAudioPortConfig(const struct audio_port_config *config, int delayMs);
+}
+
+搜索AudioPolicyClient::setAudioPortConfig函数，发现函数实现在下面路径
+frameworks/av/services/audiopolicy/service/AudioPolicyClientImpl.cpp
+status_t AudioPolicyService::AudioPolicyClient::setAudioPortConfig(
+                                                        const struct audio_port_config *config,
+                                                        int delayMs)
+{
+    return mAudioPolicyService-&gt;clientSetAudioPortConfig(config, delayMs);
+}
+
+frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp
+status_t AudioPolicyService::clientSetAudioPortConfig(const struct audio_port_config *config,
+                                                      int delayMs)
+{
+    return mAudioCommandThread-&gt;setAudioPortConfigCommand(config, delayMs);
+}
+status_t AudioPolicyService::AudioCommandThread::setAudioPortConfigCommand(
+                                            const struct audio_port_config *config, int delayMs)
+{
+    sp&lt;AudioCommand&gt; command = new AudioCommand();
+    //设置需要传入队列的命令
+    command-&gt;mCommand = SET_AUDIOPORT_CONFIG;
+    SetAudioPortConfigData *data = new SetAudioPortConfigData();
+    data-&gt;mConfig = *config;
+    command-&gt;mParam = data;
+    command-&gt;mWaitStatus = true;
+    ALOGV("AudioCommandThread() adding set port config delay %d", delayMs);
+    //将一个音频命令对象按照指定的延迟时间加入到执行队列，并等待命令执行完成或超时
+    //此处发送 SET_AUDIOPORT_CONFIG 音频命令到队列
+    //标记8
+    return sendCommand(command, delayMs);
+}
+status_t AudioPolicyService::AudioCommandThread::sendCommand(sp&lt;AudioCommand&gt;&amp; command, int delayMs)
+{
+    {
+        Mutex::Autolock _l(mLock);
+        //调用insertCommand_l成员函数，将传入的command和delayMs插入到线程的命令队列中。
+	//insertCommand_l是一个私有成员函数，负责将命令插入到一个按时间排序的队列中。
+        insertCommand_l(command, delayMs);
+	//mWaitWorkCV是条件变量，用于在有工作可做时通知等待的线程。
+	//signal函数唤醒等待条件变量的线程，告知有新的命令可以处理。
+        mWaitWorkCV.signal();
+    }
+    return command-&gt;mStatus;
+}
+</code></pre> 
+<h3><a id="8_audiopolicy_497"></a>标记8 audiopolicy</h3> 
+<p>将一个音频命令对象加入到执行队列等待命令执行完成或超时。因此可以搜索命令SET_AUDIOPORT_CONFIG，看在什么位置进行了处理。</p> 
+<pre><code>frameworks/av/services/audiopolicy/service/AudioPolicyService.cpp
+bool AudioPolicyService::AudioCommandThread::threadLoop()
+{
+switch (command-&gt;mCommand) {
+......
+    case SET_AUDIOPORT_CONFIG: {
+                    SetAudioPortConfigData *data = (SetAudioPortConfigData *)command-&gt;mParam.get();
+                    ALOGV("AudioCommandThread() processing set port config");
+		    //标记9 af获取到AudioFlinger服务
+                    sp&lt;IAudioFlinger&gt; af = AudioSystem::get_audio_flinger();
+                    if (af == 0) {
+                        command-&gt;mStatus = PERMISSION_DENIED;
+                    } else {
+                        mLock.unlock();
+			//标记10
+                        command-&gt;mStatus = af-&gt;setAudioPortConfig(&amp;data-&gt;mConfig);
+                        mLock.lock();
+                    }
+                    } break;
+......
+</code></pre> 
+<h3><a id="10_audioflinger_524"></a>标记10 audioflinger</h3> 
+<p>因此在AudioFlinger.cpp文件中调用setAudioPortConfig</p> 
+<pre><code>frameworks/av/services/audioflinger/AudioFlinger.cpp
+status_t AudioFlinger::setAudioPortConfig(const struct audio_port_config *config)
+{
+    ......
+    audio_module_handle_t module;
+    if (config-&gt;type == AUDIO_PORT_TYPE_DEVICE) {
+        module = config-&gt;ext.device.hw_module;
+    } else {
+        module = config-&gt;ext.mix.hw_module;
+    }
+    ......
+    AudioHwDevice *audioHwDevice = mAudioHwDevs.valueAt(index);
+    //使用HAL间接操作audio硬件
+    //标记11 hwDevice赋值 //标记13
+    return audioHwDevice-&gt;hwDevice()-&gt;setAudioPortConfig(config);
+}
+
+frameworks/av/services/audioflinger/AudioHwDevice.h
+sp&lt;DeviceHalInterface&gt; hwDevice() const { return mHwDevice; }
+</code></pre> 
+<h4><a id="11_audioflingerhwDevice_550"></a>标记11 audioflinger：hwDevice变量赋值</h4> 
+<p>hwDevice类型为sp <code>&lt;DeviceHalInterface&gt;</code>，在标记12中查询到hwDevice最终赋值为DeviceHalLocal的实例地址</p> 
+<pre><code>frameworks/av/services/audioflinger/AudioHwDevice.h
+sp&lt;DeviceHalInterface&gt; hwDevice() const { return mHwDevice; }
+
+//mHwDevice值是在初始化时传入进来的，因此需要找到实例化的地方
+AudioHwDevice(audio_module_handle_t handle,
+                  const char *moduleName,
+                  const sp&lt;DeviceHalInterface&gt;&amp; hwDevice,
+                  Flags flags)
+        : mHandle(handle)
+        , mModuleName(strdup(moduleName))
+	//初始化时传入参数
+        , mHwDevice(hwDevice)
+        , mFlags(flags) { }
+
+正好在AudioFlinger.cpp有new AudioHwDevice在标记14位置
+frameworks/av/services/audioflinger/AudioFlinger.cpp
+......
+mDevicesFactoryHal = DevicesFactoryHalInterface::create();
+......
+// loadHwModule_l() must be called with AudioFlinger::mLock and AudioFlinger::mHardwareLock held
+AudioHwDevice* AudioFlinger::loadHwModule_l(const char *name){
+    sp&lt;DeviceHalInterface&gt; dev;
+    //打开一个指定名称的音频设备，并获取该设备的智能指针引用
+    //标记12 调用到DevicesFactoryHal的openDevice方法打开驱动设备
+    int rc = mDevicesFactoryHal-&gt;openDevice(name, &amp;dev);
+    ......
+    //标记14
+    AudioHwDevice *audioDevice = new AudioHwDevice(handle, name, dev, flags);
+}
+
+
+</code></pre> 
+<h3><a id="12_audioflinger_588"></a>标记12 audioflinger</h3> 
+<p>mDevicesFactoryHal的赋值最终调用DevicesFactoryHalLocal，最终差查询到 标记11中类型为sp <code>&lt;DeviceHalInterface&gt;</code>的hwDevice，最终传入了 DeviceHalLocal的实例地址</p> 
+<pre><code>frameworks/av/services/audioflinger/AudioFlinger.cpp
+mDevicesFactoryHal = DevicesFactoryHalInterface::create();
+
+frameworks/av/media/libaudiohal/include/media/audiohal/DevicesFactoryHalInterface.h //由libaudiohal可知HAL实现在hardware
+class DevicesFactoryHalInterface : public RefBase
+{
+    virtual status_t openDevice(const char *name, sp&lt;DeviceHalInterface&gt; *device) = 0;
+}
+
+hardware/amlogic/audio/utils/hidl_interface_7_0/impl/DevicesFactoryHalLocal.h
+//DevicesFactoryHalLocal 继承DevicesFactoryHalInterface，因此可以查看DevicesFactoryHalLocal 的实现
+class DevicesFactoryHalLocal : public DevicesFactoryHalInterface{
+......
+}
+
+hardware/amlogic/audio/utils/hidl_interface_7_0/impl/DevicesFactoryHalLocal.cpp 
+status_t DevicesFactoryHalLocal::openDevice(const char *name, sp&lt;DeviceHalInterface&gt; *device) {
+    audio_hw_device_t *dev;
+    //标记12.1 加载音频设备模块
+    status_t rc = load_audio_interface(name, &amp;dev);
+    if (rc == OK) {
+	//标记11中类型为sp &lt;DeviceHalInterface&gt;的hwDevice，最终传入了 DeviceHalLocal的实例地址
+        *device = new DeviceHalLocal(dev);
+    }
+    return rc;
+}
+</code></pre> 
+<h4><a id="121_hardwareload_audio_interface_621"></a>标记12.1 hardware：load_audio_interface</h4> 
+<p>load_audio_interface获取对应音频模块</p> 
+<pre><code>hardware/amlogic/audio/utils/hidl_interface_7_0/impl/DevicesFactoryHalLocal.cpp
+//其中load_audio_interface中可以查看到需要获取哪个硬件的模块ID AUDIO_HARDWARE_MODULE_ID
+static status_t load_audio_interface(const char *if_name, audio_hw_device_t **dev)
+{
+    //搜索 AUDIO_HARDWARE_MODULE_ID 可以得到很多硬件音频模块USB、远程音频等，找到我们需要的aml即可
+    //利用HAL层注册信息id和name，获取相应的模块
+    //主要用于id相同、name不同，即获取相同功能但厂家不同的硬件库。
+    //获取到HAL层音频模块后,再将mod通过audio_hw_device_open打开
+    rc = hw_get_module_by_class(AUDIO_HARDWARE_MODULE_ID, if_name, &amp;mod);
+    //调用对应音频模块的open方法
+    rc = audio_hw_device_open(mod, dev);
+}
+其中 audio_hw_device_open
+static inline int audio_hw_device_open(const struct hw_module_t* module,
+                                       struct audio_hw_device** device)
+{
+    return module-&gt;methods-&gt;open(module, AUDIO_HARDWARE_INTERFACE,
+                                 TO_HW_DEVICE_T_OPEN(device));//调用硬件模块的open方法
+}
+
+搜索 AUDIO_HARDWARE_MODULE_ID 可以得到很多硬件音频模块USB、远程音频等，找到我们需要的aml即可
+/hardware/amlogic/audio/audio_hal/audio_hw.c
+static struct hw_module_methods_t hal_module_methods = {
+    .open = adev_open,
+};
+struct audio_module HAL_MODULE_INFO_SYM = {
+    .common = {
+        .tag = HARDWARE_MODULE_TAG,
+        .module_api_version = AUDIO_MODULE_API_VERSION_0_1,
+        .hal_api_version = HARDWARE_HAL_API_VERSION,
+        .id = AUDIO_HARDWARE_MODULE_ID,
+        .name = "aml audio HW HAL",
+        .author = "amlogic, Corp.",
+        .methods = &amp;hal_module_methods,
+    },
+};
+static int adev_open(const hw_module_t* module, const char* name, hw_device_t** device){
+    struct aml_audio_device *adev;
+    //注意该结构体，hw_device后的函数就是对应framework的接口，=后的函数就是对应hal的接口
+    adev-&gt;hw_device.set_audio_port_config = adev_set_audio_port_config;
+}
+static int adev_set_audio_port_config(struct audio_hw_device *dev, const struct audio_port_config *config)
+{
+     AM_LOGI("id:%d, dev:%s, role:%s, type:%s, gain:%d", config-&gt;id, ....)
+}
+</code></pre> 
+<h3><a id="13_hardware_673"></a>标记13 hardware</h3> 
+<pre><code>
+frameworks/av/media/libaudiohal/include/media/audiohal/DeviceHalInterface.h //由libaudiohal可知HAL实现在hardware
+{
+    virtual status_t setAudioPortConfig(const struct audio_port_config *config) = 0;
+}
+
+/hardware/amlogic/audio/utils/hidl_interface_7_0/impl/DeviceHalLocal.h
+#include &lt;media/audiohal/DeviceHalInterface.h&gt;
+class DeviceHalLocal : public DeviceHalInterface{
+     virtual status_t setAudioPortConfig(const struct audio_port_config *config);
+}
+
+hardware/amlogic/audio/utils/hidl_interface_7_0/impl/DeviceHalLocal.cpp
+status_t DeviceHalLocal::setAudioPortConfig(const struct audio_port_config *config) {
+    if (version() &gt;= AUDIO_DEVICE_API_VERSION_3_0)
+        return mDev-&gt;set_audio_port_config(mDev, config);
+    else
+        return INVALID_OPERATION;
+}
+</code></pre> 
+<h2><a id="dumpsys_699"></a>dumpsys调试</h2> 
+<pre><code>dumpsys 关于音量的有下面三种属性：
+media.audio_flinger、audio、media.audio_policy
+其中media.audio_flinger能显示关与aml中关于HAL的信息
+    static IBinder getAudioFlinger() {
+        return ServiceManager.getService("media.audio_flinger");
+    }
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c8a2154035339a53f29be237ef8cab2b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【postgresql初级使用】视图上的触发器instead of，替代计划的rewrite，实现不一样的审计日志</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/87ba50dcb23bf7afec689af01bb6c1d1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">直流放大器</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

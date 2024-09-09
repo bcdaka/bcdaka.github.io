@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>扩散模型实战（十）：Stable Diffusion文本条件生成图像大模型 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/2da4e624f44772996a40afa9f3f82029/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="扩散模型实战（十）：Stable Diffusion文本条件生成图像大模型">
+  <meta property="og:description" content="推荐阅读列表： 扩散模型实战（一）：基本原理介绍
+扩散模型实战（二）：扩散模型的发展
+扩散模型实战（三）：扩散模型的应用
+扩散模型实战（四）：从零构建扩散模型
+扩散模型实战（五）：采样过程
+扩散模型实战（六）：Diffusers DDPM初探
+扩散模型实战（七）：Diffusers蝴蝶图像生成实战
+扩散模型实战（八）：微调扩散模型
+扩散模型实战（九）：使用CLIP模型引导和控制扩散模型
+在AIGC时代，Stable Diffusion无疑是其中最亮的“仔”，它是一个强大的文本条件隐式扩散模型（text-conditioned latent diffusion model），可以根据文字描述（也称为Prompt）生成精美图片。
+一、基本概念 1.1 隐式扩散 对于基于transformer的大模型来说，self-attention的计算复杂度与输入数据是平方关系的，比如一张128X128像素的图片在像素数量上是64X64像素图片的4倍，内存和计算量是16倍。这正是高分辨率图像生成任务存在的普遍现象。
+为了解决这个问题，提出了隐式扩散（Latent Diffusion）方法，该方法认为图片通常包含大量冗余信息，首先使用大量图片数据训练一个Variational Auto-Encode（VAE）模型，编码器将图片映射到一个较小的隐式表示，解码器可以将较小的隐式表示映射到原始图片。Stable Diffusion中的VAE接受一张3通道图片作为输入，生成一个4通道的隐式特征，同时每一个空间维度都将减少为原来的八分之一。例如，一张512X512像素的图片可以被压缩到一个4X64X64的隐式表示。
+通过在隐式表示（而不是完整图像）上进行扩散，可以使用更少的内存也可以减少UNet层数，从而加速图片生成，极大降低了训练和推理成本。
+隐式扩散的结构，如下图所示：
+1.2 以文本为生成条件 前面的章节展示了如何将额外信息输入给UNet，以实现对生成图像的控制，这种方法称为条件生成。以文本为条件进行控制图像的生成是在推理阶段，我们可以输入期望图像的文本描述（Prompt），并把纯噪声数据作为起点，然后模型对噪声数据进行“去噪”，从而生成能够匹配文本描述的图像。那么这个过程是如何实现的呢？
+我们需要对文本进行编码表示，然后输入给UNet作为生成条件，文本嵌入表示如下图ENCODER_HIDDEN_STATES
+Stable Diffusion使用CLIP对文本描述进行编码，首先对输入文本描述进行分词，然后输入给CLIP文本编码器，从而为每个token产生一个768维（Stable Diffusion 1.x版本）或者1024维（Stable Diffusion 2.x版本）向量，为了使输入格式一致，文本描述总是被补全或者截断为77个token。
+那么，如何将这些条件信息输入给UNet进行预测呢？答案是使用交叉注意力（cross-attention）机制。UNet网络中的每个空间位置都可以与文本条件中的不同token建立注意力（在稍后的代码中可以看到具体的实现），如下图所示：
+1.3 无分类器引导 第2节我们提到可以使用CLIP编码文本描述来控制图像的生成，但是实际使用中，每个生成的图像都是按照文本描述生成的吗？当然不一定，其实是大模型的幻觉问题，原因可能是训练数据中图像与文本描述相关性弱，模型可能学着不过度依赖文本描述，而是从大量图像中学习来生成图像，最终达不到我们的期望，那如何解决呢？
+我们可以引入一个小技巧-无分类器引导（Classifier-Free Guidance，CFG）。在训练时，我们时不时把文本条件置空，强制模型去学习如何在无文字信息的情况下对图像“去噪”。在推理阶段，我们分别进行了两个预测：一个有文字条件，另一个则没有文字条件。这样我们就可以利用两者的差异来建立一个最终的预测了，并使最终结果在文本条件预测所指明的方向上依据一个缩放系数（引导尺度）更好的生成文本描述匹配的结果。从下图看到，更大的引导尺度能让生成的图像更接近文本描述。
+1.4 其他类型的条件生成模型：Img2Img、Inpainting与Depth2Img模型 其实除了使用文本描述作为条件生成图像，还有其他不同类型的条件可以控制Stable Diffusion生成图像，比如图片到图片、图片的部分掩码（mask）到图片以及深度图到图片，这些模型分别使用图片本身、图片掩码和图片深度信息作为条件来生成最终的图片。
+Img2Img是图片到图片的转换，包括多种类型，如风格转换（从照片风格转换为动漫风格）和图片超分辨率（给定一张低分辨率图片作为条件，让模型生成对应的高分辨率图片，类似Stable Diffusion Upscaler）。Inpainting又称图片修复，模型会根据掩码的区域信息和掩码之外的全局结构信息生成连贯的图片。Depth2Img采用图片的深度新作为条件，模型生成与深度图本身相似的具有全局结构的图片，如下图所示：
+1.5 使用DreamBooth微调扩散模型 DreamBooth可以微调文本到图像的生成模型，最初是为Google的Imagen Model开发的，很快被应用到Stable Diffusion中。它可以根据用户提供的一个主题3~5张图片，就可以生成与该主题相关的图像，但它对于各种设置比较敏感。
+二、环境准备 安装python库
+pip install -Uq diffusers ftfy acceleratepip install -Uq git&#43;https://github.com/huggingface/transformers 数据准备
+import torchimport requestsfrom PIL import Imagefrom io import BytesIOfrom matplotlib import pyplot as plt　# 这次要探索的管线比较多from diffusers import ( StableDiffusionPipeline, StableDiffusionImg2ImgPipeline, StableDiffusionInpaintPipeline, StableDiffusionDepth2ImgPipeline ) # 因为要用到的展示图片较多，所以我们写了一个旨在下载图片的函数def download_image(url): response = requests.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2023-11-17T09:51:41+08:00">
+    <meta property="article:modified_time" content="2023-11-17T09:51:41+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">扩散模型实战（十）：Stable Diffusion文本条件生成图像大模型</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2><strong>推荐阅读列表：</strong></h2> 
+<p> <a href="https://mp.csdn.net/mp_blog/creation/editor/132126535" title="扩散模型实战（一）：基本原理介绍">扩散模型实战（一）：基本原理介绍</a></p> 
+<p><a href="https://mp.csdn.net/mp_blog/creation/editor/132126766" title="扩散模型实战（二）：扩散模型的发展">扩散模型实战（二）：扩散模型的发展</a></p> 
+<p><a href="https://mp.csdn.net/mp_blog/creation/editor/132158174" title="扩散模型实战（三）：扩散模型的应用">扩散模型实战（三）：扩散模型的应用</a></p> 
+<p><a href="https://mp.csdn.net/mp_blog/creation/editor/132347788" title="扩散模型实战（四）：从零构建扩散模型">扩散模型实战（四）：从零构建扩散模型</a></p> 
+<p><a href="https://mp.csdn.net/mp_blog/creation/editor/132486151" title="扩散模型实战（五）：采样过程">扩散模型实战（五）：采样过程</a></p> 
+<p><a href="https://mp.csdn.net/mp_blog/creation/editor/132500829" title="扩散模型实战（六）：Diffusers DDPM初探">扩散模型实战（六）：Diffusers DDPM初探</a></p> 
+<p><a href="https://mp.csdn.net/mp_blog/creation/editor/132550870" title="扩散模型实战（七）：Diffusers蝴蝶图像生成实战">扩散模型实战（七）：Diffusers蝴蝶图像生成实战</a></p> 
+<p><a class="link-info" href="https://mp.csdn.net/mp_blog/creation/editor/132574064" title="扩散模型实战（八）：微调扩散模型">扩散模型实战（八）：微调扩散模型</a></p> 
+<p><a class="link-info" href="https://mp.csdn.net/mp_blog/creation/editor/134453955" title="扩散模型实战（九）：使用CLIP模型引导和控制扩散模型">扩散模型实战（九）：使用CLIP模型引导和控制扩散模型</a></p> 
+<p>        在AIGC时代，Stable Diffusion无疑是其中最亮的“仔”，它是一个强大的文本条件隐式扩散模型（text-conditioned latent diffusion model），可以根据文字描述（也称为Prompt）生成精美图片。</p> 
+<h2><strong>一、基本概念</strong></h2> 
+<h3><strong>1.1 隐式扩散</strong></h3> 
+<p>       对于基于transformer的大模型来说，self-attention的计算复杂度与输入数据是平方关系的，比如一张128X128像素的图片在像素数量上是64X64像素图片的4倍，内存和计算量是16倍。这正是高分辨率图像生成任务存在的普遍现象。</p> 
+<p>       为了解决这个问题，提出了隐式扩散（Latent Diffusion）方法，该方法认为图片通常包含大量冗余信息，首先使用大量图片数据训练一个Variational Auto-Encode（VAE）模型，编码器将图片映射到一个较小的隐式表示，解码器可以将较小的隐式表示映射到原始图片。Stable Diffusion中的VAE接受一张3通道图片作为输入，生成一个4通道的隐式特征，同时每一个空间维度都将减少为原来的八分之一。例如，一张512X512像素的图片可以被压缩到一个4X64X64的隐式表示。</p> 
+<p>       通过在隐式表示（而不是完整图像）上进行扩散，可以使用更少的内存也可以减少UNet层数，从而加速图片生成，极大降低了训练和推理成本。<br>         隐式扩散的结构，如下图所示：</p> 
+<p class="img-center"><img alt="" height="387" src="https://images2.imgbox.com/d5/24/YehDBmDb_o.jpg" width="770"></p> 
+<h3><strong>1.2 以文本为生成条件</strong></h3> 
+<p>       前面的章节展示了如何将额外信息输入给UNet，以实现对生成图像的控制，这种方法称为条件生成。以文本为条件进行控制图像的生成是在推理阶段，我们可以输入期望图像的文本描述（Prompt），并把纯噪声数据作为起点，然后模型对噪声数据进行“去噪”，从而生成能够匹配文本描述的图像。那么这个过程是如何实现的呢？</p> 
+<p>      我们需要对文本进行编码表示，然后输入给UNet作为生成条件，文本嵌入表示如下图ENCODER_HIDDEN_STATES</p> 
+<p class="img-center"><img alt="" height="716" src="https://images2.imgbox.com/02/76/lEgL8vX3_o.jpg" width="728"></p> 
+<p>       Stable Diffusion使用CLIP对文本描述进行编码，首先对输入文本描述进行分词，然后输入给CLIP文本编码器，从而为每个token产生一个768维（Stable Diffusion 1.x版本）或者1024维（Stable Diffusion 2.x版本）向量，为了使输入格式一致，文本描述总是被补全或者截断为77个token。</p> 
+<p>       那么，如何将这些条件信息输入给UNet进行预测呢？答案是使用交叉注意力（cross-attention）机制。UNet网络中的每个空间位置都可以与文本条件中的不同token建立注意力（<strong>在稍后的代码中可以看到具体的实现</strong>），如下图所示：</p> 
+<p class="img-center"><img alt="" height="543" src="https://images2.imgbox.com/7a/88/HooyrETD_o.jpg" width="784"></p> 
+<h3><strong>1.3 无分类器引导</strong></h3> 
+<p>       <strong>第2节</strong>我们提到可以使用CLIP编码文本描述来控制图像的生成，但是实际使用中，每个生成的图像都是按照文本描述生成的吗？当然不一定，其实是大模型的幻觉问题，原因可能是训练数据中图像与文本描述相关性弱，模型可能学着不过度依赖文本描述，而是从大量图像中学习来生成图像，最终达不到我们的期望，那如何解决呢？</p> 
+<p>       我们可以引入一个小技巧-无分类器引导（Classifier-Free Guidance，CFG）。在训练时，我们时不时把文本条件置空，强制模型去学习如何在无文字信息的情况下对图像“去噪”。在推理阶段，我们分别进行了两个预测：一个有文字条件，另一个则没有文字条件。这样我们就可以利用两者的差异来建立一个最终的预测了，并使最终结果在文本条件预测所指明的方向上依据一个缩放系数（引导尺度）更好的生成文本描述匹配的结果。从下图看到，更大的引导尺度能让生成的图像更接近文本描述。</p> 
+<p class="img-center"><img alt="" height="185" src="https://images2.imgbox.com/74/e0/UEb7Uozh_o.jpg" width="739"></p> 
+<h3><strong>1.4 其他类型的条件生成模型：Img2Img、Inpainting与Depth2Img模型</strong></h3> 
+<p>       其实除了使用文本描述作为条件生成图像，还有其他不同类型的条件可以控制Stable Diffusion生成图像，比如图片到图片、图片的部分掩码（mask）到图片以及深度图到图片，这些模型分别使用图片本身、图片掩码和图片深度信息作为条件来生成最终的图片。</p> 
+<p>       Img2Img是图片到图片的转换，包括多种类型，如风格转换（从照片风格转换为动漫风格）和图片超分辨率（给定一张低分辨率图片作为条件，让模型生成对应的高分辨率图片，类似Stable Diffusion Upscaler）。Inpainting又称图片修复，模型会根据掩码的区域信息和掩码之外的全局结构信息生成连贯的图片。Depth2Img采用图片的深度新作为条件，模型生成与深度图本身相似的具有全局结构的图片，如下图所示：</p> 
+<p class="img-center"><img alt="" height="105" src="https://images2.imgbox.com/22/3d/oQGOJCbH_o.png" width="789"></p> 
+<h3><strong>1.5 使用DreamBooth微调扩散模型</strong></h3> 
+<p>      DreamBooth可以微调文本到图像的生成模型，最初是为Google的Imagen Model开发的，很快被应用到Stable Diffusion中。它可以根据用户提供的一个主题3~5张图片，就可以生成与该主题相关的图像，但它对于各种设置比较敏感。</p> 
+<h2><strong>二、环境准备</strong></h2> 
+<p>安装python库</p> 
+<pre><code>pip install -Uq diffusers ftfy accelerate</code><code>pip install -Uq git+https://github.com/huggingface/transformers</code></pre> 
+<p>数据准备</p> 
+<pre><code>import torch</code><code>import requests</code><code>from PIL import Image</code><code>from io import BytesIO</code><code>from matplotlib import pyplot as plt</code><code>　</code><code># 这次要探索的管线比较多</code><code>from diffusers import (</code><code>    StableDiffusionPipeline, </code><code>    StableDiffusionImg2ImgPipeline,</code><code>    StableDiffusionInpaintPipeline, </code><code>    StableDiffusionDepth2ImgPipeline</code><code>    )       </code><code>　</code><code># 因为要用到的展示图片较多，所以我们写了一个旨在下载图片的函数</code><code>def download_image(url):</code><code>    response = requests.get(url)</code><code>    return Image.open(BytesIO(response.content)).convert("RGB")</code><code>　</code><code># Inpainting需要用到的图片</code><code>img_url = "https://raw.githubusercontent.com/CompVis/latent-</code><code> diffusion/main/data/inpainting_examples/overture-creations-</code><code> 5sI6fQgYIuo.png"</code><code>mask_url = "https://raw.githubusercontent.com/CompVis/latent-</code><code> diffusion/main/data/ inpainting_examples/overture-creations-</code><code> 5sI6fQgYIuo_mask.png"</code><code>　</code><code>init_image = download_image(img_url).resize((512, 512))</code><code>mask_image = download_image(mask_url).resize((512, 512))</code><code>　</code><code>device = (</code><code>    "mps"</code><code>    if torch.backends.mps.is_available()</code><code>    else "cuda"</code><code>    if torch.cuda.is_available()</code><code>    else "cpu"</code><code>)</code></pre> 
+<h2><strong>三、使用文本描述控制生成图像</strong></h2> 
+<p>       加载Stable Diffusion Pipeline，当然可以通过model_id切换Stable Diffusion版本</p> 
+<pre><code># 载入管线</code><code>model_id = "stabilityai/stable-diffusion-2-1-base"</code><code>pipe = StableDiffusionPipeline.from_pretrained(model_id).to(device)</code></pre> 
+<p>如果GPU显存不足，可以尝试以下方法来减少GPU显存的使用</p> 
+<ul><li>降低模型的精度为FP16</li></ul> 
+<pre><code>pipe = StableDiffusionPipeline.from_pretrained(model_id,</code><code>    revision="fp16",torch_dtype=torch.float16).to(device)</code></pre> 
+<ul><li>开启注意力切分功能，可以降低速度来减少GPU显存的使用</li></ul> 
+<pre><code>pipe.enable_attention_slicing()</code></pre> 
+<p></p> 
+<ul><li>减小生成图像的尺寸</li></ul> 
+<pre><code># 给生成器设置一个随机种子，这样可以保证结果的可复现性</code><code>generator = torch.Generator(device=device).manual_seed(42)</code><code>　</code><code># 运行这个管线</code><code>pipe_output = pipe(</code><code>    prompt="Palette knife painting of an autumn cityscape",</code><code>    # 提示文字：哪些要生成</code><code>    negative_prompt="Oversaturated, blurry, low quality",</code><code>    # 提示文字：哪些不要生成</code><code>    height=480, width=640,     # 定义所生成图片的尺寸</code><code>    guidance_scale=8,          # 提示文字的影响程度</code><code>    num_inference_steps=35,    # 定义一次生成需要多少个推理步骤</code><code>    generator=generator        # 设定随机种子的生成器</code><code>)</code><code>　</code><code># 查看生成结果，如图6-7所示</code><code>pipe_output.images[0]</code></pre> 
+<p class="img-center"><img alt="" height="476" src="https://images2.imgbox.com/5f/6b/vLLe6azI_o.png" width="635"></p> 
+<p><strong>主要参数介绍：</strong></p> 
+<p><strong>width和height</strong>：用于指定生成图片的尺寸，他们必须可以被8整除，否则VAE不能整除工作；</p> 
+<p><strong>num_inference_steps</strong>：会影响生成图片的质量，采用默认50即可，用户也可以尝试不同的值来对比一下效果；</p> 
+<p><strong>negative_prompt</strong>：用于强调不希望生成的内容，该参数一般在无分类器引导的情况下使用。列出一些不想要的特征，以帮助模型生成更好的结果；</p> 
+<p><strong>guidance_scale</strong>：决定了无分类器引导的影响强度。增大这个参数可以使生成的内容更接近给出的文本描述，但是参数值过大，则可能导致结果过于饱和，不美观，如下图所示：</p> 
+<pre><code>cfg_scales = [1.1, 8, 12] </code><code>prompt = "A collie with a pink hat" </code><code>fig, axs = plt.subplots(1, len(cfg_scales), figsize=(16, 5))</code><code>for i, ax in enumerate(axs):</code><code>    im = pipe(prompt, height=480, width=480,</code><code>        guidance_scale=cfg_scales[i], num_inference_steps=35,</code><code>        generator=torch.Generator(device=device).manual_seed(42)).</code><code>            images[0] </code><code>    ax.imshow(im); ax.set_title(f'CFG Scale {cfg_scales[i]}')</code></pre> 
+<p class="img-center"><img alt="" height="263" src="https://images2.imgbox.com/73/cc/dPwkFgHl_o.png" width="795"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c1fd62bb4c3307d465aaf2f43e078992/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">ElasticStack日志分析平台－ES 集群、Kibana与Kafka</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/926314cc20574e9faf301edfd8cdc7f0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">数据结构-二叉树·堆（顺序结构的实现）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

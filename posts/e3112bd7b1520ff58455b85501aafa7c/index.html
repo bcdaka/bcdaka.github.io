@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Docker Compose部署Kafka集群并在宿主机Windows连接开发 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/e3112bd7b1520ff58455b85501aafa7c/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Docker Compose部署Kafka集群并在宿主机Windows连接开发">
+  <meta property="og:description" content="文章目录 1. 常用参数2. 理解参数和原理3. Docker Compose4. 验证 Docker for Windows4.23.0windows11Java17 1. 常用参数 kafka容器常用参数如下
+-e KAFKA_BROKER_ID=1：设置 Kafka broker 的 ID 为 1。每个 Kafka broker 都需要一个唯一的 ID。
+-e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181：指定 Kafka 连接到 Zookeeper 的地址，这里假设 Zookeeper 容器的名称为 zookeeper，并且它在 2181 端口监听。
+-e ALLOW_PLAINTEXT_LISTENER=yes：允许 Kafka 使用纯文本监听器。即允许非加密的通信。
+-e KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092：Kafka broker 实际监听在容器内的 0.0.0.0:9092 上。这意味着 Kafka 接受来自任何网络接口的连接。
+-e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092：指定 Kafka 广播其监听器地址，客户端将使用该地址连接到 broker。在这个例子中，Kafka 广播它在 localhost:9092 上监听。
+KAFKA_LISTENER_SECURITY_PROTOCOL_MAP：指定 Kafka 使用的监听器协议映射。例如：PLAINTEXT:PLAINTEXT,SSL:SSL。
+KAFKA_INTER_BROKER_LISTENER_NAME：指定 broker 间通信使用的监听器名称。例如：PLAINTEXT。
+2. 理解参数和原理 KAFKA_LISTENERS是broker实际监听的地址。
+KAFKA_ADVERTISED_LISTENERS是broker注册在zookeeper或者controller broker里面的元数据，当消费者或者生产者使用Bootstrap-Server去连接kafka集群时，集群会返回元数据等信息到客户端，客户端会根据每个broker提供的KAFKA_ADVERTISED_LISTENERS去连接对应的broker。
+所以首先，集群之间，broker之间需要通信，所以每个kafka容器需要设置一个KAFKA_ADVERTISED_LISTENERS用于告诉别的容器如何连接到自己，如果容器都是处于同一bridge网络，那么直接使用容器名即可。
+其次，我们想要在宿主机比如windows的idea开发，我们一般只能通过docker容器-p暴露的端口去连接kafka，所以每个kafka容器还需要设置一个KAFKA_ADVERTISED_LISTENERS来告诉宿主机的客户端，如何连接到自己，这里需要使用localhost&#43;暴露在宿主机的端口。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-14T20:18:22+08:00">
+    <meta property="article:modified_time" content="2024-07-14T20:18:22+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Docker Compose部署Kafka集群并在宿主机Windows连接开发</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#1__8" rel="nofollow">1. 常用参数</a></li><li><a href="#2__27" rel="nofollow">2. 理解参数和原理</a></li><li><a href="#3_Docker_Compose_43" rel="nofollow">3. Docker Compose</a></li><li><a href="#4__116" rel="nofollow">4. 验证</a></li></ul> 
+</div> 
+<p></p> 
+<table><thead><tr><th>Docker for Windows</th><th>4.23.0</th></tr></thead><tbody><tr><td>windows</td><td>11</td></tr><tr><td>Java</td><td>17</td></tr></tbody></table> 
+<h2><a id="1__8"></a>1. 常用参数</h2> 
+<p>kafka容器常用参数如下</p> 
+<ul><li> <p><code>-e KAFKA_BROKER_ID=1</code>：设置 Kafka broker 的 ID 为 1。每个 Kafka broker 都需要一个唯一的 ID。</p> </li><li> <p><code>-e KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181</code>：指定 Kafka 连接到 Zookeeper 的地址，这里假设 Zookeeper 容器的名称为 <code>zookeeper</code>，并且它在 2181 端口监听。</p> </li><li> <p><code>-e ALLOW_PLAINTEXT_LISTENER=yes</code>：允许 Kafka 使用纯文本监听器。即允许非加密的通信。</p> </li><li> <p><code>-e KAFKA_LISTENERS=PLAINTEXT://0.0.0.0:9092</code>：Kafka broker 实际监听在容器内的 <code>0.0.0.0:9092</code> 上。这意味着 Kafka 接受来自任何网络接口的连接。</p> </li><li> <p><code>-e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092</code>：指定 Kafka 广播其监听器地址，客户端将使用该地址连接到 broker。在这个例子中，Kafka 广播它在 <code>localhost:9092</code> 上监听。</p> </li><li> <p><code>KAFKA_LISTENER_SECURITY_PROTOCOL_MAP</code>：指定 Kafka 使用的监听器协议映射。例如：<code>PLAINTEXT:PLAINTEXT,SSL:SSL</code>。</p> </li><li> <p><code>KAFKA_INTER_BROKER_LISTENER_NAME</code>：指定 broker 间通信使用的监听器名称。例如：<code>PLAINTEXT</code>。</p> </li></ul> 
+<h2><a id="2__27"></a>2. 理解参数和原理</h2> 
+<p><code>KAFKA_LISTENERS</code>是broker实际监听的地址。</p> 
+<p><code>KAFKA_ADVERTISED_LISTENERS</code>是broker注册在zookeeper或者controller broker里面的元数据，当消费者或者生产者使用Bootstrap-Server去连接kafka集群时，集群会返回元数据等信息到客户端，客户端会根据每个broker提供的<code>KAFKA_ADVERTISED_LISTENERS</code>去连接对应的broker。</p> 
+<p>所以首先，集群之间，broker之间需要通信，所以每个kafka容器需要设置一个<code>KAFKA_ADVERTISED_LISTENERS</code>用于告诉别的容器如何连接到自己，如果容器都是处于同一bridge网络，那么直接使用容器名即可。</p> 
+<p>其次，我们想要在宿主机比如windows的idea开发，我们一般只能通过docker容器-p暴露的端口去连接kafka，所以每个kafka容器还需要设置一个<code>KAFKA_ADVERTISED_LISTENERS</code>来告诉宿主机的客户端，如何连接到自己，这里需要使用localhost+暴露在宿主机的端口。</p> 
+<p>那么如果<code>KAFKA_ADVERTISED_LISTENERS</code>里面有2个地址，如何保证broker之间的连接使用的是容器名，而宿主机客户端使用的是localhost呢？</p> 
+<p>这需要<code>KAFKA_INTER_BROKER_LISTENER_NAME</code>来指定前者。</p> 
+<p>并且由于<code>KAFKA_ADVERTISED_LISTENERS</code>里面有2个地址，所以我们还需要<code>KAFKA_LISTENER_SECURITY_PROTOCOL_MAP</code>来映射监听器名字。</p> 
+<h2><a id="3_Docker_Compose_43"></a>3. Docker Compose</h2> 
+<pre><code>version: '3.8'
+
+services:
+  zookeeper:
+    image: bitnami/zookeeper:3.8.2
+    container_name: zookeeper
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+    networks:
+      - kafka
+
+  kafka1:
+    image: bitnami/kafka:3.6.1
+    container_name: kafka1
+    depends_on:
+      - zookeeper
+    ports:
+      - "19092:9092"
+    environment:
+      - KAFKA_BROKER_ID=1
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_LISTENERS=INTERNAL://0.0.0.0:9093,EXTERNAL://0.0.0.0:9092
+      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka1:9093,EXTERNAL://localhost:19092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
+    networks:
+      - kafka
+
+  kafka2:
+    image: bitnami/kafka:3.6.1
+    container_name: kafka2
+    depends_on:
+      - zookeeper
+    ports:
+      - "29092:9092"
+    environment:
+      - KAFKA_BROKER_ID=2
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_LISTENERS=INTERNAL://0.0.0.0:9093,EXTERNAL://0.0.0.0:9092
+      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka2:9093,EXTERNAL://localhost:29092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
+    networks:
+      - kafka
+
+  kafka3:
+    image: bitnami/kafka:3.6.1
+    container_name: kafka3
+    depends_on:
+      - zookeeper
+    ports:
+      - "39092:9092"
+    environment:
+      - KAFKA_BROKER_ID=3
+      - KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_LISTENERS=INTERNAL://0.0.0.0:9093,EXTERNAL://0.0.0.0:9092
+      - KAFKA_ADVERTISED_LISTENERS=INTERNAL://kafka3:9093,EXTERNAL://localhost:39092
+      - KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=INTERNAL:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL
+    networks:
+      - kafka
+
+networks:
+  kafka:
+    driver: bridge
+</code></pre> 
+<p>可以看到每个容器都设置了INTERNAL，因为指定了KAFKA_INTER_BROKER_LISTENER_NAME=INTERNAL，所以这是用于broker之间的连接，其监听在本地的<code>0.0.0.0:9093</code>，广播给其它broker的通信地址是&lt;容器名&gt;:9093，使用PLAINTEXT（明文）方式通信。</p> 
+<p>除此之外还设置了EXTERNAL，监听在本地的<code>0.0.0.0:9092</code>，广播给客户端的地址是localhost:19092、localhost:29092、localhost:39092，也就是windows上的客户端通过localhost:19092访问broker，这会被docker的-p映射到对应容器的9092，被<code>0.0.0.0:9092</code>对接。</p> 
+<h2><a id="4__116"></a>4. 验证</h2> 
+<p>连接到某个容器。创建test主题。</p> 
+<pre><code>kafka-topics.sh --create --topic test --partitions 3 --replication-factor 3 --bootstrap-server kafka1:9093
+</code></pre> 
+<p>查看分区和副本情况，可以看到在不同的broker上，输出中显示的是Broker ID。</p> 
+<pre><code>I have no name!@7212060b6e3d:/$ kafka-topics.sh --describe --topic test --bootstrap-server kafka1:9093
+Topic: test     TopicId: Lo1eQ6aCQj6WiFcNiVBrcw PartitionCount: 3       ReplicationFactor: 3    Configs: 
+        Topic: test     Partition: 0    Leader: 2       Replicas: 2,3,1 Isr: 2,3,1
+        Topic: test     Partition: 1    Leader: 3       Replicas: 3,1,2 Isr: 3,1,2
+        Topic: test     Partition: 2    Leader: 1       Replicas: 1,2,3 Isr: 1,2,3
+</code></pre> 
+<p>引入pom包</p> 
+<pre><code>&lt;dependency&gt;
+            &lt;groupId&gt;org.apache.kafka&lt;/groupId&gt;
+            &lt;artifactId&gt;kafka-clients&lt;/artifactId&gt;
+            &lt;version&gt;3.6.1&lt;/version&gt;
+        &lt;/dependency&gt;
+        &lt;!-- SLF4J API --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.slf4j&lt;/groupId&gt;
+            &lt;artifactId&gt;slf4j-api&lt;/artifactId&gt;
+            &lt;version&gt;1.7.36&lt;/version&gt;
+        &lt;/dependency&gt;
+        &lt;!-- Logback classic (SLF4J implementation) --&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;ch.qos.logback&lt;/groupId&gt;
+            &lt;artifactId&gt;logback-classic&lt;/artifactId&gt;
+            &lt;version&gt;1.2.11&lt;/version&gt;
+        &lt;/dependency&gt;
+</code></pre> 
+<p>生产者代码，通过<code>localhost:19092</code>连接到集群。</p> 
+<pre><code>package org.dragon.producer;
+
+import org.apache.kafka.clients.producer.KafkaProducer;
+import org.apache.kafka.clients.producer.ProducerConfig;
+import org.apache.kafka.clients.producer.ProducerRecord;
+import org.apache.kafka.common.serialization.StringSerializer;
+
+import java.util.HashMap;
+
+public class KafkaProducerTest {
+    public static void main(String[] args) throws InterruptedException {
+        //创建producer
+        HashMap&lt;String, Object&gt; config = new HashMap&lt;&gt;();
+        config.put(ProducerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:19092");
+        config.put(ProducerConfig.KEY_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        config.put(ProducerConfig.VALUE_SERIALIZER_CLASS_CONFIG, StringSerializer.class.getName());
+        KafkaProducer&lt;String, String&gt; producer = new KafkaProducer&lt;String, String&gt;(config);
+
+        for (int i = 0; i &lt; 10; i++) {
+            //创建record
+            ProducerRecord&lt;String, String&gt; record = new ProducerRecord&lt;String, String&gt;(
+                    "test",
+                    "key"+i,
+                    "我是你爹"+i
+            );
+            //发送record
+            producer.send(record);
+            Thread.sleep(500);
+        }
+
+        //关闭producer
+        producer.close();
+    }
+}
+</code></pre> 
+<p>消费者代码，</p> 
+<pre><code>package org.dragon.consumer;
+
+import org.apache.kafka.clients.consumer.ConsumerConfig;
+import org.apache.kafka.clients.consumer.ConsumerRecords;
+import org.apache.kafka.clients.consumer.KafkaConsumer;
+import org.apache.kafka.common.serialization.StringDeserializer;
+import org.apache.kafka.common.serialization.StringSerializer;
+
+import java.util.Collections;
+import java.util.HashMap;
+
+public class KafkaConsumerTest {
+    public static void main(String[] args) {
+
+        // 创建消费者对象
+        HashMap&lt;String, Object&gt; config = new HashMap&lt;&gt;();
+        config.put(ConsumerConfig.BOOTSTRAP_SERVERS_CONFIG, "localhost:19092");
+        config.put(ConsumerConfig.KEY_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+        config.put(ConsumerConfig.VALUE_DESERIALIZER_CLASS_CONFIG, StringDeserializer.class.getName());
+
+        config.put(ConsumerConfig.GROUP_ID_CONFIG, "mkl");
+
+        KafkaConsumer&lt;String, String&gt; kafkaConsumer = new KafkaConsumer&lt;String, String&gt;(config);
+        // 消费者订阅主题
+        kafkaConsumer.subscribe(Collections.singletonList("test"));
+
+        try {
+            while (true){
+                // 消费者拉取消息
+                ConsumerRecords&lt;String, String&gt; records = kafkaConsumer.poll(100);
+                records.forEach(System.out::println);
+            }
+        }finally {
+            // 消费者关闭
+            kafkaConsumer.close();
+        }
+    }
+}
+</code></pre> 
+<p>都启动后，消费者和生产者日志正常。<br> <img src="https://images2.imgbox.com/78/53/bkmhXM5C_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/853cebc3faf32eda9464a5da67afb534/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">说一下GET请求和POST请求的区别</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8b863c70a6457d892dabda83ef76418a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【C&#43;&#43;航海王：追寻罗杰的编程之路】哈希的应用——位图 | 布隆过滤器</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

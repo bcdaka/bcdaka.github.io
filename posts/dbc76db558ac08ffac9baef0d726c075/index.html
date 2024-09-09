@@ -1,0 +1,1329 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Sentinel熔断与限流 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/dbc76db558ac08ffac9baef0d726c075/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Sentinel熔断与限流">
+  <meta property="og:description" content="一、服务雪崩与解决方案 1.1、服务雪崩问题 一句话：微服务之间相互调用，因为调用链中的一个服务故障，引起整个链路都无法访问的情况。
+微服务中，服务间调用关系错综复杂，一个微服务往往依赖于多个其它微服务。
+如图，如果服务提供者I发生了故障，当前的应用的部分业务因为依赖于服务I，因此也会被阻塞。此时，其它不依赖于服务I的业务似乎不受影响。
+但是，依赖服务I的业务请求被阻塞，用户不会得到响应，则tomcat的这个线程不会释放，于是越来越多的用户请求到来，越来越多的线程会阻塞：
+服务器支持的线程和并发数有限，请求一直阻塞，会导致服务器资源耗尽，从而导致所有其它服务都不可用，那么当前服务也就不可用了。
+那么，依赖于当前服务的其它服务随着时间的推移，最终也都会变的不可用，形成级联失败，雪崩就发生了：
+解决雪崩问题的常见方式有四种：
+1.2、超时处理 超时处理：设定超时时间，请求超过一定时间没有响应就返回错误信息，不会无休止等待
+1.3、仓壁模式 仓壁模式来源于船舱的设计：
+船舱都会被隔板分离为多个独立空间，当船体破损时，只会导致部分空间进入，将故障控制在一定范围内，避免整个船体都被淹没。
+于此类似，我们可以限定每个业务能使用的线程数，避免耗尽整个tomcat的资源，因此也叫线程隔离。
+1.4、断路器 断路器模式：由断路器统计业务执行的异常比例，如果超出阈值则会熔断该业务，拦截访问该业务的一切请求。
+断路器会统计访问某个服务的请求数量，异常比例：
+当发现访问服务D的请求异常比例过高时，认为服务D有导致雪崩的风险，会拦截访问服务D的一切请求，形成熔断：
+1.5、限流 流量控制：限制业务访问的QPS，避免服务因流量的突增而故障。
+1.6、总结 什么是雪崩问题？
+微服务之间相互调用，因为调用链中的一个服务故障，引起整个链路都无法访问的情况。 可以认为：
+限流是对服务的保护，避免因瞬间高并发流量而导致服务故障，进而避免雪崩。是一种预防措施。
+超时处理、线程隔离、降级熔断是在部分服务故障时，将故障控制在一定范围，避免雪崩。是一种补救措施。
+解决雪崩问题的常见方式有四种：
+超时处理：设定超时时间，请求超过一定时间没有响应就返回错误信息，不会无休止等待
+舱壁模式：限定每个业务能使用的线程数，避免耗尽整个tomcat的资源，因此也叫线程隔离。
+熔断降级：由断路器统计业务执行的异常比例，如果超出阈值则会熔断该业务，拦截访问该业务的一切请求。
+流量控制：限制业务访问的QPS，避免服务因流量的突增而故障。
+二、初识Sentinel 在SpringCloud当中支持多种服务保护技术：
+Netfix HystrixSentinelResilience4J 早期比较流行的是Hystrix框架，但目前国内实用最广泛的还是阿里巴巴的Sentinel框架，这里我们做下对比：
+SentinelHystrix隔离策略信号量隔离线程池隔离/信号量隔离熔断降级策略基于慢调用比例或异常比例基于失败比率实时指标实现滑动窗口滑动窗口（基于 RxJava）规则配置支持多种数据源支持多种数据源扩展性多个扩展点插件的形式基于注解的支持支持支持限流基于 QPS，支持基于调用关系的限流有限的支持流量整形支持慢启动、匀速排队模式不支持系统自适应保护支持不支持控制台开箱即用，可配置规则、查看秒级监控、机器发现等不完善常见框架的适配Servlet、Spring Cloud、Dubbo、gRPC 等Servlet、Spring Cloud Netflix https://sentinelguard.io/zh-cn/index.html https://github.com/alibaba/Sentinel Sentinel是阿里巴巴开源的一款微服务流量控制组件。官网地址：https://sentinelguard.io/zh-cn/index.html
+Sentinel 具有以下特征:
+•丰富的应用场景：Sentinel 承接了阿里巴巴近 10 年的双十一大促流量的核心场景，例如秒杀（即突发流量控制在系统容量可以承受的范围）、消息削峰填谷、集群流量控制、实时熔断下游不可用应用等。
+•完备的实时监控：Sentinel 同时提供实时的监控功能。您可以在控制台中看到接入应用的单台机器秒级数据，甚至 500 台以下规模的集群的汇总运行情况。
+•广泛的开源生态：Sentinel 提供开箱即用的与其它开源框架/库的整合模块，例如与 Spring Cloud、Dubbo、gRPC 的整合。您只需要引入相应的依赖并进行简单的配置即可快速地接入 Sentinel。
+•完善的 SPI 扩展点：Sentinel 提供简单易用、完善的 SPI 扩展接口。您可以通过实现扩展接口来快速地定制逻辑。例如定制规则管理、适配动态数据源等。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-08-29T00:15:58+08:00">
+    <meta property="article:modified_time" content="2024-08-29T00:15:58+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Sentinel熔断与限流</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>一、服务雪崩与解决方案</h2> 
+<h3><a id="11_2"></a>1.1、服务雪崩问题</h3> 
+<p>一句话：微服务之间相互调用，因为调用链中的一个服务故障，引起整个链路都无法访问的情况。</p> 
+<p>微服务中，服务间调用关系错综复杂，一个微服务往往依赖于多个其它微服务。</p> 
+<p><img src="https://images2.imgbox.com/29/6d/hQLuGRl8_o.png" alt="image-20240827204943349"></p> 
+<p>如图，如果服务提供者I发生了故障，当前的应用的部分业务因为依赖于服务I，因此也会被阻塞。此时，其它不依赖于服务I的业务似乎不受影响。</p> 
+<p><img src="https://images2.imgbox.com/3d/30/CrATSM5K_o.png" alt="image-20240827205002590"></p> 
+<p>但是，依赖服务I的业务请求被阻塞，用户不会得到响应，则tomcat的这个线程不会释放，于是越来越多的用户请求到来，越来越多的线程会阻塞：</p> 
+<p><img src="https://images2.imgbox.com/0d/52/jaXbZzYx_o.png" alt="image-20240827205244584"></p> 
+<p>服务器支持的线程和并发数有限，请求一直阻塞，会导致服务器资源耗尽，从而导致所有其它服务都不可用，那么当前服务也就不可用了。</p> 
+<p>那么，依赖于当前服务的其它服务随着时间的推移，最终也都会变的不可用，形成级联失败，雪崩就发生了：</p> 
+<p><img src="https://images2.imgbox.com/88/fb/OOtDlWS9_o.png" alt="image-20240827205256638"></p> 
+<p>解决雪崩问题的常见方式有四种：</p> 
+<h3><a id="12_28"></a>1.2、超时处理</h3> 
+<p>超时处理：设定超时时间，请求超过一定时间没有响应就返回错误信息，不会无休止等待</p> 
+<p><img src="https://images2.imgbox.com/e3/1d/I2sulgh9_o.png" alt="image-20240827205650618"></p> 
+<h3><a id="13_36"></a>1.3、仓壁模式</h3> 
+<p>仓壁模式来源于船舱的设计：</p> 
+<p>船舱都会被隔板分离为多个独立空间，当船体破损时，只会导致部分空间进入，将故障控制在一定范围内，避免整个船体都被淹没。</p> 
+<p>于此类似，我们可以限定每个业务能使用的线程数，避免耗尽整个tomcat的资源，因此也叫线程隔离。</p> 
+<p><img src="https://images2.imgbox.com/8c/f4/d9OsOd6B_o.png" alt="image-20240827205714458"></p> 
+<h3><a id="14_48"></a>1.4、断路器</h3> 
+<p>断路器模式：由<strong>断路器</strong>统计业务执行的异常比例，如果超出阈值则会<strong>熔断</strong>该业务，拦截访问该业务的一切请求。</p> 
+<p>断路器会统计访问某个服务的请求数量，异常比例：</p> 
+<p><img src="https://images2.imgbox.com/be/8a/nEE1ft1K_o.png" alt="image-20240827205519805"></p> 
+<p>当发现访问服务D的请求异常比例过高时，认为服务D有导致雪崩的风险，会拦截访问服务D的一切请求，形成熔断：</p> 
+<p><img src="https://images2.imgbox.com/61/61/KXT7SU7d_o.png" alt="image-20240827205540092"></p> 
+<h3><a id="15_60"></a>1.5、限流</h3> 
+<p><strong>流量控制</strong>：限制业务访问的QPS，避免服务因流量的突增而故障。</p> 
+<p><img src="https://images2.imgbox.com/60/2c/bgQR8qTY_o.png" alt="image-20240827205625160"></p> 
+<h3><a id="16_68"></a>1.6、总结</h3> 
+<p>什么是雪崩问题？</p> 
+<ul><li>微服务之间相互调用，因为调用链中的一个服务故障，引起整个链路都无法访问的情况。</li></ul> 
+<p>可以认为：</p> 
+<p><strong>限流</strong>是对服务的保护，避免因瞬间高并发流量而导致服务故障，进而避免雪崩。是一种<strong>预防</strong>措施。</p> 
+<p><strong>超时处理、线程隔离、降级熔断</strong>是在部分服务故障时，将故障控制在一定范围，避免雪崩。是一种<strong>补救</strong>措施。</p> 
+<p>解决雪崩问题的常见方式有四种：</p> 
+<ul><li> <p>超时处理：设定超时时间，请求超过一定时间没有响应就返回错误信息，不会无休止等待</p> </li><li> <p>舱壁模式：限定每个业务能使用的线程数，避免耗尽整个tomcat的资源，因此也叫线程隔离。</p> </li><li> <p>熔断降级：由<strong>断路器</strong>统计业务执行的异常比例，如果超出阈值则会<strong>熔断</strong>该业务，拦截访问该业务的一切请求。</p> </li><li> <p>流量控制：限制业务访问的QPS，避免服务因流量的突增而故障。</p> </li></ul> 
+<h2><a id="Sentinel_92"></a>二、初识Sentinel</h2> 
+<p>在SpringCloud当中支持多种服务保护技术：</p> 
+<ul><li><a href="https://github.com/Netflix/Hystrix">Netfix Hystrix</a></li><li><a href="https://github.com/alibaba/Sentinel">Sentinel</a></li><li><a href="https://github.com/resilience4j/resilience4j">Resilience4J</a></li></ul> 
+<p>早期比较流行的是Hystrix框架，但目前国内实用最广泛的还是阿里巴巴的Sentinel框架，这里我们做下对比：</p> 
+<table><thead><tr><th></th><th><strong>Sentinel</strong></th><th><strong>Hystrix</strong></th></tr></thead><tbody><tr><td>隔离策略</td><td>信号量隔离</td><td>线程池隔离/信号量隔离</td></tr><tr><td>熔断降级策略</td><td>基于慢调用比例或异常比例</td><td>基于失败比率</td></tr><tr><td>实时指标实现</td><td>滑动窗口</td><td>滑动窗口（基于 RxJava）</td></tr><tr><td>规则配置</td><td>支持多种数据源</td><td>支持多种数据源</td></tr><tr><td>扩展性</td><td>多个扩展点</td><td>插件的形式</td></tr><tr><td>基于注解的支持</td><td>支持</td><td>支持</td></tr><tr><td>限流</td><td>基于 QPS，支持基于调用关系的限流</td><td>有限的支持</td></tr><tr><td>流量整形</td><td>支持慢启动、匀速排队模式</td><td>不支持</td></tr><tr><td>系统自适应保护</td><td>支持</td><td>不支持</td></tr><tr><td>控制台</td><td>开箱即用，可配置规则、查看秒级监控、机器发现等</td><td>不完善</td></tr><tr><td>常见框架的适配</td><td>Servlet、Spring Cloud、Dubbo、gRPC 等</td><td>Servlet、Spring Cloud Netflix</td></tr></tbody></table> 
+<pre><code class="prism language-http">https://sentinelguard.io/zh-cn/index.html
+</code></pre> 
+<pre><code class="prism language-http">https://github.com/alibaba/Sentinel
+</code></pre> 
+<p>Sentinel是阿里巴巴开源的一款微服务流量控制组件。官网地址：https://sentinelguard.io/zh-cn/index.html</p> 
+<p>Sentinel 具有以下特征:</p> 
+<p>•<strong>丰富的应用场景</strong>：Sentinel 承接了阿里巴巴近 10 年的双十一大促流量的核心场景，例如秒杀（即突发流量控制在系统容量可以承受的范围）、消息削峰填谷、集群流量控制、实时熔断下游不可用应用等。</p> 
+<p>•<strong>完备的实时监控</strong>：Sentinel 同时提供实时的监控功能。您可以在控制台中看到接入应用的单台机器秒级数据，甚至 500 台以下规模的集群的汇总运行情况。</p> 
+<p>•<strong>广泛的开源生态</strong>：Sentinel 提供开箱即用的与其它开源框架/库的整合模块，例如与 Spring Cloud、Dubbo、gRPC 的整合。您只需要引入相应的依赖并进行简单的配置即可快速地接入 Sentinel。</p> 
+<p>•<strong>完善的</strong> <strong>SPI</strong> <strong>扩展点</strong>：Sentinel 提供简单易用、完善的 SPI 扩展接口。您可以通过实现扩展接口来快速地定制逻辑。例如定制规则管理、适配动态数据源等。</p> 
+<p><img src="https://images2.imgbox.com/43/7b/A0GofNZU_o.png" alt="image-20240827210841757"></p> 
+<h2><a id="Sentinel_142"></a>三、微服务整合Sentinel</h2> 
+<h3><a id="31POM_144"></a>3.1、改POM</h3> 
+<pre><code class="prism language-xml"> <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependencies</span><span class="token punctuation">&gt;</span></span>
+        <span class="token comment">&lt;!--sentinel--&gt;</span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>com.alibaba.cloud<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>spring-cloud-starter-alibaba-sentinel<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependencies</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/db/f9/jqihhAbi_o.png" alt="image-20240827214826617"></p> 
+<h3><a id="32YAML_160"></a>3.2、写YAML</h3> 
+<pre><code class="prism language-yaml"><span class="token key atrule">server</span><span class="token punctuation">:</span>
+  <span class="token key atrule">port</span><span class="token punctuation">:</span> <span class="token number">9001</span>
+
+<span class="token key atrule">spring</span><span class="token punctuation">:</span>
+  <span class="token key atrule">application</span><span class="token punctuation">:</span>
+    <span class="token key atrule">name</span><span class="token punctuation">:</span> sentinelservice
+  <span class="token key atrule">cloud</span><span class="token punctuation">:</span>
+    <span class="token key atrule">nacos</span><span class="token punctuation">:</span>
+      <span class="token key atrule">discovery</span><span class="token punctuation">:</span>
+        <span class="token key atrule">server-addr</span><span class="token punctuation">:</span> 192.168.200.129<span class="token punctuation">:</span><span class="token number">8848</span> <span class="token comment">#配置Nacos地址</span>
+    
+    <span class="token key atrule">sentinel</span><span class="token punctuation">:</span>
+      <span class="token key atrule">transport</span><span class="token punctuation">:</span>
+        <span class="token key atrule">dashboard</span><span class="token punctuation">:</span> 192.168.200.129<span class="token punctuation">:</span><span class="token number">8858</span> <span class="token comment">#配置Sentinel dashboard控制台服务地址</span>
+        <span class="token key atrule">port</span><span class="token punctuation">:</span> <span class="token number">8719</span> <span class="token comment">#默认8719端口，假如被占用会自动从8719开始依次+1扫描,直至找到未被占用的端口</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/16/f4/pTkLUOSa_o.png" alt="image-20240827215202688"></p> 
+<h3><a id="33_184"></a>3.3、主启动</h3> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>service</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>boot<span class="token punctuation">.</span></span><span class="token class-name">SpringApplication</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>boot<span class="token punctuation">.</span>autoconfigure<span class="token punctuation">.</span></span><span class="token class-name">SpringBootApplication</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>cloud<span class="token punctuation">.</span>client<span class="token punctuation">.</span>discovery<span class="token punctuation">.</span></span><span class="token class-name">EnableDiscoveryClient</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * @Author: 史小创
+ * @Time: 2024/8/27 下午9:43
+ * @Description:
+ */</span>
+
+<span class="token annotation punctuation">@SpringBootApplication</span>
+<span class="token annotation punctuation">@EnableDiscoveryClient</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">SentinelServiceApplication</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">SpringApplication</span><span class="token punctuation">.</span><span class="token function">run</span><span class="token punctuation">(</span><span class="token class-name">SentinelServiceApplication</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span> args<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/39/ea/lrUNxfId_o.png" alt="image-20240827215302783"></p> 
+<h3><a id="34_212"></a>3.4、测试</h3> 
+<p><img src="https://images2.imgbox.com/f8/55/4ZPWCl3L_o.png" alt="image-20240827215421736"></p> 
+<p><img src="https://images2.imgbox.com/b5/4a/H5KuKe7i_o.png" alt="image-20240827215459305"></p> 
+<p>原因：Sentinel采用的为懒加载的模式。想使用Sentinel对某个接口进行限流和降级等操作，一定要先访问下接口，使Sentinel检测出相应的接口</p> 
+<pre><code class="prism language-http">http://localhost:9001/testA
+</code></pre> 
+<pre><code class="prism language-http">http://localhost:9001/testB
+</code></pre> 
+<p><img src="https://images2.imgbox.com/46/82/QYOirEQT_o.png" alt="image-20240827215846359"></p> 
+<h2><a id="_232"></a>四、实战：流控规则</h2> 
+<h3><a id="41_234"></a>4.1、概述</h3> 
+<p><img src="https://images2.imgbox.com/55/d1/5Cuc4Ohs_o.png" alt="image-20240827220426995"></p> 
+<p>Sentinel能够对流量进行控制，主要是监控应用的QPS流量或者并发线程数等指标，如果达到指定的阈值时，就会被流量进行控制，以避免服务被瞬时的高并发流量击垮，保证服务的高可靠性。参数见最下方：</p> 
+<table><thead><tr><th>序号</th><th>名称</th><th>含义</th></tr></thead><tbody><tr><td>1</td><td>资源名</td><td>资源的唯一名称，默认就是请求的接口路径，可以自行修改，但是要保证唯一。</td></tr><tr><td>2</td><td>针对来源</td><td>具体针对某个微服务进行限流，默认值为default，表示不区分来源，全部限流。</td></tr><tr><td>3</td><td>阈值类型</td><td>QPS表示通过QPS进行限流，并发线程数表示通过并发线程数限流。</td></tr><tr><td>4</td><td>单机阈值</td><td>与阈值类型组合使用。如果阈值类型选择的是QPS，表示当调用接口的QPS达到阈值时，进行限流操作。如果阈值类型选择的是并发线程数，则表示当调用接口的并发线程数达到阈值时，进行限流操作。</td></tr><tr><td>5</td><td>是否集群</td><td>选中则表示集群环境，不选中则表示非集群环境。</td></tr></tbody></table> 
+<h3><a id="42_250"></a>4.2、流控模式</h3> 
+<p><img src="https://images2.imgbox.com/ac/77/jLWqvNe3_o.png" alt="image-20240827220951390"></p> 
+<p>在添加限流规则时，点击高级选项，可以选择三种<strong>流控模式</strong>：</p> 
+<ul><li>直接：统计当前资源的请求，触发阈值时对当前资源直接限流，也是默认的模式</li><li>关联：统计与当前资源相关的另一个资源，触发阈值时，对当前资源限流</li><li>链路：统计从指定链路访问到本资源的请求，触发阈值时，对指定链路限流</li></ul> 
+<h4><a id="421_262"></a>4.2.1、直连</h4> 
+<p>默认的流控模式，当接口达到限流条件时，直接开启限流功能。</p> 
+<p><img src="https://images2.imgbox.com/b6/d5/sJ6AJD8N_o.png" alt="image-20240827221313582"></p> 
+<p><img src="https://images2.imgbox.com/45/cf/i8zQcAgY_o.png" alt="image-20240827221330218"></p> 
+<p>表示1秒钟内查询1次就是OK，若超过次数1，就直接-快速失败，报默认错误</p> 
+<pre><code class="prism language-http">http://localhost:9001/testA
+</code></pre> 
+<p><img src="https://images2.imgbox.com/90/9e/dPSpYDJ4_o.gif" alt="1"></p> 
+<p>Blocked by Sentinel (flow limiting) 这样的方式貌似太丑，能否有美观一点呢</p> 
+<h4><a id="422_282"></a>4.2.2、关联</h4> 
+<p><strong>关联模式</strong>：统计与当前资源相关的另一个资源，触发阈值时，对当前资源限流</p> 
+<p><strong>使用场景</strong>：比如用户支付时需要修改订单状态，同时用户要查询订单。查询和修改操作会争抢数据库锁，产生竞争。业务需求是优先支付和更新订单的业务，因此当修改订单业务触发阈值时，需要对查询订单业务限流。</p> 
+<p>简单讲：当关联的资源达到阈值时，就限流自己。当与A关联的资源B达到阀值后，就限流A自己B惹事，A挂了。</p> 
+<p><img src="https://images2.imgbox.com/1f/ed/QUAzF34G_o.png" alt="image-20240827222328595"></p> 
+<p><img src="https://images2.imgbox.com/14/29/79HT6Lil_o.png" alt="image-20240827222442555"></p> 
+<p>当关联资源/testB的qps阀值超过1时，就限流/testA的Rest访问地址，当关联资源到阈值后限制配置好的资源名，B惹事，A挂了</p> 
+<pre><code class="prism language-http">http://localhost:9001/testB
+</code></pre> 
+<pre><code class="prism language-http">http://localhost:9001/testA
+</code></pre> 
+<p><img src="https://images2.imgbox.com/47/55/Cql8YWcs_o.gif" alt="2"></p> 
+<p>小结：</p> 
+<p>满足下面条件可以使用关联模式：</p> 
+<ul><li>两个有竞争关系的资源</li><li>一个优先级较高，一个优先级较低</li></ul> 
+<h4><a id="423_317"></a>4.2.3、链路</h4> 
+<p><strong>链路模式</strong>：只针对从指定链路访问到本资源的请求做统计，判断是否超过阈值。</p> 
+<p>来自不同链路的请求对同一个目标访问时，实施针对性的不同限流措施，比如C请求来访问就限流，D请求来访问就是OK</p> 
+<pre><code class="prism language-yaml"><span class="token key atrule">web-context-unify</span><span class="token punctuation">:</span> <span class="token boolean important">false</span> <span class="token comment"># controller层的方法对service层调用不认为是同一个根链路</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/43/28/daaYXfZF_o.png" alt="image-20240827223822595"></p> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>service<span class="token punctuation">.</span>service</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>csp<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">SentinelResource</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>stereotype<span class="token punctuation">.</span></span><span class="token class-name">Service</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * @Author: 史小创
+ * @Time: 2024/8/27 下午10:43
+ * @Description:
+ */</span>
+
+<span class="token annotation punctuation">@Service</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">FlowLimitService</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token annotation punctuation">@SentinelResource</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"common"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">common</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"------FlowLimitService come in"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/8e/46/212xox5z_o.png" alt="image-20240827224459534"></p> 
+<pre><code class="prism language-java"> <span class="token comment">/**
+     * 流控-链路演示demo
+     * C和D两个请求都访问flowLimitService.common()方法，阈值到达后对C限流，对D不管
+     */</span>
+    <span class="token annotation punctuation">@Resource</span>
+    <span class="token keyword">private</span> <span class="token class-name">FlowLimitService</span> flowLimitService<span class="token punctuation">;</span>
+
+    <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/testC"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">testC</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        flowLimitService<span class="token punctuation">.</span><span class="token function">common</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token string">"------testC"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/testD"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">testD</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        flowLimitService<span class="token punctuation">.</span><span class="token function">common</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token string">"------testD"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/a0/75/NetpGKvL_o.png" alt="image-20240827224607692"></p> 
+<p><img src="https://images2.imgbox.com/f4/ad/3eLJ4uBj_o.png" alt="image-20240827224717762"></p> 
+<p><img src="https://images2.imgbox.com/94/ea/DI1ahBVO_o.png" alt="image-20240827224837210"></p> 
+<pre><code class="prism language-http">http://localhost:9001/testC
+</code></pre> 
+<pre><code class="prism language-http">http://localhost:9001/testD
+</code></pre> 
+<p><img src="https://images2.imgbox.com/70/1d/VUFP76Mw_o.gif" alt="5"></p> 
+<h3><a id="43_396"></a>4.3、流控效果</h3> 
+<p>在流控的高级选项中，还有一个流控效果选项：</p> 
+<p><img src="https://images2.imgbox.com/c2/90/ryDjLuqf_o.png" alt="image-20240827225952576"></p> 
+<p>流控效果是指请求达到流控阈值时应该采取的措施，包括三种：</p> 
+<ul><li> <p>快速失败：达到阈值后，新的请求会被立即拒绝并抛出FlowException异常。是默认的处理方式。</p> </li><li> <p>warm up：预热模式，对超出阈值的请求同样是拒绝并抛出异常。但这种模式阈值会动态变化，从一个较小值逐渐增加到最大阈值。</p> </li><li> <p>排队等待：让所有的请求按照先后次序排队执行，两个请求的间隔不能小于指定时长</p> </li></ul> 
+<h4><a id="431_412"></a>4.3.1、快速失败</h4> 
+<h4><a id="432Warm_up_414"></a>4.3.2、预热Warm up</h4> 
+<pre><code class="prism language-http">https://github.com/alibaba/Sentinel/wiki/Flow-Control:-Warm-Up
+</code></pre> 
+<pre><code class="prism language-http">https://github.com/alibaba/Sentinel/wiki/%E9%99%90%E6%B5%81---%E5%86%B7%E5%90%AF%E5%8A%A8
+</code></pre> 
+<p><img src="https://images2.imgbox.com/5f/d9/WlFHnAnV_o.png" alt="image-20240828080826894"></p> 
+<p>阈值一般是一个微服务能承担的最大QPS，但是一个服务刚刚启动时，一切资源尚未初始化（<strong>冷启动</strong>），如果直接将QPS跑到最大值，可能导致服务瞬间宕机。</p> 
+<p>warm up也叫<strong>预热模式</strong>，是应对服务冷启动的一种方案。请求阈值初始值是 maxThreshold / coldFactor，持续指定时长后，逐渐提高到maxThreshold值。而coldFactor的默认值是3.</p> 
+<p>例如，我设置QPS的maxThreshold为10，预热时间为5秒，那么初始阈值就是 10 / 3 ，也就是3，然后在5秒后逐渐增长到10.</p> 
+<p><img src="https://images2.imgbox.com/5e/6e/gyPBAbtJ_o.png" alt="image-20240828080911618"></p> 
+<p>如：秒杀系统在开启的瞬间，会有很多流量上来，很有可能把系统打死，预热方式就是把为了保护系统，可慢慢的把流量放进来，慢慢的把阈值增长到设置的阈值。</p> 
+<p>默认 <code>coldFactor</code> 为 3，即请求 QPS 从 <code>threshold / 3</code> 开始，经预热时长逐渐升至设定的 QPS 阈值。</p> 
+<p><img src="https://images2.imgbox.com/12/73/ELaUSWiH_o.png" alt="image-20240828081044514"></p> 
+<pre><code class="prism language-http">https://github.com/alibaba/Sentinel/blob/1.8/sentinel-core/src/main/java/com/alibaba/csp/sentinel/slots/block/flow/controller/WarmUpController.java
+</code></pre> 
+<p><img src="https://images2.imgbox.com/a8/96/m6FRzCr8_o.png" alt="image-20240828081219370"></p> 
+<table><thead><tr><th><strong>默认 coldFactor 为 3，即请求QPS从(threshold / 3) 开始，经多少预热时长才逐渐升至设定的 QPS 阈值。</strong></th></tr></thead><tbody><tr><td>案例，单机阈值为10，预热时长设置5秒。<br>系统初始化的阈值为10 / 3 约等于3,即单机阈值刚开始为3(我们人工设定单机阈值是10，sentinel计算后QPS判定为3开始)；<br>然后过了5秒后阀值才慢慢升高恢复到设置的单机阈值10，也就是说5秒钟内QPS为3，过了保护期5秒后QPS为10</td></tr></tbody></table> 
+<p><img src="https://images2.imgbox.com/26/b8/fSWK630I_o.png" alt="image-20240828081428677"></p> 
+<p><img src="https://images2.imgbox.com/79/53/Rs0sCzXE_o.png" alt="image-20240828081601147"></p> 
+<pre><code class="prism language-http">http://localhost:9001/testB
+</code></pre> 
+<p><img src="https://images2.imgbox.com/33/4c/hzO1juzF_o.gif" alt="3"></p> 
+<p><img src="https://images2.imgbox.com/83/91/wcaXHpQh_o.png" alt="image-20240828082156779"></p> 
+<h4><a id="433_470"></a>4.3.3、排队等待</h4> 
+<p>当请求超过QPS阈值时，快速失败和warm up 会拒绝新的请求并抛出异常。</p> 
+<p>而排队等待则是让所有请求进入一个队列中，然后按照阈值允许的时间间隔依次执行。后来的请求必须等待前面执行完成，如果请求预期的等待时间超出最大时长，则会被拒绝。</p> 
+<p>工作原理</p> 
+<p>例如：QPS = 5，意味着每200ms处理一个队列中的请求；timeout = 2000，意味着<strong>预期等待时长</strong>超过2000ms的请求会被拒绝并抛出异常。</p> 
+<p>那什么叫做预期等待时长呢？</p> 
+<p>比如现在一下子来了12 个请求，因为每200ms执行一个请求，那么：</p> 
+<ul><li>第6个请求的<strong>预期等待时长</strong> = 200 * （6 - 1） = 1000ms</li><li>第12个请求的预期等待时长 = 200 * （12-1） = 2200ms</li></ul> 
+<p>现在，第1秒同时接收到10个请求，但第2秒只有1个请求，此时QPS的曲线这样的：</p> 
+<p><img src="https://images2.imgbox.com/a9/f6/0KVehR04_o.png" alt="image-20240828082324502"></p> 
+<p>如果使用队列模式做流控，所有进入的请求都要排队，以固定的200ms的间隔执行，QPS会变的很平滑：</p> 
+<p><img src="https://images2.imgbox.com/68/17/kYk7ZL9B_o.png" alt="image-20240828082358536"></p> 
+<p>平滑的QPS曲线，对于服务器来说是更友好的。</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/testE"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">testE</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token class-name">System</span><span class="token punctuation">.</span><span class="token function">currentTimeMillis</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">"      testE,排队等待"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token string">"------testE"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/db/8e/bSkDKUYu_o.png" alt="image-20240828082554438"></p> 
+<pre><code class="prism language-http">http://localhost:9001/testE
+</code></pre> 
+<p><img src="https://images2.imgbox.com/63/1a/t06qWkbD_o.png" alt="image-20240828083318096"></p> 
+<p><img src="https://images2.imgbox.com/03/2f/K5vjfk1U_o.gif" alt="4"></p> 
+<p><img src="https://images2.imgbox.com/61/b4/4PGDwzUN_o.png" alt="image-20240828083731619"></p> 
+<h4><a id="444_523"></a>4.4.4、总结</h4> 
+<p>流控效果有哪些？</p> 
+<ul><li> <p>快速失败：QPS超过阈值时，拒绝新的请求</p> </li><li> <p>warm up： QPS超过阈值时，拒绝新的请求；QPS阈值是逐渐提升的，可以避免冷启动时高并发导致服务宕机。</p> </li><li> <p>排队等待：请求会进入队列，按照阈值允许的时间间隔依次执行请求；如果请求预期等待时长大于超时时间，直接拒绝</p> </li></ul> 
+<h3><a id="44_535"></a>4.4、线程隔离（舱壁模式）</h3> 
+<p>线程隔离有两种方式实现：</p> 
+<ul><li> <p>线程池隔离</p> </li><li> <p>信号量隔离（Sentinel默认采用）</p> </li></ul> 
+<p>如图：</p> 
+<p><img src="https://images2.imgbox.com/02/06/G8EWlwQp_o.png" alt="image-20240828232857421"></p> 
+<p><strong>线程池隔离</strong>：给每个服务调用业务分配一个线程池，利用线程池本身实现隔离效果</p> 
+<p><strong>信号量隔离</strong>：不创建线程池，而是计数器模式，记录业务使用的线程数量，达到信号量上限时，禁止新的请求。</p> 
+<p>两者的优缺点：</p> 
+<p><img src="https://images2.imgbox.com/bf/8b/9rrQxJuZ_o.png" alt="image-20240828232923471"></p> 
+<p><strong>用法说明</strong>：</p> 
+<p>在添加限流规则时，可以选择两种阈值类型：</p> 
+<p><img src="https://images2.imgbox.com/4d/ab/Qg8OpriC_o.png" alt="image-20240828232953989"></p> 
+<ul><li> <p>QPS：就是每秒的请求数，在快速入门中已经演示过</p> </li><li> <p>线程数：是该资源能使用用的tomcat线程数的最大值。也就是通过限制线程数量，实现<strong>线程隔离</strong>（舱壁模式）。</p> </li></ul> 
+<p>实操</p> 
+<p><img src="https://images2.imgbox.com/ce/0d/CCgZp351_o.png" alt="image-20240828233245078"></p> 
+<p><img src="https://images2.imgbox.com/2f/24/0fczXDBV_o.png" alt="image-20240828233952370"></p> 
+<p>Jmeter给它打满了，大部分我们自己访问都不好使，偶尔Jmeter线程切换系统判定没访问，我们自己的点击才有点机会</p> 
+<h2><a id="_581"></a>五、实战：熔断规则</h2> 
+<p>熔断降级是解决雪崩问题的重要手段。其思路是由<strong>断路器</strong>统计服务调用的异常比例、慢请求比例，如果超出阈值则会<strong>熔断</strong>该服务。即拦截访问该服务的一切请求；而当服务恢复时，断路器会放行访问该服务的请求。</p> 
+<p>断路器控制熔断和放行是通过状态机来完成的：</p> 
+<p><img src="https://images2.imgbox.com/f4/93/tWlNXRNr_o.png" alt="image-20240828090457975"></p> 
+<p>状态机包括三个状态：</p> 
+<ul><li>closed：关闭状态，断路器放行所有请求，并开始统计异常比例、慢请求比例。超过阈值则切换到open状态</li><li>open：打开状态，服务调用被<strong>熔断</strong>，访问被熔断服务的请求会被拒绝，快速失败，直接走降级逻辑。Open状态5秒后会进入half-open状态</li><li>half-open：半开状态，放行一次请求，根据执行结果来判断接下来的操作。 
+  <ul><li>请求成功：则切换到closed状态</li><li>请求失败：则切换到open状态</li></ul> </li></ul> 
+<p>断路器熔断策略有三种：慢调用、异常比例、异常数</p> 
+<pre><code class="prism language-http">https://sentinelguard.io/zh-cn/docs/circuit-breaking.html
+</code></pre> 
+<pre><code class="prism language-http">https://github.com/alibaba/Sentinel/wiki/%E7%86%94%E6%96%AD%E9%99%8D%E7%BA%A7
+</code></pre> 
+<p><img src="https://images2.imgbox.com/04/c4/e3JWXJYr_o.png" alt="image-20240828090248426"></p> 
+<h3><a id="51_611"></a>5.1、慢调用</h3> 
+<p><strong>慢调用</strong>：业务的响应时长（RT）大于指定时长的请求认定为慢调用请求。在指定时间内，如果请求数量超过设定的最小数量，慢调用比例大于设定的阈值，则触发熔断。</p> 
+<p>慢调用比例 (<code>SLOW_REQUEST_RATIO</code>)：选择以慢调用比例作为阈值，需要设置允许的慢调用 RT（即最大的响应时间），请求的响应时间大于该值则统计为慢调用。当单位统计时长（<code>statIntervalMs</code>）内请求数目大于设置的最小请求数目，并且慢调用的比例大于阈值，则接下来的熔断时长内请求会自动被熔断。经过熔断时长后熔断器会进入探测恢复状态（HALF-OPEN 状态），若接下来的一个请求响应时间小于设置的慢调用 RT 则结束熔断，若大于设置的慢调用 RT 则会再次被熔断。</p> 
+<pre><code class="prism language-java"><span class="token comment">/**
+     * 新增熔断规则-慢调用比例
+     *
+     * @return
+     */</span>
+    <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/testF"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">testF</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 暂停几秒钟线程</span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">TimeUnit</span><span class="token punctuation">.</span><span class="token constant">SECONDS</span><span class="token punctuation">.</span><span class="token function">sleep</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">InterruptedException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            e<span class="token punctuation">.</span><span class="token function">printStackTrace</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"----测试:新增熔断规则-慢调用比例 "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token string">"------testF 新增熔断规则-慢调用比例"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/c6/43/4kKh0qOo_o.png" alt="image-20240828091326594"></p> 
+<p><img src="https://images2.imgbox.com/da/7b/qxySMoQq_o.png" alt="image-20240828091640919"></p> 
+<p>名词解释：</p> 
+<p>进入熔断状态判断依据：在统计时长内，实际请求数目＞设定的最小请求数 且 实际慢调用比例＞比例阈值 ，进入熔断状态。</p> 
+<p>1.调用：一个请求发送到服务器，服务器给与响应，一个响应就是一个调用。</p> 
+<p>2.最大RT：即最大的响应时间，指系统对请求作出响应的业务处理时间。</p> 
+<p>3.慢调用：处理业务逻辑的实际时间&gt;设置的最大RT时间，这个调用叫做慢调用。</p> 
+<p>4.慢调用比例：在所以调用中，慢调用占有实际的比例＝慢调用次数➗总调用次数</p> 
+<p>5.比例阈值：自己设定的 ， 比例阈值＝慢调用次数➗调用次数</p> 
+<p>6.统计时长：时间的判断依据</p> 
+<p>7.最小请求数：设置的调用最小请求数，上图比如1秒钟打进来10个线程（大于我们配置的5个了）调用被触发</p> 
+<p>触发条件+熔断状态：</p> 
+<p>1熔断状态(保险丝跳闸断电，不可访问)：在接下来的熔断时长内请求会自动被熔断</p> 
+<p>2探测恢复状态(探路先锋)：熔断时长结束后进入探测恢复状态</p> 
+<p>3结束熔断(保险丝闭合恢复，可以访问)：在探测恢复状态，如果接下来的一个请求响应时间小于设置的慢调用 RT，则结束熔断，否则继续熔断。</p> 
+<h3><a id="52_672"></a>5.2、异常比例</h3> 
+<p>异常比例 (<code>ERROR_RATIO</code>)：当单位统计时长（<code>statIntervalMs</code>）内请求数目大于设置的最小请求数目，并且异常的比例大于阈值，则接下来的熔断时长内请求会自动被熔断。经过熔断时长后熔断器会进入探测恢复状态（HALF-OPEN 状态），若接下来的一个请求成功完成（没有错误）则结束熔断，否则会再次被熔断。异常比率的阈值范围是 <code>[0.0, 1.0]</code>，代表 0% - 100%。</p> 
+<pre><code class="prism language-java"> <span class="token comment">/**
+     * 新增熔断规则-异常比例
+     *
+     * @return
+     */</span>
+    <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/testG"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">testG</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"----测试:新增熔断规则-异常比例 "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">int</span> age <span class="token operator">=</span> <span class="token number">10</span> <span class="token operator">/</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token string">"------testG,新增熔断规则-异常比例 "</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/53/30/k2rZo5nc_o.png" alt="image-20240828230336091"></p> 
+<p>不配置Sentinel，对于int age=10/0，调一次错一次报错error，页面报【Whitelabel Error Page】或全局异常</p> 
+<p>配置Sentinel，对于int age=10/0，如符合如下异常比例启动熔断，页面报【Blocked by Sentinel (flow limiting)】</p> 
+<p><img src="https://images2.imgbox.com/57/13/6hqmaJd1_o.png" alt="image-20240828230656770"></p> 
+<p><img src="https://images2.imgbox.com/6f/a7/gogoAbxf_o.png" alt="image-20240828234558108"></p> 
+<h3><a id="53_702"></a>5.3、异常数</h3> 
+<pre><code class="prism language-java">  <span class="token comment">/**
+     * 新增熔断规则-异常数
+     *
+     * @return
+     */</span>
+    <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/testH"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">testH</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"----测试:新增熔断规则-异常数 "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">int</span> age <span class="token operator">=</span> <span class="token number">10</span> <span class="token operator">/</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token string">"------testH,新增熔断规则-异常数 "</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/32/49/1kZl1O7T_o.png" alt="image-20240828232402712"></p> 
+<p><img src="https://images2.imgbox.com/a1/a7/E3ySB6ej_o.png" alt="image-20240828232525919"></p> 
+<p><img src="https://images2.imgbox.com/11/f9/pONCAn7K_o.png" alt="image-20240828234817139"></p> 
+<h2><a id="SentinelResource_726"></a>六、SentinelResource注解</h2> 
+<h3><a id="61_728"></a>6.1、概述</h3> 
+<p>SentinelResource是一个流量防卫防护组件注解，用于指定防护资源，对配置的资源进行流量控制、熔断降级等功能。</p> 
+<pre><code class="prism language-http">https://github.com/alibaba/Sentinel/blob/1.8/sentinel-core/src/main/java/com/alibaba/csp/sentinel/annotation/SentinelResource.java
+</code></pre> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>csp<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>annotation</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>csp<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span></span><span class="token class-name">EntryType</span></span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>lang<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token operator">*</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * 该注解用于定义 Sentinel 资源。
+ */</span>
+<span class="token annotation punctuation">@Target</span><span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span><span class="token class-name">ElementType</span><span class="token punctuation">.</span><span class="token constant">METHOD</span><span class="token punctuation">,</span> <span class="token class-name">ElementType</span><span class="token punctuation">.</span><span class="token constant">TYPE</span><span class="token punctuation">}</span><span class="token punctuation">)</span>
+<span class="token annotation punctuation">@Retention</span><span class="token punctuation">(</span><span class="token class-name">RetentionPolicy</span><span class="token punctuation">.</span><span class="token constant">RUNTIME</span><span class="token punctuation">)</span>
+<span class="token annotation punctuation">@Inherited</span>
+<span class="token keyword">public</span> <span class="token annotation punctuation">@interface</span> <span class="token class-name">SentinelResource</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">/**
+     * @return Sentinel 资源的名称
+     */</span>
+    <span class="token class-name">String</span> <span class="token function">value</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">default</span> <span class="token string">""</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * @return 进入类型（入站或出站），默认为出站
+     */</span>
+    <span class="token class-name">EntryType</span> <span class="token function">entryType</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">default</span> <span class="token class-name">EntryType</span><span class="token punctuation">.</span><span class="token constant">OUT</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * @return 资源的分类（类型）
+     * @自 1.7.0
+     */</span>
+    <span class="token keyword">int</span> <span class="token function">resourceType</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">default</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * @return 阻塞异常处理函数的名称，默认为空
+     */</span>
+    <span class="token class-name">String</span> <span class="token function">blockHandler</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">default</span> <span class="token string">""</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * 默认情况下，{@code blockHandler} 位于与原方法相同的类中。
+     * 但是，如果某些方法具有相同的签名并且打算设置相同的阻塞处理程序，
+     * 则用户可以设置阻塞处理程序所在的类。注意，阻塞处理程序方法必须是静态的。
+     *
+     * @return 阻塞处理程序所在的类，不应提供多个类
+     */</span>
+    <span class="token class-name">Class</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token function">blockHandlerClass</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">default</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * @return 回退函数的名称，默认为空
+     */</span>
+    <span class="token class-name">String</span> <span class="token function">fallback</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">default</span> <span class="token string">""</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * {@code defaultFallback} 用作默认的通用回退方法。
+     * 它不应接受任何参数，并且返回类型应与原方法兼容。
+     *
+     * @return 默认回退方法的名称，默认为空
+     * @自 1.6.0
+     */</span>
+    <span class="token class-name">String</span> <span class="token function">defaultFallback</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">default</span> <span class="token string">""</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * 默认情况下，{@code fallback} 位于与原方法相同的类中。
+     * 但是，如果某些方法具有相同的签名并且打算设置相同的回退，
+     * 则用户可以设置回退函数所在的类。注意，共享的回退方法必须是静态的。
+     *
+     * @return 回退方法所在的类（仅单个类）
+     * @自 1.6.0
+     */</span>
+    <span class="token class-name">Class</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token function">fallbackClass</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">default</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * @return 要跟踪的异常类列表，默认是 {@link Throwable}
+     * @自 1.5.1
+     */</span>
+    <span class="token class-name">Class</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span> <span class="token keyword">extends</span> <span class="token class-name">Throwable</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token function">exceptionsToTrace</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">default</span> <span class="token punctuation">{<!-- --></span><span class="token class-name">Throwable</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+    
+    <span class="token comment">/**
+     * 指示要忽略的异常。注意，{@code exceptionsToTrace} 和 {@code exceptionsToIgnore}
+     * 不应同时出现，否则 {@code exceptionsToIgnore} 将具有更高优先级。
+     *
+     * @return 要忽略的异常类列表，默认为空
+     * @自 1.6.0
+     */</span>
+    <span class="token class-name">Class</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span> <span class="token keyword">extends</span> <span class="token class-name">Throwable</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token function">exceptionsToIgnore</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">default</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>当请求进入微服务时，首先会访问DispatcherServlet，然后进入Controller、Service、Mapper，这样的一个调用链就叫做<strong>簇点链路</strong>。簇点链路中被监控的每一个接口就是一个<strong>资源</strong>。</p> 
+<p>默认情况下sentinel会监控SpringMVC的每一个端点（Endpoint，也就是controller中的方法），因此SpringMVC的每一个端点（Endpoint）就是调用链路中的一个资源。</p> 
+<p><img src="https://images2.imgbox.com/4f/a0/p4fSE5oB_o.png" alt="image-20240828141700276"></p> 
+<p>流控、熔断等都是针对簇点链路中的资源来设置的，因此我们可以点击对应资源后面的按钮来设置规则：</p> 
+<ul><li>流控：流量控制</li><li>降级：降级熔断</li><li>热点：热点参数限流，是限流的一种</li><li>授权：请求的权限控制</li></ul> 
+<h3><a id="62rest_841"></a>6.2、按照rest地址限流+默认限流返回</h3> 
+<p>通过访问res地址来限流，会返回Sentinel自带默认的限流处理信息。</p> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>service<span class="token punctuation">.</span>web</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>bind<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">GetMapping</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>bind<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">RestController</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * @Author: 史小创
+ * @Time: 2024/8/28 下午2:20
+ * @Description:
+ */</span>
+
+<span class="token annotation punctuation">@RestController</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">RateLimitController</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/rateLimit/byUrl"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">byUrl</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token string">"按rest地址限流测试OK"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/45/32/jOV9lG5r_o.png" alt="image-20240828142422182"></p> 
+<p>先访问一下：</p> 
+<pre><code class="prism language-http">http://localhost:9001/rateLimit/byUrl
+</code></pre> 
+<p><img src="https://images2.imgbox.com/40/31/GzVnat75_o.png" alt="image-20240828142614726"></p> 
+<p><img src="https://images2.imgbox.com/54/79/HWxmPonc_o.png" alt="image-20240828142921795"></p> 
+<p><img src="https://images2.imgbox.com/9c/a7/TQ8iTGu0_o.png" alt="image-20240828142752072"></p> 
+<pre><code class="prism language-http">http://localhost:9001/rateLimit/byUrl
+</code></pre> 
+<p><img src="https://images2.imgbox.com/d5/3e/CiTKANwv_o.gif" alt="6"></p> 
+<h3><a id="63SentinelResource_890"></a>6.3、按SentinelResource资源名称限流+自定义限流返回</h3> 
+<p>不想用默认的限流提示(Blocked by Sentinel (flow limiting))，想返回自定义限流的提示</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/rateLimit/byResource"</span><span class="token punctuation">)</span>
+    <span class="token annotation punctuation">@SentinelResource</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"byResourceSentinelResource"</span><span class="token punctuation">,</span> blockHandler <span class="token operator">=</span> <span class="token string">"handleException"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">byResource</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token string">"按资源名称SentinelResource限流测试OK"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">handleException</span><span class="token punctuation">(</span><span class="token class-name">BlockException</span> exception<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token string">"服务不可用@SentinelResource启动"</span> <span class="token operator">+</span> <span class="token string">"\t"</span> <span class="token operator">+</span> <span class="token string">"o(╥﹏╥)o"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/dc/98/MxuF4MaZ_o.png" alt="image-20240828143408207"></p> 
+<pre><code class="prism language-http">http://localhost:9001/rateLimit/byResource
+</code></pre> 
+<p><img src="https://images2.imgbox.com/93/3f/BrgIiOwN_o.png" alt="image-20240828143837999"></p> 
+<p><img src="https://images2.imgbox.com/53/12/xeZ25Woh_o.png" alt="image-20240828143943693"></p> 
+<pre><code class="prism language-http">http://localhost:9001/rateLimit/byResource
+</code></pre> 
+<p><img src="https://images2.imgbox.com/ff/f0/WJVPZFJk_o.gif" alt="7"></p> 
+<h3><a id="64SentinelResource_928"></a>6.4、按SentinelResource资源名称限流+自定义限流返回+服务降级处理</h3> 
+<p>按SentinelResource配置，点击超过限流配置返回自定义限流提示+程序异常返回fallback服务降级</p> 
+<pre><code class="prism language-java"> <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/rateLimit/doAction/{p1}"</span><span class="token punctuation">)</span>
+    <span class="token annotation punctuation">@SentinelResource</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"doActionSentinelResource"</span><span class="token punctuation">,</span>
+            blockHandler <span class="token operator">=</span> <span class="token string">"doActionBlockHandler"</span><span class="token punctuation">,</span> fallback <span class="token operator">=</span> <span class="token string">"doActionFallback"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">doAction</span><span class="token punctuation">(</span><span class="token annotation punctuation">@PathVariable</span><span class="token punctuation">(</span><span class="token string">"p1"</span><span class="token punctuation">)</span> <span class="token class-name">Integer</span> p1<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>p1 <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RuntimeException</span><span class="token punctuation">(</span><span class="token string">"p1等于零直接异常"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> <span class="token string">"doAction"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">doActionBlockHandler</span><span class="token punctuation">(</span><span class="token annotation punctuation">@PathVariable</span><span class="token punctuation">(</span><span class="token string">"p1"</span><span class="token punctuation">)</span> <span class="token class-name">Integer</span> p1<span class="token punctuation">,</span> <span class="token class-name">BlockException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>err<span class="token punctuation">.</span><span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"sentinel配置自定义限流了:{}"</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token string">"sentinel配置自定义限流了"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">doActionFallback</span><span class="token punctuation">(</span><span class="token annotation punctuation">@PathVariable</span><span class="token punctuation">(</span><span class="token string">"p1"</span><span class="token punctuation">)</span> <span class="token class-name">Integer</span> p1<span class="token punctuation">,</span> <span class="token class-name">Throwable</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>err<span class="token punctuation">.</span><span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"程序逻辑异常了:{}"</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token string">"程序逻辑异常了"</span> <span class="token operator">+</span> <span class="token string">"\t"</span> <span class="token operator">+</span> e<span class="token punctuation">.</span><span class="token function">getMessage</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/9e/dd/DFdwfVYA_o.png" alt="image-20240828144947872"></p> 
+<pre><code class="prism language-http">http://localhost:9001/rateLimit/doAction/99
+</code></pre> 
+<p><img src="https://images2.imgbox.com/6f/9c/RM2CDpiI_o.png" alt="image-20240828145241809"></p> 
+<p><img src="https://images2.imgbox.com/6a/d4/RZtlcNKF_o.png" alt="image-20240828145424387"></p> 
+<p><img src="https://images2.imgbox.com/13/a5/ueXjze5g_o.png" alt="image-20240828145538861"></p> 
+<p><img src="https://images2.imgbox.com/08/09/xTSbCWch_o.png" alt="image-20240828145554556"></p> 
+<pre><code class="prism language-http">http://localhost:9001/rateLimit/doAction/99
+</code></pre> 
+<pre><code class="prism language-http">http://localhost:9001/rateLimit/doAction/0
+</code></pre> 
+<p><img src="https://images2.imgbox.com/05/3b/KjWN7d9p_o.gif" alt="8"></p> 
+<h2><a id="_984"></a>七、实战：热点规则</h2> 
+<h3><a id="71_986"></a>7.1、概述</h3> 
+<p>热点即经常访问的数据，很多时候我们希望统计或者限制某个热点数据中访问频次最高的TopN数据，并对其访问进行限流或者其它操作</p> 
+<pre><code class="prism language-http">https://github.com/alibaba/Sentinel/wiki/%E7%83%AD%E7%82%B9%E5%8F%82%E6%95%B0%E9%99%90%E6%B5%81
+</code></pre> 
+<p><img src="https://images2.imgbox.com/0e/36/FKz8hGUR_o.png" alt="image-20240828151135470"></p> 
+<h3><a id="72_998"></a>7.2、全局参数限流</h3> 
+<p>方法testHotKey里面第一个参数P1只要QPS超过每秒1次，马上降级处理</p> 
+<pre><code class="prism language-java"> <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/testHotKey"</span><span class="token punctuation">)</span>
+    <span class="token annotation punctuation">@SentinelResource</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"testHotKey"</span><span class="token punctuation">,</span> blockHandler <span class="token operator">=</span> <span class="token string">"dealHandler_testHotKey"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">testHotKey</span><span class="token punctuation">(</span><span class="token annotation punctuation">@RequestParam</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"p1"</span><span class="token punctuation">,</span> required <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">)</span> <span class="token class-name">String</span> p1<span class="token punctuation">,</span>
+                             <span class="token annotation punctuation">@RequestParam</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"p2"</span><span class="token punctuation">,</span> required <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">)</span> <span class="token class-name">String</span> p2<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token string">"------testHotKey"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">dealHandler_testHotKey</span><span class="token punctuation">(</span><span class="token class-name">String</span> p1<span class="token punctuation">,</span> <span class="token class-name">String</span> p2<span class="token punctuation">,</span> <span class="token class-name">BlockException</span> exception<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token string">"-----dealHandler_testHotKey"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/d7/2c/MxbC9t5P_o.png" alt="image-20240828152207986"></p> 
+<pre><code class="prism language-http">http://localhost:9001/testHotkey
+</code></pre> 
+<p><img src="https://images2.imgbox.com/79/a3/Ea8LETHt_o.png" alt="image-20240828152622745"></p> 
+<p><img src="https://images2.imgbox.com/c8/31/9T7mJbYK_o.png" alt="image-20240828152657339"></p> 
+<p><img src="https://images2.imgbox.com/27/4b/SLWz7zS7_o.png" alt="image-20240828152741465"></p> 
+<p>限流模式只支持QPS模式，固定写死了。（这才叫热点）</p> 
+<p>@SentinelResource注解的方法参数索引，0代表第一个参数，1代表第二个参数，以此类推</p> 
+<p>单机阀值以及统计窗口时长表示在此窗口时间超过阀值就限流。</p> 
+<p>上面的抓图就是第一个参数有值的话，1秒的QPS为1，超过就限流，限流后调用dealHandler_testHotKey支持方法。</p> 
+<pre><code class="prism language-http">http://localhost:9001/testHotkey?p1=abc
+</code></pre> 
+<pre><code class="prism language-http">http://localhost:9001/testHotkey?p1=abc
+</code></pre> 
+<pre><code class="prism language-http">http://localhost:9001/testHotKey?p2=99
+</code></pre> 
+<p><img src="https://images2.imgbox.com/03/ff/oDbBn5QB_o.gif" alt="9"></p> 
+<h3><a id="73_1051"></a>7.3、测试例外项（热点参数限流）</h3> 
+<p>上述案例演示了第一个参数p1，当QPS超过1秒1次点击后马上被限流</p> 
+<p>我们期望p1参数当它是某个特殊值时，到达某个约定值后【普通正常限流】规则突然例外、失效了，它的限流值和平时不一样，假如当p1的值等于5时，它的阈值可以达到200或其它值</p> 
+<p><img src="https://images2.imgbox.com/be/44/a1yNKNnW_o.png" alt="image-20240828173838436"></p> 
+<p><img src="https://images2.imgbox.com/34/5c/L4OaZoLi_o.png" alt="image-20240828173941007"></p> 
+<pre><code class="prism language-http">http://localhost:9001/testHotKey?p1=abc
+</code></pre> 
+<pre><code class="prism language-http">http://localhost:9001/testHotKey?p1=5
+</code></pre> 
+<p><img src="https://images2.imgbox.com/f8/7c/ZvT7OTc6_o.gif" alt="10"></p> 
+<p>注意：热点参数的注意点，参数必须是基本类型或者String</p> 
+<p><img src="https://images2.imgbox.com/96/68/oDtGnMLV_o.png" alt="image-20240828174347473"></p> 
+<h2><a id="_1081"></a>八、实战：授权规则</h2> 
+<h3><a id="81_1083"></a>8.1、概述</h3> 
+<pre><code class="prism language-http">https://github.com/alibaba/Sentinel/wiki/%E5%A6%82%E4%BD%95%E4%BD%BF%E7%94%A8#%E8%AE%BF%E9%97%AE%E6%8E%A7%E5%88%B6%E8%A7%84%E5%88%99-authorityrule
+</code></pre> 
+<p><img src="https://images2.imgbox.com/14/c0/lkQuTKHS_o.png" alt="image-20240828181035196"></p> 
+<p>在Sentinel的授权规则中，提供了 白名单与黑名单 两种授权类型。白放行、黑禁止</p> 
+<p>授权规则可以对调用方的来源做控制，有白名单和黑名单两种方式。</p> 
+<ul><li> <p>白名单：来源（origin）在白名单内的调用者允许访问</p> </li><li> <p>黑名单：来源（origin）在黑名单内的调用者不允许访问</p> </li></ul> 
+<p>点击左侧菜单的授权，可以看到授权规则：</p> 
+<p><img src="https://images2.imgbox.com/db/39/rIugNcSS_o.png" alt="image-20240828181207484"></p> 
+<ul><li> <p>资源名：就是受保护的资源，例如/order/{orderId}</p> </li><li> <p>流控应用：是来源者的名单，</p> 
+  <ul><li>如果是勾选白名单，则名单中的来源被许可访问。</li><li>如果是勾选黑名单，则名单中的来源被禁止访问。</li></ul> </li></ul> 
+<p>比如：</p> 
+<p><img src="https://images2.imgbox.com/0b/48/9GIwMkUQ_o.png" alt="image-20240828181229237"></p> 
+<p>我们允许请求从gateway到order-service，不允许浏览器访问order-service，那么白名单中就要填写<strong>网关的来源名称（origin）</strong>。</p> 
+<h3><a id="82_1117"></a>8.2、代码</h3> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>service<span class="token punctuation">.</span>web</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>bind<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">GetMapping</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>bind<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">RestController</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * @Author: 史小创
+ * @Time: 2024/8/28 下午6:13
+ * @Description: Empower授权规则，用来处理请求的来源
+ */</span>
+
+<span class="token annotation punctuation">@RestController</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">EmpowerController</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"/empower"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">requestSentinel4</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>err<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"测试Sentinel授权规则empower"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token string">"Sentinel授权规则"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>service<span class="token punctuation">.</span>handler</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>csp<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>adapter<span class="token punctuation">.</span>spring<span class="token punctuation">.</span>webmvc<span class="token punctuation">.</span>callback<span class="token punctuation">.</span></span><span class="token class-name">RequestOriginParser</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">jakarta<span class="token punctuation">.</span>servlet<span class="token punctuation">.</span>http<span class="token punctuation">.</span></span><span class="token class-name">HttpServletRequest</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>stereotype<span class="token punctuation">.</span></span><span class="token class-name">Component</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * @Author: 史小创
+ * @Time: 2024/8/28 下午6:15
+ * @Description:
+ */</span>
+
+<span class="token annotation punctuation">@Component</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">MyRequestOriginParser</span> <span class="token keyword">implements</span> <span class="token class-name">RequestOriginParser</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">parseOrigin</span><span class="token punctuation">(</span><span class="token class-name">HttpServletRequest</span> request<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> request<span class="token punctuation">.</span><span class="token function">getParameter</span><span class="token punctuation">(</span><span class="token string">"serverName"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/b4/89/lFzheK9O_o.png" alt="image-20240828181928270"></p> 
+<h3><a id="83_1167"></a>8.3、测试</h3> 
+<pre><code class="prism language-http">http://localhost:9001/empower
+</code></pre> 
+<p><img src="https://images2.imgbox.com/ed/1f/CmOVvWvJ_o.png" alt="image-20240828182750123"></p> 
+<pre><code class="prism language-http">http://localhost:9001/empower?serverName=abc
+</code></pre> 
+<pre><code class="prism language-http">http://localhost:9001/empower?serverName=test2
+</code></pre> 
+<pre><code class="prism language-http">http://localhost:9001/empower?serverName=test
+</code></pre> 
+<p><img src="https://images2.imgbox.com/00/7a/GcZowK5t_o.gif" alt="11"></p> 
+<h2><a id="_1191"></a>九、规则持久化</h2> 
+<p><img src="https://images2.imgbox.com/2b/a9/pmpWhWw4_o.png" alt="image-20240828192641430"></p> 
+<p>现在，sentinel的所有规则都是内存存储，重启后所有规则都会丢失。在生产环境下，我们必须确保这些规则的持久化，避免丢失。</p> 
+<h3><a id="91_1197"></a>9.1、规则管理模式</h3> 
+<p>规则是否能持久化，取决于规则管理模式，sentinel支持三种规则管理模式：</p> 
+<ul><li> <p>原始模式：Sentinel的默认模式，将规则保存在内存，重启服务会丢失。</p> </li><li> <p>pull模式</p> </li><li> <p>push模式</p> </li></ul> 
+<h3><a id="92pull_1209"></a>9.2、pull模式</h3> 
+<p>pull模式：控制台将配置的规则推送到Sentinel客户端，而客户端会将配置规则保存在本地文件或数据库中。以后会定时去本地文件或数据库中查询，更新本地规则。</p> 
+<p><img src="https://images2.imgbox.com/42/dd/a5ARjTDs_o.png" alt="image-20240828183231650"></p> 
+<h3><a id="93push_1217"></a>9.3、push模式</h3> 
+<p>push模式：控制台将配置规则推送到远程配置中心，例如Nacos。Sentinel客户端监听Nacos，获取配置变更的推送消息，完成本地配置更新。</p> 
+<p><img src="https://images2.imgbox.com/8f/23/I0coVkjX_o.png" alt="image-20240828183306153"></p> 
+<h3><a id="94POM_1225"></a>9.4、改POM</h3> 
+<pre><code class="prism language-xml"> <span class="token comment">&lt;!--SpringCloud ailibaba sentinel-datasource-nacos --&gt;</span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>com.alibaba.csp<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>sentinel-datasource-nacos<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/93/f9/F48pD4Z9_o.png" alt="image-20240828185546463"></p> 
+<h3><a id="95Yaml_1239"></a>9.5、写Yaml</h3> 
+<pre><code class="prism language-yaml">      <span class="token key atrule">datasource</span><span class="token punctuation">:</span>
+        <span class="token key atrule">ds1</span><span class="token punctuation">:</span>
+          <span class="token key atrule">nacos</span><span class="token punctuation">:</span>
+            <span class="token key atrule">server-addr</span><span class="token punctuation">:</span> 192.168.200.129<span class="token punctuation">:</span><span class="token number">8848</span>
+            <span class="token key atrule">dataId</span><span class="token punctuation">:</span> $<span class="token punctuation">{<!-- --></span>spring.application.name<span class="token punctuation">}</span>
+            <span class="token key atrule">groupId</span><span class="token punctuation">:</span> DEFAULT_GROUP
+            <span class="token key atrule">data-type</span><span class="token punctuation">:</span> json
+            <span class="token key atrule">rule-type</span><span class="token punctuation">:</span> flow <span class="token comment"># com.alibaba.cloud.sentinel.datasource.RuleType</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/b2/37/m04XCivb_o.png" alt="image-20240828190858764"></p> 
+<p><strong>跟踪rule-type: flow</strong></p> 
+<p><img src="https://images2.imgbox.com/8e/e1/Ikld82iz_o.png" alt="image-20240828193458457"></p> 
+<p><img src="https://images2.imgbox.com/64/2b/KlY9mXNT_o.png" alt="image-20240828193516164"></p> 
+<p><img src="https://images2.imgbox.com/d7/79/KJMc6Kj2_o.png" alt="image-20240828193953165"></p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">enum</span> <span class="token class-name">RuleType</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">FLOW</span><span class="token punctuation">(</span><span class="token string">"flow"</span><span class="token punctuation">,</span> <span class="token class-name">FlowRule</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token function">DEGRADE</span><span class="token punctuation">(</span><span class="token string">"degrade"</span><span class="token punctuation">,</span> <span class="token class-name">DegradeRule</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token function">PARAM_FLOW</span><span class="token punctuation">(</span><span class="token string">"param-flow"</span><span class="token punctuation">,</span> <span class="token class-name">ParamFlowRule</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token function">SYSTEM</span><span class="token punctuation">(</span><span class="token string">"system"</span><span class="token punctuation">,</span> <span class="token class-name">SystemRule</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token function">AUTHORITY</span><span class="token punctuation">(</span><span class="token string">"authority"</span><span class="token punctuation">,</span> <span class="token class-name">AuthorityRule</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token function">GW_FLOW</span><span class="token punctuation">(</span><span class="token string">"gw-flow"</span><span class="token punctuation">,</span> <span class="token string">"com.alibaba.csp.sentinel.adapter.gateway.common.rule.GatewayFlowRule"</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+    <span class="token function">GW_API_GROUP</span><span class="token punctuation">(</span><span class="token string">"gw-api-group"</span><span class="token punctuation">,</span> <span class="token string">"com.alibaba.csp.sentinel.adapter.gateway.common.api.ApiDefinition"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<table><thead><tr><th>枚举常量</th><th>含义</th><th>作用</th></tr></thead><tbody><tr><td>FLOW</td><td>限流规则</td><td>控制应用的QPS（每秒查询率），限制系统流量以避免过载。</td></tr><tr><td>DEGRADE</td><td>熔断降级规则</td><td>当响应时间过长或错误率过高时，触发降级，临时阻断流量以保护系统。</td></tr><tr><td>PARAM_FLOW</td><td>热点参数限流规则</td><td>针对特定参数值进行限流，例如限制某个用户或IP的访问频率。</td></tr><tr><td>SYSTEM</td><td>系统规则</td><td>根据CPU使用率、内存等指标调整流控策略，保护系统整体稳定性。</td></tr><tr><td>AUTHORITY</td><td>授权规则</td><td>基于黑白名单控制访问权限，限制特定来源的流量。</td></tr><tr><td>GW_FLOW</td><td>网关流控规则</td><td>针对API网关的流量控制规则，细粒度控制通过网关的流量。</td></tr><tr><td>GW_API_GROUP</td><td>网关API分组规则</td><td>将API进行分组管理，定义一组API的流量控制策略。</td></tr></tbody></table> 
+<p><img src="https://images2.imgbox.com/91/0e/EWKOkNWU_o.png" alt="image-20240828194134734"></p> 
+<p>我想多数据源配置呢？？</p> 
+<pre><code class="prism language-yaml"><span class="token key atrule">spring</span><span class="token punctuation">:</span>
+  <span class="token key atrule">application</span><span class="token punctuation">:</span>
+    <span class="token key atrule">name</span><span class="token punctuation">:</span> sentinel<span class="token punctuation">-</span>project
+
+  <span class="token key atrule">cloud</span><span class="token punctuation">:</span>
+    <span class="token key atrule">nacos</span><span class="token punctuation">:</span>
+      <span class="token key atrule">discovery</span><span class="token punctuation">:</span>
+        <span class="token comment"># Nacos服务注册中心地址</span>
+        <span class="token key atrule">server-addr</span><span class="token punctuation">:</span> 10.20.30.227<span class="token punctuation">:</span><span class="token number">9999</span>
+
+<span class="token key atrule">sentinel</span><span class="token punctuation">:</span>
+  <span class="token key atrule">transport</span><span class="token punctuation">:</span>
+    <span class="token comment"># 配置Sentinel dashboard地址</span>
+    <span class="token key atrule">dashboard</span><span class="token punctuation">:</span> 10.20.30.94<span class="token punctuation">:</span><span class="token number">8080</span>
+    <span class="token comment"># 默认8719端口，假如被占用会自动从8719开始依次+1扫描，直至找到未被占用的端口</span>
+    <span class="token key atrule">port</span><span class="token punctuation">:</span> <span class="token number">8719</span>
+
+  <span class="token key atrule">datasource</span><span class="token punctuation">:</span>
+    <span class="token comment"># sentinel持久化配置</span>
+    <span class="token key atrule">ds1</span><span class="token punctuation">:</span>
+      <span class="token comment"># 你是自定义key, 也可以做限流类型等</span>
+      <span class="token key atrule">nacos</span><span class="token punctuation">:</span>
+        <span class="token key atrule">server-addr</span><span class="token punctuation">:</span> 10.20.30.227<span class="token punctuation">:</span><span class="token number">9999</span>  <span class="token comment"># nacos地址</span>
+        <span class="token key atrule">dataId</span><span class="token punctuation">:</span> flow <span class="token comment"># 你是nacos配置里面的</span>
+        <span class="token key atrule">groupId</span><span class="token punctuation">:</span> DEFAULT_GROUP <span class="token comment"># 就是nacos配置里面的</span>
+        <span class="token key atrule">data-type</span><span class="token punctuation">:</span> json <span class="token comment"># 你是nacos配置里面的</span>
+        <span class="token key atrule">rule-type</span><span class="token punctuation">:</span> flow <span class="token comment"># 也以为流量规则, 具体类型见com.alibaba.cloud.sentinel.datasource.RuleType</span>
+
+    <span class="token key atrule">ds2</span><span class="token punctuation">:</span>
+      <span class="token comment"># 你是自定义key, 也可以做限流类型等</span>
+      <span class="token key atrule">nacos</span><span class="token punctuation">:</span>
+        <span class="token key atrule">server-addr</span><span class="token punctuation">:</span> 10.20.30.227<span class="token punctuation">:</span><span class="token number">9999</span>  <span class="token comment"># nacos地址</span>
+        <span class="token key atrule">dataId</span><span class="token punctuation">:</span> degrade <span class="token comment"># 你是nacos配置里面的</span>
+        <span class="token key atrule">groupId</span><span class="token punctuation">:</span> DEFAULT_GROUP <span class="token comment"># 就是nacos配置里面的</span>
+        <span class="token key atrule">data-type</span><span class="token punctuation">:</span> json <span class="token comment"># 你是nacos配置里面的</span>
+        <span class="token key atrule">rule-type</span><span class="token punctuation">:</span> degrade <span class="token comment"># 也以为熔断降级规则, 具体类型见com.alibaba.cloud.sentinel.datasource.RuleType</span>
+</code></pre> 
+<h3><a id="96Nacos_1333"></a>9.6、Nacos配置</h3> 
+<pre><code class="prism language-json"><span class="token punctuation">[</span>
+  <span class="token punctuation">{<!-- --></span>
+    <span class="token string-property property">"resource"</span><span class="token operator">:</span> <span class="token string">"/rateLimit/byUrl"</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"limitApp"</span><span class="token operator">:</span> <span class="token string">"default"</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"grade"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"count"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"strategy"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"controlBehavior"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"clusterMode"</span><span class="token operator">:</span> <span class="token boolean">false</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+<table><thead><tr><th>字段名称</th><th>含义</th></tr></thead><tbody><tr><td>resource</td><td>资源名称</td></tr><tr><td>limitApp</td><td>来源应用</td></tr><tr><td>grade</td><td>阈值类型，0表示线程数，1表示QPS</td></tr><tr><td>count</td><td>单机阈值</td></tr><tr><td>strategy</td><td>流控模式，0表示直接，1表示关联，2表示链路</td></tr><tr><td>controlBehavior</td><td>流控效果，0表示快速失败，1表示Warm Up，2表示排队等待</td></tr><tr><td>clusterMode</td><td>是否集群</td></tr></tbody></table> 
+<p><img src="https://images2.imgbox.com/5d/81/fXwQ4MJv_o.png" alt="image-20240828191100628"></p> 
+<p><img src="https://images2.imgbox.com/68/14/Pg1sv3jV_o.png" alt="image-20240828191349365"></p> 
+<h3><a id="97_1365"></a>9.7、测试</h3> 
+<p>重启服务后一定要多刷几次就出来了哈：</p> 
+<pre><code class="prism language-http">http://localhost:9001/rateLimit/byUrl
+</code></pre> 
+<p><img src="https://images2.imgbox.com/10/2f/OFccBeW2_o.gif" alt="12"></p> 
+<h2><a id="OpenFeignSentinelfallback_1377"></a>十、OpenFeign和Sentinel集成实现fallback服务降级</h2> 
+<p>SpringCloud中，微服务调用都是通过Feign来实现的，因此做客户端保护必须整合Feign和Sentinel。</p> 
+<p>先降低版本：</p> 
+<p><img src="https://images2.imgbox.com/31/32/OQ3sixbn_o.png" alt="image-20240828215517583"></p> 
+<pre><code class="prism language-xml"> <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>spring.boot.version</span><span class="token punctuation">&gt;</span></span>3.0.9<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>spring.boot.version</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>spring.cloud.version</span><span class="token punctuation">&gt;</span></span>2022.0.2<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>spring.cloud.version</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/fb/ba/kT4PEf7e_o.png" alt="image-20240828215605331"></p> 
+<h3><a id="101_1396"></a>10.1、服务的提供者</h3> 
+<p><img src="https://images2.imgbox.com/c2/b7/vCiLY9wq_o.png" alt="image-20240828220055880"></p> 
+<h4><a id="1011YAML_1400"></a>101.1、YAML</h4> 
+<pre><code class="prism language-yaml"><span class="token key atrule">server</span><span class="token punctuation">:</span>
+  <span class="token key atrule">port</span><span class="token punctuation">:</span> <span class="token number">9001</span>
+
+<span class="token key atrule">spring</span><span class="token punctuation">:</span>
+  <span class="token key atrule">application</span><span class="token punctuation">:</span>
+    <span class="token key atrule">name</span><span class="token punctuation">:</span> sentinelprovider
+  <span class="token key atrule">cloud</span><span class="token punctuation">:</span>
+    <span class="token key atrule">nacos</span><span class="token punctuation">:</span>
+      <span class="token key atrule">discovery</span><span class="token punctuation">:</span>
+        <span class="token key atrule">server-addr</span><span class="token punctuation">:</span> 192.168.200.129<span class="token punctuation">:</span><span class="token number">8848</span> <span class="token comment">#配置Nacos地址</span>
+
+    <span class="token key atrule">sentinel</span><span class="token punctuation">:</span>
+      <span class="token key atrule">transport</span><span class="token punctuation">:</span>
+        <span class="token key atrule">dashboard</span><span class="token punctuation">:</span> 192.168.200.129<span class="token punctuation">:</span><span class="token number">8858</span> <span class="token comment">#配置Sentinel dashboard控制台服务地址</span>
+        <span class="token key atrule">port</span><span class="token punctuation">:</span> <span class="token number">8719</span> <span class="token comment">#默认8719端口，假如被占用会自动从8719开始依次+1扫描,直至找到未被占用的端口</span>
+</code></pre> 
+<h4><a id="1012_1422"></a>10.1.2、主启动</h4> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>provider</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>boot<span class="token punctuation">.</span></span><span class="token class-name">SpringApplication</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>boot<span class="token punctuation">.</span>autoconfigure<span class="token punctuation">.</span></span><span class="token class-name">SpringBootApplication</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>cloud<span class="token punctuation">.</span>client<span class="token punctuation">.</span>discovery<span class="token punctuation">.</span></span><span class="token class-name">EnableDiscoveryClient</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * @Author: 史小创
+ * @Time: 2024/8/28 下午7:56
+ * @Description:
+ */</span>
+
+<span class="token annotation punctuation">@SpringBootApplication</span>
+<span class="token annotation punctuation">@EnableDiscoveryClient</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">SentinelProviderApplication</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">SpringApplication</span><span class="token punctuation">.</span><span class="token function">run</span><span class="token punctuation">(</span><span class="token class-name">SentinelProviderApplication</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span> args<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="1013_1448"></a>10.1.3、业务类</h4> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>provider<span class="token punctuation">.</span>web</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>csp<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">SentinelResource</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>csp<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>slots<span class="token punctuation">.</span>block<span class="token punctuation">.</span></span><span class="token class-name">BlockException</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>bind<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">GetMapping</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>bind<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">PathVariable</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>bind<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">RestController</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * @Author: 史小创
+ * @Time: 2024/8/28 下午8:12
+ * @Description:
+ */</span>
+
+<span class="token annotation punctuation">@RestController</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">SentinelProviderController</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/rateLimit/doAction/{p1}"</span><span class="token punctuation">)</span>
+    <span class="token annotation punctuation">@SentinelResource</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"doActionSentinelResource"</span><span class="token punctuation">,</span> blockHandler <span class="token operator">=</span> <span class="token string">"doActionBlockHandler"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">doAction</span><span class="token punctuation">(</span><span class="token annotation punctuation">@PathVariable</span><span class="token punctuation">(</span><span class="token string">"p1"</span><span class="token punctuation">)</span> <span class="token class-name">Integer</span> p1<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>p1 <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">RuntimeException</span><span class="token punctuation">(</span><span class="token string">"p1等于零直接异常"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> <span class="token string">"doAction"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">doActionBlockHandler</span><span class="token punctuation">(</span><span class="token annotation punctuation">@PathVariable</span><span class="token punctuation">(</span><span class="token string">"p1"</span><span class="token punctuation">)</span> <span class="token class-name">Integer</span> p1<span class="token punctuation">,</span> <span class="token class-name">BlockException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>err<span class="token punctuation">.</span><span class="token function">printf</span><span class="token punctuation">(</span><span class="token string">"sentinel配置自定义限流了:{}"</span><span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token string">"sentinel配置自定义限流了"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="1014_1486"></a>10.1.4、测试</h4> 
+<pre><code class="prism language-http">http://localhost:9001/rateLimit/doAction/1
+</code></pre> 
+<p><img src="https://images2.imgbox.com/f4/0d/2CCIaCQx_o.png" alt="image-20240828215929074"></p> 
+<h3><a id="102OpenFeign_1496"></a>10.2、OpenFeign</h3> 
+<p><img src="https://images2.imgbox.com/d1/67/WfoMLvSK_o.png" alt="image-20240828220328978"></p> 
+<pre><code class="prism language-xml"> <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependencies</span><span class="token punctuation">&gt;</span></span>
+        <span class="token comment">&lt;!--openfeign--&gt;</span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>org.springframework.cloud<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>spring-cloud-starter-openfeign<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependencies</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>feign</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>cloud<span class="token punctuation">.</span>openfeign<span class="token punctuation">.</span></span><span class="token class-name">FeignClient</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>bind<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">GetMapping</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>bind<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">PathVariable</span></span><span class="token punctuation">;</span>
+
+<span class="token annotation punctuation">@FeignClient</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"sentinelprovider"</span><span class="token punctuation">,</span> fallback <span class="token operator">=</span> <span class="token class-name">FeignSentinelApiFallBack</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> <span class="token keyword">interface</span> <span class="token class-name">SentinelApi</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/rateLimit/doAction/{p1}"</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">doAction</span><span class="token punctuation">(</span><span class="token annotation punctuation">@PathVariable</span><span class="token punctuation">(</span><span class="token string">"p1"</span><span class="token punctuation">)</span> <span class="token class-name">Integer</span> p1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>feign</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>stereotype<span class="token punctuation">.</span></span><span class="token class-name">Component</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * @Author: 史小创
+ * @Time: 2024/8/28 下午8:26
+ * @Description: 统一服务降级类
+ */</span>
+
+<span class="token annotation punctuation">@Component</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">FeignSentinelApiFallBack</span> <span class="token keyword">implements</span> <span class="token class-name">SentinelApi</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">doAction</span><span class="token punctuation">(</span><span class="token class-name">Integer</span> p1<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token string">"对方服务宕机或不可用，FallBack服务降级o(╥﹏╥)o"</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="103_1547"></a>10.3、服务消费者</h3> 
+<h4><a id="1031POM_1549"></a>10.3.1、POM</h4> 
+<pre><code class="prism language-xml"><span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependencies</span><span class="token punctuation">&gt;</span></span>
+        <span class="token comment">&lt;!-- 引入自己定义的api通用包 --&gt;</span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>com.sentinel<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>sentinel-feign<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>version</span><span class="token punctuation">&gt;</span></span>1.0-SNAPSHOT<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>version</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+        <span class="token comment">&lt;!--openfeign--&gt;</span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>org.springframework.cloud<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>spring-cloud-starter-openfeign<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependencies</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+<h4><a id="1032YAML_1569"></a>10.3.2、YAML</h4> 
+<pre><code class="prism language-yaml"><span class="token key atrule">server</span><span class="token punctuation">:</span>
+  <span class="token key atrule">port</span><span class="token punctuation">:</span> <span class="token number">9002</span>
+
+<span class="token key atrule">spring</span><span class="token punctuation">:</span>
+  <span class="token key atrule">application</span><span class="token punctuation">:</span>
+    <span class="token key atrule">name</span><span class="token punctuation">:</span> sentinelconsumer
+  <span class="token key atrule">cloud</span><span class="token punctuation">:</span>
+    <span class="token key atrule">nacos</span><span class="token punctuation">:</span>
+      <span class="token key atrule">discovery</span><span class="token punctuation">:</span>
+        <span class="token key atrule">server-addr</span><span class="token punctuation">:</span> 192.168.200.129<span class="token punctuation">:</span><span class="token number">8848</span> <span class="token comment">#配置Nacos地址</span>
+
+<span class="token comment"># 激活Sentinel对Feign的支持</span>
+<span class="token key atrule">feign</span><span class="token punctuation">:</span>
+  <span class="token key atrule">sentinel</span><span class="token punctuation">:</span>
+    <span class="token key atrule">enabled</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+</code></pre> 
+<h4><a id="1033_1591"></a>10.3.3、主启动</h4> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>consumer</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>boot<span class="token punctuation">.</span></span><span class="token class-name">SpringApplication</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>boot<span class="token punctuation">.</span>autoconfigure<span class="token punctuation">.</span></span><span class="token class-name">SpringBootApplication</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>cloud<span class="token punctuation">.</span>client<span class="token punctuation">.</span>discovery<span class="token punctuation">.</span></span><span class="token class-name">EnableDiscoveryClient</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>cloud<span class="token punctuation">.</span>openfeign<span class="token punctuation">.</span></span><span class="token class-name">EnableFeignClients</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>context<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">ComponentScan</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * @Author: 史小创
+ * @Time: 2024/8/28 下午7:56
+ * @Description:
+ */</span>
+
+<span class="token annotation punctuation">@SpringBootApplication</span>
+<span class="token annotation punctuation">@EnableDiscoveryClient</span>
+<span class="token annotation punctuation">@EnableFeignClients</span><span class="token punctuation">(</span>basePackages <span class="token operator">=</span> <span class="token string">"com.sentinel.feign"</span><span class="token punctuation">)</span>
+<span class="token annotation punctuation">@ComponentScan</span><span class="token punctuation">(</span><span class="token string">"com.sentinel"</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">SentinelConsumerApplication</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">SpringApplication</span><span class="token punctuation">.</span><span class="token function">run</span><span class="token punctuation">(</span><span class="token class-name">SentinelConsumerApplication</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span> args<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="1034_1621"></a>10.3.4、业务类</h4> 
+<pre><code class="prism language-yaml">package com.sentinel.consumer.web;
+
+import com.sentinel.feign.SentinelApi;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.RestController;
+
+/<span class="token important">**</span>
+ * @Author<span class="token punctuation">:</span> 史小创
+ * @Time<span class="token punctuation">:</span> 2024/8/28 下午8<span class="token punctuation">:</span><span class="token number">33</span>
+ * @Description<span class="token punctuation">:</span>
+ <span class="token important">*/</span>
+
+@RestController
+public class SentinelConsumerController <span class="token punctuation">{<!-- --></span>
+    @Autowired
+    private SentinelApi sentinelApi;
+
+    @GetMapping("/rateLimit/doAction/<span class="token punctuation">{<!-- --></span>p1<span class="token punctuation">}</span>")
+    public String doAction(@PathVariable("p1") Integer p1) <span class="token punctuation">{<!-- --></span>
+        return sentinelApi.doAction(p1);
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="1035_1652"></a>10.3.5、测试</h4> 
+<pre><code class="prism language-http">http://localhost:9002/rateLimit/doAction/1
+</code></pre> 
+<pre><code class="prism language-http">http://localhost:9002/rateLimit/doAction/0
+</code></pre> 
+<p><img src="https://images2.imgbox.com/03/76/d4U0yXqM_o.png" alt="image-20240828220727389"></p> 
+<p><img src="https://images2.imgbox.com/33/14/1PdEY1d6_o.png" alt="image-20240828220738700"></p> 
+<h3><a id="104Sentinel_1668"></a>10.4、整合Sentinel</h3> 
+<p><img src="https://images2.imgbox.com/ea/bd/2yWB5g2Q_o.png" alt="image-20240828220913600"></p> 
+<p><img src="https://images2.imgbox.com/f0/2c/HIFKo4UJ_o.png" alt="image-20240828220931509"></p> 
+<p><img src="https://images2.imgbox.com/98/e7/nXThWJfc_o.png" alt="image-20240828220940379"></p> 
+<pre><code class="prism language-http">http://localhost:9002/rateLimit/doAction/1
+</code></pre> 
+<pre><code class="prism language-http">http://localhost:9002/rateLimit/doAction/0
+</code></pre> 
+<p><img src="https://images2.imgbox.com/2e/e0/iyOAW8TS_o.gif" alt="13"></p> 
+<h3><a id="105_1688"></a>10.5、版本复原</h3> 
+<p><img src="https://images2.imgbox.com/02/e4/Bz7FTzOG_o.png" alt="image-20240828224525489"></p> 
+<h2><a id="GateWaySentinel_1696"></a>十一、GateWay和Sentinel集成实现服务限流</h2> 
+<p><img src="https://images2.imgbox.com/0a/4e/d8JSwjVI_o.png" alt="image-20240828224653700"></p> 
+<h3><a id="111POM_1700"></a>11.1、POM</h3> 
+<p><code>Spring Cloud Gateway</code>确实是基于<code>Spring WebFlux</code>的反应式框架构建的。因此，通常情况下，不需要也不应该同时包含<code>spring-boot-starter-web</code>依赖，因为<code>spring-boot-starter-web</code>是基于Servlet API的，而<code>Spring WebFlux</code>是基于反应式堆栈的。这两者使用不同的底层模型，不适合一起使用。</p> 
+<pre><code class="prism language-xml">  <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>org.springframework.cloud<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>spring-cloud-starter-gateway<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/e1/2c/s3W7FSnt_o.png" alt="image-20240828224734361"></p> 
+<pre><code class="prism language-xml"><span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependencies</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>com.alibaba.csp<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>sentinel-transport-simple-http<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>version</span><span class="token punctuation">&gt;</span></span>1.8.6<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>version</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>com.alibaba.csp<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>sentinel-spring-cloud-gateway-adapter<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>version</span><span class="token punctuation">&gt;</span></span>1.8.6<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>version</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>javax.annotation<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>javax.annotation-api<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>version</span><span class="token punctuation">&gt;</span></span>1.3.2<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>version</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>scope</span><span class="token punctuation">&gt;</span></span>compile<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>scope</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>org.springframework.boot<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+            <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>spring-boot-starter-webflux<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependencies</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/77/de/mVZFtsg6_o.png" alt="image-20240828224845723"></p> 
+<h3><a id="112YAML_1744"></a>11.2、YAML</h3> 
+<pre><code class="prism language-yaml"><span class="token key atrule">server</span><span class="token punctuation">:</span>
+  <span class="token key atrule">port</span><span class="token punctuation">:</span> <span class="token number">8888</span>
+
+<span class="token key atrule">spring</span><span class="token punctuation">:</span>
+  <span class="token key atrule">application</span><span class="token punctuation">:</span>
+    <span class="token key atrule">name</span><span class="token punctuation">:</span> sentinelgateway     <span class="token comment"># sentinel+gataway整合Case</span>
+  <span class="token key atrule">cloud</span><span class="token punctuation">:</span>
+    <span class="token key atrule">nacos</span><span class="token punctuation">:</span>
+      <span class="token key atrule">discovery</span><span class="token punctuation">:</span>
+        <span class="token key atrule">server-addr</span><span class="token punctuation">:</span> 192.168.200.129<span class="token punctuation">:</span><span class="token number">8848</span>
+    <span class="token key atrule">gateway</span><span class="token punctuation">:</span>
+      <span class="token key atrule">routes</span><span class="token punctuation">:</span>
+        <span class="token punctuation">-</span> <span class="token key atrule">id</span><span class="token punctuation">:</span> pay_routh1 <span class="token comment">#pay_routh1                #路由的ID(类似mysql主键ID)，没有固定规则但要求唯一，建议配合服务名</span>
+          <span class="token key atrule">uri</span><span class="token punctuation">:</span> lb<span class="token punctuation">:</span>//sentinelprovider            <span class="token comment">#匹配后提供服务的路由地址</span>
+          <span class="token key atrule">predicates</span><span class="token punctuation">:</span>
+            <span class="token punctuation">-</span> Path=/rateLimit/doAction/<span class="token important">**</span>                      <span class="token comment"># 断言，路径相匹配的进行路由</span>
+</code></pre> 
+<h3><a id="113_1767"></a>11.3、启动</h3> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>gateway</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>boot<span class="token punctuation">.</span>autoconfigure<span class="token punctuation">.</span></span><span class="token class-name">SpringBootApplication</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>cloud<span class="token punctuation">.</span>client<span class="token punctuation">.</span>discovery<span class="token punctuation">.</span></span><span class="token class-name">EnableDiscoveryClient</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * @Author: 史小创
+ * @Time: 2024/8/28 下午10:19
+ * @Description:
+ */</span>
+
+<span class="token annotation punctuation">@SpringBootApplication</span>
+<span class="token annotation punctuation">@EnableDiscoveryClient</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">SentinelGatewayApplication</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>boot<span class="token punctuation">.</span></span>SpringApplication</span><span class="token punctuation">.</span><span class="token function">run</span><span class="token punctuation">(</span><span class="token class-name">SentinelGatewayApplication</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">,</span> args<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="114_1792"></a>11.4、配置类</h3> 
+<pre><code class="prism language-http">https://sentinelguard.io/zh-cn/docs/api-gateway-flow-control.html
+</code></pre> 
+<p><img src="https://images2.imgbox.com/ce/6b/19ZRrrOx_o.png" alt="image-20240828225407856"></p> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">com<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>gateway<span class="token punctuation">.</span>config</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>csp<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>adapter<span class="token punctuation">.</span>gateway<span class="token punctuation">.</span>common<span class="token punctuation">.</span>rule<span class="token punctuation">.</span></span><span class="token class-name">GatewayFlowRule</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>csp<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>adapter<span class="token punctuation">.</span>gateway<span class="token punctuation">.</span>common<span class="token punctuation">.</span>rule<span class="token punctuation">.</span></span><span class="token class-name">GatewayRuleManager</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>csp<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>adapter<span class="token punctuation">.</span>gateway<span class="token punctuation">.</span>sc<span class="token punctuation">.</span></span><span class="token class-name">SentinelGatewayFilter</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>csp<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>adapter<span class="token punctuation">.</span>gateway<span class="token punctuation">.</span>sc<span class="token punctuation">.</span>callback<span class="token punctuation">.</span></span><span class="token class-name">BlockRequestHandler</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>csp<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>adapter<span class="token punctuation">.</span>gateway<span class="token punctuation">.</span>sc<span class="token punctuation">.</span>callback<span class="token punctuation">.</span></span><span class="token class-name">GatewayCallbackManager</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>csp<span class="token punctuation">.</span>sentinel<span class="token punctuation">.</span>adapter<span class="token punctuation">.</span>gateway<span class="token punctuation">.</span>sc<span class="token punctuation">.</span>exception<span class="token punctuation">.</span></span><span class="token class-name">SentinelGatewayBlockExceptionHandler</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>beans<span class="token punctuation">.</span>factory<span class="token punctuation">.</span></span><span class="token class-name">ObjectProvider</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>cloud<span class="token punctuation">.</span>gateway<span class="token punctuation">.</span>filter<span class="token punctuation">.</span></span><span class="token class-name">GlobalFilter</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>context<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">Bean</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>context<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">Configuration</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>core<span class="token punctuation">.</span></span><span class="token class-name">Ordered</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>core<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">Order</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>http<span class="token punctuation">.</span></span><span class="token class-name">HttpStatus</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>http<span class="token punctuation">.</span></span><span class="token class-name">MediaType</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>http<span class="token punctuation">.</span>codec<span class="token punctuation">.</span></span><span class="token class-name">ServerCodecConfigurer</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>reactive<span class="token punctuation">.</span>function<span class="token punctuation">.</span></span><span class="token class-name">BodyInserters</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>reactive<span class="token punctuation">.</span>function<span class="token punctuation">.</span>server<span class="token punctuation">.</span></span><span class="token class-name">ServerResponse</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>reactive<span class="token punctuation">.</span>result<span class="token punctuation">.</span>view<span class="token punctuation">.</span></span><span class="token class-name">ViewResolver</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>server<span class="token punctuation">.</span></span><span class="token class-name">ServerWebExchange</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">reactor<span class="token punctuation">.</span>core<span class="token punctuation">.</span>publisher<span class="token punctuation">.</span></span><span class="token class-name">Mono</span></span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">javax<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">PostConstruct</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token operator">*</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * @Author: 史小创
+ * @Time: 2024/8/28 下午10:24
+ * @Description:
+ */</span>
+
+<span class="token annotation punctuation">@Configuration</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">GatewayConfiguration</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">ViewResolver</span><span class="token punctuation">&gt;</span></span> viewResolvers<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">ServerCodecConfigurer</span> serverCodecConfigurer<span class="token punctuation">;</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">GatewayConfiguration</span><span class="token punctuation">(</span><span class="token class-name">ObjectProvider</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">List</span><span class="token punctuation">&lt;</span><span class="token class-name">ViewResolver</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> viewResolversProvider<span class="token punctuation">,</span>
+                                <span class="token class-name">ServerCodecConfigurer</span> serverCodecConfigurer<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>viewResolvers <span class="token operator">=</span> viewResolversProvider<span class="token punctuation">.</span><span class="token function">getIfAvailable</span><span class="token punctuation">(</span><span class="token class-name">Collections</span><span class="token operator">::</span><span class="token function">emptyList</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>serverCodecConfigurer <span class="token operator">=</span> serverCodecConfigurer<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Bean</span>
+    <span class="token annotation punctuation">@Order</span><span class="token punctuation">(</span><span class="token class-name">Ordered</span><span class="token punctuation">.</span><span class="token constant">HIGHEST_PRECEDENCE</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">SentinelGatewayBlockExceptionHandler</span> <span class="token function">sentinelGatewayBlockExceptionHandler</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Register the block exception handler for Spring Cloud Gateway.</span>
+        <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">SentinelGatewayBlockExceptionHandler</span><span class="token punctuation">(</span>viewResolvers<span class="token punctuation">,</span> serverCodecConfigurer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@Bean</span>
+    <span class="token annotation punctuation">@Order</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>
+    <span class="token keyword">public</span> <span class="token class-name">GlobalFilter</span> <span class="token function">sentinelGatewayFilter</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">SentinelGatewayFilter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token annotation punctuation">@PostConstruct</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">doInit</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 自己动手，丰衣足食</span>
+        <span class="token comment">// initGatewayRules();</span>
+        <span class="token function">initBlockHandler</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 处理+自定义返回的例外信息内容，类似我们的调用触发了流控规则保护</span>
+    <span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">initBlockHandler</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">Set</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">GatewayFlowRule</span><span class="token punctuation">&gt;</span></span> rules <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashSet</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        rules<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">GatewayFlowRule</span><span class="token punctuation">(</span><span class="token string">"pay_routh1"</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">setCount</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">setIntervalSec</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">GatewayRuleManager</span><span class="token punctuation">.</span><span class="token function">loadRules</span><span class="token punctuation">(</span>rules<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">BlockRequestHandler</span> handler <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">BlockRequestHandler</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token annotation punctuation">@Override</span>
+            <span class="token keyword">public</span> <span class="token class-name">Mono</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">ServerResponse</span><span class="token punctuation">&gt;</span></span> <span class="token function">handleRequest</span><span class="token punctuation">(</span><span class="token class-name">ServerWebExchange</span> exchange<span class="token punctuation">,</span> <span class="token class-name">Throwable</span> t<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> map <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                map<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token string">"errorCode"</span><span class="token punctuation">,</span> <span class="token class-name">HttpStatus</span><span class="token punctuation">.</span><span class="token constant">TOO_MANY_REQUESTS</span><span class="token punctuation">.</span><span class="token function">getReasonPhrase</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                map<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span><span class="token string">"errorMessage"</span><span class="token punctuation">,</span> <span class="token string">"请求太过频繁，系统忙不过来，触发限流(sentinel+gataway整合Case)"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+                <span class="token keyword">return</span> <span class="token class-name">ServerResponse</span><span class="token punctuation">.</span><span class="token function">status</span><span class="token punctuation">(</span><span class="token class-name">HttpStatus</span><span class="token punctuation">.</span><span class="token constant">TOO_MANY_REQUESTS</span><span class="token punctuation">)</span>
+                        <span class="token punctuation">.</span><span class="token function">contentType</span><span class="token punctuation">(</span><span class="token class-name">MediaType</span><span class="token punctuation">.</span><span class="token constant">APPLICATION_JSON</span><span class="token punctuation">)</span>
+                        <span class="token punctuation">.</span><span class="token function">body</span><span class="token punctuation">(</span><span class="token class-name">BodyInserters</span><span class="token punctuation">.</span><span class="token function">fromValue</span><span class="token punctuation">(</span>map<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">GatewayCallbackManager</span><span class="token punctuation">.</span><span class="token function">setBlockHandler</span><span class="token punctuation">(</span>handler<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="115_1892"></a>11.5、测试</h3> 
+<pre><code class="prism language-http">http://localhost:8888/rateLimit/doAction/1
+</code></pre> 
+<p><img src="https://images2.imgbox.com/49/64/tbP4YNcr_o.gif" alt="14"></p> 
+<h2><a id="_1904"></a>十二、环境搭建</h2> 
+<p>SpringBoot+SpringCloud</p> 
+<pre><code class="prism language-xml">   <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>spring.boot.version</span><span class="token punctuation">&gt;</span></span>3.2.0<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>spring.boot.version</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>spring.cloud.version</span><span class="token punctuation">&gt;</span></span>2023.0.0<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>spring.cloud.version</span><span class="token punctuation">&gt;</span></span>
+        <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>spring.cloud.alibaba.version</span><span class="token punctuation">&gt;</span></span>2022.0.0.0<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>spring.cloud.alibaba.version</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+<p>docker</p> 
+<p><img src="https://images2.imgbox.com/79/d0/ddEjIHbS_o.png" alt="image-20240827194204811"></p> 
+<p>Nacos</p> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> pull nacos/nacos-server:v2.0.3
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> run <span class="token parameter variable">--env</span> <span class="token assign-left variable">MODE</span><span class="token operator">=</span>standalone <span class="token parameter variable">--name</span> nacos <span class="token parameter variable">--restart</span><span class="token operator">=</span>always <span class="token parameter variable">-d</span> <span class="token parameter variable">-p</span> <span class="token number">8848</span>:8848 <span class="token parameter variable">-p</span> <span class="token number">9848</span>:9848 <span class="token parameter variable">-p</span> <span class="token number">9849</span>:9849 <span class="token parameter variable">-e</span> <span class="token assign-left variable">JVM_XMS</span><span class="token operator">=</span>512m <span class="token parameter variable">-e</span> <span class="token assign-left variable">JVM_XMX</span><span class="token operator">=</span>512m <span class="token parameter variable">-v</span> /opt/nacos:/home/nacos/nacos-server-2.0.3/nacos/standalone/data nacos/nacos-server:v2.0.3
+</code></pre> 
+<pre><code class="prism language-bash">http://192.168.200.129:8848/nacos/<span class="token comment">#/login</span>
+</code></pre> 
+<p>sentinel</p> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> pull bladex/sentinel-dashboard:1.8.6
+</code></pre> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> run <span class="token parameter variable">--name</span> sentinel-dashboard <span class="token parameter variable">--restart</span><span class="token operator">=</span>always <span class="token parameter variable">-p</span> <span class="token number">8858</span>:8858 <span class="token parameter variable">-v</span> /opt/sentinel:/opt/sentinel <span class="token parameter variable">-d</span> bladex/sentinel-dashboard:1.8.6
+</code></pre> 
+<pre><code class="prism language-bash">http://192.168.200.129:8858/<span class="token comment">#/login</span>
+</code></pre> 
+<p>jdk:</p> 
+<p><img src="https://images2.imgbox.com/72/1c/3hMlhgLw_o.png" alt="image-20240824171950942"></p> 
+<p>Maven</p> 
+<p><img src="https://images2.imgbox.com/e9/57/elP1ZyPz_o.png" alt="image-20240823181810973"></p> 
+<p>IDEA</p> 
+<p><img src="https://images2.imgbox.com/9c/36/qUhYN4Id_o.png" alt="image-20240823181906302"></p> 
+<p>代码汇总：</p> 
+<pre><code class="prism language-http">https://github.com/shixiaochuangjob/markdownfile/tree/main/20240828
+</code></pre> 
+<p><img src="https://images2.imgbox.com/7f/ba/MFt2ZgtB_o.png" alt="image-20240829000412781"></p> 
+<pre><code class="prism language-http">https://mp.weixin.qq.com/s?__biz=MzkwOTczNzUxMQ==&amp;mid=2247485129&amp;idx=1&amp;sn=6ff255ba38842473c025ada5ccd72182&amp;chksm=c1376d81f640e49770514d2af99b21e9893c606c31fa9eefbd9483a9af3053901635d43a8c0e#rd
+</code></pre> 
+<p><img src="https://images2.imgbox.com/03/c3/D4qvNYyp_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b2f9640c30668235f934e1bea8e40c4f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">质量技术&amp;AI提效专题分享-得物技术沙龙</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/04a530a1d4e3123020398436d4f1127f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【C&#43;&#43;】vector（下）--上篇</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

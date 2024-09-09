@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Canal同步Mysql实时操作日志至RabbitMQ，并实现监听及解析处理 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/7ab46381876179104505dbef5f3d9a0a/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Canal同步Mysql实时操作日志至RabbitMQ，并实现监听及解析处理">
+  <meta property="og:description" content="前言 关于Canal的介绍及原理不在此赘述，可自行查阅。笔者在使用Canal同步Mysql实时操作记录至RabbitMQ的过程中，也翻阅了一些大牛们的文章，可能是我使用的Canal版本与文中版本不一致，出现了一些问题，在此总结记录一下可行的方案。
+注：本文使用的Canal为 v1.1.7
+一、Mysql数据库开启bin_log 先查看目标数据库是否开启bin_log SHOW VARIABLES LIKE &#39;log_bin&#39; 如结果中，log_bin的值为OFF则未开启，为ON则已开启。
+如未开启，可编辑Mysql配置文件：/etc/my.cnf。 [mysqld] log-bin=mysql-bin # 开启binlog binlog-format=ROW # 选择ROW模式 server_id=1 # 配置MySQL replaction需要定义，不和Canal的slaveId重复即可 重启MySQL ，再次通过上一步查看配置是否生效。
+二、数据库创建新用户 创建专用于数据同步的新用户 -- 创建一个新用户，名称可自行定义 create user canal@&#39;%&#39; IDENTIFIED by &#39;canal&#39;; -- 为新用户授权 GRANT SELECT, REPLICATION SLAVE, REPLICATION CLIENT,SUPER ON *.* TO &#39;canal&#39;@&#39;%&#39;; -- 刷新缓存中的用户数据 FLUSH PRIVILEGES; 三、配置RabhitMQ 以下使用的名称均可自行定义，保证唯一即可
+1. 添加交换机 2. 添加队列 3. 绑定交换机与队列，设置 Routing key 四、下载、配置、运行Canal（windows环境） 1. 下载服务端 可到以下地址下载所需版本的包：github-alibaba-canal
+本文使用较新的 v1.1.7 。
+选择下载 canal.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-04-03T15:53:38+08:00">
+    <meta property="article:modified_time" content="2024-04-03T15:53:38+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Canal同步Mysql实时操作日志至RabbitMQ，并实现监听及解析处理</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_0"></a>前言</h3> 
+<p>关于Canal的介绍及原理不在此赘述，可自行查阅。笔者在使用Canal同步Mysql实时操作记录至RabbitMQ的过程中，也翻阅了一些大牛们的文章，可能是我使用的Canal版本与文中版本不一致，出现了一些问题，在此总结记录一下可行的方案。<br> 注：本文使用的Canal为 <code>v1.1.7</code></p> 
+<h3><a id="Mysqlbin_log_3"></a>一、Mysql数据库开启bin_log</h3> 
+<ul><li>先查看目标数据库是否开启<code>bin_log</code></li></ul> 
+<pre><code class="prism language-sql"><span class="token keyword">SHOW</span> VARIABLES <span class="token operator">LIKE</span> <span class="token string">'log_bin'</span>
+</code></pre> 
+<p>如结果中，log_bin的值为OFF则未开启，为ON则已开启。<br> <img src="https://images2.imgbox.com/91/bd/KWVTrEe9_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>如未开启，可编辑Mysql配置文件：<code>/etc/my.cnf</code>。</li></ul> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>mysqld<span class="token punctuation">]</span>
+log-bin<span class="token operator">=</span>mysql-bin <span class="token comment"># 开启binlog</span>
+binlog-format<span class="token operator">=</span>ROW <span class="token comment"># 选择ROW模式</span>
+<span class="token assign-left variable">server_id</span><span class="token operator">=</span><span class="token number">1</span> <span class="token comment"># 配置MySQL replaction需要定义，不和Canal的slaveId重复即可</span>
+</code></pre> 
+<p>重启MySQL ，再次通过上一步查看配置是否生效。</p> 
+<h3><a id="_19"></a>二、数据库创建新用户</h3> 
+<ul><li>创建专用于数据同步的新用户</li></ul> 
+<pre><code class="prism language-sql"><span class="token comment">-- 创建一个新用户，名称可自行定义</span>
+<span class="token keyword">create</span> <span class="token keyword">user</span> canal<span class="token variable">@'%'</span> IDENTIFIED <span class="token keyword">by</span> <span class="token string">'canal'</span><span class="token punctuation">;</span>
+<span class="token comment">-- 为新用户授权</span>
+<span class="token keyword">GRANT</span> <span class="token keyword">SELECT</span><span class="token punctuation">,</span> <span class="token keyword">REPLICATION</span> SLAVE<span class="token punctuation">,</span> <span class="token keyword">REPLICATION</span> CLIENT<span class="token punctuation">,</span>SUPER <span class="token keyword">ON</span> <span class="token operator">*</span><span class="token punctuation">.</span><span class="token operator">*</span> <span class="token keyword">TO</span> <span class="token string">'canal'</span><span class="token variable">@'%'</span><span class="token punctuation">;</span>
+<span class="token comment">-- 刷新缓存中的用户数据</span>
+FLUSH <span class="token keyword">PRIVILEGES</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="RabhitMQ_29"></a>三、配置RabhitMQ</h3> 
+<p>以下使用的名称均可自行定义，保证唯一即可</p> 
+<h4><a id="1__31"></a>1. 添加交换机</h4> 
+<p><img src="https://images2.imgbox.com/d8/22/BypTiwJX_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="2__34"></a>2. 添加队列</h4> 
+<p><img src="https://images2.imgbox.com/e7/40/E9Z2zlVb_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="3__Routing_key_36"></a>3. 绑定交换机与队列，设置 Routing key</h4> 
+<p><img src="https://images2.imgbox.com/07/cc/yUgVTDgW_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="Canalwindows_38"></a>四、下载、配置、运行Canal（windows环境）</h3> 
+<h4><a id="1__39"></a>1. 下载服务端</h4> 
+<ul><li> <p>可到以下地址下载所需版本的包：<a href="https://github.com/alibaba/canal/releases">github-alibaba-canal</a><br> 本文使用较新的 <code>v1.1.7</code> 。<br> <img src="https://images2.imgbox.com/ac/2b/z1iAqmXO_o.png" alt="在这里插入图片描述"></p> </li><li> <p>选择下载 <code>canal.deployer-1.1.7.tar.gz</code>。<br> <img src="https://images2.imgbox.com/b7/a6/NUOpN1oC_o.png" alt="在这里插入图片描述"></p> </li></ul> 
+<h4><a id="2__46"></a>2. 配置</h4> 
+<ul><li>解压下载包，获得如下文件。<br> <img src="https://images2.imgbox.com/35/c5/Gfgvfc1t_o.png" alt="在这里插入图片描述"></li><li>编辑：<code>conf\canal.properties</code>（仅列出需要修改的配置项）</li></ul> 
+<pre><code class="prism language-bash"><span class="token comment"># tcp, kafka, rocketMQ, rabbitMQ, pulsarMQ</span>
+canal.serverMode <span class="token operator">=</span> rabbitMQ
+<span class="token comment">##################################################</span>
+<span class="token comment">######### 		    RabbitMQ	     #############</span>
+<span class="token comment">##################################################</span>
+<span class="token comment"># host 无需添加端口号</span>
+rabbitmq.host <span class="token operator">=</span> <span class="token number">192.168</span>.0.2
+<span class="token comment"># 填写 / 即可</span>
+rabbitmq.virtual.host <span class="token operator">=</span> /
+<span class="token comment"># RabbitMQ的用户名、密码</span>
+rabbitmq.username <span class="token operator">=</span> admin
+rabbitmq.password <span class="token operator">=</span> <span class="token number">123456</span>
+<span class="token comment"># 上文配置的交换机（exchange）名称：Name</span>
+rabbitmq.exchange <span class="token operator">=</span> canal.exchange
+<span class="token comment"># 交换机类型：Type</span>
+rabbitmq.deliveryMode <span class="token operator">=</span> direct
+
+<span class="token comment"># 以下两个字段为自行添加，否则会报空指针异常</span>
+<span class="token comment"># 队列（queue）名称：Name</span>
+rabbitmq.queue <span class="token operator">=</span> canal.queue
+<span class="token comment"># 绑定队列-交换机时的路由秘钥：Routing key</span>
+rabbitmq.routingKey <span class="token operator">=</span> canal.routing.key
+</code></pre> 
+<ul><li>编辑：<code>conf\example\instance.properties</code>（仅列出需要修改的配置项）</li></ul> 
+<pre><code class="prism language-bash"><span class="token comment"># 目标数据库地址</span>
+<span class="token assign-left variable">canal.instance.master.address</span><span class="token operator">=</span><span class="token number">192.168</span>.0.1:3306
+<span class="token comment"># 目标数据库用户名密码</span>
+<span class="token assign-left variable">canal.instance.dbUsername</span><span class="token operator">=</span>canal
+<span class="token assign-left variable">canal.instance.dbPassword</span><span class="token operator">=</span>Canal@123
+
+<span class="token comment"># 表过滤正则表达式（按需修改）</span>
+<span class="token comment"># 全库全表 ： .*\\..*</span>
+<span class="token comment"># 指定库所有表：  库名\..*   例：test\..*</span>
+<span class="token comment"># 单表：  库名.表名  例：test.user</span>
+<span class="token comment"># 多规则组合使用：  库名1\..*,库名2.表名1,库名3.表名2 (逗号分隔)  例 test\..*,test2.user1,test3.user2 (逗号分隔)</span>
+<span class="token assign-left variable">canal.instance.filter.regex</span><span class="token operator">=</span>.*<span class="token punctuation">\</span><span class="token punctuation">\</span><span class="token punctuation">..</span>*
+<span class="token comment"># canal.instance.filter.regex=project.sys_user,project.sys_role</span>
+</code></pre> 
+<h4><a id="3__91"></a>3. 运行</h4> 
+<p>windows环境下直接运行<code>bin\startup.bat</code>，linux环境下执行<code>bin\startup.sh</code>。<br> 执行启动脚本后，查看日志信息<code>logs\canal\canal.log</code>，出现如下信息，表示启动成功。</p> 
+<pre><code class="prism language-bash"><span class="token punctuation">[</span>main<span class="token punctuation">]</span> INFO  com.alibaba.otter.canal.deployer.CanalStarter - <span class="token comment">## the canal server is running now ......</span>
+</code></pre> 
+<h3><a id="_97"></a>五、测试</h3> 
+<p>对监听的数据库表做修改操作，至RabbitMQ控制台的队列中查看是否插入消息。<br> 如下，即成功插入实时操作数据。<br> <img src="https://images2.imgbox.com/76/c3/pvpDT873_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_101"></a>六、项目中监听处理</h3> 
+<ul><li>创建一个maven项目</li></ul> 
+<p><img src="https://images2.imgbox.com/85/93/EffsFxa0_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>在<code>pom.xml</code>中引入<code>spring-boot-starter-amqp</code>依赖，此包集成了对RabbitMQ的支持。</li></ul> 
+<pre><code class="prism language-xml">	<span class="token comment">&lt;!-- RabbitMQ 集成支持 --&gt;</span>
+	<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+	    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>org.springframework.boot<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+	    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>spring-boot-starter-amqp<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+	<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+	
+	<span class="token comment">&lt;!-- fastjson 解析数据 --&gt;</span>
+	<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+	    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>com.alibaba<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+	    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>fastjson<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+	    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>version</span><span class="token punctuation">&gt;</span></span>2.0.9.graal<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>version</span><span class="token punctuation">&gt;</span></span>
+	<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+<ul><li>修改配置文件<code>application.yml</code>（此处已按个人偏好，文件类型改为yaml），配置RabbitMQ。</li></ul> 
+<pre><code class="prism language-yaml"><span class="token key atrule">spring</span><span class="token punctuation">:</span>
+  <span class="token key atrule">rabbitmq</span><span class="token punctuation">:</span>
+    <span class="token key atrule">host</span><span class="token punctuation">:</span> 192.168.0.2
+    <span class="token key atrule">port</span><span class="token punctuation">:</span> <span class="token number">5672</span>
+    <span class="token key atrule">username</span><span class="token punctuation">:</span> admin
+    <span class="token key atrule">password</span><span class="token punctuation">:</span> <span class="token number">123456</span>
+</code></pre> 
+<ul><li>binLog数据实体类<code>BinLogEntity </code></li></ul> 
+<pre><code class="prism language-java"><span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>fastjson<span class="token punctuation">.</span></span><span class="token class-name">JSONArray</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>fastjson<span class="token punctuation">.</span></span><span class="token class-name">JSONObject</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">lombok<span class="token punctuation">.</span></span><span class="token class-name">Data</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">ArrayList</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">HashMap</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">List</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">java<span class="token punctuation">.</span>util<span class="token punctuation">.</span></span><span class="token class-name">Map</span></span><span class="token punctuation">;</span>
+
+<span class="token annotation punctuation">@Data</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">BinLogEntity</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">/**
+     * 数据库
+     */</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> database<span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * 表
+     */</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> table<span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * 操作类型
+     */</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> type<span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * 操作数据
+     */</span>
+    <span class="token keyword">private</span> <span class="token class-name">JSONArray</span> data<span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * 变更前数据
+     */</span>
+    <span class="token keyword">private</span> <span class="token class-name">JSONArray</span> old<span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * 主键名称
+     */</span>
+    <span class="token keyword">private</span> <span class="token class-name">JSONArray</span> pkNames<span class="token punctuation">;</span>
+
+    <span class="token comment">/**
+     * 执行sql语句
+     */</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> sql<span class="token punctuation">;</span>
+    
+    <span class="token keyword">private</span> <span class="token class-name">Long</span> es<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">String</span> gtid<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">Long</span> id<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">Boolean</span> isDdl<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">JSONObject</span> mysqlType<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">JSONObject</span> sqlType<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token class-name">Long</span> ts<span class="token punctuation">;</span>
+
+    <span class="token keyword">public</span> <span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> <span class="token function">getData</span><span class="token punctuation">(</span><span class="token class-name">Class</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> clazz<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>data <span class="token operator">==</span> <span class="token keyword">null</span> <span class="token operator">||</span> <span class="token keyword">this</span><span class="token punctuation">.</span>data<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span>data<span class="token punctuation">.</span><span class="token function">toJavaList</span><span class="token punctuation">(</span>clazz<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> <span class="token function">getOld</span><span class="token punctuation">(</span><span class="token class-name">Class</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> clazz<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>old <span class="token operator">==</span> <span class="token keyword">null</span> <span class="token operator">||</span> <span class="token keyword">this</span><span class="token punctuation">.</span>old<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> <span class="token keyword">this</span><span class="token punctuation">.</span>old<span class="token punctuation">.</span><span class="token function">toJavaList</span><span class="token punctuation">(</span>clazz<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> <span class="token function">getPkNames</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>pkNames <span class="token operator">==</span> <span class="token keyword">null</span> <span class="token operator">||</span> <span class="token keyword">this</span><span class="token punctuation">.</span>pkNames<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> pkNames <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ArrayList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">Object</span> pkName <span class="token operator">:</span> <span class="token keyword">this</span><span class="token punctuation">.</span>pkNames<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+            pkNames<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>pkName<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">return</span> pkNames<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> <span class="token function">getMysqlType</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>mysqlType <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> mysqlTypeMap <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>mysqlType<span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span><span class="token punctuation">(</span>k<span class="token punctuation">,</span> v<span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+            mysqlTypeMap<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>k<span class="token punctuation">,</span> v<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> mysqlTypeMap<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> <span class="token function">getSqlType</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">.</span>sqlType <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Integer</span><span class="token punctuation">&gt;</span></span> sqlTypeMap <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>sqlType<span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span><span class="token punctuation">(</span>k<span class="token punctuation">,</span> v<span class="token punctuation">)</span> <span class="token operator">-&gt;</span> <span class="token punctuation">{<!-- --></span>
+            sqlTypeMap<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>k<span class="token punctuation">,</span> <span class="token class-name">Integer</span><span class="token punctuation">.</span><span class="token function">valueOf</span><span class="token punctuation">(</span>v<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> sqlTypeMap<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<ul><li>操作数据实体类</li></ul> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Data</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">User</span> <span class="token keyword">implements</span> <span class="token class-name">Serializable</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">private</span> <span class="token keyword">static</span> <span class="token keyword">final</span> <span class="token keyword">long</span> serialVersionUID <span class="token operator">=</span> <span class="token number">1L</span><span class="token punctuation">;</span>
+
+	<span class="token comment">/**
+	 * ID
+	 */</span>
+	<span class="token keyword">private</span> <span class="token class-name">Long</span> id<span class="token punctuation">;</span>
+
+	<span class="token comment">/**
+	 * 姓名
+	 */</span>
+	<span class="token keyword">private</span> <span class="token class-name">String</span> name<span class="token punctuation">;</span>
+
+	<span class="token comment">/**
+	 * 年龄
+	 */</span>
+	<span class="token keyword">private</span> <span class="token class-name">Integer</span> age<span class="token punctuation">;</span>
+
+	<span class="token comment">/**
+	 * 电话
+	 */</span>
+	<span class="token keyword">private</span> <span class="token class-name">String</span> phone<span class="token punctuation">;</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<ul><li>监听类<code>CanalListener</code></li></ul> 
+<pre><code class="prism language-java"><span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>alibaba<span class="token punctuation">.</span>fastjson<span class="token punctuation">.</span></span><span class="token class-name">JSON</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>example<span class="token punctuation">.</span>canalclient<span class="token punctuation">.</span>entity<span class="token punctuation">.</span></span><span class="token class-name">BinLogEntity</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">com<span class="token punctuation">.</span>example<span class="token punctuation">.</span>canalclient<span class="token punctuation">.</span>entity<span class="token punctuation">.</span></span><span class="token class-name">User</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>amqp<span class="token punctuation">.</span>core<span class="token punctuation">.</span></span><span class="token class-name">Message</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>amqp<span class="token punctuation">.</span>rabbit<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">Exchange</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>amqp<span class="token punctuation">.</span>rabbit<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">Queue</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>amqp<span class="token punctuation">.</span>rabbit<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">QueueBinding</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>amqp<span class="token punctuation">.</span>rabbit<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">RabbitListener</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>messaging<span class="token punctuation">.</span>handler<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">Payload</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>stereotype<span class="token punctuation">.</span></span><span class="token class-name">Component</span></span><span class="token punctuation">;</span>
+
+<span class="token comment">/**
+ * 监听数据库数据变化时RabbitMQ发送的信息
+ */</span>
+<span class="token annotation punctuation">@Component</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">CanalListener</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token annotation punctuation">@RabbitListener</span><span class="token punctuation">(</span>bindings <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token annotation punctuation">@QueueBinding</span><span class="token punctuation">(</span>
+                    value <span class="token operator">=</span> <span class="token annotation punctuation">@Queue</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"canal.queue"</span><span class="token punctuation">,</span> durable <span class="token operator">=</span> <span class="token string">"true"</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                    exchange <span class="token operator">=</span> <span class="token annotation punctuation">@Exchange</span><span class="token punctuation">(</span>value <span class="token operator">=</span> <span class="token string">"canal.exchange"</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                    key <span class="token operator">=</span> <span class="token string">"canal.routing.key"</span>
+            <span class="token punctuation">)</span>
+    <span class="token punctuation">}</span><span class="token punctuation">)</span>
+	<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">handleDataChange</span><span class="token punctuation">(</span><span class="token annotation punctuation">@Payload</span> <span class="token class-name">Message</span> message<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 获取消息内容</span>
+        <span class="token class-name">String</span> content <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">String</span><span class="token punctuation">(</span>message<span class="token punctuation">.</span><span class="token function">getBody</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token class-name">StandardCharsets</span><span class="token punctuation">.</span><span class="token constant">UTF_8</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 反序列化</span>
+        <span class="token class-name">BinLogEntity</span> binLog <span class="token operator">=</span> <span class="token constant">JSON</span><span class="token punctuation">.</span><span class="token function">parseObject</span><span class="token punctuation">(</span>content<span class="token punctuation">,</span> <span class="token class-name">BinLogEntity</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token comment">// 获取操作数据</span>
+        <span class="token class-name">User</span> user <span class="token operator">=</span> binLog<span class="token punctuation">.</span><span class="token function">getData</span><span class="token punctuation">(</span><span class="token class-name">User</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">User</span> oldUser <span class="token operator">=</span> binLog<span class="token punctuation">.</span><span class="token function">getOld</span><span class="token punctuation">(</span><span class="token class-name">User</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"数据库："</span> <span class="token operator">+</span> binLog<span class="token punctuation">.</span><span class="token function">getDatabase</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"表："</span> <span class="token operator">+</span> binLog<span class="token punctuation">.</span><span class="token function">getTable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"操作类型："</span> <span class="token operator">+</span> binLog<span class="token punctuation">.</span><span class="token function">getType</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"主键："</span> <span class="token operator">+</span> <span class="token constant">JSON</span><span class="token punctuation">.</span><span class="token function">toJSONString</span><span class="token punctuation">(</span>binLog<span class="token punctuation">.</span><span class="token function">getPkNames</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"数据："</span> <span class="token operator">+</span> <span class="token constant">JSON</span><span class="token punctuation">.</span><span class="token function">toJSONString</span><span class="token punctuation">(</span><span class="token class-name">User</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"原数据："</span> <span class="token operator">+</span> <span class="token constant">JSON</span><span class="token punctuation">.</span><span class="token function">toJSONString</span><span class="token punctuation">(</span><span class="token class-name">User</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token string">"MysqlType："</span> <span class="token operator">+</span> <span class="token constant">JSON</span><span class="token punctuation">.</span><span class="token function">toJSONString</span><span class="token punctuation">(</span>binLog<span class="token punctuation">.</span><span class="token function">getMysqlType</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<ul><li>打印结果（修改操作）</li></ul> 
+<pre><code class="prism language-bash">数据库：project
+表：sys_user
+操作类型：UPDATE
+主键：<span class="token punctuation">[</span><span class="token string">"id"</span><span class="token punctuation">]</span>
+数据：<span class="token punctuation">{<!-- --></span>
+	<span class="token string">"id"</span><span class="token builtin class-name">:</span> <span class="token number">1</span>,
+	<span class="token string">"name"</span><span class="token builtin class-name">:</span> <span class="token string">"张三"</span>,
+	<span class="token string">"age"</span><span class="token builtin class-name">:</span> <span class="token number">21</span>,
+	<span class="token string">"phone"</span><span class="token builtin class-name">:</span> <span class="token number">13333333333</span>
+<span class="token punctuation">}</span>
+原数据：<span class="token punctuation">{<!-- --></span>
+	<span class="token string">"age"</span><span class="token builtin class-name">:</span> <span class="token number">20</span>,
+	<span class="token string">"phone"</span><span class="token builtin class-name">:</span> <span class="token number">12222222222</span>
+<span class="token punctuation">}</span>
+MysqlType：<span class="token punctuation">{<!-- --></span>
+	<span class="token string">"id"</span><span class="token builtin class-name">:</span> <span class="token string">"bigint unsigned"</span>,
+	<span class="token string">"name"</span><span class="token builtin class-name">:</span> <span class="token string">"varchar(50)"</span>,
+	<span class="token string">"age"</span><span class="token builtin class-name">:</span> <span class="token string">"int(3) unsigned"</span>,
+	<span class="token string">"phone"</span><span class="token builtin class-name">:</span> <span class="token string">"varchar(50)"</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>至此，已实现对目标数据库实时操作数据进行监听，可根据不同的操作类型，采取相应的业务处理。</p> 
+<h3><a id="_331"></a>七、参考文章</h3> 
+<p><a href="https://blog.csdn.net/qq_37319035/article/details/121697258">Canal+Msql+RabbitMq数据库同步配置，看这一篇就够了</a></p> 
+<p><a href="https://blog.csdn.net/angellee1988/article/details/118370914">使用canal同步mysql数据库信息到RabbitMQ</a></p> 
+<p><a href="https://blog.csdn.net/Alice_qixin/article/details/108121895">Canal配置connector.subscribe和canal.instance.filter.regex遇到的坑</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/972f2dbf600dafd9472aaae3df3b0d5d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Python免费下载安装全流程（Python 最新版本），新手小白必看！</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/afa6da142b91db5a72b05449f14d5234/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">2024年前端最新笔试百题，web开发教程</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

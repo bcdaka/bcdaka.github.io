@@ -1,0 +1,3294 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Crowd-SAM：SAM作为拥挤场景中目标检测的智能标注器 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/fbdb2a1c7383e412ebd6c54914580983/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Crowd-SAM：SAM作为拥挤场景中目标检测的智能标注器">
+  <meta property="og:description" content="摘要 目标检测是一项重要任务，广泛应用于各种场景。通常，它需要大量的标签进行训练，这相当耗时，尤其是在拥挤的场景中。最近，Segment Anything Model（SAM）作为一种强大的零样本分割器应运而生，为实例分割提供了一种新颖的方法。然而，在处理拥挤场景中经常出现遮挡的物体时，SAM及其变体的准确性和效率往往受到损害。在本文中，我们提出了Crowd-SAM，一个基于SAM的框架，旨在以少量可学习参数和最少标记图像为代价，增强SAM在拥挤场景中的性能。我们引入了一个高效的提示采样器（EPS）和一个部分-整体区分网络（PWD-Net），有助于掩码选择，并提高了拥挤场景中的准确性。尽管其设计简单，但Crowd-SAM在包括CrowdHuman和CityPersons在内的多个基准测试中，与最先进的完全监督目标检测方法不相上下。我们的代码可在https://github.com/FelixCaae/CrowdSAM上获得。
+关键词：拥挤场景中的检测 ⋅ \cdot ⋅ 少样本学习 ⋅ \cdot ⋅ Segment Anything Model
+1、引言 在自动驾驶和视频监控等领域中，拥挤场景下的目标检测是一项基础任务。主要焦点在于识别和定位行人和车辆等密集分布的常见目标，其中遮挡现象带来了重大挑战。近年来，包括两阶段方法[45,60]和基于查询的方法[8,22,62]在内，已经取得了巨大进展。然而，这些方法主要遵循监督学习的方式，并需要大量带标签的训练样本，这带来了相当高的标注成本，每个目标大约需要42.4秒[38]。拥挤场景的密度和复杂性进一步加剧了标注负担。
+收集目标标注的高成本促使人们探索替代方案，如小样本学习[34,39,44]、弱监督学习[41,53]、半监督学习[29,30,42,49]和无监督学习[1,6,21,26,48]。其中表现最好的是半监督目标检测（SSOD），它利用带标签和未带标签的数据进行训练，并在常见的基准测试（如PASCAL VOC[15]和COCO[24]）上取得了巨大成功。不幸的是，SSOD引入了额外的复杂性，如复杂的增强技术和在线伪标签。
+近年来，基于提示的分割模型因其灵活性和可扩展性而越来越受到关注。特别是，Segment Anything Model（SAM）[20]展现了其高效且准确地预测由提示指定的区域掩码的高能力，这些提示可以是点、框、掩码或文本描述等多种形式。认识到其非凡的潜力，研究人员已付出诸多努力将其应用于各种视觉任务，如医学图像识别[31]、遥感分析[4, 12]、工业缺陷检测[52]等。
+尽管在SAM之后取得了巨大进展[18,46,54]，但将SAM应用于拥挤场景中的目标检测却鲜有研究。在本文中，我们基于两个动机研究了SAM在这种情况下的潜力。首先，SAM在一个非常大的数据集SA-1B上进行了预训练，该数据集包含了大多数常见目标，因此合理利用这些知识来促进大规模数据的标注和训练一个全新的检测器是合理的。其次，SAM在处理由聚集在一起的目标组成的复杂场景时，展现出了强大的分割能力，这对于从头开始训练的目标检测器来说是非常困难的。
+为此，我们提出了Crowd-SAM，一种由SAM驱动的智能标注器，用于拥挤场景中的目标检测。如图1所示，我们引入了一种基于DINOv2的自促进方法，以减轻人工提示的成本。我们的方法采用配备了高效提示采样器（EPS）的密集网格，以适中的成本覆盖尽可能多的目标。为了在遮挡场景中精确区分多个输出中的掩码，我们设计了一个掩码选择模块，称为部分-整体判别网络（PWD-Net），该网络学习在交并比（IoU）分数中区分质量最高的输出。凭借其轻量级模型设计和快速训练计划，它在包括CrowdHuman[37]和CityPersons[58]在内的公共基准测试中表现出色。
+我们的贡献可以概括如下：
+我们提出了Crowd-SAM，一种自提示分割方法，用于标注包含聚集目标的图像，仅需少量示例即可产生准确结果。
+我们为Crowd-SAM设计了两个新颖组件，即EPS和PWD-Net，它们有效地释放了SAM在拥挤场景中的能力。
+我们在两个基准测试上进行了全面的实验，以证明Crowd-SAM的有效性和可推广性。
+2、相关工作 目标检测。通用目标检测旨在识别和定位目标，主要分为两类：即一阶段检测器和二阶段检测器。一阶段检测器利用图像特征预测边界框和类别分数[23, 27, 35]，而二阶段检测器则首先生成区域候选框，然后对其进行分类和细化[9, 10, 36]。最近，端到端目标检测器如DETR[2, 55, 63]通过在训练阶段采用一对一匹配来替代手工设计的模块（如非极大值抑制NMS），在多个领域展现出巨大潜力。
+然而，将这些检测器直接应用于行人检测往往会导致性能下降，因为行人通常处于拥挤且遮挡的环境中。早期工作[32]提出将额外特征集成到行人检测器中，以探索低级视觉线索，而后续方法[5, 56]则尝试利用头部区域进行更好的表示学习。在[56]中，一个锚点与目标整体和头部部分相关联，通过联合训练实现更鲁棒的检测器。AdaptiveNMS[25]通过预测行人密度来调整NMS阈值。其他方法则侧重于损失函数的设计以改进训练过程。例如，RepLoss[45]鼓励对同一目标的预测一致性，同时排斥来自不同目标的预测。最近，Zheng等人[62]通过建模查询之间的关系，改进了基于DETR的检测器在拥挤场景中的表现，并取得了显著成效。尽管这些工作已将拥挤场景中的目标检测推向了新的阶段，但它们都依赖于大量标记样本进行训练，这非常耗时费力。这一局限性促使我们借助SAM开发标签高效的检测器和自动标注工具。
+小样本目标检测（Few-Shot Object Detection，FSOD）。该任务旨在在有限的训练样本下检测新类别的目标。FSOD方法大致可分为基于元学习的方法[16,51]和基于微调的方法[34,39,44]。Meta-RCNN[51]通过孪生网络并行处理查询图像和支持图像。将查询图像中的感兴趣区域（Region of Interest，RoI）特征与类别原型融合，以有效迁移从支持集中学习的知识。TFA[44]提出了一种简单的两阶段微调方法，仅微调网络的最后几层。FSCE[39]在微调阶段引入了监督对比损失，以缓解分类错误问题。De-FRCN[34]停止来自区域候选网络（Region Proposal Network，RPN）的梯度，并缩放来自R-CNN[36]的梯度，随后使用原型校准块来优化分类得分。
+分割万物模型（Segment Anything Models，SAM）。SAM[20]是一个用于分割任务的视觉基础模型，采用半监督学习范式在SA-1B数据集上进行训练。由于其接触到了庞大的训练样本库，SAM成为了一个高度通用的类别无关模型，能够有效处理世界上各种各样的对象。尽管SAM在解决分割任务时表现出色，但仍存在领域迁移、效率低下、类别无关设计等问题。HQ-SAM[18]通过学习一个轻量级适配器来提高其分割质量。Fast-SAM[50]和Mobile-SAM[54]则通过知识蒸馏来加快SAM的推理速度。RSprompt[4]通过生成适当的提示，使SAM能够为遥感图像生成语义上不同的分割结果。Med-SA[47]提出了一种空间深度转置方法，使2DSAM能够适应3D医学图像，并设计了一个超提示适配器以实现基于提示的条件适应。不幸的是，这些方法需要大量的标记数据才能进行有效适应，这使得它们在标注成本高昂的拥挤场景中不切实际。与它们不同，Per-SAM[57]和Matcher[28]通过提取无需训练的相似性先验，教会SAM仅通过一个或少数几个实例来识别特定对象。SAPNet[46]为实例分割构建了一个弱监督流程。尽管这些方法降低了数据要求，但它们仍然无法满足拥挤场景（如行人检测，尤其是存在遮挡的情况）的需求。
+3、方法 3.1、预备知识 SAM[20]是一个强大且有前景的分割模型，由三个主要组件组成：（a）一个负责特征提取的图像编码器；（b）一个设计用于编码用户提供的几何提示的提示编码器；以及（c）一个轻量级的掩码解码器，该解码器根据给定的提示预测掩码。利用广泛的训练数据，SAM在各种基准测试中展示了令人印象深刻的零样本分割性能。特别是，SAM使用点和框作为提示来指定感兴趣的区域。
+DINO[3]代表了一类以自监督方式学习的Vision Transformer（ViT）[7]，专为通用应用而设计。在训练过程中，DINO采用了一种类似于BYOL[11]的自蒸馏策略，促进了鲁棒表示的学习。DINOv2[33]通过集成多个额外的预训练任务来加强DINO的基础，提高了其可扩展性和稳定性，特别是对于大型模型（如具有10亿参数的ViT-H）。得益于其增强功能，DINOv2在语义分割任务中表现出了强大的表示能力。
+3.2、问题定义与总体框架 问题定义。如图1所示，我们的目标是在标记数据很少的情况下，检测拥挤场景中的对象（如行人）。我们将此问题表述为一类小样本检测任务。常见的小样本流程是将数据分为基础集和新集。不同的是，我们直接使用目标类的数据进行模型训练，因为基础模型已经在大规模数据上进行了训练。特别是，我们采用分割掩码作为中间结果，这些结果可以很容易地转换为边界框。在训练和评估过程中，仅提供边界框标注。
+对SAM自动生成器的初步研究。提示数量会影响SAM的性能，我们针对拥挤场景分析了这一问题。在此情况下，我们使用SAM的自动生成器在CrowdHuman[37]上进行了几项初步研究，该自动生成器利用网格点搜索每个区域。表1传达了三个关键观察结果：（1）拥挤场景需要密集的网格；（2）点提示和类别无关提示的分布模糊性导致了许多假正例（FPs）；（3）当网格尺寸较大时，解码时间是一个不可忽视的负担。因此，密集的提示和假正例的去除是在设计用于拥挤场景中检测/分割任务的基于SAM的方法时的关键方面。
+总体框架。受上述研究的启发，我们为SAM[20]配备了几个适当的组件，以实现一个准确且高效的标注框架，如图2所示。为了准确定位成簇的对象，我们采用基础模型DINOv2[33]来预测语义热图，这是一项可以通过简单的二分类器完成的任务。为了区分输出掩码（由正确掩码、背景和部分级掩码的混合组成），我们设计了部分-整体区分网络（PWD-Net），该网络将SAM学习到的标记和DINOv2的语义丰富标记作为输入，以重新评估所有输出。最后，为了处理密集网格使用带来的冗余问题，我们提出了一种高效的提示采样器（EPS），以适中的成本解码掩码。
+我们将在以下部分介绍我们方法的详细情况。
+3.3、特定类别的提示生成 在拥挤场景中为每个对象（如行人）生成一个独特的点提示实际上是一个非平凡的问题。因此，我们退后一步，研究如何使用与单个对象相关联的多个提示来检测对象，并应用适当的后处理技术来去除重复项。为此，我们采用了一种基于热图的提示生成流程，该流程首先对区域进行分类，然后从正区域生成提示。
+对于输入图像 I ∈ R H × W × 3 I \in \mathbb{R}^{H \times W \times 3} I∈RH×W×3，我们首先使用预训练的图像编码器 E D E_{D} ED​ 来提取富含语义的特征。为了更好地将这些预训练特征转移到对象分割任务中，我们在最终输出层之后添加一个多层感知机（MLP）块，从而获得适应后的特征 F D I N O ∈ R H s × W s × C F_{D I N O} \in \mathbb{R}^{\frac{H}{s} \times \frac{W}{s} \times C} FDINO​∈RsH​×sW​×C，其中 s s s 是DINOv2[33]的块大小， C C C 是输出通道数。然后，我们使用一个分割头 H e a d C L S Head_{C L S} HeadCLS​ 对 F D I N O F_{D I N O} FDINO​ 进行逐像素分类，生成一个热图 H ^ ∈ [ 0 , 1 ] H s × W s \hat{\mathbb{H}} \in[0,1]^{\frac{H}{s} \times \frac{W}{s}} H^∈[0,1]sH​×sW​，该热图指示了对象的位置，即 H ^ = Head ⁡ C L S ( F D I N O ) \hat{\mathbb{H}}=\operatorname{Head}_{C L S}\left(F_{D I N O}\right) H^=HeadCLS​(FDINO​)。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-08-06T22:00:00+08:00">
+    <meta property="article:modified_time" content="2024-08-06T22:00:00+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Crowd-SAM：SAM作为拥挤场景中目标检测的智能标注器</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atelier-sulphurpool-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_1"></a>摘要</h2> 
+<p>目标检测是一项重要任务，广泛应用于各种场景。通常，它需要大量的标签进行训练，这相当耗时，尤其是在拥挤的场景中。最近，Segment Anything Model（SAM）作为一种强大的零样本分割器应运而生，为实例分割提供了一种新颖的方法。然而，在处理拥挤场景中经常出现遮挡的物体时，SAM及其变体的准确性和效率往往受到损害。在本文中，我们提出了Crowd-SAM，一个基于SAM的框架，旨在以少量可学习参数和最少标记图像为代价，增强SAM在拥挤场景中的性能。我们引入了一个高效的提示采样器（EPS）和一个部分-整体区分网络（PWD-Net），有助于掩码选择，并提高了拥挤场景中的准确性。尽管其设计简单，但Crowd-SAM在包括CrowdHuman和CityPersons在内的多个基准测试中，与最先进的完全监督目标检测方法不相上下。我们的代码可在https://github.com/FelixCaae/CrowdSAM上获得。</p> 
+<p>关键词：拥挤场景中的检测 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         ⋅ 
+        
+       
+      
+        \cdot 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4445em;"></span><span class="mord">⋅</span></span></span></span></span> 少样本学习 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         ⋅ 
+        
+       
+      
+        \cdot 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4445em;"></span><span class="mord">⋅</span></span></span></span></span> Segment Anything Model</p> 
+<h2><a id="1_5"></a>1、引言</h2> 
+<p>在自动驾驶和视频监控等领域中，拥挤场景下的目标检测是一项基础任务。主要焦点在于识别和定位行人和车辆等密集分布的常见目标，其中遮挡现象带来了重大挑战。近年来，包括两阶段方法[45,60]和基于查询的方法[8,22,62]在内，已经取得了巨大进展。然而，这些方法主要遵循监督学习的方式，并需要大量带标签的训练样本，这带来了相当高的标注成本，每个目标大约需要42.4秒[38]。拥挤场景的密度和复杂性进一步加剧了标注负担。</p> 
+<p>收集目标标注的高成本促使人们探索替代方案，如小样本学习[34,39,44]、弱监督学习[41,53]、半监督学习[29,30,42,49]和无监督学习[1,6,21,26,48]。其中表现最好的是半监督目标检测（SSOD），它利用带标签和未带标签的数据进行训练，并在常见的基准测试（如PASCAL VOC[15]和COCO[24]）上取得了巨大成功。不幸的是，SSOD引入了额外的复杂性，如复杂的增强技术和在线伪标签。</p> 
+<p>近年来，基于提示的分割模型因其灵活性和可扩展性而越来越受到关注。特别是，Segment Anything Model（SAM）[20]展现了其高效且准确地预测由提示指定的区域掩码的高能力，这些提示可以是点、框、掩码或文本描述等多种形式。认识到其非凡的潜力，研究人员已付出诸多努力将其应用于各种视觉任务，如医学图像识别[31]、遥感分析[4, 12]、工业缺陷检测[52]等。</p> 
+<p>尽管在SAM之后取得了巨大进展[18,46,54]，但将SAM应用于拥挤场景中的目标检测却鲜有研究。在本文中，我们基于两个动机研究了SAM在这种情况下的潜力。首先，SAM在一个非常大的数据集SA-1B上进行了预训练，该数据集包含了大多数常见目标，因此合理利用这些知识来促进大规模数据的标注和训练一个全新的检测器是合理的。其次，SAM在处理由聚集在一起的目标组成的复杂场景时，展现出了强大的分割能力，这对于从头开始训练的目标检测器来说是非常困难的。</p> 
+<p><img src="https://images2.imgbox.com/1f/84/ISGO9ZoK_o.png" alt="在这里插入图片描述"></p> 
+<p>为此，我们提出了Crowd-SAM，一种由SAM驱动的智能标注器，用于拥挤场景中的目标检测。如图1所示，我们引入了一种基于DINOv2的自促进方法，以减轻人工提示的成本。我们的方法采用配备了高效提示采样器（EPS）的密集网格，以适中的成本覆盖尽可能多的目标。为了在遮挡场景中精确区分多个输出中的掩码，我们设计了一个掩码选择模块，称为部分-整体判别网络（PWD-Net），该网络学习在交并比（IoU）分数中区分质量最高的输出。凭借其轻量级模型设计和快速训练计划，它在包括CrowdHuman[37]和CityPersons[58]在内的公共基准测试中表现出色。</p> 
+<p>我们的贡献可以概括如下：</p> 
+<ol><li> <p>我们提出了Crowd-SAM，一种自提示分割方法，用于标注包含聚集目标的图像，仅需少量示例即可产生准确结果。</p> </li><li> <p>我们为Crowd-SAM设计了两个新颖组件，即EPS和PWD-Net，它们有效地释放了SAM在拥挤场景中的能力。</p> </li><li> <p>我们在两个基准测试上进行了全面的实验，以证明Crowd-SAM的有效性和可推广性。</p> </li></ol> 
+<h2><a id="2_29"></a>2、相关工作</h2> 
+<p>目标检测。通用目标检测旨在识别和定位目标，主要分为两类：即一阶段检测器和二阶段检测器。一阶段检测器利用图像特征预测边界框和类别分数[23, 27, 35]，而二阶段检测器则首先生成区域候选框，然后对其进行分类和细化[9, 10, 36]。最近，端到端目标检测器如DETR[2, 55, 63]通过在训练阶段采用一对一匹配来替代手工设计的模块（如非极大值抑制NMS），在多个领域展现出巨大潜力。</p> 
+<p>然而，将这些检测器直接应用于行人检测往往会导致性能下降，因为行人通常处于拥挤且遮挡的环境中。早期工作[32]提出将额外特征集成到行人检测器中，以探索低级视觉线索，而后续方法[5, 56]则尝试利用头部区域进行更好的表示学习。在[56]中，一个锚点与目标整体和头部部分相关联，通过联合训练实现更鲁棒的检测器。AdaptiveNMS[25]通过预测行人密度来调整NMS阈值。其他方法则侧重于损失函数的设计以改进训练过程。例如，RepLoss[45]鼓励对同一目标的预测一致性，同时排斥来自不同目标的预测。最近，Zheng等人[62]通过建模查询之间的关系，改进了基于DETR的检测器在拥挤场景中的表现，并取得了显著成效。尽管这些工作已将拥挤场景中的目标检测推向了新的阶段，但它们都依赖于大量标记样本进行训练，这非常耗时费力。这一局限性促使我们借助SAM开发标签高效的检测器和自动标注工具。</p> 
+<p>小样本目标检测（Few-Shot Object Detection，FSOD）。该任务旨在在有限的训练样本下检测新类别的目标。FSOD方法大致可分为基于元学习的方法[16,51]和基于微调的方法[34,39,44]。Meta-RCNN[51]通过孪生网络并行处理查询图像和支持图像。将查询图像中的感兴趣区域（Region of Interest，RoI）特征与类别原型融合，以有效迁移从支持集中学习的知识。TFA[44]提出了一种简单的两阶段微调方法，仅微调网络的最后几层。FSCE[39]在微调阶段引入了监督对比损失，以缓解分类错误问题。De-FRCN[34]停止来自区域候选网络（Region Proposal Network，RPN）的梯度，并缩放来自R-CNN[36]的梯度，随后使用原型校准块来优化分类得分。</p> 
+<p>分割万物模型（Segment Anything Models，SAM）。SAM[20]是一个用于分割任务的视觉基础模型，采用半监督学习范式在SA-1B数据集上进行训练。由于其接触到了庞大的训练样本库，SAM成为了一个高度通用的类别无关模型，能够有效处理世界上各种各样的对象。尽管SAM在解决分割任务时表现出色，但仍存在领域迁移、效率低下、类别无关设计等问题。HQ-SAM[18]通过学习一个轻量级适配器来提高其分割质量。Fast-SAM[50]和Mobile-SAM[54]则通过知识蒸馏来加快SAM的推理速度。RSprompt[4]通过生成适当的提示，使SAM能够为遥感图像生成语义上不同的分割结果。Med-SA[47]提出了一种空间深度转置方法，使2DSAM能够适应3D医学图像，并设计了一个超提示适配器以实现基于提示的条件适应。不幸的是，这些方法需要大量的标记数据才能进行有效适应，这使得它们在标注成本高昂的拥挤场景中不切实际。与它们不同，Per-SAM[57]和Matcher[28]通过提取无需训练的相似性先验，教会SAM仅通过一个或少数几个实例来识别特定对象。SAPNet[46]为实例分割构建了一个弱监督流程。尽管这些方法降低了数据要求，但它们仍然无法满足拥挤场景（如行人检测，尤其是存在遮挡的情况）的需求。</p> 
+<h2><a id="3_40"></a>3、方法</h2> 
+<h3><a id="31_41"></a>3.1、预备知识</h3> 
+<p>SAM[20]是一个强大且有前景的分割模型，由三个主要组件组成：（a）一个负责特征提取的图像编码器；（b）一个设计用于编码用户提供的几何提示的提示编码器；以及（c）一个轻量级的掩码解码器，该解码器根据给定的提示预测掩码。利用广泛的训练数据，SAM在各种基准测试中展示了令人印象深刻的零样本分割性能。特别是，SAM使用点和框作为提示来指定感兴趣的区域。</p> 
+<p>DINO[3]代表了一类以自监督方式学习的Vision Transformer（ViT）[7]，专为通用应用而设计。在训练过程中，DINO采用了一种类似于BYOL[11]的自蒸馏策略，促进了鲁棒表示的学习。DINOv2[33]通过集成多个额外的预训练任务来加强DINO的基础，提高了其可扩展性和稳定性，特别是对于大型模型（如具有10亿参数的ViT-H）。得益于其增强功能，DINOv2在语义分割任务中表现出了强大的表示能力。</p> 
+<h3><a id="32_46"></a>3.2、问题定义与总体框架</h3> 
+<p>问题定义。如图1所示，我们的目标是在标记数据很少的情况下，检测拥挤场景中的对象（如行人）。我们将此问题表述为一类小样本检测任务。常见的小样本流程是将数据分为基础集和新集。不同的是，我们直接使用目标类的数据进行模型训练，因为基础模型已经在大规模数据上进行了训练。特别是，我们采用分割掩码作为中间结果，这些结果可以很容易地转换为边界框。在训练和评估过程中，仅提供边界框标注。<br> <img src="https://images2.imgbox.com/12/16/SJNIIONH_o.png" alt="在这里插入图片描述"></p> 
+<p>对SAM自动生成器的初步研究。提示数量会影响SAM的性能，我们针对拥挤场景分析了这一问题。在此情况下，我们使用SAM的自动生成器在CrowdHuman[37]上进行了几项初步研究，该自动生成器利用网格点搜索每个区域。表1传达了三个关键观察结果：（1）拥挤场景需要密集的网格；（2）点提示和类别无关提示的分布模糊性导致了许多假正例（FPs）；（3）当网格尺寸较大时，解码时间是一个不可忽视的负担。因此，密集的提示和假正例的去除是在设计用于拥挤场景中检测/分割任务的基于SAM的方法时的关键方面。</p> 
+<p><img src="https://images2.imgbox.com/c5/0d/m4ZyR0xj_o.png" alt="在这里插入图片描述"></p> 
+<p>总体框架。受上述研究的启发，我们为SAM[20]配备了几个适当的组件，以实现一个准确且高效的标注框架，如图2所示。为了准确定位成簇的对象，我们采用基础模型DINOv2[33]来预测语义热图，这是一项可以通过简单的二分类器完成的任务。为了区分输出掩码（由正确掩码、背景和部分级掩码的混合组成），我们设计了部分-整体区分网络（PWD-Net），该网络将SAM学习到的标记和DINOv2的语义丰富标记作为输入，以重新评估所有输出。最后，为了处理密集网格使用带来的冗余问题，我们提出了一种高效的提示采样器（EPS），以适中的成本解码掩码。<br> 我们将在以下部分介绍我们方法的详细情况。</p> 
+<h3><a id="33_58"></a>3.3、特定类别的提示生成</h3> 
+<p>在拥挤场景中为每个对象（如行人）生成一个独特的点提示实际上是一个非平凡的问题。因此，我们退后一步，研究如何使用与单个对象相关联的多个提示来检测对象，并应用适当的后处理技术来去除重复项。为此，我们采用了一种基于热图的提示生成流程，该流程首先对区域进行分类，然后从正区域生成提示。<br> <img src="https://images2.imgbox.com/07/ef/zXu1ADWT_o.png" alt="在这里插入图片描述"></p> 
+<p>对于输入图像 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         I 
+        
+       
+         ∈ 
+        
+        
+        
+          R 
+         
+         
+         
+           H 
+          
+         
+           × 
+          
+         
+           W 
+          
+         
+           × 
+          
+         
+           3 
+          
+         
+        
+       
+      
+        I \in \mathbb{R}^{H \times W \times 3} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7224em; vertical-align: -0.0391em;"></span><span class="mord mathnormal" style="margin-right: 0.0785em;">I</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8413em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8413em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0813em;">H</span><span class="mbin mtight">×</span><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">W</span><span class="mbin mtight">×</span><span class="mord mtight">3</span></span></span></span></span></span></span></span></span></span></span></span></span>，我们首先使用预训练的图像编码器 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          E 
+         
+        
+          D 
+         
+        
+       
+      
+        E_{D} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0576em;">E</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.0576em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">D</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 来提取富含语义的特征。为了更好地将这些预训练特征转移到对象分割任务中，我们在最终输出层之后添加一个多层感知机（MLP）块，从而获得适应后的特征 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          F 
+         
+         
+         
+           D 
+          
+         
+           I 
+          
+         
+           N 
+          
+         
+           O 
+          
+         
+        
+       
+         ∈ 
+        
+        
+        
+          R 
+         
+         
+          
+          
+            H 
+           
+          
+            s 
+           
+          
+         
+           × 
+          
+          
+          
+            W 
+           
+          
+            s 
+           
+          
+         
+           × 
+          
+         
+           C 
+          
+         
+        
+       
+      
+        F_{D I N O} \in \mathbb{R}^{\frac{H}{s} \times \frac{W}{s} \times C} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">D</span><span class="mord mathnormal mtight" style="margin-right: 0.0785em;">I</span><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">NO</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.9735em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9735em;"><span class="" style="top: -3.363em; margin-right: 0.05em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight"><span class="mopen nulldelimiter sizing reset-size3 size6"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.8721em;"><span class="" style="top: -2.656em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">s</span></span></span></span><span class="" style="top: -3.2255em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line mtight" style="border-bottom-width: 0.049em;"></span></span><span class="" style="top: -3.384em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0813em;">H</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.344em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter sizing reset-size3 size6"></span></span><span class="mbin mtight">×</span><span class="mord mtight"><span class="mopen nulldelimiter sizing reset-size3 size6"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.8721em;"><span class="" style="top: -2.656em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">s</span></span></span></span><span class="" style="top: -3.2255em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line mtight" style="border-bottom-width: 0.049em;"></span></span><span class="" style="top: -3.384em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">W</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.344em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter sizing reset-size3 size6"></span></span><span class="mbin mtight">×</span><span class="mord mathnormal mtight" style="margin-right: 0.0715em;">C</span></span></span></span></span></span></span></span></span></span></span></span></span>，其中 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         s 
+        
+       
+      
+        s 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal">s</span></span></span></span></span> 是DINOv2[33]的块大小，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         C 
+        
+       
+      
+        C 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0715em;">C</span></span></span></span></span> 是输出通道数。然后，我们使用一个分割头 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         H 
+        
+       
+         e 
+        
+       
+         a 
+        
+        
+        
+          d 
+         
+         
+         
+           C 
+          
+         
+           L 
+          
+         
+           S 
+          
+         
+        
+       
+      
+        Head_{C L S} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8444em; vertical-align: -0.15em;"></span><span class="mord mathnormal">He</span><span class="mord mathnormal">a</span><span class="mord"><span class="mord mathnormal">d</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0715em;">C</span><span class="mord mathnormal mtight">L</span><span class="mord mathnormal mtight" style="margin-right: 0.0576em;">S</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 对 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          F 
+         
+         
+         
+           D 
+          
+         
+           I 
+          
+         
+           N 
+          
+         
+           O 
+          
+         
+        
+       
+      
+        F_{D I N O} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">D</span><span class="mord mathnormal mtight" style="margin-right: 0.0785em;">I</span><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">NO</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 进行逐像素分类，生成一个热图 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          H 
+         
+        
+          ^ 
+         
+        
+       
+         ∈ 
+        
+       
+         [ 
+        
+       
+         0 
+        
+       
+         , 
+        
+       
+         1 
+        
+        
+        
+          ] 
+         
+         
+          
+          
+            H 
+           
+          
+            s 
+           
+          
+         
+           × 
+          
+          
+          
+            W 
+           
+          
+            s 
+           
+          
+         
+        
+       
+      
+        \hat{\mathbb{H}} \in[0,1]^{\frac{H}{s} \times \frac{W}{s}} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.9914em; vertical-align: -0.0391em;"></span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9523em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathbb">H</span></span><span class="" style="top: -3.2579em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.1944em;"><span class="mord">^</span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1.2235em; vertical-align: -0.25em;"></span><span class="mopen">[</span><span class="mord">0</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord">1</span><span class="mclose"><span class="mclose">]</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9735em;"><span class="" style="top: -3.363em; margin-right: 0.05em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight"><span class="mopen nulldelimiter sizing reset-size3 size6"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.8721em;"><span class="" style="top: -2.656em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">s</span></span></span></span><span class="" style="top: -3.2255em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line mtight" style="border-bottom-width: 0.049em;"></span></span><span class="" style="top: -3.384em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0813em;">H</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.344em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter sizing reset-size3 size6"></span></span><span class="mbin mtight">×</span><span class="mord mtight"><span class="mopen nulldelimiter sizing reset-size3 size6"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.8721em;"><span class="" style="top: -2.656em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">s</span></span></span></span><span class="" style="top: -3.2255em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line mtight" style="border-bottom-width: 0.049em;"></span></span><span class="" style="top: -3.384em;"><span class="pstrut" style="height: 3em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">W</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.344em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter sizing reset-size3 size6"></span></span></span></span></span></span></span></span></span></span></span></span></span></span>，该热图指示了对象的位置，即 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          H 
+         
+        
+          ^ 
+         
+        
+       
+         = 
+        
+        
+         
+         
+           Head 
+          
+         
+           ⁡ 
+          
+         
+         
+         
+           C 
+          
+         
+           L 
+          
+         
+           S 
+          
+         
+        
+        
+        
+          ( 
+         
+         
+         
+           F 
+          
+          
+          
+            D 
+           
+          
+            I 
+           
+          
+            N 
+           
+          
+            O 
+           
+          
+         
+        
+          ) 
+         
+        
+       
+      
+        \hat{\mathbb{H}}=\operatorname{Head}_{C L S}\left(F_{D I N O}\right) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.9523em;"></span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9523em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathbb">H</span></span><span class="" style="top: -3.2579em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.1944em;"><span class="mord">^</span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mop"><span class="mop"><span class="mord mathrm">Head</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0715em;">C</span><span class="mord mathnormal mtight">L</span><span class="mord mathnormal mtight" style="margin-right: 0.0576em;">S</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="minner"><span class="mopen delimcenter" style="top: 0em;">(</span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">D</span><span class="mord mathnormal mtight" style="margin-right: 0.0785em;">I</span><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">NO</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose delimcenter" style="top: 0em;">)</span></span></span></span></span></span>。</p> 
+<p>仅给定边界框标注 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         B 
+        
+       
+         ∈ 
+        
+       
+         [ 
+        
+       
+         0 
+        
+       
+         , 
+        
+       
+         1 
+        
+        
+        
+          ] 
+         
+         
+          
+          
+            N 
+           
+          
+            B 
+           
+          
+         
+           × 
+          
+         
+           4 
+          
+         
+        
+       
+      
+        B \in[0,1]^{N_{B} \times 4} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7224em; vertical-align: -0.0391em;"></span><span class="mord mathnormal" style="margin-right: 0.0502em;">B</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1.0913em; vertical-align: -0.25em;"></span><span class="mopen">[</span><span class="mord">0</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord">1</span><span class="mclose"><span class="mclose">]</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8413em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.109em;">N</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3448em;"><span class="" style="top: -2.3567em; margin-left: -0.109em; margin-right: 0.0714em;"><span class="pstrut" style="height: 2.5em;"></span><span class="sizing reset-size3 size1 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0502em;">B</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.1433em;"><span class=""></span></span></span></span></span></span><span class="mbin mtight">×</span><span class="mord mtight">4</span></span></span></span></span></span></span></span></span></span></span></span></span>，其中 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          N 
+         
+        
+          B 
+         
+        
+       
+      
+        N_{B} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.109em;">N</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.109em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0502em;">B</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 是目标数量，这个二值分割头可以通过框级别的监督进行优化。然而，粗糙的边界往往会在背景区域引起大量点的分散。为了缓解这个问题，我们使用SAM[20]来生成高质量的掩码级别伪标签，这在图4中与真实标签（GT）一起进行了说明。解码后的掩码随后被合并成一个单一的前景掩码 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         H 
+        
+       
+         ∈ 
+        
+       
+         { 
+        
+       
+         0 
+        
+       
+         , 
+        
+       
+         1 
+        
+        
+        
+          } 
+         
+         
+         
+           256 
+          
+         
+           × 
+          
+         
+           256 
+          
+         
+        
+       
+      
+        \mathbb{H} \in\{0,1\}^{256 \times 256} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.728em; vertical-align: -0.0391em;"></span><span class="mord mathbb">H</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1.0641em; vertical-align: -0.25em;"></span><span class="mopen">{<!-- --></span><span class="mord">0</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord">1</span><span class="mclose"><span class="mclose">}</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8141em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">256</span><span class="mbin mtight">×</span><span class="mord mtight">256</span></span></span></span></span></span></span></span></span></span></span></span></span>。我们使用Dice损失来训练适配器和分割头，以生成的伪掩码作为目标，如下所示：</p> 
+<p><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          L 
+         
+         
+         
+           f 
+          
+         
+           g 
+          
+         
+        
+       
+         = 
+        
+       
+         dice 
+        
+       
+         ⁡ 
+        
+       
+         ( 
+        
+       
+         f 
+        
+       
+         ( 
+        
+        
+        
+          H 
+         
+        
+          ^ 
+         
+        
+       
+         ) 
+        
+       
+         , 
+        
+       
+         H 
+        
+       
+         ) 
+        
+       
+      
+        \mathcal{L}_{f g}=\operatorname{dice}(f(\hat{\mathbb{H}}), \mathbb{H}) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.9694em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord mathcal">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3361em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1076em;">f</span><span class="mord mathnormal mtight" style="margin-right: 0.0359em;">g</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1.2023em; vertical-align: -0.25em;"></span><span class="mop"><span class="mord mathrm">dice</span></span><span class="mopen">(</span><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span><span class="mopen">(</span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9523em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathbb">H</span></span><span class="" style="top: -3.2579em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.1944em;"><span class="mord">^</span></span></span></span></span></span></span><span class="mclose">)</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathbb">H</span><span class="mclose">)</span></span></span></span></span></p> 
+<p>其中 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         f 
+        
+       
+      
+        f 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.1076em;">f</span></span></span></span></span> 是一个上采样函数，用于将 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         H 
+        
+       
+      
+        \mathbb{H} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6889em;"></span><span class="mord mathbb">H</span></span></span></span></span> 调整到 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         256 
+        
+       
+         × 
+        
+       
+         256 
+        
+       
+      
+        256 \times 256 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7278em; vertical-align: -0.0833em;"></span><span class="mord">256</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">256</span></span></span></span></span> 的大小。在推理过程中，我们为掩码二值化添加一个阈值 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         t 
+        
+       
+      
+        t 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6151em;"></span><span class="mord mathnormal">t</span></span></span></span></span>，在我们的实验中简单地设置为0.5。二值化后的掩码被映射到点提示 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          P 
+         
+        
+          G 
+         
+        
+       
+      
+        P_{G} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">P</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">G</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 上，这些点提示仅包含正区域中的点。</p> 
+<h3><a id="34_71"></a>3.4、语义引导掩码预测</h3> 
+<p>在3.3节中生成了候选区域后，我们的进一步目标是有效地解码密集提示并准确地区分生成的掩码。如图3所示，由于网格的密集性，每个实例都包含一组提示。假设在SAM中仅需要一个位置正确的提示来进行掩码预测，那么解码所有提示不仅会导致计算浪费，还会因为一些位置不佳的提示而产生更多的误报（FPs）。</p> 
+<p>高效提示采样器（EPS）。为了解决这一挑战，我们引入了EPS，它基于解码掩码的置信度动态地修剪提示。该方法在算法1中详细阐述。从生成的点提示列表<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          P 
+         
+        
+          G 
+         
+        
+       
+      
+        P_{G} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">P</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">G</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>开始，EPS在每次迭代中通过均匀随机采样从<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          P 
+         
+        
+          G 
+         
+        
+       
+      
+        P_{G} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">P</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">G</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>中抽取一批提示<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          P 
+         
+        
+          B 
+         
+        
+       
+      
+        P_{B} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">P</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0502em;">B</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，然后将这些采样的提示<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          P 
+         
+        
+          B 
+         
+        
+       
+      
+        P_{B} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">P</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0502em;">B</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>添加到输出点列表<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          P 
+         
+        
+          S 
+         
+        
+       
+      
+        P_{S} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">P</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0576em;">S</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>中。随后，我们使用带有批处理提示<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          P 
+         
+        
+          B 
+         
+        
+       
+      
+        P_{B} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">P</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0502em;">B</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>的SAM生成器来生成掩码<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         M 
+        
+       
+      
+        M 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span></span></span></span>。此外，我们从PWD-Net中聚合判别置信度分数<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         S 
+        
+       
+      
+        S 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span></span></span></span></span>，这些分数用于通过分数阈值<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         T 
+        
+       
+      
+        T 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">T</span></span></span></span></span>（即<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          M 
+         
+        
+          ′ 
+         
+        
+       
+         = 
+        
+       
+         M 
+        
+       
+         [ 
+        
+       
+         S 
+        
+       
+         &gt; 
+        
+       
+         T 
+        
+       
+         ] 
+        
+       
+      
+        M^{\prime}=M[S&gt;T] 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7519em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.7519em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mopen">[</span><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">&gt;</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">T</span><span class="mclose">]</span></span></span></span></span>）来选择有效的掩码<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          M 
+         
+        
+          ′ 
+         
+        
+       
+      
+        M^{\prime} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7519em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.7519em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span></span></span></span></span>。PWD-Net的详细解释将在后续部分给出。有效的掩码表示被认为分割良好的区域，因此我们从提示列表<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          P 
+         
+        
+          G 
+         
+        
+       
+      
+        P_{G} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">P</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">G</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>中移除那些已被<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          M 
+         
+        
+          ′ 
+         
+        
+       
+      
+        M^{\prime} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7519em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.7519em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">′</span></span></span></span></span></span></span></span></span></span></span></span></span>中任何掩码<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         m 
+        
+       
+      
+        m 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal">m</span></span></span></span></span>覆盖的点。当<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          P 
+         
+        
+          G 
+         
+        
+       
+      
+        P_{G} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">P</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">G</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>为空时，迭代停止。此外，EPS还通过一个参数<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         K 
+        
+       
+      
+        K 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0715em;">K</span></span></span></span></span>建立了一个停止准则，一旦总样本数达到这个限制，就终止采样过程。该参数在控制整体解码成本方面起着重要作用。在我们的实验中，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         K 
+        
+       
+      
+        K 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0715em;">K</span></span></span></span></span>经验性地设置为500，以在效率和召回率之间取得平衡。<br> <img src="https://images2.imgbox.com/7b/36/8sKL0J9k_o.png" alt="在这里插入图片描述"></p> 
+<p>部分-整体区分网络（PWD-Net）。给定由SAM基于采样提示批次<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          P 
+         
+        
+          B 
+         
+        
+       
+      
+        P_{B} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">P</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0502em;">B</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>预测的原始掩码，我们设计了一个自动选择器来选择最合适的掩码。它预期在两个方面优化输出：（i）如果它们是正样本，则根据相关掩码的质量优化输出交并比（IoU）分数；（ii）抑制落在背景区域的样本的分数。</p> 
+<p>如图2所示，对于与<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         N 
+        
+       
+      
+        N 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span></span>个提示相对应的生成的掩码，我们利用SAM掩码解码器中的掩码标记（Mask Tokens）和IoU标记（IoU Tokens），以及自监督预训练模型DINOv2[33]提取的复杂特征。<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         M 
+        
+       
+      
+        \mathcal{M} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathcal">M</span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         U 
+        
+       
+      
+        \mathcal{U} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathcal" style="margin-right: 0.0993em;">U</span></span></span></span></span>分别在SAM掩码解码器中负责掩码解码和IoU预测。因此，我们假设它们包含形状感知信息，这有助于区分掩码。这些组件使我们能够在少量样本的情况下为每个特定提示计算一个判别置信度分数<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         S 
+        
+       
+      
+        S 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span></span></span></span></span>。最初，精细化IoU分数<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          S 
+         
+        
+          iou  
+         
+        
+       
+      
+        S_{\text {iou }} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3175em;"><span class="" style="top: -2.55em; margin-left: -0.0576em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">iou </span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>计算如下：</p> 
+<p><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          S 
+         
+        
+          iou  
+         
+        
+       
+         = 
+        
+        
+         
+         
+           Head 
+          
+         
+           ⁡ 
+          
+         
+        
+          par  
+         
+        
+       
+         ( 
+        
+       
+         Concat 
+        
+       
+         ⁡ 
+        
+       
+         ( 
+        
+       
+         Repeat 
+        
+       
+         ⁡ 
+        
+       
+         ( 
+        
+       
+         U 
+        
+       
+         ) 
+        
+       
+         , 
+        
+       
+         M 
+        
+       
+         ) 
+        
+       
+         ) 
+        
+       
+         + 
+        
+        
+         
+         
+           Head 
+          
+         
+           ⁡ 
+          
+         
+        
+          IoU  
+         
+        
+       
+         ( 
+        
+       
+         U 
+        
+       
+         ) 
+        
+       
+      
+        S_{\text {iou }}=\operatorname{Head}_{\text {par }}(\operatorname{Concat}(\operatorname{Repeat}(\mathcal{U}), \mathcal{M}))+\operatorname{Head}_{\text {IoU }}(\mathcal{U}) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3175em;"><span class="" style="top: -2.55em; margin-left: -0.0576em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">iou </span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1.0361em; vertical-align: -0.2861em;"></span><span class="mop"><span class="mop"><span class="mord mathrm">Head</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">par </span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mop"><span class="mord mathrm">Concat</span></span><span class="mopen">(</span><span class="mop"><span class="mord mathrm">Repeat</span></span><span class="mopen">(</span><span class="mord mathcal" style="margin-right: 0.0993em;">U</span><span class="mclose">)</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathcal">M</span><span class="mclose">))</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mop"><span class="mop"><span class="mord mathrm">Head</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">IoU </span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathcal" style="margin-right: 0.0993em;">U</span><span class="mclose">)</span></span></span></span></span>，</p> 
+<p>其中，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          Head 
+         
+        
+          par 
+         
+        
+       
+      
+        \text{Head}_{\text {par}} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.9805em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord text"><span class="mord">Head</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">par</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 是一个并行IoU头部，由一个多层感知机（MLP）块组成；<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         U 
+        
+       
+         ∈ 
+        
+        
+        
+          R 
+         
+         
+         
+           N 
+          
+         
+           × 
+          
+         
+           1 
+          
+         
+           × 
+          
+         
+           C 
+          
+         
+        
+       
+      
+        \mathcal{U} \in \mathbb{R}^{N \times 1 \times C} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7224em; vertical-align: -0.0391em;"></span><span class="mord mathcal" style="margin-right: 0.0993em;">U</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8413em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8413em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.109em;">N</span><span class="mbin mtight">×</span><span class="mord mtight">1</span><span class="mbin mtight">×</span><span class="mord mathnormal mtight" style="margin-right: 0.0715em;">C</span></span></span></span></span></span></span></span></span></span></span></span></span> 和 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         M 
+        
+       
+         ∈ 
+        
+        
+        
+          R 
+         
+         
+         
+           N 
+          
+         
+           × 
+          
+         
+           4 
+          
+         
+           × 
+          
+         
+           C 
+          
+         
+        
+       
+      
+        \mathcal{M} \in \mathbb{R}^{N \times 4 \times C} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7224em; vertical-align: -0.0391em;"></span><span class="mord mathcal">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8413em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8413em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.109em;">N</span><span class="mbin mtight">×</span><span class="mord mtight">4</span><span class="mbin mtight">×</span><span class="mord mathnormal mtight" style="margin-right: 0.0715em;">C</span></span></span></span></span></span></span></span></span></span></span></span></span> 分别表示IoU标记和掩码标记。注意在方程（2）中，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          S 
+         
+        
+          iou  
+         
+        
+       
+      
+        S_{\text {iou }} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3175em;"><span class="" style="top: -2.55em; margin-left: -0.0576em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">iou </span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 是来自两个独立头部（并行适配器头部 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          Head 
+         
+        
+          par 
+         
+        
+       
+      
+        \text{Head}_{\text {par}} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.9805em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord text"><span class="mord">Head</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">par</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 和原始 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          Head 
+         
+        
+          IoU 
+         
+        
+       
+      
+        \text{Head}_{\text {IoU}} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8444em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord text"><span class="mord">Head</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">IoU</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>）的输出的和。我们冻结了 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          Head 
+         
+        
+          IoU 
+         
+        
+       
+      
+        \text{Head}_{\text {IoU}} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8444em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord text"><span class="mord">Head</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">IoU</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span> 的参数，以避免在少量样本学习中出现过拟合。此外，由于这两个标记 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         M 
+        
+       
+      
+        \mathcal{M} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathcal">M</span></span></span></span></span> 和 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         U 
+        
+       
+      
+        \mathcal{U} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathcal" style="margin-right: 0.0993em;">U</span></span></span></span></span> 的形状不同，我们将 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         U 
+        
+       
+      
+        \mathcal{U} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathcal" style="margin-right: 0.0993em;">U</span></span></span></span></span> 重复4次，并在通道维度上将这两个标记拼接起来。精细化分数 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          S 
+         
+        
+          iou  
+         
+        
+       
+         ∈ 
+        
+        
+        
+          R 
+         
+         
+         
+           N 
+          
+         
+           × 
+          
+         
+           4 
+          
+         
+        
+       
+      
+        S_{\text {iou }} \in \mathbb{R}^{N \times 4} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3175em;"><span class="" style="top: -2.55em; margin-left: -0.0576em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">iou </span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8413em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8413em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.109em;">N</span><span class="mbin mtight">×</span><span class="mord mtight">4</span></span></span></span></span></span></span></span></span></span></span></span></span> 通过评估来自 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         M 
+        
+       
+      
+        \mathcal{M} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathcal">M</span></span></span></span></span> 和 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         U 
+        
+       
+      
+        \mathcal{U} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathcal" style="margin-right: 0.0993em;">U</span></span></span></span></span> 的纹理感知特征来封装生成掩码的质量。</p> 
+<p>进一步地，我们利用自监督预训练模型DINOv2中嵌入的语义特征以及掩码数据 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          M 
+         
+        
+          ^ 
+         
+        
+       
+      
+        \hat{M} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.9468em;"></span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9468em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span><span class="" style="top: -3.2523em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.1667em;"><span class="mord">^</span></span></span></span></span></span></span></span></span></span></span>，来计算判别分数 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          S 
+         
+         
+         
+           c 
+          
+         
+           l 
+          
+         
+           s 
+          
+         
+        
+       
+      
+        S_{c l s} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3361em;"><span class="" style="top: -2.55em; margin-left: -0.0576em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">c</span><span class="mord mathnormal mtight" style="margin-right: 0.0197em;">l</span><span class="mord mathnormal mtight">s</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>：</p> 
+<p><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          S 
+         
+         
+         
+           c 
+          
+         
+           l 
+          
+         
+           s 
+          
+         
+        
+       
+         = 
+        
+       
+         σ 
+        
+        
+        
+          ( 
+         
+         
+         
+           Head 
+          
+          
+          
+            C 
+           
+          
+            L 
+           
+          
+            S 
+           
+          
+         
+        
+          ( 
+         
+        
+          O 
+         
+        
+          ) 
+         
+        
+          ) 
+         
+        
+       
+         , 
+        
+        
+       
+         O 
+        
+       
+         = 
+        
+       
+         Pool 
+        
+        
+        
+          ( 
+         
+        
+          d 
+         
+        
+          ( 
+         
+        
+          Softmax 
+         
+        
+          ( 
+         
+         
+         
+           M 
+          
+         
+           ^ 
+          
+         
+        
+          ) 
+         
+        
+          ) 
+         
+        
+          ∘ 
+         
+         
+         
+           F 
+          
+          
+          
+            D 
+           
+          
+            I 
+           
+          
+            N 
+           
+          
+            O 
+           
+          
+         
+        
+          ) 
+         
+        
+       
+      
+        S_{c l s}=\sigma\left(\text{Head}_{C L S}(\mathcal{O})\right), \quad \mathcal{O}=\text{Pool}\left(d(\text{Softmax}(\hat{M})) \circ F_{D I N O}\right) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3361em;"><span class="" style="top: -2.55em; margin-left: -0.0576em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">c</span><span class="mord mathnormal mtight" style="margin-right: 0.0197em;">l</span><span class="mord mathnormal mtight">s</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">σ</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="minner"><span class="mopen delimcenter" style="top: 0em;">(</span><span class="mord"><span class="mord text"><span class="mord">Head</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0715em;">C</span><span class="mord mathnormal mtight">L</span><span class="mord mathnormal mtight" style="margin-right: 0.0576em;">S</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathcal" style="margin-right: 0.0278em;">O</span><span class="mclose">)</span><span class="mclose delimcenter" style="top: 0em;">)</span></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 1em;"></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathcal" style="margin-right: 0.0278em;">O</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1.8em; vertical-align: -0.65em;"></span><span class="mord text"><span class="mord">Pool</span></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="minner"><span class="mopen delimcenter" style="top: 0em;"><span class="delimsizing size2">(</span></span><span class="mord mathnormal">d</span><span class="mopen">(</span><span class="mord text"><span class="mord">Softmax</span></span><span class="mopen">(</span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9468em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span><span class="" style="top: -3.2523em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.1667em;"><span class="mord">^</span></span></span></span></span></span></span><span class="mclose">))</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">∘</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">D</span><span class="mord mathnormal mtight" style="margin-right: 0.0785em;">I</span><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">NO</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose delimcenter" style="top: 0em;"><span class="delimsizing size2">)</span></span></span></span></span></span></span>。</p> 
+<p>在这里，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         O 
+        
+       
+         ∈ 
+        
+        
+        
+          R 
+         
+         
+         
+           N 
+          
+         
+           × 
+          
+         
+           C 
+          
+         
+        
+       
+      
+        \mathcal{O} \in \mathbb{R}^{N \times C} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7224em; vertical-align: -0.0391em;"></span><span class="mord mathcal" style="margin-right: 0.0278em;">O</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8413em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8413em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.109em;">N</span><span class="mbin mtight">×</span><span class="mord mathnormal mtight" style="margin-right: 0.0715em;">C</span></span></span></span></span></span></span></span></span></span></span></span></span> 表示提取的语义标记，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          M 
+         
+        
+          ^ 
+         
+        
+       
+         ∈ 
+        
+        
+        
+          R 
+         
+         
+         
+           N 
+          
+         
+           × 
+          
+         
+           H 
+          
+         
+           × 
+          
+         
+           W 
+          
+         
+           × 
+          
+         
+           4 
+          
+         
+        
+       
+      
+        \hat{M} \in \mathbb{R}^{N \times H \times W \times 4} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.9859em; vertical-align: -0.0391em;"></span><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.9468em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span></span><span class="" style="top: -3.2523em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.1667em;"><span class="mord">^</span></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8413em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8413em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.109em;">N</span><span class="mbin mtight">×</span><span class="mord mathnormal mtight" style="margin-right: 0.0813em;">H</span><span class="mbin mtight">×</span><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">W</span><span class="mbin mtight">×</span><span class="mord mtight">4</span></span></span></span></span></span></span></span></span></span></span></span></span> 和 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          F 
+         
+         
+         
+           D 
+          
+         
+           I 
+          
+         
+           N 
+          
+         
+           O 
+          
+         
+        
+       
+         ∈ 
+        
+        
+        
+          R 
+         
+         
+         
+           N 
+          
+         
+           × 
+          
+         
+           h 
+          
+         
+           × 
+          
+         
+           w 
+          
+         
+           × 
+          
+         
+           C 
+          
+         
+        
+       
+      
+        F_{D I N O} \in \mathbb{R}^{N \times h \times w \times C} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">D</span><span class="mord mathnormal mtight" style="margin-right: 0.0785em;">I</span><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">NO</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8491em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8491em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.109em;">N</span><span class="mbin mtight">×</span><span class="mord mathnormal mtight">h</span><span class="mbin mtight">×</span><span class="mord mathnormal mtight" style="margin-right: 0.0269em;">w</span><span class="mbin mtight">×</span><span class="mord mathnormal mtight" style="margin-right: 0.0715em;">C</span></span></span></span></span></span></span></span></span></span></span></span></span> 分别表示由SAM 31生成的掩码和由DINOv2提取的特征。我们将<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         d 
+        
+       
+      
+        d 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6944em;"></span><span class="mord mathnormal">d</span></span></span></span></span>表示为一个下采样函数，该函数将掩码大小调整为<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         h 
+        
+       
+         × 
+        
+       
+         w 
+        
+       
+      
+        h \times w 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7778em; vertical-align: -0.0833em;"></span><span class="mord mathnormal">h</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal" style="margin-right: 0.0269em;">w</span></span></span></span></span>，以与<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          F 
+         
+         
+         
+           D 
+          
+         
+           I 
+          
+         
+           N 
+          
+         
+           O 
+          
+         
+        
+       
+      
+        F_{D I N O} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">F</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">D</span><span class="mord mathnormal mtight" style="margin-right: 0.0785em;">I</span><span class="mord mathnormal mtight" style="margin-right: 0.0278em;">NO</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>保持一致。Pool是一个全局池化函数，它在x轴和y轴上执行平均池化，而<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         ∘ 
+        
+       
+      
+        \circ 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4445em;"></span><span class="mord">∘</span></span></span></span></span>表示哈达玛积。判别分数<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          S 
+         
+         
+         
+           c 
+          
+         
+           l 
+          
+         
+           s 
+          
+         
+        
+       
+         ∈ 
+        
+        
+        
+          R 
+         
+         
+         
+           N 
+          
+         
+           × 
+          
+         
+           4 
+          
+         
+        
+       
+      
+        S_{c l s} \in \mathbb{R}^{N \times 4} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3361em;"><span class="" style="top: -2.55em; margin-left: -0.0576em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">c</span><span class="mord mathnormal mtight" style="margin-right: 0.0197em;">l</span><span class="mord mathnormal mtight">s</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8413em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8413em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.109em;">N</span><span class="mbin mtight">×</span><span class="mord mtight">4</span></span></span></span></span></span></span></span></span></span></span></span></span>预测掩码是否属于前景或背景。<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          Head 
+         
+         
+         
+           C 
+          
+         
+           L 
+          
+         
+           S 
+          
+         
+        
+       
+      
+        \text{Head}_{C L S} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8444em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord text"><span class="mord">Head</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0715em;">C</span><span class="mord mathnormal mtight">L</span><span class="mord mathnormal mtight" style="margin-right: 0.0576em;">S</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>与第3.3节中介绍的二元分类器共享相同的参数。最后，我们通过简单地将两个分数相乘来计算判别联合分数，并估计掩码的质量：<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         S 
+        
+       
+         = 
+        
+        
+        
+          S 
+         
+        
+          iou  
+         
+        
+       
+         ⋅ 
+        
+        
+        
+          S 
+         
+        
+          cls  
+         
+        
+       
+      
+        S=S_{\text {iou }} \cdot S_{\text {cls }} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3175em;"><span class="" style="top: -2.55em; margin-left: -0.0576em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">iou </span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">⋅</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3361em;"><span class="" style="top: -2.55em; margin-left: -0.0576em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">cls </span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>。</p> 
+<p>在训练过程中，将从真实掩码中采样的提示作为输入。对于前景内的提示，判别置信分数旨在准确预测生成掩码和真实掩码的交并比（IoU）。相反，对于背景内的提示，分数理想情况下为0。因此，该方面的损失函数制定如下：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+           
+            
+             
+             
+               s 
+              
+             
+               target  
+              
+             
+               i 
+              
+             
+            
+              = 
+             
+             
+             
+               { 
+              
+              
+               
+                
+                 
+                  
+                  
+                    IoU 
+                   
+                  
+                    ⁡ 
+                   
+                   
+                   
+                     ( 
+                    
+                    
+                    
+                      m 
+                     
+                    
+                      i 
+                     
+                    
+                   
+                     , 
+                    
+                    
+                    
+                      m 
+                     
+                     
+                     
+                       G 
+                      
+                     
+                       T 
+                      
+                     
+                    
+                      i 
+                     
+                    
+                   
+                     ) 
+                    
+                   
+                  
+                    , 
+                   
+                  
+                 
+                
+                
+                 
+                  
+                   
+                   
+                     m 
+                    
+                    
+                    
+                      G 
+                     
+                    
+                      T 
+                     
+                    
+                   
+                     i 
+                    
+                   
+                  
+                    ∈ 
+                   
+                   
+                   
+                     M 
+                    
+                    
+                    
+                      G 
+                     
+                    
+                      T 
+                     
+                    
+                    
+                    
+                      b 
+                     
+                    
+                      g 
+                     
+                    
+                   
+                  
+                    , 
+                   
+                  
+                 
+                
+               
+               
+                
+                 
+                  
+                  
+                    0 
+                   
+                  
+                    , 
+                   
+                  
+                 
+                
+                
+                 
+                  
+                   
+                   
+                     m 
+                    
+                    
+                    
+                      G 
+                     
+                    
+                      T 
+                     
+                    
+                   
+                     i 
+                    
+                   
+                  
+                    ∈ 
+                   
+                   
+                   
+                     M 
+                    
+                    
+                    
+                      G 
+                     
+                    
+                      T 
+                     
+                    
+                    
+                    
+                      f 
+                     
+                    
+                      g 
+                     
+                    
+                   
+                  
+                    , 
+                   
+                  
+                 
+                
+               
+              
+             
+            
+           
+          
+         
+         
+          
+           
+            
+             
+             
+               L 
+              
+             
+               iou  
+              
+             
+            
+              = 
+             
+            
+              MSE 
+             
+            
+              ⁡ 
+             
+             
+             
+               ( 
+              
+             
+               S 
+              
+             
+               , 
+              
+              
+              
+                S 
+               
+              
+                target  
+               
+              
+             
+               ) 
+              
+             
+            
+              . 
+             
+            
+           
+          
+         
+        
+       
+         \begin{array}{l} s_{\text {target }}^{i}=\left\{\begin{array}{ll} \operatorname{IoU}\left(m^{i}, m_{G T}^{i}\right), &amp; m_{G T}^{i} \in M_{G T}^{b g}, \\ 0, &amp; m_{G T}^{i} \in M_{G T}^{f g}, \end{array}\right. \\ \mathcal{L}_{\text {iou }}=\operatorname{MSE}\left(S, S_{\text {target }}\right) . \end{array} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 3.854em; vertical-align: -1.677em;"></span><span class="mord"><span class="mtable"><span class="arraycolsep" style="width: 0.5em;"></span><span class="col-align-l"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 2.177em;"><span class="" style="top: -4.177em;"><span class="pstrut" style="height: 3.577em;"></span><span class="mord"><span class="mord"><span class="mord mathnormal">s</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.8247em;"><span class="" style="top: -2.453em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">target </span></span></span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.3831em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="minner"><span class="mopen delimcenter" style="top: 0em;"><span class="delimsizing size3">{<!-- --></span></span><span class="mord"><span class="mtable"><span class="arraycolsep" style="width: 0.5em;"></span><span class="col-align-l"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.577em;"><span class="" style="top: -3.61em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mop"><span class="mord mathrm">IoU</span></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="minner"><span class="mopen delimcenter" style="top: 0em;"><span class="delimsizing size1">(</span></span><span class="mord"><span class="mord mathnormal">m</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8247em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span></span></span></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord"><span class="mord mathnormal">m</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.8247em;"><span class="" style="top: -2.4247em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">GT</span></span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2753em;"><span class=""></span></span></span></span></span></span><span class="mclose delimcenter" style="top: 0em;"><span class="delimsizing size1">)</span></span></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mpunct">,</span></span></span><span class="" style="top: -2.283em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord">0</span><span class="mpunct">,</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.077em;"><span class=""></span></span></span></span></span><span class="arraycolsep" style="width: 0.5em;"></span><span class="arraycolsep" style="width: 0.5em;"></span><span class="col-align-l"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.577em;"><span class="" style="top: -3.61em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord"><span class="mord mathnormal">m</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.8247em;"><span class="" style="top: -2.4247em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">GT</span></span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2753em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.967em;"><span class="" style="top: -2.4065em; margin-left: -0.109em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">GT</span></span></span></span><span class="" style="top: -3.1809em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">b</span><span class="mord mathnormal mtight" style="margin-right: 0.0359em;">g</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2935em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span></span></span><span class="" style="top: -2.283em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord"><span class="mord mathnormal">m</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.8247em;"><span class="" style="top: -2.4247em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">GT</span></span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2753em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.967em;"><span class="" style="top: -2.4065em; margin-left: -0.109em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">GT</span></span></span></span><span class="" style="top: -3.1809em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1076em;">f</span><span class="mord mathnormal mtight" style="margin-right: 0.0359em;">g</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2935em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.077em;"><span class=""></span></span></span></span></span><span class="arraycolsep" style="width: 0.5em;"></span></span></span><span class="mclose nulldelimiter"></span></span></span></span><span class="" style="top: -2.26em;"><span class="pstrut" style="height: 3.577em;"></span><span class="mord"><span class="mord"><span class="mord mathcal">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3175em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">iou </span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mop"><span class="mord mathrm">MSE</span></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="minner"><span class="mopen delimcenter" style="top: 0em;">(</span><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.0576em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">target </span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span><span class="mclose delimcenter" style="top: 0em;">)</span></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord">.</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.677em;"><span class=""></span></span></span></span></span><span class="arraycolsep" style="width: 0.5em;"></span></span></span></span></span></span></span></span><br> 其中，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          s 
+         
+        
+          target  
+         
+        
+          i 
+         
+        
+       
+      
+        s_{\text {target }}^{i} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.2078em; vertical-align: -0.3831em;"></span><span class="mord"><span class="mord mathnormal">s</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.8247em;"><span class="" style="top: -2.453em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">target </span></span></span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.3831em;"><span class=""></span></span></span></span></span></span></span></span></span></span>表示由第<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         i 
+        
+       
+      
+        i 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6595em;"></span><span class="mord mathnormal">i</span></span></span></span></span>个提示生成的掩码<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          m 
+         
+        
+          i 
+         
+        
+       
+      
+        m^{i} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8247em;"></span><span class="mord"><span class="mord mathnormal">m</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8247em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span></span></span></span></span></span></span></span></span></span></span></span></span>的目标分数，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          S 
+         
+        
+          target  
+         
+        
+       
+         = 
+        
+        
+         
+         
+           { 
+          
+          
+          
+            s 
+           
+          
+            target  
+           
+          
+            i 
+           
+          
+         
+           } 
+          
+         
+         
+         
+           i 
+          
+         
+           = 
+          
+         
+           1 
+          
+         
+        
+          N 
+         
+        
+       
+      
+        S_{\text {target }}=\left\{s_{\text {target }}^{i}\right\}_{i=1}^{N} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.9694em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.0576em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">target </span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1.514em; vertical-align: -0.4328em;"></span><span class="minner"><span class="minner"><span class="mopen delimcenter" style="top: 0em;"><span class="delimsizing size1">{<!-- --></span></span><span class="mord"><span class="mord mathnormal">s</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.8247em;"><span class="" style="top: -2.453em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">target </span></span></span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.3831em;"><span class=""></span></span></span></span></span></span><span class="mclose delimcenter" style="top: 0em;"><span class="delimsizing size1">}</span></span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.0812em;"><span class="" style="top: -2.2672em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span><span class="mrel mtight">=</span><span class="mord mtight">1</span></span></span></span><span class="" style="top: -3.3029em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.109em;">N</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.4328em;"><span class=""></span></span></span></span></span></span></span></span></span></span>；<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         M 
+        
+       
+         = 
+        
+        
+         
+         
+           { 
+          
+          
+          
+            m 
+           
+          
+            i 
+           
+          
+         
+           } 
+          
+         
+         
+         
+           i 
+          
+         
+           = 
+          
+         
+           1 
+          
+         
+        
+          N 
+         
+        
+       
+      
+        M=\left\{m^{i}\right\}_{i=1}^{N} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1.4809em; vertical-align: -0.3997em;"></span><span class="minner"><span class="minner"><span class="mopen delimcenter" style="top: 0em;"><span class="delimsizing size1">{<!-- --></span></span><span class="mord"><span class="mord mathnormal">m</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8247em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span></span></span></span></span></span></span></span></span><span class="mclose delimcenter" style="top: 0em;"><span class="delimsizing size1">}</span></span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.0812em;"><span class="" style="top: -2.3003em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span><span class="mrel mtight">=</span><span class="mord mtight">1</span></span></span></span><span class="" style="top: -3.3029em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.109em;">N</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.3997em;"><span class=""></span></span></span></span></span></span></span></span></span></span>；<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          M 
+         
+         
+         
+           G 
+          
+         
+           T 
+          
+         
+        
+       
+         = 
+        
+        
+         
+         
+           { 
+          
+          
+          
+            m 
+           
+           
+           
+             G 
+            
+           
+             T 
+            
+           
+          
+            i 
+           
+          
+         
+           } 
+          
+         
+         
+         
+           i 
+          
+         
+           = 
+          
+         
+           1 
+          
+         
+        
+          N 
+         
+        
+       
+         = 
+        
+        
+        
+          M 
+         
+         
+         
+           G 
+          
+         
+           T 
+          
+         
+         
+         
+           b 
+          
+         
+           g 
+          
+         
+        
+       
+         ∪ 
+        
+        
+        
+          M 
+         
+         
+         
+           G 
+          
+         
+           T 
+          
+         
+         
+         
+           f 
+          
+         
+           g 
+          
+         
+        
+       
+      
+        M_{G T}=\left\{m_{G T}^{i}\right\}_{i=1}^{N}=M_{G T}^{b g} \cup M_{G T}^{f g} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: -0.109em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">GT</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1.4809em; vertical-align: -0.3997em;"></span><span class="minner"><span class="minner"><span class="mopen delimcenter" style="top: 0em;"><span class="delimsizing size1">{<!-- --></span></span><span class="mord"><span class="mord mathnormal">m</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.8247em;"><span class="" style="top: -2.4247em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">GT</span></span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2753em;"><span class=""></span></span></span></span></span></span><span class="mclose delimcenter" style="top: 0em;"><span class="delimsizing size1">}</span></span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.0812em;"><span class="" style="top: -2.3003em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span><span class="mrel mtight">=</span><span class="mord mtight">1</span></span></span></span><span class="" style="top: -3.3029em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.109em;">N</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.3997em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1.2605em; vertical-align: -0.2935em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.967em;"><span class="" style="top: -2.4065em; margin-left: -0.109em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">GT</span></span></span></span><span class="" style="top: -3.1809em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">b</span><span class="mord mathnormal mtight" style="margin-right: 0.0359em;">g</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2935em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">∪</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1.2605em; vertical-align: -0.2935em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.967em;"><span class="" style="top: -2.4065em; margin-left: -0.109em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">GT</span></span></span></span><span class="" style="top: -3.1809em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1076em;">f</span><span class="mord mathnormal mtight" style="margin-right: 0.0359em;">g</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2935em;"><span class=""></span></span></span></span></span></span></span></span></span></span>。这里，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          M 
+         
+         
+         
+           G 
+          
+         
+           T 
+          
+         
+         
+         
+           b 
+          
+         
+           g 
+          
+         
+        
+       
+      
+        M_{G T}^{b g} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.2605em; vertical-align: -0.2935em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.967em;"><span class="" style="top: -2.4065em; margin-left: -0.109em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">GT</span></span></span></span><span class="" style="top: -3.1809em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">b</span><span class="mord mathnormal mtight" style="margin-right: 0.0359em;">g</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2935em;"><span class=""></span></span></span></span></span></span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          M 
+         
+         
+         
+           G 
+          
+         
+           T 
+          
+         
+         
+         
+           f 
+          
+         
+           g 
+          
+         
+        
+       
+      
+        M_{G T}^{f g} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.2605em; vertical-align: -0.2935em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.967em;"><span class="" style="top: -2.4065em; margin-left: -0.109em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">GT</span></span></span></span><span class="" style="top: -3.1809em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1076em;">f</span><span class="mord mathnormal mtight" style="margin-right: 0.0359em;">g</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2935em;"><span class=""></span></span></span></span></span></span></span></span></span></span>分别表示背景真实掩码集和前景真实掩码集。</p> 
+<h3><a id="35_112"></a>3.5、训练和推理</h3> 
+<p>整个框架的总训练损失结合了方程(1)和方程(5)：</p> 
+<p><span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         L 
+        
+       
+         = 
+        
+        
+        
+          L 
+         
+        
+          fg  
+         
+        
+       
+         + 
+        
+        
+        
+          L 
+         
+        
+          iou  
+         
+        
+       
+      
+        \mathcal{L}=\mathcal{L}_{\text {fg }}+\mathcal{L}_{\text {iou }} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathcal">L</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.9694em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord mathcal">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3361em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">fg </span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathcal">L</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3175em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">iou </span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span></p> 
+<p>在推理阶段，我们从4个掩码中选择置信度分数<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         S 
+        
+       
+      
+        S 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span></span></span></span></span>最高的掩码作为PWD-Net的输出，我们将其表示为<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         M 
+        
+       
+         ∈ 
+        
+        
+        
+          R 
+         
+         
+         
+           N 
+          
+         
+           × 
+          
+         
+           H 
+          
+         
+           × 
+          
+         
+           W 
+          
+         
+        
+       
+      
+        M \in \mathbb{R}^{N \times H \times W} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7224em; vertical-align: -0.0391em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">M</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8413em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8413em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.109em;">N</span><span class="mbin mtight">×</span><span class="mord mathnormal mtight" style="margin-right: 0.0813em;">H</span><span class="mbin mtight">×</span><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">W</span></span></span></span></span></span></span></span></span></span></span></span></span>和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          S 
+         
+        
+          o 
+         
+        
+       
+         ∈ 
+        
+        
+        
+          R 
+         
+        
+          N 
+         
+        
+       
+      
+        S_{o} \in \mathbb{R}^{N} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.1514em;"><span class="" style="top: -2.55em; margin-left: -0.0576em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">o</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">∈</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8413em;"></span><span class="mord"><span class="mord mathbb">R</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8413em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.109em;">N</span></span></span></span></span></span></span></span></span></span></span></span></span>。我们采用窗口裁剪策略以提高对小目标的性能，如[20]所述。该策略将整个图像切分成重叠的裁剪块，并分别处理每个裁剪块。最终结果由每个裁剪块的输出合并而成，并在此处应用非极大值抑制（NMS）来移除重复的提案。</p> 
+<h2><a id="4_120"></a>4、实验</h2> 
+<p>数据集。我们遵循[62]的做法，采用CrowdHuman[37]作为基准数据集来进行主要实验和消融研究。CrowdHuman[37]从互联网上收集和标注了包含拥挤人群的图像。它分别包含15,000、4,370和5,000张用于训练、验证和测试的图像。我们还在CityPersons[58]数据集上评估了我们的方法，以应对真实的城市场景。此外，我们还利用了OCC-Human[61]数据集，该数据集特别以遮挡人群而著称。对于这些行人数据集，我们使用可见标注（仅包括物体的可见区域）进行训练和评估。为了验证Crowd-SAM的可扩展性，我们进一步通过添加一个多类分类器来设计一个Crowd-SAM的多类版本。我们使用COCO[24]训练验证集的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         0.1 
+        
+       
+         % 
+        
+       
+      
+        0.1\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">0.1%</span></span></span></span></span>用于训练，COCO验证集用于验证。此外，我们还在COCO的一个包含遮挡物体的子集上验证了我们的方法，即COCO-OCC[17]，该子集是通过选择物体具有高重叠率的图像来提取的。<br> <img src="https://images2.imgbox.com/ac/df/KoRMoZM2_o.png" alt="在这里插入图片描述"></p> 
+<p>实现细节。我们在所有实验中使用SAM (ViT-L) [20]和DINOv2 (ViTL) [33]作为基础模型。在微调阶段，我们冻结了它们所有的参数以避免过拟合。我们没有使用真实的真实标签（GT），而是使用SAM生成的伪掩码作为<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          S 
+         
+        
+          target  
+         
+        
+       
+      
+        S_{\text {target }} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.9694em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0576em;">S</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2806em;"><span class="" style="top: -2.55em; margin-left: -0.0576em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">target </span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span></span></span></span></span>来监督方程(5)中PWD-Net的学习。如图4©所示，这些生成的伪标签质量很高。我们从伪掩码中随机选择点作为正训练样本，从背景中选择点作为负训练样本。在训练过程中，我们使用Adam优化器[19]，学习率为<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         1 
+        
+        
+        
+          0 
+         
+         
+         
+           − 
+          
+         
+           5 
+          
+         
+        
+       
+      
+        10^{-5} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8141em;"></span><span class="mord">1</span><span class="mord"><span class="mord">0</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8141em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">−</span><span class="mord mtight">5</span></span></span></span></span></span></span></span></span></span></span></span></span>，权重衰减为<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         1 
+        
+        
+        
+          0 
+         
+         
+         
+           − 
+          
+         
+           4 
+          
+         
+        
+       
+      
+        10^{-4} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8141em;"></span><span class="mord">1</span><span class="mord"><span class="mord">0</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8141em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">−</span><span class="mord mtight">4</span></span></span></span></span></span></span></span></span></span></span></span></span>，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          β 
+         
+        
+          1 
+         
+        
+       
+         = 
+        
+       
+         0.9 
+        
+       
+      
+        \beta_{1}=0.9 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0528em;">β</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: -0.0528em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">1</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">0.9</span></span></span></span></span>，<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          β 
+         
+        
+          2 
+         
+        
+       
+         = 
+        
+       
+         0.99 
+        
+       
+      
+        \beta_{2}=0.99 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0528em;">β</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: -0.0528em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">2</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">0.99</span></span></span></span></span>。我们以批量大小为1的方式训练我们的模块2000次迭代，这可以在单个GTX 3090 Ti GPU上在几分钟内完成。更多细节请参见附录。</p> 
+<p>评估指标。我们遵循[62]的做法，使用IoU阈值为0.5的平均精度（AP）、<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+         
+         
+           M 
+          
+         
+           R 
+          
+         
+         
+         
+           − 
+          
+         
+           2 
+          
+         
+        
+       
+      
+        \mathrm{MR}^{-2} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8873em;"></span><span class="mord"><span class="mord"><span class="mord mathrm">MR</span></span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8873em;"><span class="" style="top: -3.1362em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">−</span><span class="mord mtight">2</span></span></span></span></span></span></span></span></span></span></span></span></span>和召回率作为评估指标。一般来说，更高的AP、召回率和更低的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+         
+         
+           M 
+          
+         
+           R 
+          
+         
+         
+         
+           − 
+          
+         
+           2 
+          
+         
+        
+       
+      
+        \mathrm{MR}^{-2} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8873em;"></span><span class="mord"><span class="mord"><span class="mord mathrm">MR</span></span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8873em;"><span class="" style="top: -3.1362em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mtight">−</span><span class="mord mtight">2</span></span></span></span></span></span></span></span></span></span></span></span></span>值表示更好的性能。</p> 
+<h3><a id="41_129"></a>4.1、行人检测实验结果</h3> 
+<p>为了公平比较，我们使用<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         2 
+        
+       
+         × 
+        
+       
+      
+        2 \times 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7278em; vertical-align: -0.0833em;"></span><span class="mord">2</span><span class="mord">×</span></span></span></span></span>训练计划重新实现了竞争对手方法[34,43,55,59,62]，在CrowdHuman[37]和CityPersons[58]数据集上使用可见标注。</p> 
+<p>主要结果。我们将Crowd-SAM与包括全监督目标检测器[43,55,59,62]、少量样本目标检测器[34]和基于SAM的方法[20,28]在内的最相关方法进行了比较。请注意，我们使用可见标注，这与使用完整框标注得到的结果不同。</p> 
+<p>如表2所示，仅使用10张标记图像，Crowd-SAM就实现了与全监督目标检测器相当的性能，后者由DINO 55提供，最佳AP为<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         86.7 
+        
+       
+         % 
+        
+       
+      
+        86.7\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">86.7%</span></span></span></span></span>。特别是，Crowd-SAM比先进的无锚检测器FCOS 43高出<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         2.1 
+        
+       
+         % 
+        
+        
+        
+          A 
+         
+        
+          P 
+         
+        
+       
+      
+        2.1\% \mathrm{AP} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">2.1%</span><span class="mord"><span class="mord mathrm">AP</span></span></span></span></span></span>。这些结果表明，通过使用适当的适应技术，SAM可以在像CrowdHuman这样的复杂行人检测数据集上达到非常有竞争力的性能。另一方面，Crowd-SAM在少样本检测设置下实现了最先进的性能，并显著优于所有少样本目标检测器。DeFRCN[34]是一种配备有ResNet-101 14的成熟少样本目标检测器，其报告的AP为<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         46.4 
+        
+       
+         % 
+        
+       
+      
+        46.4\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">46.4%</span></span></span></span></span>。值得注意的是，我们的方法比它高出<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         32 
+        
+       
+         % 
+        
+       
+      
+        32\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">32%</span></span></span></span></span>，这表明在少样本检测设置下的优越性。Crowd-SAM与De-FRCN的定性比较如图4所示。对于基于SAM的方法，我们的Crowd-SAM在召回率上大幅领先SAM基线，分别为<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         6 
+        
+       
+         % 
+        
+       
+      
+        6\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">6%</span></span></span></span></span>（使用多裁剪）和<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         18.3 
+        
+       
+         % 
+        
+       
+      
+        18.3\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">18.3%</span></span></span></span></span>（不使用多裁剪）。此外，Crowd-SAM还优于其他方法，如Matcher[28]。<br> <img src="https://images2.imgbox.com/22/2d/wKurq4Kk_o.png" alt="在这里插入图片描述"></p> 
+<p>OccHuman和CityPersons上的结果。为了研究Crowd-SAM在遮挡场景中的性能，我们将其与先进的同类方法Pose2Seg[61]进行了比较，结果如表3所示。值得注意的是，Pose2Seg是一个全监督检测器，而Crowd-SAM是一个少样本检测器。从结果中可以看出，Crowd-SAM在AP上领先Pose2Seg <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         9.2 
+        
+       
+         % 
+        
+       
+      
+        9.2\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">9.2%</span></span></span></span></span>，这证明了其在遮挡场景中的鲁棒性。此外，我们还将我们的方法应用到一个不那么拥挤但更真实的城市数据集CityPersons[58]上，如表4所示。Crowd-SAM在AP上比TFA 44高出<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         2.7 
+        
+       
+         % 
+        
+       
+      
+        2.7\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">2.7%</span></span></span></span></span>，比FSCE[39]高出<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         1.1 
+        
+       
+         % 
+        
+        
+        
+          A 
+         
+        
+          P 
+         
+        
+       
+      
+        1.1\% \mathrm{AP} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">1.1%</span><span class="mord"><span class="mord mathrm">AP</span></span></span></span></span></span>，比De-FRCN[34]高出<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         7.8 
+        
+       
+         % 
+        
+        
+        
+          A 
+         
+        
+          P 
+         
+        
+       
+      
+        7.8\% \mathrm{AP} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">7.8%</span><span class="mord"><span class="mord mathrm">AP</span></span></span></span></span></span>。总之，与先进的少样本目标检测器相比，我们的方法仍然具有竞争力，尽管它并不是专为稀疏场景设计的。<br> <img src="https://images2.imgbox.com/f6/ec/UT9aNCNp_o.png" alt="在这里插入图片描述"></p> 
+<p>这些结果表明，Crowd-SAM在所有拥挤、遮挡和城市场景中都充分发挥了视觉基础模型（即SAM和DINO）的力量。</p> 
+<h3><a id="42_144"></a>4.2、多类目标检测实验结果</h3> 
+<p>为了进一步探索在更普遍设置下的可扩展性，我们设计了一个多类Crowd-SAM。多类版本的Crowd-SAM略有不同，即将二分类器替换为多分类器。然后，我们在广泛采用的通用目标检测基准COCO[24]和COCO-OCC[17]（COCO的一个子集，主要由高遮挡比图像组成）上验证了多类Crowd-SAM。</p> 
+<p>我们将我们的方法与两种监督检测器进行了比较，即Faster R-CNN[36]和BCNet[17]，并在表5中报告了结果。可以看出，我们的CrowdSAM在两个数据集上的性能与监督检测器相当，并且在比较COCO和COCO-OCC时，仅下降了<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         1.4 
+        
+        
+        
+          A 
+         
+        
+          P 
+         
+        
+       
+         % 
+        
+       
+      
+        1.4 \mathrm{AP}\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">1.4</span><span class="mord"><span class="mord mathrm">AP</span></span><span class="mord">%</span></span></span></span></span>。这一小幅下降表明我们的方法对遮挡具有鲁棒性。</p> 
+<p><img src="https://images2.imgbox.com/8d/70/cO642B1F_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="43_152"></a>4.3、消融实验</h3> 
+<p>模块消融实验。我们对Crowd-SAM的关键组件进行了消融实验，包括前景定位、EPS和PWD-Net，以验证它们的有效性。在表6中，当移除前景定位时，AP显著下降了<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         7.4 
+        
+       
+         % 
+        
+       
+      
+        7.4\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">7.4%</span></span></span></span></span>，召回率下降了<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         8.5 
+        
+       
+         % 
+        
+       
+      
+        8.5\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">8.5%</span></span></span></span></span>，这表明限制前景区域的重要性。对于EPS，一旦移除，AP下降了<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         0.6 
+        
+       
+         % 
+        
+       
+      
+        0.6\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">0.6%</span></span></span></span></span>。我们假设EPS不仅加速了密集提示的采样过程，还有助于关注图像中难以理解的部分，这些部分传达了模糊的语义信息。我们还在表7中将EPS与其他一些批量迭代器进行了比较。此外，我们发现PWD-Net是必不可少的，当移除它时，AP急剧下降到<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         17.0 
+        
+       
+         % 
+        
+       
+      
+        17.0\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">17.0%</span></span></span></span></span>。最后，我们指出多裁剪是一个强大的技巧，可以提高性能，对最终性能贡献了<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         7.0 
+        
+       
+         % 
+        
+        
+        
+          A 
+         
+        
+          P 
+         
+        
+       
+      
+        7.0\% \mathrm{AP} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">7.0%</span><span class="mord"><span class="mord mathrm">AP</span></span></span></span></span></span>。总的来说，这些结果表明所有组件都是必不可少的。<br> <img src="https://images2.imgbox.com/24/9d/5SNEVC3H_o.png" alt="在这里插入图片描述"></p> 
+<p>EPS消融实验。我们通过将EPS与几个变体进行比较，对其进行了全面研究。我们仅对每个图像进行一次前向传播，以避免多裁剪引起的额外延迟。我们使用一个默认采样器，它遍历所有训练样本，以及一个具有停止阈值<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         K 
+        
+       
+      
+        K 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0715em;">K</span></span></span></span></span>的随机迭代器作为对照。如表7所示，对于所有三个采样器，AP和召回率都随着网格大小的增加而增加。然而，当网格大小达到128时，默认采样器会出现内存不足错误，导致无法在此设置中使用。对于随机采样器，其性能受到<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         K 
+        
+       
+      
+        K 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0715em;">K</span></span></span></span></span>的限制，网格大小大于64时仅带来有限的改进，例如<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         0.1 
+        
+       
+         % 
+        
+        
+        
+          A 
+         
+        
+          P 
+         
+        
+       
+      
+        0.1\% \mathrm{AP} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">0.1%</span><span class="mord"><span class="mord mathrm">AP</span></span></span></span></span></span>。相反，我们的EPS受益于更大的网格大小，并取得了更好的结果。</p> 
+<p><img src="https://images2.imgbox.com/2e/6d/YgS6Fwth_o.png" alt="在这里插入图片描述"></p> 
+<p>PWD-Net消融实验。我们将PWD-Net与用全零占位符替换某些标记的变体进行了比较。我们还考虑了两种设计，即直接调整IoU头或学习一个并行的IoU头。如表8所示，所有三个标记，即掩码标记<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         M 
+        
+       
+      
+        \mathcal{M} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathcal">M</span></span></span></span></span>、IoU标记<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         U 
+        
+       
+      
+        \mathcal{U} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathcal" style="margin-right: 0.0993em;">U</span></span></span></span></span>和语义标记<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         O 
+        
+       
+      
+        \mathcal{O} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathcal" style="margin-right: 0.0278em;">O</span></span></span></span></span>，都对最终结果有贡献。特别是，一旦移除<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         M 
+        
+       
+      
+        \mathcal{M} 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathcal">M</span></span></span></span></span>，AP就会下降<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         40.0 
+        
+       
+         % 
+        
+       
+      
+        40.0\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">40.0%</span></span></span></span></span>，这是一个灾难性的下降。这种下降表明，掩码标记包含了形状感知特征，这对于部分-整体区分任务至关重要。值得注意的是，当我们调整预训练的IoU头时，AP下降了<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         2.8 
+        
+       
+         % 
+        
+       
+      
+        2.8\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">2.8%</span></span></span></span></span>，这表明它容易对少量标记的图像过拟合。通过冻结SAM的IoU头，PWD-Net可以从大量分割数据中学习的形状感知知识中获益更多。</p> 
+<h2><a id="5_163"></a>5、结论</h2> 
+<p>本文提出了一种基于SAM的框架Crowd-SAM，用于拥挤场景中的目标检测和分割，旨在简化标注过程。对于每张图像，Crowd-SAM生成密集的提示以实现高召回率，并使用EPS来修剪冗余的提示。为了在遮挡情况下实现准确的检测，Crowd-SAM采用了PWD-Net，它利用几个信息丰富的标记来选择最适合的掩码。结合所提出的模块，Crowd-SAM在CrowdHuman上实现了<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         78.4 
+        
+       
+         % 
+        
+       
+      
+        78.4\% 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8056em; vertical-align: -0.0556em;"></span><span class="mord">78.4%</span></span></span></span></span>的AP，与全监督检测器相当，验证了拥挤场景中的目标检测可以从像SAM这样的基础模型中受益，同时保持数据效率。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/bbcfb5342fe8617327fbd1614544ee2c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">在没有硬盘的情况下进行电脑数据迁移</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7fa027e1542f9a04e0f85f5bc257f293/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">程序编译及链接</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

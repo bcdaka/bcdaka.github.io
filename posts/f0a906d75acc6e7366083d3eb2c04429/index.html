@@ -1,0 +1,548 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>合成孔径雷达(SAR) RD算法 面目标成像Matlab仿真 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/f0a906d75acc6e7366083d3eb2c04429/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="合成孔径雷达(SAR) RD算法 面目标成像Matlab仿真">
+  <meta property="og:description" content="合成孔径雷达SAR RD算法 面目标成像Matlab仿真 一、概述二、面目标成像的注意点1.算力的问题2.距离向分辨率与方位向分辨率的问题3.随机相位的问题 三、成像步骤与图解1.回波生成2.距离向频谱3.距离压缩结果4.方位向傅里叶变换结果(距离多普勒域)5.徙动校正结果6.方位压缩(成像结果) 四、完整代码 一、概述 所谓面目标仿真，其实是点目标仿真的升级版，不了解点目标仿真的同学可以先看一下点目标仿真
+https://blog.csdn.net/qq_30017409/article/details/133905960
+在点目标仿真中，我们主要是通过距离多普勒算法，将回波数据成像为了多个点，但是这个点在内容上是没有任何意义的。而如果有许多点目标，每个点目标都有它的灰度值，组合在一起就能够达到成像的效果了。
+例如，一张分辨率为300*300的SAR图像，代表着它有300行×300列的像素，而每个像素都有一个灰度值（注意将SAR图像与RGB三通道图像区分），也就是强度值；那么我们利用点目标成像的方法，将每个点的强度值赋到我们的点目标上，就能够实现面目标成像了。
+重新梳理一下面目标成像的流程：首先有一张SAR图像-&gt;将SAR图像的每个像素点对应的灰度值，赋到一个点目标上-&gt;对许多点目标同时进行成像-&gt;得到一副由回波数据，进过距离多普勒算法（其他算法也一样）成像的图片，这张图片对应与我们预设的那张SAR图像
+那么肯定有同学要问了，这把一幅图片生成为回波数据，再成像，最后得到的还是原来那一副图片，好像没有什么意义？其实不然，因为各种各样的原因，写论文或是做实验的时候，很多实验并不适合在实测（真实的雷达）数据上进行，转而使用这种仿真的方式，一样能够达到发论文，论证创新方法有效性的目的，所以面目标成像也算是基本功。
+本文旨在基于Ian G. Cumming的《合成孔径雷达成像算法与实现》中第六章的距离多普勒算法处，机载雷达的数据进行面目标仿真，辅以讲解，完整代码请见文末
+另外：作者也是SAR成像的初学者，代码和讲解当中也有许多瑕疵的存在，仅供读者参考
+二、面目标成像的注意点 将一个点目标的成像看成是用打印机打印“一个点”，那么面目标成像就是用打印机打印“很多个点”，而这些点的强度值(灰度值)不相同，从而组成了我们看到的图像。在这个“打印”的过程当中，下面的问题需要注意，其他涉及的部分基本与点目标仿真相同
+1.算力的问题 面目标成像十分消耗算力，但不是成像过程消耗算力，而是将一张图片转换成回波，生成回波的计算过程非常消耗算力，这里面涉及到大量的矩阵运算，所以在专业仿真当中一般都会用GPU运算进行优化，接下来的示例使用一张130*150的J20图像用于演示，一般的笔记本也可以进行仿真。
+在Matlab中，我们可以在生成回波时使用：
+single函数转换数据为单精度，缩短运行时间gpuArray函数将数据转移到GPU上进行计算 %根据Naz*Nrg的点数生成回波 Target_num=Ntarget; S_echo = zeros( Nrg,Naz); S_echo=gpuArray(single(S_echo));%转换为单精度并放置到GPU上计算 2.距离向分辨率与方位向分辨率的问题 将面目标成像看做是打印目标点，那么需要非常注意目标点之间的“间距”。
+在图像中，我们的每个像素点都是紧邻的，所以不存在间距的概念但是在SAR成像中，我们的每个点目标之间的距离分别是“距离分辨率”与“方位分辨率”
+因此产生了不同，我们需要在代码中将像素点与点目标的坐标对应起来
+首先我们要计算rho_r和rho_a % 合成孔径参数 rho_r = c / (2 * Fr); % 距离向分辨率 rho_a = Vr/Fa; % 距离向分辨率|La / 2 然后生成点目标的坐标
+%% 点目标坐标设置 % 设置目标点相对于景中心之间的距离 img_0 = imread(&#39;./800600_SIM/J20.png&#39;); img_0=imrotate(img_0, -6, &#39;crop&#39;);%顺时针旋转5度(可选) img = im2double(rgb2gray(img_0)); %img = im2double(img_0); w_r =rho_r; % 图片img中单位像素对应的距离(m) w_a=rho_a; NPosition = zeros(numel(img),4); % 坐标系原点设为参考点零多普勒时刻雷达星下点，x地距向，y方位向，z地表法线向 for m = 1:size(img,1)%行数 for n = 1:size(img,2)%列数 img(m,n) if(img(m,n)==0) continue;%跳过背景点 end NPosition( (m-1)*size(img,2)&#43;n,: ) = [(n-1)*w_a,(m-1)*w_r, 0, img(m,n) ]; end end Range_Size=size(img,1);%求像素点大小数量 Azimuth_Size=size(img,2); nonZeroRows = any(NPosition, 2);%去除全为0的行，也就是刚才的背景点 NPosition = NPosition(nonZeroRows, :); Ntarget = size( NPosition,1 );%像素点的个数 Position_x_r = (NPosition(:,2)-max(NPosition(:,2))/2).">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-18T16:31:30+08:00">
+    <meta property="article:modified_time" content="2024-05-18T16:31:30+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">合成孔径雷达(SAR) RD算法 面目标成像Matlab仿真</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>合成孔径雷达SAR RD算法 面目标成像Matlab仿真</h4> 
+ <ul><li><ul><li><a href="#_2" rel="nofollow">一、概述</a></li><li><a href="#_14" rel="nofollow">二、面目标成像的注意点</a></li><li><ul><li><a href="#1_16" rel="nofollow">1.算力的问题</a></li><li><a href="#2_29" rel="nofollow">2.距离向分辨率与方位向分辨率的问题</a></li><li><a href="#3_74" rel="nofollow">3.随机相位的问题</a></li></ul> 
+   </li><li><a href="#_97" rel="nofollow">三、成像步骤与图解</a></li><li><ul><li><a href="#1_98" rel="nofollow">1.回波生成</a></li><li><a href="#2_102" rel="nofollow">2.距离向频谱</a></li><li><a href="#3_106" rel="nofollow">3.距离压缩结果</a></li><li><a href="#4_110" rel="nofollow">4.方位向傅里叶变换结果(距离多普勒域)</a></li><li><a href="#5_117" rel="nofollow">5.徙动校正结果</a></li><li><a href="#6_120" rel="nofollow">6.方位压缩(成像结果)</a></li></ul> 
+   </li><li><a href="#_124" rel="nofollow">四、完整代码</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="_2"></a>一、概述</h3> 
+<p>所谓面目标仿真，其实是点目标仿真的升级版，不了解点目标仿真的同学可以先看一下点目标仿真</p> 
+<blockquote> 
+ <p>https://blog.csdn.net/qq_30017409/article/details/133905960</p> 
+</blockquote> 
+<p>在点目标仿真中，我们主要是通过距离多普勒算法，将回波数据成像为了多个点，但是这个点在内容上是没有任何意义的。而如果有许多点目标，每个点目标都有它的灰度值，组合在一起就能够达到成像的效果了。<br> 例如，一张分辨率为300*300的SAR图像，代表着它有300行×300列的像素，而每个像素都有一个灰度值（注意将SAR图像与RGB三通道图像区分），也就是强度值；那么我们利用点目标成像的方法，将每个点的强度值赋到我们的点目标上，就能够实现面目标成像了。<br> <strong>重新梳理一下面目标成像的流程：首先有一张SAR图像-&gt;将SAR图像的每个像素点对应的灰度值，赋到一个点目标上-&gt;对许多点目标同时进行成像-&gt;得到一副由回波数据，进过距离多普勒算法（其他算法也一样）成像的图片，这张图片对应与我们预设的那张SAR图像</strong><br> 那么肯定有同学要问了，这把一幅图片生成为回波数据，再成像，最后得到的还是原来那一副图片，好像没有什么意义？其实不然，因为各种各样的原因，写论文或是做实验的时候，很多实验并不适合在实测（真实的雷达）数据上进行，转而使用这种仿真的方式，一样能够达到发论文，论证创新方法有效性的目的，所以面目标成像也算是基本功。<br> 本文旨在基于Ian G. Cumming的《合成孔径雷达成像算法与实现》中第六章的距离多普勒算法处，机载雷达的数据进行面目标仿真，辅以讲解，<strong>完整代码请见文末</strong></p> 
+<p>另外：作者也是SAR成像的初学者，代码和讲解当中也有许多瑕疵的存在，仅供读者参考</p> 
+<h3><a id="_14"></a>二、面目标成像的注意点</h3> 
+<p>将一个点目标的成像看成是用打印机打印“一个点”，那么面目标成像就是用打印机打印“很多个点”，而这些点的强度值(灰度值)不相同，从而组成了我们看到的图像。在这个“打印”的过程当中，下面的问题需要注意，其他涉及的部分基本与点目标仿真相同</p> 
+<h4><a id="1_16"></a>1.算力的问题</h4> 
+<p>面目标成像十分消耗算力，但不是成像过程消耗算力，而是将一张图片转换成回波，<strong>生成回波的计算过程</strong>非常消耗算力，这里面涉及到大量的矩阵运算，所以在专业仿真当中一般都会用GPU运算进行优化，接下来的示例使用一张130*150的J20图像用于演示，一般的笔记本也可以进行仿真。<br> <img src="https://images2.imgbox.com/b3/91/OboPmoOt_o.png" alt="![在这里插入图片描述](https://img-blog.csdnimg.cn/direct/8f707fe524904a5cb6a8f88446548726.png"></p> 
+<p>在Matlab中，我们可以在生成回波时使用：</p> 
+<ul><li>single函数转换数据为单精度，缩短运行时间</li><li>gpuArray函数将数据转移到GPU上进行计算</li></ul> 
+<pre><code class="prism language-matlab"><span class="token comment">%根据Naz*Nrg的点数生成回波</span>
+Target_num<span class="token operator">=</span>Ntarget<span class="token punctuation">;</span>
+S_echo <span class="token operator">=</span> <span class="token function">zeros</span><span class="token punctuation">(</span> Nrg<span class="token punctuation">,</span>Naz<span class="token punctuation">)</span><span class="token punctuation">;</span>
+S_echo<span class="token operator">=</span><span class="token function">gpuArray</span><span class="token punctuation">(</span><span class="token function">single</span><span class="token punctuation">(</span>S_echo<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">%转换为单精度并放置到GPU上计算</span>
+</code></pre> 
+<h4><a id="2_29"></a>2.距离向分辨率与方位向分辨率的问题</h4> 
+<p>将面目标成像看做是打印目标点，那么需要非常注意目标点之间的“间距”。</p> 
+<ul><li>在图像中，我们的每个像素点都是紧邻的，所以不存在间距的概念</li><li>但是在SAR成像中，我们的每个<strong>点目标</strong>之间的距离分别是“距离分辨率”与“方位分辨率”<br> 因此产生了不同，我们需要在代码中将像素点与点目标的坐标对应起来<br> <img src="https://images2.imgbox.com/12/89/8RcR9JrA_o.png" alt="在这里插入图片描述"><br> 首先我们要计算rho_r和rho_a</li></ul> 
+<pre><code class="prism language-matlab"><span class="token comment">%  合成孔径参数</span>
+rho_r <span class="token operator">=</span> c <span class="token operator">/</span> <span class="token punctuation">(</span><span class="token number">2</span> <span class="token operator">*</span> Fr<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">% 距离向分辨率</span>
+rho_a <span class="token operator">=</span> Vr<span class="token operator">/</span>Fa<span class="token punctuation">;</span> <span class="token comment">% 距离向分辨率|La / 2</span>
+</code></pre> 
+<p>然后生成点目标的坐标</p> 
+<pre><code class="prism language-matlab"><span class="token comment">%% 点目标坐标设置</span>
+<span class="token comment">%  设置目标点相对于景中心之间的距离</span>
+
+img_0   <span class="token operator">=</span> <span class="token function">imread</span><span class="token punctuation">(</span><span class="token string">'./800600_SIM/J20.png'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+img_0<span class="token operator">=</span><span class="token function">imrotate</span><span class="token punctuation">(</span>img_0<span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">6</span><span class="token punctuation">,</span> <span class="token string">'crop'</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">%顺时针旋转5度(可选)</span>
+img     <span class="token operator">=</span> <span class="token function">im2double</span><span class="token punctuation">(</span><span class="token function">rgb2gray</span><span class="token punctuation">(</span>img_0<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">%img     = im2double(img_0);</span>
+w_r <span class="token operator">=</span>rho_r<span class="token punctuation">;</span>           <span class="token comment">% 图片img中单位像素对应的距离(m)</span>
+w_a<span class="token operator">=</span>rho_a<span class="token punctuation">;</span>
+NPosition <span class="token operator">=</span> <span class="token function">zeros</span><span class="token punctuation">(</span><span class="token function">numel</span><span class="token punctuation">(</span>img<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">% 坐标系原点设为参考点零多普勒时刻雷达星下点，x地距向，y方位向，z地表法线向</span>
+<span class="token keyword">for</span> m <span class="token operator">=</span> <span class="token number">1</span><span class="token operator">:</span><span class="token function">size</span><span class="token punctuation">(</span>img<span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token comment">%行数</span>
+    <span class="token keyword">for</span> n <span class="token operator">=</span> <span class="token number">1</span><span class="token operator">:</span><span class="token function">size</span><span class="token punctuation">(</span>img<span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token comment">%列数</span>
+        <span class="token function">img</span><span class="token punctuation">(</span>m<span class="token punctuation">,</span>n<span class="token punctuation">)</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">img</span><span class="token punctuation">(</span>m<span class="token punctuation">,</span>n<span class="token punctuation">)</span><span class="token operator">==</span><span class="token number">0</span><span class="token punctuation">)</span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span><span class="token comment">%跳过背景点</span>
+        <span class="token keyword">end</span>
+        <span class="token function">NPosition</span><span class="token punctuation">(</span> <span class="token punctuation">(</span>m<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">*</span><span class="token function">size</span><span class="token punctuation">(</span>img<span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token operator">+</span>n<span class="token punctuation">,</span><span class="token operator">:</span> <span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">(</span>n<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">*</span>w_a<span class="token punctuation">,</span><span class="token punctuation">(</span>m<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">*</span>w_r<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token function">img</span><span class="token punctuation">(</span>m<span class="token punctuation">,</span>n<span class="token punctuation">)</span> <span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token keyword">end</span>
+<span class="token keyword">end</span>
+Range_Size<span class="token operator">=</span><span class="token function">size</span><span class="token punctuation">(</span>img<span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">%求像素点大小数量</span>
+Azimuth_Size<span class="token operator">=</span><span class="token function">size</span><span class="token punctuation">(</span>img<span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+nonZeroRows <span class="token operator">=</span> <span class="token function">any</span><span class="token punctuation">(</span>NPosition<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">%去除全为0的行，也就是刚才的背景点</span>
+NPosition <span class="token operator">=</span> <span class="token function">NPosition</span><span class="token punctuation">(</span>nonZeroRows<span class="token punctuation">,</span> <span class="token operator">:</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+Ntarget     <span class="token operator">=</span> <span class="token function">size</span><span class="token punctuation">(</span> NPosition<span class="token punctuation">,</span><span class="token number">1</span> <span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">%像素点的个数</span>
+ Position_x_r <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token function">NPosition</span><span class="token punctuation">(</span><span class="token operator">:</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token operator">-</span><span class="token function">max</span><span class="token punctuation">(</span><span class="token function">NPosition</span><span class="token punctuation">(</span><span class="token operator">:</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token operator">/</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token operator">.'</span><span class="token punctuation">;</span>
+ Position_y_a <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token function">NPosition</span><span class="token punctuation">(</span><span class="token operator">:</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">-</span><span class="token function">max</span><span class="token punctuation">(</span><span class="token function">NPosition</span><span class="token punctuation">(</span><span class="token operator">:</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token operator">/</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token operator">.'</span><span class="token punctuation">;</span> <span class="token comment">%点目标的坐标矩阵表示</span>
+ Position_Abs<span class="token operator">=</span> <span class="token function">NPosition</span><span class="token punctuation">(</span><span class="token operator">:</span><span class="token punctuation">,</span><span class="token number">4</span><span class="token punctuation">)</span><span class="token operator">.'</span><span class="token punctuation">;</span><span class="token comment">%目标点的幅度</span>
+</code></pre> 
+<p>在这个过程中还需要注意跳过背景点，也就是说灰度值为0的点我们不需要进行仿真。<code> if(img(m,n)==0)</code></p> 
+<h4><a id="3_74"></a>3.随机相位的问题</h4> 
+<blockquote> 
+ <p>在SAR成像中，随机相位通常指的是由于各种因素（如运动误差、载荷、地形等）引起的回波信号中的不可预测的相位变化。这些随机相位误差会影响图像的质量，因为理论上，只有当回波信号的相位被准确补偿时，才能得到聚焦的图像1。<br> 添加随机相位的目的是为了对这些误差进行补偿。在SAR/ISAR相位补偿技术中，通过基于图像评价函数的逐级逼近算法，可以对随机干扰相位进行补偿，以确保对未知信号中干扰相位的正确估计2。这样的补偿技术有助于提高图像的质量和准确性。<br> 简而言之，随机相位是SAR成像过程中不可避免的，但通过适当的处理和补偿技术，可以最大限度地减少其对成像质量的负面影响。</p> 
+</blockquote> 
+<p>在我们的仿真过程中也要对每个点目标添加一个随机生成的相位</p> 
+<pre><code class="prism language-matlab"><span class="token comment">%% 生成随机相位(0~2*pi)</span>
+<span class="token comment">% 生成符合正态分布的随机数</span>
+mu <span class="token operator">=</span> <span class="token keyword">pi</span><span class="token punctuation">;</span> <span class="token comment">% 均值</span>
+sigma <span class="token operator">=</span> <span class="token keyword">pi</span><span class="token punctuation">;</span> <span class="token comment">% 标准差</span>
+num_samples <span class="token operator">=</span> Naz<span class="token operator">*</span>Nrg<span class="token punctuation">;</span> <span class="token comment">% 生成的随机数个数</span>
+random_numbers <span class="token operator">=</span> mu <span class="token operator">+</span> sigma <span class="token operator">*</span> <span class="token function">randn</span><span class="token punctuation">(</span>num_samples<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">% 将随机数映射到0到2π之间</span>
+random_numbers_mapped <span class="token operator">=</span> <span class="token function">mod</span><span class="token punctuation">(</span>random_numbers<span class="token punctuation">,</span> <span class="token number">2</span><span class="token operator">*</span>mu<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>对每个点进行仿真的时候：</p> 
+<pre><code class="prism language-matlab">   <span class="token comment">%后向散射系数</span>
+    A0<span class="token operator">=</span><span class="token function">Position_Abs</span><span class="token punctuation">(</span><span class="token number">i</span><span class="token punctuation">)</span><span class="token operator">.*</span><span class="token function">exp</span><span class="token punctuation">(</span><span class="token number">1j</span><span class="token operator">*</span><span class="token function">random_numbers_mapped</span><span class="token punctuation">(</span><span class="token number">i</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>将随机相位组合进后向散射系数，乘到回波上</p> 
+<h3><a id="_97"></a>三、成像步骤与图解</h3> 
+<h4><a id="1_98"></a>1.回波生成</h4> 
+<p><img src="https://images2.imgbox.com/58/68/scz5P8nO_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="2_102"></a>2.距离向频谱</h4> 
+<p><img src="https://images2.imgbox.com/93/7a/Ckxx0qjg_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="3_106"></a>3.距离压缩结果</h4> 
+<p><img src="https://images2.imgbox.com/7d/fa/1QJxuTsW_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="4_110"></a>4.方位向傅里叶变换结果(距离多普勒域)</h4> 
+<p><img src="https://images2.imgbox.com/70/2d/RVwHPugp_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="5_117"></a>5.徙动校正结果</h4> 
+<p><img src="https://images2.imgbox.com/b6/cb/siMhgZlW_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="6_120"></a>6.方位压缩(成像结果)</h4> 
+<p><strong>左侧为imagesc图片，右侧为灰度图。可以直观地展示成像结果</strong><br> <img src="https://images2.imgbox.com/2b/cb/FeijMyxW_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_124"></a>四、完整代码</h3> 
+<p>注意：由于代码使用的是书上的机载参数，所以仅进行了小斜视角的RD算法仿真</p> 
+<pre><code class="prism language-matlab"><span class="token comment">%{<!-- --></span>
+<span class="token comment">%      机载SAR参数RDA面目标仿真                          </span>
+<span class="token comment">%       作用：读取图片，生成回波，进行RD成像                               </span>
+<span class="token comment">%            作者：CYAN                                  </span>
+<span class="token comment">%}</span>
+clc<span class="token punctuation">;</span>clear<span class="token punctuation">;</span>close all<span class="token punctuation">;</span>
+<span class="token comment">%代码格式化命令：MBeautify.formatCurrentEditorPage()</span>
+
+<span class="token comment">%% 机载轨道参数</span>
+
+<span class="token comment">% 姿态参数</span>
+
+theta_r_c <span class="token operator">=</span> <span class="token number">1</span><span class="token operator">*</span><span class="token keyword">pi</span><span class="token operator">/</span><span class="token number">180</span><span class="token punctuation">;</span> <span class="token comment">%斜视角，单位为弧度;</span>
+<span class="token comment">%计算等效雷达速度(卫星做圆周运动的线速度)</span>
+Vr <span class="token operator">=</span> <span class="token number">150</span><span class="token punctuation">;</span> <span class="token comment">%运行速度150m每秒</span>
+
+<span class="token comment">%景中心斜距R_eta_c和最近斜距R0，斜视角theta_rc由轨道高度、俯仰角、入射角计算得出</span>
+R_eta_c <span class="token operator">=</span> <span class="token number">20e3</span><span class="token punctuation">;</span> <span class="token comment">%景中心斜距</span>
+
+R0 <span class="token operator">=</span> R_eta_c<span class="token operator">/</span> <span class="token function">cos</span><span class="token punctuation">(</span>theta_r_c<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+<span class="token comment">%% 信号参数设置</span>
+
+<span class="token comment">%   电磁波参数</span>
+c <span class="token operator">=</span> <span class="token number">3e+8</span><span class="token punctuation">;</span> <span class="token comment">% 光速</span>
+Vs <span class="token operator">=</span> Vr<span class="token punctuation">;</span> <span class="token comment">% 卫星平台速度</span>
+Vg <span class="token operator">=</span> Vr<span class="token punctuation">;</span> <span class="token comment">% 波束扫描速度</span>
+
+Lr<span class="token operator">=</span><span class="token number">1.5</span><span class="token punctuation">;</span><span class="token comment">%距离向天线尺寸——&gt;椭圆的短轴</span>
+f0 <span class="token operator">=</span> <span class="token number">5.3e+9</span><span class="token punctuation">;</span> <span class="token comment">% 雷达工作频率</span>
+lambda <span class="token operator">=</span> c <span class="token operator">/</span> f0<span class="token punctuation">;</span> <span class="token comment">%电磁波波长</span>
+
+
+<span class="token comment">%  距离向信号参数</span>
+Tr <span class="token operator">=</span> <span class="token number">2.5e-6</span><span class="token punctuation">;</span> <span class="token comment">% 发射脉冲时宽</span>
+Kr <span class="token operator">=</span> <span class="token number">20e12</span><span class="token punctuation">;</span> <span class="token comment">% 距离向调频率</span>
+Br <span class="token operator">=</span> Tr<span class="token operator">*</span>Kr<span class="token punctuation">;</span> <span class="token comment">% 距离向信号带宽</span>
+alpha_os_r <span class="token operator">=</span> <span class="token number">1.2</span><span class="token punctuation">;</span> <span class="token comment">% 距离过采样率</span>
+
+Fr <span class="token operator">=</span> alpha_os_r <span class="token operator">*</span> Br<span class="token punctuation">;</span> <span class="token comment">% 距离向采样率</span>
+
+<span class="token comment">%  方位向信号参数</span>
+alpha_os_a <span class="token operator">=</span><span class="token number">1.25</span><span class="token punctuation">;</span> <span class="token comment">% 方位过采样率(高过采样率避免鬼影目标)</span>
+
+delta_f_dop<span class="token operator">=</span><span class="token number">80</span><span class="token punctuation">;</span><span class="token comment">%多普勒带宽80Hz</span>
+La <span class="token operator">=</span> <span class="token number">0.886</span><span class="token operator">*</span><span class="token number">2</span><span class="token operator">*</span>Vs<span class="token operator">*</span><span class="token function">cos</span><span class="token punctuation">(</span>theta_r_c<span class="token punctuation">)</span><span class="token operator">/</span>delta_f_dop<span class="token punctuation">;</span>
+
+Fa <span class="token operator">=</span> alpha_os_a <span class="token operator">*</span> delta_f_dop<span class="token punctuation">;</span> <span class="token comment">% 方位向采样率</span>
+Ta <span class="token operator">=</span> <span class="token number">0.886</span> <span class="token operator">*</span> lambda <span class="token operator">*</span> R_eta_c <span class="token operator">/</span> <span class="token punctuation">(</span>La <span class="token operator">*</span> Vg <span class="token operator">*</span> <span class="token function">cos</span><span class="token punctuation">(</span>theta_r_c<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">%目标照射时间</span>
+L_La<span class="token operator">=</span>R_eta_c<span class="token operator">*</span>lambda<span class="token operator">*</span>delta_f_dop<span class="token operator">/</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token operator">*</span>Vr<span class="token operator">*</span><span class="token function">cos</span><span class="token punctuation">(</span>theta_r_c<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">%  景中心点(原点)的参数</span>
+time_eta_c <span class="token operator">=</span> <span class="token operator">-</span>R_eta_c <span class="token operator">*</span> <span class="token function">sin</span><span class="token punctuation">(</span>theta_r_c<span class="token punctuation">)</span> <span class="token operator">/</span> Vr<span class="token punctuation">;</span> <span class="token comment">% 波束中心穿越时刻</span>
+f_eta_c <span class="token operator">=</span> <span class="token number">2</span> <span class="token operator">*</span> Vr <span class="token operator">*</span> <span class="token function">sin</span><span class="token punctuation">(</span>theta_r_c<span class="token punctuation">)</span> <span class="token operator">/</span> lambda<span class="token punctuation">;</span> <span class="token comment">% 多普勒中心频率</span>
+
+La <span class="token operator">=</span> <span class="token number">0.886</span><span class="token operator">*</span><span class="token number">2</span><span class="token operator">*</span>Vs<span class="token operator">*</span><span class="token function">cos</span><span class="token punctuation">(</span>theta_r_c<span class="token punctuation">)</span><span class="token operator">/</span>delta_f_dop<span class="token punctuation">;</span>              <span class="token comment">% 实际天线长度       </span>
+                          
+
+<span class="token comment">%  合成孔径参数</span>
+rho_r <span class="token operator">=</span> c <span class="token operator">/</span> <span class="token punctuation">(</span><span class="token number">2</span> <span class="token operator">*</span> Fr<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">% 距离向分辨率</span>
+rho_a <span class="token operator">=</span> Vr<span class="token operator">/</span>Fa<span class="token punctuation">;</span> <span class="token comment">% 距离向分辨率|La / 2</span>
+theta_bw <span class="token operator">=</span> <span class="token number">0.886</span> <span class="token operator">*</span> lambda <span class="token operator">/</span> Lr<span class="token punctuation">;</span> <span class="token comment">% 方位向3dB波束宽度</span>
+theta_syn <span class="token operator">=</span> Vs <span class="token operator">/</span> Vg <span class="token operator">*</span> theta_bw<span class="token punctuation">;</span> <span class="token comment">% 合成角宽度(斜面上的合成角)</span>
+Ls <span class="token operator">=</span> R_eta_c <span class="token operator">*</span> theta_syn<span class="token punctuation">;</span> <span class="token comment">% 合成孔径长度</span>
+
+
+
+<span class="token comment">%% 点目标坐标设置</span>
+<span class="token comment">%  设置目标点相对于景中心之间的距离</span>
+
+img_0   <span class="token operator">=</span> <span class="token function">imread</span><span class="token punctuation">(</span><span class="token string">'./800600_SIM/J20.png'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+img_0<span class="token operator">=</span><span class="token function">imrotate</span><span class="token punctuation">(</span>img_0<span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">6</span><span class="token punctuation">,</span> <span class="token string">'crop'</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">%顺时针旋转5度(可选)</span>
+img     <span class="token operator">=</span> <span class="token function">im2double</span><span class="token punctuation">(</span><span class="token function">rgb2gray</span><span class="token punctuation">(</span>img_0<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">%img     = im2double(img_0);</span>
+w_r <span class="token operator">=</span>rho_r<span class="token punctuation">;</span>           <span class="token comment">% 图片img中单位像素对应的距离(m)</span>
+w_a<span class="token operator">=</span>rho_a<span class="token punctuation">;</span>
+NPosition <span class="token operator">=</span> <span class="token function">zeros</span><span class="token punctuation">(</span><span class="token function">numel</span><span class="token punctuation">(</span>img<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">% 坐标系原点设为参考点零多普勒时刻雷达星下点，x地距向，y方位向，z地表法线向</span>
+<span class="token keyword">for</span> m <span class="token operator">=</span> <span class="token number">1</span><span class="token operator">:</span><span class="token function">size</span><span class="token punctuation">(</span>img<span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token comment">%行数</span>
+    <span class="token keyword">for</span> n <span class="token operator">=</span> <span class="token number">1</span><span class="token operator">:</span><span class="token function">size</span><span class="token punctuation">(</span>img<span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token comment">%列数</span>
+        <span class="token function">img</span><span class="token punctuation">(</span>m<span class="token punctuation">,</span>n<span class="token punctuation">)</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token function">img</span><span class="token punctuation">(</span>m<span class="token punctuation">,</span>n<span class="token punctuation">)</span><span class="token operator">==</span><span class="token number">0</span><span class="token punctuation">)</span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span><span class="token comment">%跳过背景点</span>
+        <span class="token keyword">end</span>
+        <span class="token function">NPosition</span><span class="token punctuation">(</span> <span class="token punctuation">(</span>m<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">*</span><span class="token function">size</span><span class="token punctuation">(</span>img<span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token operator">+</span>n<span class="token punctuation">,</span><span class="token operator">:</span> <span class="token punctuation">)</span> <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">(</span>n<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">*</span>w_a<span class="token punctuation">,</span><span class="token punctuation">(</span>m<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">*</span>w_r<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token function">img</span><span class="token punctuation">(</span>m<span class="token punctuation">,</span>n<span class="token punctuation">)</span> <span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token keyword">end</span>
+<span class="token keyword">end</span>
+Range_Size<span class="token operator">=</span><span class="token function">size</span><span class="token punctuation">(</span>img<span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">%求像素点大小数量</span>
+Azimuth_Size<span class="token operator">=</span><span class="token function">size</span><span class="token punctuation">(</span>img<span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+nonZeroRows <span class="token operator">=</span> <span class="token function">any</span><span class="token punctuation">(</span>NPosition<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">%去除全为0的行，也就是刚才的背景点</span>
+NPosition <span class="token operator">=</span> <span class="token function">NPosition</span><span class="token punctuation">(</span>nonZeroRows<span class="token punctuation">,</span> <span class="token operator">:</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+Ntarget     <span class="token operator">=</span> <span class="token function">size</span><span class="token punctuation">(</span> NPosition<span class="token punctuation">,</span><span class="token number">1</span> <span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">%像素点的个数</span>
+ Position_x_r <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token function">NPosition</span><span class="token punctuation">(</span><span class="token operator">:</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token operator">-</span><span class="token function">max</span><span class="token punctuation">(</span><span class="token function">NPosition</span><span class="token punctuation">(</span><span class="token operator">:</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token operator">/</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token operator">.'</span><span class="token punctuation">;</span>
+ Position_y_a <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token function">NPosition</span><span class="token punctuation">(</span><span class="token operator">:</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token operator">-</span><span class="token function">max</span><span class="token punctuation">(</span><span class="token function">NPosition</span><span class="token punctuation">(</span><span class="token operator">:</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token operator">/</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token operator">.'</span><span class="token punctuation">;</span> <span class="token comment">%点目标的坐标矩阵表示</span>
+ Position_Abs<span class="token operator">=</span> <span class="token function">NPosition</span><span class="token punctuation">(</span><span class="token operator">:</span><span class="token punctuation">,</span><span class="token number">4</span><span class="token punctuation">)</span><span class="token operator">.'</span><span class="token punctuation">;</span><span class="token comment">%目标点的幅度</span>
+
+<span class="token comment">%% 时间轴参数</span>
+Nrg <span class="token operator">=</span> Range_Size<span class="token operator">*</span><span class="token number">2</span><span class="token punctuation">;</span> <span class="token comment">% 距离线采样点数</span>
+Naz <span class="token operator">=</span> Azimuth_Size<span class="token operator">*</span><span class="token number">2</span><span class="token punctuation">;</span> <span class="token comment">% 距离线数</span>
+Trg <span class="token operator">=</span> Nrg <span class="token operator">/</span> Fr<span class="token punctuation">;</span>Taz <span class="token operator">=</span> Naz <span class="token operator">/</span> Fa<span class="token punctuation">;</span>
+<span class="token comment">%距离向/方位向采样时间间隔</span>
+Gap_t_tau <span class="token operator">=</span> <span class="token number">1</span> <span class="token operator">/</span> Fr<span class="token punctuation">;</span>Gap_t_eta <span class="token operator">=</span> <span class="token number">1</span> <span class="token operator">/</span> Fa<span class="token punctuation">;</span>
+<span class="token comment">%距离向/方位向采样频率间隔</span>
+Gap_f_tau <span class="token operator">=</span> Fr <span class="token operator">/</span> Nrg<span class="token punctuation">;</span>Gap_f_eta <span class="token operator">=</span> Fa <span class="token operator">/</span> Naz<span class="token punctuation">;</span>
+<span class="token comment">%  时间轴变量</span>
+time_tau_r <span class="token operator">=</span> <span class="token number">2</span> <span class="token operator">*</span> R_eta_c <span class="token operator">/</span> c <span class="token operator">+</span> <span class="token punctuation">(</span><span class="token operator">-</span>Trg <span class="token operator">/</span> <span class="token number">2</span><span class="token operator">:</span>Gap_t_tau<span class="token operator">:</span>Trg <span class="token operator">/</span> <span class="token number">2</span> <span class="token operator">-</span> Gap_t_tau<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">% 距离时间变量</span>
+time_eta_a <span class="token operator">=</span> time_eta_c<span class="token operator">+</span><span class="token punctuation">(</span><span class="token operator">-</span>Taz <span class="token operator">/</span> <span class="token number">2</span><span class="token operator">:</span>Gap_t_eta<span class="token operator">:</span>Taz <span class="token operator">/</span> <span class="token number">2</span> <span class="token operator">-</span> Gap_t_eta<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">% 方位时间变量</span>
+<span class="token comment">%  随着距离向时间变化的最近斜距；c/2是因为距离向上一个时间包含两次电磁波来回</span>
+R0_tau_r <span class="token operator">=</span> <span class="token punctuation">(</span>time_tau_r <span class="token operator">*</span> c <span class="token operator">/</span> <span class="token number">2</span><span class="token punctuation">)</span> <span class="token operator">*</span> <span class="token function">cos</span><span class="token punctuation">(</span>theta_r_c<span class="token punctuation">)</span><span class="token punctuation">;</span>
+Ext_R0_tau_r <span class="token operator">=</span> <span class="token function">repmat</span><span class="token punctuation">(</span>R0_tau_r<span class="token operator">.'</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> Naz<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">%扩展R0，用于计算变量Ka</span>
+<span class="token comment">%  频率变量</span>
+f_tau <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token operator">-</span>Fr <span class="token operator">/</span> <span class="token number">2</span><span class="token operator">:</span>Gap_f_tau<span class="token operator">:</span>Fr <span class="token operator">/</span> <span class="token number">2</span> <span class="token operator">-</span> Gap_f_tau<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">% 距离频率变量</span>
+<span class="token comment">%f_tau=f_tau-(round(f_tau/Fr))/Fr;%混叠方程</span>
+f_eta <span class="token operator">=</span> f_eta_c <span class="token operator">+</span> <span class="token punctuation">(</span><span class="token operator">-</span>Fa <span class="token operator">/</span> <span class="token number">2</span><span class="token operator">:</span>Gap_f_eta<span class="token operator">:</span>Fa <span class="token operator">/</span> <span class="token number">2</span> <span class="token operator">-</span> Gap_f_eta<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">% 方位频率变量</span>
+<span class="token comment">%f_eta=f_eta-(round(f_eta/Fa))/Fa;</span>
+
+<span class="token comment">%  时间轴</span>
+<span class="token punctuation">[</span>Ext_time_eta_a<span class="token punctuation">,</span>Ext_time_tau_r<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token function">meshgrid</span><span class="token punctuation">(</span>time_eta_a<span class="token punctuation">,</span>time_tau_r<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">% 设置距离时域-方位时域二维网络坐标</span>
+<span class="token comment">%  频率轴</span>
+<span class="token punctuation">[</span>Ext_f_eta<span class="token punctuation">,</span>Ext_f_tau<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token function">meshgrid</span><span class="token punctuation">(</span> f_eta<span class="token punctuation">,</span>f_tau<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">% 设置频率时域-方位频域二维网络坐标</span>
+
+
+
+
+
+<span class="token comment">%% 生成随机相位(0~2*pi)</span>
+<span class="token comment">% 生成符合正态分布的随机数</span>
+mu <span class="token operator">=</span> <span class="token keyword">pi</span><span class="token punctuation">;</span> <span class="token comment">% 均值</span>
+sigma <span class="token operator">=</span> <span class="token keyword">pi</span><span class="token punctuation">;</span> <span class="token comment">% 标准差</span>
+num_samples <span class="token operator">=</span> Naz<span class="token operator">*</span>Nrg<span class="token punctuation">;</span> <span class="token comment">% 生成的随机数个数</span>
+random_numbers <span class="token operator">=</span> mu <span class="token operator">+</span> sigma <span class="token operator">*</span> <span class="token function">randn</span><span class="token punctuation">(</span>num_samples<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">% 将随机数映射到0到2π之间</span>
+random_numbers_mapped <span class="token operator">=</span> <span class="token function">mod</span><span class="token punctuation">(</span>random_numbers<span class="token punctuation">,</span> <span class="token number">2</span><span class="token operator">*</span>mu<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+<span class="token comment">%% 生成回波S_echo</span>
+<span class="token comment">%根据Naz*Nrg的点数生成回波</span>
+Target_num<span class="token operator">=</span>Ntarget<span class="token punctuation">;</span>
+S_echo <span class="token operator">=</span> <span class="token function">zeros</span><span class="token punctuation">(</span> Nrg<span class="token punctuation">,</span>Naz<span class="token punctuation">)</span><span class="token punctuation">;</span>
+S_echo<span class="token operator">=</span><span class="token function">gpuArray</span><span class="token punctuation">(</span><span class="token function">single</span><span class="token punctuation">(</span>S_echo<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">%转换为单精度并放置到GPU上计算</span>
+f <span class="token operator">=</span> <span class="token function">waitbar</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token string">'生成回波数据中...'</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">% waitbar显示进度条</span>
+
+<span class="token keyword">for</span> <span class="token number">i</span> <span class="token operator">=</span> <span class="token number">1</span><span class="token operator">:</span>Ntarget
+
+    R0_Target <span class="token operator">=</span> R0  <span class="token operator">+</span> <span class="token function">Position_x_r</span><span class="token punctuation">(</span><span class="token number">i</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">%对每个目标计算瞬时斜距</span>
+
+    time_eta_c_Target <span class="token operator">=</span><span class="token punctuation">(</span><span class="token function">Position_y_a</span><span class="token punctuation">(</span><span class="token number">i</span><span class="token punctuation">)</span> <span class="token operator">-</span>R0_Target <span class="token operator">*</span> <span class="token function">tan</span><span class="token punctuation">(</span>theta_r_c<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">/</span> Vr<span class="token punctuation">;</span> <span class="token comment">%波束中心穿越时刻</span>
+
+    <span class="token comment">%  计算目标点的瞬时斜距</span>
+    R_eta <span class="token operator">=</span> <span class="token function">sqrt</span><span class="token punctuation">(</span><span class="token punctuation">(</span>R0_Target<span class="token punctuation">)</span><span class="token operator">^</span><span class="token number">2</span><span class="token operator">+</span><span class="token punctuation">(</span>Vr<span class="token operator">^</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token operator">*</span><span class="token punctuation">(</span><span class="token punctuation">(</span>Ext_time_eta_a <span class="token operator">-</span> <span class="token function">Position_y_a</span><span class="token punctuation">(</span><span class="token number">i</span><span class="token punctuation">)</span> <span class="token operator">/</span> Vr<span class="token punctuation">)</span><span class="token operator">.^</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    <span class="token comment">%  距离向包络</span>
+    Wr <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token function">abs</span><span class="token punctuation">(</span>Ext_time_tau_r<span class="token operator">-</span><span class="token number">2</span><span class="token operator">*</span>R_eta<span class="token operator">/</span>c<span class="token punctuation">)</span> <span class="token operator">&lt;=</span> Tr <span class="token operator">/</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">%  方位向包络</span>
+    Wa <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token function">abs</span><span class="token punctuation">(</span>Ext_time_eta_a<span class="token operator">-</span>time_eta_c_Target<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;=</span>Ta<span class="token operator">/</span><span class="token number">2</span> <span class="token punctuation">;</span>
+    
+    <span class="token comment">%   相位</span>
+    Phase <span class="token operator">=</span> <span class="token function">exp</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1j</span><span class="token operator">*</span><span class="token number">4</span><span class="token operator">*</span><span class="token keyword">pi</span><span class="token operator">*</span>f0<span class="token operator">*</span>R_eta<span class="token operator">/</span>c<span class="token punctuation">)</span> <span class="token operator">.*</span> <span class="token function">exp</span><span class="token punctuation">(</span><span class="token operator">+</span><span class="token number">1j</span><span class="token operator">*</span><span class="token keyword">pi</span><span class="token operator">*</span>Kr<span class="token operator">*</span><span class="token punctuation">(</span>Ext_time_tau_r <span class="token operator">-</span> <span class="token number">2</span> <span class="token operator">*</span> R_eta <span class="token operator">/</span> c<span class="token punctuation">)</span><span class="token operator">.^</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">%后向散射系数</span>
+    A0<span class="token operator">=</span><span class="token function">Position_Abs</span><span class="token punctuation">(</span><span class="token number">i</span><span class="token punctuation">)</span><span class="token operator">.*</span><span class="token function">exp</span><span class="token punctuation">(</span><span class="token number">1j</span><span class="token operator">*</span><span class="token function">random_numbers_mapped</span><span class="token punctuation">(</span><span class="token number">i</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">%  接收信号叠加</span>
+    S_echo_Target <span class="token operator">=</span> A0<span class="token operator">*</span>Wr <span class="token operator">.*</span> Wa <span class="token operator">.*</span> Phase<span class="token punctuation">;</span>
+    S_echo <span class="token operator">=</span> S_echo <span class="token operator">+</span> S_echo_Target<span class="token punctuation">;</span>
+    <span class="token comment">% 进度条</span>
+    str<span class="token operator">=</span><span class="token punctuation">[</span><span class="token string">'回波数据生成：'</span><span class="token punctuation">,</span><span class="token function">num2str</span><span class="token punctuation">(</span><span class="token number">100</span><span class="token operator">*</span><span class="token number">i</span><span class="token operator">/</span>Target_num<span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token string">'%'</span><span class="token punctuation">]</span><span class="token punctuation">;</span><span class="token comment">% 百分比形式显示处理进程,不需要删掉这行代码就行</span>
+
+    <span class="token comment">%fprintf("当前回波点坐标:%.2f,%.2f\n",Position_x_r(i),Position_y_a(i));</span>
+    <span class="token function">waitbar</span><span class="token punctuation">(</span><span class="token number">i</span><span class="token operator">/</span>Target_num<span class="token punctuation">,</span>f<span class="token punctuation">,</span>str<span class="token punctuation">)</span><span class="token comment">% 更新进度条，配合句柄使用</span>
+<span class="token keyword">end</span>
+
+S_echo <span class="token operator">=</span> S_echo <span class="token operator">.*</span> <span class="token function">exp</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">2j</span><span class="token operator">*</span><span class="token keyword">pi</span><span class="token operator">*</span>f_eta_c<span class="token operator">*</span>Ext_time_eta_a<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">%校正时间轴</span>
+
+
+
+<span class="token comment">%% 距离压缩</span>
+
+Hf <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token function">abs</span><span class="token punctuation">(</span>Ext_f_tau<span class="token punctuation">)</span> <span class="token operator">&lt;=</span> Br <span class="token operator">/</span> <span class="token number">2</span><span class="token punctuation">)</span> <span class="token operator">.*</span> <span class="token function">exp</span><span class="token punctuation">(</span><span class="token operator">+</span><span class="token number">1j</span><span class="token operator">*</span><span class="token keyword">pi</span><span class="token operator">*</span>Ext_f_tau<span class="token operator">.^</span><span class="token number">2</span><span class="token operator">/</span>Kr<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">%滤波器</span>
+<span class="token comment">%  匹配滤波</span>
+S1_ftau_eta <span class="token operator">=</span> <span class="token function">fftshift</span><span class="token punctuation">(</span><span class="token function">fft</span><span class="token punctuation">(</span><span class="token function">fftshift</span><span class="token punctuation">(</span>S_echo<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Nrg<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+S1_ftau_eta <span class="token operator">=</span> S1_ftau_eta <span class="token operator">.*</span> Hf<span class="token punctuation">;</span>
+S1_tau_eta <span class="token operator">=</span> <span class="token function">fftshift</span><span class="token punctuation">(</span><span class="token function">ifft</span><span class="token punctuation">(</span><span class="token function">fftshift</span><span class="token punctuation">(</span>S1_ftau_eta<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Nrg<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">%% 方位向傅里叶变换</span>
+S2_tau_feta <span class="token operator">=</span> <span class="token function">fftshift</span><span class="token punctuation">(</span><span class="token function">fft</span><span class="token punctuation">(</span><span class="token function">fftshift</span><span class="token punctuation">(</span>S1_tau_eta<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Naz<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">%% 距离徙动校正RCMC:采用相位补偿法</span>
+
+<span class="token comment">%虽然Ka是随着R0变化的，但是在相位补偿时需要假设R0是不变的</span>
+delta_R <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token punctuation">(</span>lambda <span class="token operator">*</span> Ext_f_eta<span class="token punctuation">)</span><span class="token operator">.^</span><span class="token number">2</span><span class="token punctuation">)</span> <span class="token operator">.*</span> R0<span class="token punctuation">)</span> <span class="token operator">./</span> <span class="token punctuation">(</span><span class="token number">8</span> <span class="token operator">*</span> <span class="token punctuation">(</span>Vr<span class="token operator">^</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">%距离徙动表达式</span>
+G_rcmc <span class="token operator">=</span> <span class="token function">exp</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token operator">+</span><span class="token number">4j</span> <span class="token operator">*</span> <span class="token keyword">pi</span> <span class="token operator">.*</span> Ext_f_tau <span class="token operator">.*</span> delta_R<span class="token punctuation">)</span><span class="token operator">./</span>c<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">%补偿相位</span>
+S3_ftau_feta <span class="token operator">=</span> <span class="token function">fftshift</span><span class="token punctuation">(</span><span class="token function">fft</span><span class="token punctuation">(</span><span class="token function">fftshift</span><span class="token punctuation">(</span>S2_tau_feta<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Nrg<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">%在方位向傅里叶变换的基础上进行距离向傅里叶变换</span>
+
+S3_ftau_feta <span class="token operator">=</span> S3_ftau_feta<span class="token operator">.*</span>G_rcmc <span class="token punctuation">;</span> <span class="token comment">%与补偿相位相乘</span>
+S3_tau_feta_RCMC <span class="token operator">=</span> <span class="token function">fftshift</span><span class="token punctuation">(</span><span class="token function">ifft</span><span class="token punctuation">(</span><span class="token function">fftshift</span><span class="token punctuation">(</span>S3_ftau_feta<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Nrg<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">%距离向傅里叶逆变换</span>
+
+<span class="token comment">%距离徙动校正结束</span>
+
+<span class="token comment">%% 方位压缩</span>
+<span class="token comment">%  根据变化的R0计算出相应的Ka矩阵(距离向变化，方位向不变)</span>
+Ka <span class="token operator">=</span> <span class="token number">2</span> <span class="token operator">*</span> Vr<span class="token operator">^</span><span class="token number">2</span> <span class="token operator">*</span> <span class="token function">cos</span><span class="token punctuation">(</span>theta_r_c<span class="token punctuation">)</span><span class="token operator">^</span><span class="token number">2</span> <span class="token operator">./</span> <span class="token punctuation">(</span>lambda <span class="token operator">*</span> Ext_R0_tau_r<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">%  方位向匹配滤波器</span>
+Haz <span class="token operator">=</span> <span class="token function">exp</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1j</span><span class="token operator">*</span><span class="token keyword">pi</span><span class="token operator">*</span><span class="token punctuation">(</span>Ext_f_eta<span class="token operator">.^</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token operator">./</span>Ka<span class="token punctuation">)</span><span class="token punctuation">;</span>
+Offset <span class="token operator">=</span> <span class="token function">exp</span><span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1j</span><span class="token operator">*</span><span class="token number">2</span><span class="token operator">*</span><span class="token keyword">pi</span><span class="token operator">*</span>Ext_f_eta<span class="token operator">.*</span>time_eta_c<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">%偏移滤波器，将原点搬移到Naz/2的位置，校准坐标</span>
+<span class="token comment">%  匹配滤波</span>
+S4_tau_feta <span class="token operator">=</span> S3_tau_feta_RCMC <span class="token operator">.*</span> Haz<span class="token operator">.*</span>Offset<span class="token punctuation">;</span>
+S4_tau_eta <span class="token operator">=</span> <span class="token function">fftshift</span><span class="token punctuation">(</span><span class="token function">ifft</span><span class="token punctuation">(</span><span class="token function">fftshift</span><span class="token punctuation">(</span>S4_tau_feta<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Naz<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+
+
+<span class="token comment">%% 回波图可视化</span>
+
+<span class="token function">figure</span><span class="token punctuation">(</span><span class="token string">'name'</span><span class="token punctuation">,</span> "回波可视化"<span class="token punctuation">)</span>
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">real</span><span class="token punctuation">(</span>S_echo<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'原始仿真信号实部'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向时间 \tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向时间 \eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">imag</span><span class="token punctuation">(</span>S_echo<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'原始仿真信号虚部'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向时间 \tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向时间 \eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">abs</span><span class="token punctuation">(</span>S_echo<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'原始仿真信号幅度'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向时间 \tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向时间 \eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">angle</span><span class="token punctuation">(</span>S_echo<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'原始仿真信号相位'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向时间 \tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向时间 \eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">%% 距离压缩可视化</span>
+
+<span class="token comment">%距离频谱可视化</span>
+<span class="token function">figure</span><span class="token punctuation">(</span><span class="token string">'name'</span><span class="token punctuation">,</span> "回波频谱可视化"<span class="token punctuation">)</span>
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">real</span><span class="token punctuation">(</span>S1_ftau_eta<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'回波距离向实部'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向频谱点数f_\tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向时间 \eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">imag</span><span class="token punctuation">(</span>S1_ftau_eta<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'回波距离向虚部'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向频谱点数f_\tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向时间 \eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">3</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">abs</span><span class="token punctuation">(</span>S1_ftau_eta<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'回波距离向频谱幅度'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向频谱点数f_\tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向时间 \eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">4</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">angle</span><span class="token punctuation">(</span>S1_ftau_eta<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'回波距离向相位'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向频谱点数f_\tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向时间 \eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">%距离压缩结果</span>
+<span class="token function">figure</span><span class="token punctuation">(</span><span class="token string">'name'</span><span class="token punctuation">,</span> "距离压缩时域结果"<span class="token punctuation">)</span>
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">real</span><span class="token punctuation">(</span>S1_tau_eta<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'实部'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向时间 \tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向时间 \eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">abs</span><span class="token punctuation">(</span>S1_tau_eta<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'幅度'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向时间 \tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向时间 \eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">%% 方位向傅里叶变换可视化</span>
+
+<span class="token function">figure</span><span class="token punctuation">(</span><span class="token string">'name'</span><span class="token punctuation">,</span> "方位向傅里叶变换结果"<span class="token punctuation">)</span>
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">real</span><span class="token punctuation">(</span>S2_tau_feta<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'实部'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向时间\tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向频谱点数f_\eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">abs</span><span class="token punctuation">(</span>S2_tau_feta<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'幅度'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向时间\tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向频谱点数f_\eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">%% 距离徙动校正可视化</span>
+
+<span class="token function">figure</span><span class="token punctuation">(</span><span class="token string">'name'</span><span class="token punctuation">,</span> "距离徙动校正结果"<span class="token punctuation">)</span>
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">real</span><span class="token punctuation">(</span>S3_tau_feta_RCMC<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'实部'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向时间\tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向频率点数 f_\eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">abs</span><span class="token punctuation">(</span>S3_tau_feta_RCMC<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'幅度'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向时间\tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向频率点数 f_\eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token comment">%% 回波成像</span>
+<span class="token function">figure</span><span class="token punctuation">(</span><span class="token string">'name'</span><span class="token punctuation">,</span> "点目标成像结果"<span class="token punctuation">)</span>
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imagesc</span><span class="token punctuation">(</span><span class="token function">abs</span><span class="token punctuation">(</span>S4_tau_eta<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'幅度'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向时间\tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向时间 \eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token function">subplot</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">imshow</span><span class="token punctuation">(</span><span class="token function">abs</span><span class="token punctuation">(</span>S4_tau_eta<span class="token punctuation">)</span><span class="token operator">./</span><span class="token function">max</span><span class="token punctuation">(</span><span class="token function">max</span><span class="token punctuation">(</span><span class="token function">abs</span><span class="token punctuation">(</span>S4_tau_eta<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">title</span><span class="token punctuation">(</span><span class="token string">'幅度'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">ylabel</span><span class="token punctuation">(</span><span class="token string">'距离向时间\tau'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token function">xlabel</span><span class="token punctuation">(</span><span class="token string">'方位向时间 \eta'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e82288ec6a47dbfa973052823fc16355/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【数据结构】——（二叉树）堆</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b4806d56dd29d94df580fa6d326cb5ff/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">基于springboot&#43;vue&#43;Mysql的数码论坛系统设计与实现</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

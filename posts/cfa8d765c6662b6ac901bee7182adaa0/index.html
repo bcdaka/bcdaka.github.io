@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【MySQL】事务？隔离级别？锁？详解MySQL并发控制机制 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/cfa8d765c6662b6ac901bee7182adaa0/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【MySQL】事务？隔离级别？锁？详解MySQL并发控制机制">
+  <meta property="og:description" content="目录
+1.先理清一下概念
+2.锁
+2.1.分类
+2.2.表锁
+2.3.行锁（MVCC）
+2.4.如何进行事务间数据的强制同步
+2.5.间隙锁
+2.6.行锁变表锁
+2.7.强制锁行
+1.先理清一下概念 所谓并发控制指的是在对数据库进行并发操作时如何保证数据的一致性和正确性。在数据库中与并发控制相关的概念有如下几个：
+事务
+隔离界别
+锁
+这几个概念大家应该都知道，但是我猜很多人没有把它们串在一起搞明白他们之间的关系，导致这三个概念各是各的，造成记忆负担，最后对整个数据库并发控制的体系也云里雾里的。
+锁与事务的关系：
+在计算机科学中，做并发控制都是用的“标志位”来实现的，说直白一点就是锁，我们基本上可以说计算机科学中并发控制的底层都是锁的思想。在数据库中也不例外，也是通过锁来实现并发控制的。使用上锁之后，整个数据库的读写都会对外呈现出一些特质，这些特质就是事务（ACID），原子性、一致性、隔离性、持久性。
+锁与隔离级别的关系：
+当然锁有很多，在数据库中有行锁、表锁、读锁、写锁等等......不同级别的锁，ACID这些特质的强弱不同，这个强弱的级别就是“隔离级别”。
+所以综合起来说就是用锁来实现并发控制，对外会呈现出事务（ACID），锁的级别的不同，ACID的强弱也不同，隔离级别对应也不同。
+三个东西的关系理清楚后，来回顾一下事务和隔离级别的具体内容。
+事务：
+事务是为了保证SQL之间不产生脏数据。innodb中默认没有被包裹在事务中的一个单条SQL就是一个事务。事务是一类特征的总称，合起来为ACID：
+原子性 (Atomicity):一个事务是一个不可分割的工作单元；事务中的所有操作要么全部成功执行，要么全部不执行。如果事务中的任何部分失败，则整个事务将被回滚到事务开始前的状态。一致性 (Consistency):在事务开始和结束时，数据库都必须处于一致状态。这意味着事务的执行不会违反任何数据库约束或规则，并且会保持业务逻辑上的一致性。一旦事务完成，它应该使数据库从一个有效状态变为另一个有效状态。隔离性 (Isolation):并发执行的多个事务之间互不干扰，如同它们是按顺序独立执行一样。这防止了脏读（读取未提交的数据）、不可重复读（在同一事务内多次读取同一数据时结果不同）和幻读（在事务中多次执行相同的查询时，由于其他已提交事务的插入或删除操作导致结果集发生变化）等现象。持久性 (Durability):当事务成功提交后，其对数据库所做的修改将会永久保存，即使系统发生故障（如崩溃、重启等）也不会丢失这些修改。持久性通常是通过日志记录和恢复机制来保证的。 隔离级别：
+事务内具有原子性，但是事务间不具有原子性，并发情况下，多事务间仍然会存在脏数据的问题。
+1、脏读：事务A读取了事务B更新的数据，然后B回滚操作，那么A读取到的数据是脏数据。
+2、不可重复读：事务 A 多次读取同一数据，事务 B 在事务A多次读取的过程中，对数据作了更新并提交，导致事务A多次读取同一数据时，结果 不一致。
+3、幻读：系统管理员A将数据库中所有学生的成绩从具体分数改为ABCDE等级，但是系统管理员B就在这个时候插入了一条具体分数的记录，当系统管理员A改结束后发现还有一条记录没有改过来，就好像发生了幻觉一样，这就叫幻读。
+隔离级别就是为了保证事务之间不产生脏数据。
+2.锁 2.1.分类 按照对数据的操作类型分类，分为：读锁、写锁。
+按照对数据操作的粒度分类，分为：行锁、表锁、
+表锁：
+开销小、加锁快，无死锁，锁的粒度大，发生锁冲突的概率最高，并发度最低。
+读锁：
+又叫共享锁，针对同一份数据，多个读操作可以同时进行而不互相影响。针对被锁表，所有客户端都可以进行读操作，所有客户端都无法进行写操作，加锁方和其他客户端的区别是，加锁方直接不允许进行写操作，而其他客户端的写操作允许进行，只是会被阻塞挂起。锁解开后，所有挂起的操作线程会去重新争抢资源。
+写锁：
+又叫排它锁，当前写操作没有完成前，它会阻断其他写锁和读锁。针对被锁表，加锁方可以读写，其他客户端不行。其他客户端的写操作会直接失败，读操作会被阻塞挂起，解锁以后，被挂起的线程会重新去争抢资源。
+保护机制：
+读锁、写锁中，加锁方都只能读当前被自己锁定的表，这是MySQL的一个保护机制，为的就是强制要求加锁方给出一个说法，到底准备锁多久，不给说法不让走。
+MySQL中不同引擎支持不同级别的锁，myIsam支持表锁，innodb支持行锁。
+2.2.表锁 表锁，我们当然是要基于使用表锁的存储引擎来聊，也就是基于myIsam引擎。
+myIsam引擎中的读写锁是自动加的。
+myIsam引擎在解锁后的阻塞队列中进行读写锁调度是写优先，这样一旦阻塞队列中大量都是写操作，那么读操作会很难得到锁，变得很慢，从而造成永久堵塞。
+当然除了自动加锁，表锁可以通过指令来加锁。
+查看所有锁：
+show open tables 解锁：
+解铃还须系铃人，只有加锁方能解锁。
+unlock tables 加读锁:
+lock table 表名 read 加写锁">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-03-25T11:31:13+08:00">
+    <meta property="article:modified_time" content="2024-03-25T11:31:13+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【MySQL】事务？隔离级别？锁？详解MySQL并发控制机制</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="1.%E5%85%88%E7%90%86%E6%B8%85%E4%B8%80%E4%B8%8B%E6%A6%82%E5%BF%B5-toc" style="margin-left:0px;"><a href="#1.%E5%85%88%E7%90%86%E6%B8%85%E4%B8%80%E4%B8%8B%E6%A6%82%E5%BF%B5" rel="nofollow">1.先理清一下概念</a></p> 
+<p id="2.%E9%94%81-toc" style="margin-left:0px;"><a href="#2.%E9%94%81" rel="nofollow">2.锁</a></p> 
+<p id="2.1.%E5%88%86%E7%B1%BB-toc" style="margin-left:40px;"><a href="#2.1.%E5%88%86%E7%B1%BB" rel="nofollow">2.1.分类</a></p> 
+<p id="2.2.%E8%A1%A8%E9%94%81-toc" style="margin-left:40px;"><a href="#2.2.%E8%A1%A8%E9%94%81" rel="nofollow">2.2.表锁</a></p> 
+<p id="2.3.%E8%A1%8C%E9%94%81%EF%BC%88MVCC%EF%BC%89-toc" style="margin-left:40px;"><a href="#2.3.%E8%A1%8C%E9%94%81%EF%BC%88MVCC%EF%BC%89" rel="nofollow">2.3.行锁（MVCC）</a></p> 
+<p id="2.4.%E5%A6%82%E4%BD%95%E8%BF%9B%E8%A1%8C%E4%BA%8B%E5%8A%A1%E9%97%B4%E6%95%B0%E6%8D%AE%E7%9A%84%E5%BC%BA%E5%88%B6%E5%90%8C%E6%AD%A5-toc" style="margin-left:40px;"><a href="#2.4.%E5%A6%82%E4%BD%95%E8%BF%9B%E8%A1%8C%E4%BA%8B%E5%8A%A1%E9%97%B4%E6%95%B0%E6%8D%AE%E7%9A%84%E5%BC%BA%E5%88%B6%E5%90%8C%E6%AD%A5" rel="nofollow">2.4.如何进行事务间数据的强制同步</a></p> 
+<p id="2.4.%E9%97%B4%E9%9A%99%E9%94%81-toc" style="margin-left:40px;"><a href="#2.4.%E9%97%B4%E9%9A%99%E9%94%81" rel="nofollow">2.5.间隙锁</a></p> 
+<p id="2.5.%E8%A1%8C%E9%94%81%E5%8F%98%E8%A1%A8%E9%94%81-toc" style="margin-left:40px;"><a href="#2.5.%E8%A1%8C%E9%94%81%E5%8F%98%E8%A1%A8%E9%94%81" rel="nofollow">2.6.行锁变表锁</a></p> 
+<p id="2.6.%E5%BC%BA%E5%88%B6%E9%94%81%E8%A1%8C-toc" style="margin-left:40px;"><a href="#2.6.%E5%BC%BA%E5%88%B6%E9%94%81%E8%A1%8C" rel="nofollow">2.7.强制锁行</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h2 id="1.%E5%85%88%E7%90%86%E6%B8%85%E4%B8%80%E4%B8%8B%E6%A6%82%E5%BF%B5">1.先理清一下概念</h2> 
+<p>所谓并发控制指的是在对数据库进行并发操作时如何保证数据的一致性和正确性。在数据库中与并发控制相关的概念有如下几个：</p> 
+<ul><li> <p>事务</p> </li><li> <p>隔离界别</p> </li><li> <p>锁</p> </li></ul> 
+<p>这几个概念大家应该都知道，但是我猜很多人没有把它们串在一起搞明白他们之间的关系，导致这三个概念各是各的，造成记忆负担，最后对整个数据库并发控制的体系也云里雾里的。</p> 
+<p><strong>锁与事务的关系：</strong></p> 
+<p>在计算机科学中，做并发控制都是用的“标志位”来实现的，说直白一点就是锁，我们基本上可以说计算机科学中并发控制的底层都是锁的思想。在数据库中也不例外，也是通过锁来实现并发控制的。使用上锁之后，整个数据库的读写都会对外呈现出一些特质，这些特质就是事务（ACID），原子性、一致性、隔离性、持久性。</p> 
+<p><strong>锁与隔离级别的关系：</strong></p> 
+<p>当然锁有很多，在数据库中有行锁、表锁、读锁、写锁等等......不同级别的锁，ACID这些特质的强弱不同，这个强弱的级别就是“隔离级别”。</p> 
+<p>所以综合起来说就是用锁来实现并发控制，对外会呈现出事务（ACID），锁的级别的不同，ACID的强弱也不同，隔离级别对应也不同。</p> 
+<p>三个东西的关系理清楚后，来回顾一下事务和隔离级别的具体内容。</p> 
+<p><strong>事务：</strong></p> 
+<p>事务是为了保证SQL之间不产生脏数据。innodb中默认没有被包裹在事务中的一个单条SQL就是一个事务。事务是一类特征的总称，合起来为ACID：</p> 
+<ul><li>原子性 (Atomicity):一个事务是一个不可分割的工作单元；事务中的所有操作要么全部成功执行，要么全部不执行。如果事务中的任何部分失败，则整个事务将被回滚到事务开始前的状态。</li><li>一致性 (Consistency):在事务开始和结束时，数据库都必须处于一致状态。这意味着事务的执行不会违反任何数据库约束或规则，并且会保持业务逻辑上的一致性。一旦事务完成，它应该使数据库从一个有效状态变为另一个有效状态。</li><li>隔离性 (Isolation):并发执行的多个事务之间互不干扰，如同它们是按顺序独立执行一样。这防止了脏读（读取未提交的数据）、不可重复读（在同一事务内多次读取同一数据时结果不同）和幻读（在事务中多次执行相同的查询时，由于其他已提交事务的插入或删除操作导致结果集发生变化）等现象。</li><li>持久性 (Durability):当事务成功提交后，其对数据库所做的修改将会永久保存，即使系统发生故障（如崩溃、重启等）也不会丢失这些修改。持久性通常是通过日志记录和恢复机制来保证的。</li></ul> 
+<p><strong>隔离级别：</strong></p> 
+<p>事务内具有原子性，但是事务间不具有原子性，并发情况下，多事务间仍然会存在脏数据的问题。</p> 
+<p>1、脏读：事务A读取了事务B更新的数据，然后B回滚操作，那么A读取到的数据是脏数据。</p> 
+<p>2、不可重复读：事务 A 多次读取同一数据，事务 B 在事务A多次读取的过程中，对数据作了更新并提交，导致事务A多次读取同一数据时，结果 不一致。</p> 
+<p>3、幻读：系统管理员A将数据库中所有学生的成绩从具体分数改为ABCDE等级，但是系统管理员B就在这个时候插入了一条具体分数的记录，当系统管理员A改结束后发现还有一条记录没有改过来，就好像发生了幻觉一样，这就叫幻读。</p> 
+<p>隔离级别就是为了保证事务之间不产生脏数据。</p> 
+<p><img alt="" height="286" src="https://images2.imgbox.com/d5/be/MQYga6eD_o.png" width="1200"></p> 
+<h2 id="2.%E9%94%81">2.锁</h2> 
+<h3 id="2.1.%E5%88%86%E7%B1%BB">2.1.分类</h3> 
+<p>按照对数据的操作类型分类，分为：读锁、写锁。</p> 
+<p>按照对数据操作的粒度分类，分为：行锁、表锁、</p> 
+<p><strong>表锁：</strong></p> 
+<p>开销小、加锁快，无死锁，锁的粒度大，发生锁冲突的概率最高，并发度最低。</p> 
+<p><strong>读锁：</strong></p> 
+<p>又叫共享锁，针对同一份数据，多个读操作可以同时进行而不互相影响。针对被锁表，所有客户端都可以进行读操作，所有客户端都无法进行写操作，加锁方和其他客户端的区别是，加锁方直接不允许进行写操作，而其他客户端的写操作允许进行，只是会被阻塞挂起。锁解开后，所有挂起的操作线程会去重新争抢资源。</p> 
+<p><strong>写锁：</strong></p> 
+<p>又叫排它锁，当前写操作没有完成前，它会阻断其他写锁和读锁。针对被锁表，加锁方可以<strong>读</strong>写，其他客户端不行。其他客户端的写操作会直接失败，读操作会被阻塞挂起，解锁以后，被挂起的线程会重新去争抢资源。</p> 
+<p><strong>保护机制：</strong></p> 
+<p>读锁、写锁中，加锁方都只能读当前被自己锁定的表，这是MySQL的一个保护机制，为的就是强制要求加锁方给出一个说法，到底准备锁多久，不给说法不让走。</p> 
+<p><strong><span style="background-color:#ffd900;">MySQL中不同引擎支持不同级别的锁，myIsam支持表锁，innodb支持行锁。</span></strong></p> 
+<h3 id="2.2.%E8%A1%A8%E9%94%81">2.2.表锁</h3> 
+<p>表锁，我们当然是要基于使用表锁的存储引擎来聊，也就是基于myIsam引擎。</p> 
+<p>myIsam引擎中的读写锁是自动加的。</p> 
+<p><strong>myIsam引擎在解锁后的阻塞队列中进行读写锁调度是写优先，这样一旦阻塞队列中大量都是写操作，那么读操作会很难得到锁，变得很慢，从而造成永久堵塞。</strong></p> 
+<p><img alt="" height="501" src="https://images2.imgbox.com/c8/27/LLtWSAD3_o.png" width="1200"></p> 
+<p>当然除了自动加锁，表锁可以通过指令来加锁。</p> 
+<p>查看所有锁：</p> 
+<blockquote> 
+ <pre>show open tables</pre> 
+</blockquote> 
+<p>解锁：</p> 
+<p>解铃还须系铃人，只有加锁方能解锁。</p> 
+<blockquote> 
+ <pre>unlock  tables</pre> 
+</blockquote> 
+<p>加读锁:</p> 
+<blockquote> 
+ <pre>lock table 表名 read</pre> 
+</blockquote> 
+<p>加写锁</p> 
+<blockquote> 
+ <pre>lock table 表名 write</pre> 
+</blockquote> 
+<h3 id="2.3.%E8%A1%8C%E9%94%81%EF%BC%88MVCC%EF%BC%89">2.3.行锁（MVCC）</h3> 
+<p>行锁，我们当然是要基于使用行锁的存储引擎来聊，也就是基于innodb引擎。innodb和myIsam最大的不同有两点，一是支持事务，二是采用了行级锁。innodb下读写都是自动加行锁，这没有什么好说的。但是行锁因为粒度太细了，会影响效率的，innodb没有傻傻的只用了行锁，还给出了行锁的优化方案——MVCC。</p> 
+<p>MVCC，多版本并发控制，本质上就是使用行锁锁定数据。</p> 
+<p>对于锁的实现方式来说无非就两种</p> 
+<ul><li>悲观锁： 基于锁的并发控制，认为数据大概率会存在并发问题，所以进行数据更改前先给要操作的数据加上锁。程序员B开始修改数据时，给这些数据加上锁，程序员A这时再读，就发现读取不了，处于等待情况，只能等B操作完才能读数据，这保证A不会读到一个不一致的数据，但是这个会影响程序的运行效率。</li><li>乐观锁：基于版本号的并发控制，认为数据大概率不会存在并发问题，所以在进行数据操作的时候不加锁，而是在提交修改操作的时候通过版本号来确定数据有没有被第三方动过。</li></ul> 
+<p>对于行级锁这种粒度这么细的锁，选用悲观锁性能肯定是不佳的，所以mvcc其实选用的都是乐观锁。</p> 
+<p><strong>举个例子：</strong></p> 
+<p>当使用mysql的innodb模式的时候，在mvcc的机制下，当事务A读取了表a的快照，在事务A提交前事务B又去读取了表a并且修改了数据，接下来事务A提交时会有什么效果，直接失败回滚事务还是？</p> 
+<p>在这种情况下：<br> 事务A提交时，InnoDB会检查事务A对数据进行更新时的数据版本是否与事务A最初读取数据时的版本一致。如果事务B修改的数据行与事务A无关，那么事务A可以正常提交，因为它们操作的是不同的数据行。<br> 如果事务B修改的数据行正好是事务A准备更新的那部分数据，由于事务A处于可重复读隔离级别，它看到的是先前的版本，不会看到事务B的修改。当事务A尝试提交时，InnoDB的事务处理机制会确保事务的一致性，通常有两种可能的结果：<br> a. 如果InnoDB检测到事务A试图更新的数据已经被事务B更新过（即版本冲突），事务A的更新操作可能会导致一个死锁错误（Deadlock），在这种情况下，InnoDB会选择回滚其中一个事务以解决死锁问题，通常会回滚较晚开始或者较晚修改数据的事务（在这里可能是事务A）。<br> b. 如果InnoDB的并发控制机制足够强大（例如使用Next-Key Locks来防止幻读），事务A在更新数据时就已经被阻止，也就是说事务A在尝试更新数据时就会被阻塞，直到事务B完成并释放锁，事务A才能继续，进而根据实际情况决定是成功提交还是因数据已改变而回滚。</p> 
+<h3 id="2.4.%E5%A6%82%E4%BD%95%E8%BF%9B%E8%A1%8C%E4%BA%8B%E5%8A%A1%E9%97%B4%E6%95%B0%E6%8D%AE%E7%9A%84%E5%BC%BA%E5%88%B6%E5%90%8C%E6%AD%A5"><strong>2.4.如何进行事务间数据的强制同步</strong></h3> 
+<p>MySQL的MVCC是在提交的时候才比对数据是否又修改，那么有没有办法让所有事务间的数据都是强制同步的喃？有！通过关闭自动提交改为手动提交来保证修改的顺序性。</p> 
+<p>数据库默认开启自动提交，通过set autocommit=0可以关闭自动提交。</p> 
+<p>关闭后每次执行sql以后，通过commit命令来手动提交，才会对数据库产生影响，否则只会对当前操作方的数据快照有影响。<strong>innodb引擎中，其他客户端想查看到最新的数据情况也必须通过commit指令来做一次同步（因为innodb默认隔离级别为可重复读）。</strong></p> 
+<p>当一个客户端修改某行数据，未commit前，其他客户端对该行数据的修改会阻塞挂起，直到先改那个用户commit为止。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/cd/c0/ErSdUPVD_o.jpg"></p> 
+<h3 id="2.4.%E9%97%B4%E9%9A%99%E9%94%81">2.5.间隙锁</h3> 
+<p>使用范围条件匹配时，innodb会给符合条件的已有数据记录的索引加“范围锁”（范围锁是特殊的行锁），对于键值在条件范围内但并不存在的记录，叫做间隙（GAP），innodb也会对这个间隙加锁，这种机制叫做“间隙锁”</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/5a/04/7Wlvu8tl_o.jpg"></p> 
+<h3 id="2.5.%E8%A1%8C%E9%94%81%E5%8F%98%E8%A1%A8%E9%94%81">2.6.行锁变表锁</h3> 
+<p>任何需要全表扫描的情况时，行锁都会升级为表锁。</p> 
+<p>因为MySQL不知道到底该锁哪行，所以会将整个表都锁起来，然后再进行全表扫描。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/e1/1f/4yvLNRI2_o.jpg"></p> 
+<p>全表扫描的情况无非两种：</p> 
+<ol><li> <p>没建索引。</p> </li><li> <p>索引失效。</p> </li></ol> 
+<h3 id="2.6.%E5%BC%BA%E5%88%B6%E9%94%81%E8%A1%8C">2.7.强制锁行</h3> 
+<p>通过 for update 可以在无update操作下，强制锁定一行。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/84/47/Y6B1J8fa_o.jpg"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e6cafa064b9c711784fc0367886eb9e2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">springboot项目接入Oracle数据库配置</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/47db29d3c6cd3e70c01b5e1ceb47efba/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">深入浅出：实现前端菜单权限控制的策略详解（结尾附vue3完整示例代码）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

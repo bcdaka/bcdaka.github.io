@@ -1,0 +1,2294 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>PyFlink核心知识点 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/04ffeaa836173e58fea6454db18c67a7/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="PyFlink核心知识点">
+  <meta property="og:description" content="1. 核心概念 1.1. job执行流程 四层
+说明
+备注
+SteamGraph
+代码生成的最初的图
+表示程序的拓扑结构
+JobGraph
+将多个符合条件的节点，链接为一个节点
+可以减少数据在节点之间流动所需要的序列化/反序列化/传输消耗
+ExecutionGraph
+JobGraph的并行化版本
+是调度层最核心的数据结构
+PhysicalGraph
+JobManager根据ExecutionGraph对Job进行调度后，在各个TaskManager上部署Task后形成的图
+并不是一个具体的数据结构
+首先，用户通过api开发的代码，会被flink任务提交客户端生成SteamGraph；然后，客户端将SteamGraph加工成jobGraph。对SteamGraph中将多个符合条件的节点，链接为一个节点；然后，客户端将jobGraph提交到到集群JobManager，JobManager将其转化为ExecutionGraph（并行化后的执行图）；最后 ，ExecutionGraph中的各个task会以多并行示例（subTask）部署到taskManager上去执行（subTask运行的位置是taskManager提供的槽位（slot），槽位简单理解就是线程），实际运行的图就是PhysicalGraph。 1.2. task 通俗地理解，task就是一段代码逻辑。一个task中可以封装一个算子的计算逻辑，也可以封装多个算子的计算逻辑。
+1.3. subTask task的运行实例（线程），是任务调度的最小单位。
+1.4. Task Slots 在 TaskManager 中资源调度的最小单位是 task slot。TaskManager 中 task slot 的数量表示并发处理 task 的数量；task slot只隔离内存，不隔离cpu。 一个task slot 中可以执行多个算子，即多个算子可以被绑定到一个task中。这取决于于3个条件： 上下游算子是one to one 传输；上下游算子并行度相同；上下游算子属于相同的slotSharingGroup（槽位共享组）。 一个task slot 中可以运行多个不同task的各自的一个并行实例同一个task的多个并行实例，不能放在同一个task slot中 一个job中并行度最大的那个task的并行度 &lt;= 可用槽位数 2. Stream API 2.1. sources 2.1.1. 自定义source add_source()方法支持添加在java中定义的SourceFunction，实现方案如下：
+使用java api 自定义 SourceFunction 可以定义单并行度、多并行度source">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-02-29T10:49:07+08:00">
+    <meta property="article:modified_time" content="2024-02-29T10:49:07+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">PyFlink核心知识点</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2 id="cw0Eb">1. 核心概念</h2> 
+<h3 id="kme9r">1.1. job执行流程</h3> 
+<table id="ds2V3"><tbody><tr><td> <p id="uee0d0dc9">四层</p> </td><td> <p id="u154015da">说明</p> </td><td> <p id="u392ba21c">备注</p> </td></tr><tr><td> <p id="u9f7c60f6">SteamGraph</p> </td><td> <p id="uf4308df5">代码生成的最初的图</p> </td><td> <p id="u9901f35b">表示程序的拓扑结构</p> </td></tr><tr><td> <p id="u4452f966">JobGraph</p> </td><td> <p id="u83f38f1a">将多个符合条件的节点，链接为一个节点</p> </td><td> <p id="uff6a6303">可以减少数据在节点之间流动所需要的序列化/反序列化/传输消耗</p> </td></tr><tr><td> <p id="uc65b050c">ExecutionGraph</p> </td><td> <p id="u0406e586">JobGraph的并行化版本</p> </td><td> <p id="ufc1e053c">是调度层最核心的数据结构</p> </td></tr><tr><td> <p id="u0c248811">PhysicalGraph</p> </td><td> <p id="ue74467e7">JobManager根据ExecutionGraph对Job进行调度后，在各个TaskManager上部署Task后形成的图</p> </td><td> <p id="ua12f6a32">并不是一个具体的数据结构</p> </td></tr></tbody></table> 
+<ul><li id="u005275ff">首先，用户通过api开发的代码，会被flink任务提交<strong>客户端</strong>生成<strong>SteamGraph</strong>；</li><li id="uc2af668e">然后，<strong>客户端</strong>将<strong>SteamGraph</strong>加工成<strong>jobGraph</strong><strong>。</strong>对SteamGraph中将多个符合条件的节点，链接为一个节点；</li><li id="u22eb1a63">然后，<strong>客户端</strong>将jobGraph提交到到集群JobManager，<strong>JobManager</strong>将其转化为<strong>ExecutionGraph</strong>（并行化后的执行图）；</li><li id="u8418f746">最后 ，ExecutionGraph中的各个task会以多并行示例（subTask）部署到taskManager上去执行（subTask运行的位置是taskManager提供的槽位（slot），槽位简单理解就是线程），实际运行的图就是<strong>PhysicalGraph</strong>。</li></ul> 
+<p id="ue1ccd291"></p> 
+<p class="img-center"><img alt="" height="1200" id="h0Cce" src="https://images2.imgbox.com/00/06/YrYP7U41_o.png" width="1200"></p> 
+<h3 id="USPos">1.2. task</h3> 
+<p id="u9611f85b">通俗地理解，task就是一段代码逻辑。一个task中可以封装一个算子的计算逻辑，也可以封装多个算子的计算逻辑。</p> 
+<h3 id="WwyX6">1.3. subTask</h3> 
+<p id="ub07245da">task的运行实例（线程），是<strong>任务调度</strong>的<strong>最小单位。</strong></p> 
+<p id="ude524a44"></p> 
+<p class="img-center"><img alt="" height="714" id="W1fhQ" src="https://images2.imgbox.com/2d/0a/qAWcqoYC_o.png" width="1200"></p> 
+<h3 id="t8n7c">1.4. Task Slots</h3> 
+<ul><li id="u348e982f">在 TaskManager 中<strong>资源调度</strong>的<strong>最小单位</strong>是 task <em>slot</em>。TaskManager 中 task slot 的数量表示<strong>并发处理 task 的数量</strong>；</li><li id="u5bcebf46">task slot只隔离内存，不隔离cpu。</li></ul> 
+<p id="u52ba6f99"></p> 
+<p class="img-center"><img alt="" height="718" id="qObp4" src="https://images2.imgbox.com/65/01/7wQ2hMFd_o.png" width="1200"></p> 
+<ul><li id="u018e7156">一个task slot 中可以执行多个算子，即多个算子可以被绑定到一个task中。这取决于于3个条件：</li></ul> 
+<ul><li> 
+  <ul><li id="uf238eee6">上下游算子是one to one 传输；</li><li id="uf5dbb291">上下游算子并行度相同；</li><li id="u6cfb3cdc">上下游算子属于相同的slotSharingGroup（槽位共享组）。</li></ul></li></ul> 
+<ul><li id="u8d6bd8e9">一个task slot 中可以运行多个不同task的各自的一个并行实例</li><li id="u39202fe1">同一个task的多个并行实例，不能放在同一个task slot中</li></ul> 
+<p id="ubc2d217e"></p> 
+<p class="img-center"><img alt="" height="699" id="qF4Qe" src="https://images2.imgbox.com/ec/dc/gAq8xgkg_o.png" width="1200"></p> 
+<p id="u1e0635e1"></p> 
+<p class="img-center"><img alt="" height="716" id="qW1kf" src="https://images2.imgbox.com/fd/0e/lEFLl5WK_o.png" width="1200"></p> 
+<ul><li id="u97cd963f">一个job中并行度最大的那个task的并行度 &lt;= 可用槽位数</li></ul> 
+<h2 id="u0xdI">2. Stream API</h2> 
+<h3 id="QXIHP">2.1. sources</h3> 
+<h4 id="ISLBG">2.1.1. 自定义source</h4> 
+<p id="u77d76134">add_source()方法支持添加在java中定义的<strong>SourceFunction</strong>，实现方案如下：</p> 
+<ol><li id="u55f72f30">使用java api 自定义 <strong>SourceFunction</strong></li></ol> 
+<p id="ua339f5df">可以定义单并行度、多并行度source</p> 
+<pre id="FMqAe"><code>package com.siweicn.flink.test;
+
+import org.apache.flink.streaming.api.functions.source.RichSourceFunction;
+import org.apache.flink.types.Row;
+
+import java.util.Random;
+
+public class MyRichSourceFunction extends RichSourceFunction {
+
+    private static final String[] NAMES = {"Bob", "Marry", "Henry", "Mike", "Ted", "Jack"};
+    @Override
+    public void run(SourceContext sourceContext) throws Exception {
+        Random random = new Random();
+        for (int i = 0; i &lt; NAMES.length; i++) {
+            Row row = Row.of(i, NAMES[i]);
+            sourceContext.collect(row);
+        }
+    }
+
+    @Override
+    public void cancel() {
+
+    }
+}</code></pre> 
+<ol><li id="uedc69833">打jar包</li></ol> 
+<pre id="UCqIE"><code>&lt;?xml version="1.0" encoding="UTF-8"?&gt;
+&lt;project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd"&gt;
+    &lt;modelVersion&gt;4.0.0&lt;/modelVersion&gt;
+
+    &lt;groupId&gt;org.example&lt;/groupId&gt;
+    &lt;artifactId&gt;flink_1.16&lt;/artifactId&gt;
+    &lt;version&gt;1.0-SNAPSHOT&lt;/version&gt;
+
+    &lt;properties&gt;
+        &lt;maven.compiler.source&gt;8&lt;/maven.compiler.source&gt;
+        &lt;maven.compiler.target&gt;8&lt;/maven.compiler.target&gt;
+        &lt;flink.version&gt;1.16.1&lt;/flink.version&gt;
+        &lt;java.version&gt;1.8&lt;/java.version&gt;
+        &lt;scala.binary.version&gt;2.12&lt;/scala.binary.version&gt;
+        &lt;project.build.sourceEncoding&gt;UTF-8&lt;/project.build.sourceEncoding&gt;
+    &lt;/properties&gt;
+
+    &lt;dependencies&gt;
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.apache.flink&lt;/groupId&gt;
+            &lt;artifactId&gt;flink-java&lt;/artifactId&gt;
+            &lt;version&gt;${flink.version}&lt;/version&gt;
+        &lt;/dependency&gt;
+
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.apache.flink&lt;/groupId&gt;
+            &lt;artifactId&gt;flink-streaming-java&lt;/artifactId&gt;
+            &lt;version&gt;${flink.version}&lt;/version&gt;
+        &lt;/dependency&gt;
+
+        &lt;dependency&gt;
+            &lt;groupId&gt;mysql&lt;/groupId&gt;
+            &lt;artifactId&gt;mysql-connector-java&lt;/artifactId&gt;
+            &lt;version&gt;5.1.47&lt;/version&gt;
+        &lt;/dependency&gt;
+
+        &lt;dependency&gt;
+            &lt;groupId&gt;org.apache.flink&lt;/groupId&gt;
+            &lt;artifactId&gt;flink-connector-jdbc&lt;/artifactId&gt;
+            &lt;version&gt;${flink.version}&lt;/version&gt;
+        &lt;/dependency&gt;
+    &lt;/dependencies&gt;
+
+
+    &lt;build&gt;
+        &lt;plugins&gt;
+            &lt;plugin&gt;
+                &lt;groupId&gt;org.apache.maven.plugins&lt;/groupId&gt;
+                &lt;artifactId&gt;maven-assembly-plugin&lt;/artifactId&gt;
+                &lt;version&gt;3.0.0&lt;/version&gt;
+                &lt;configuration&gt;
+                    &lt;descriptorRefs&gt;
+                        &lt;descriptorRef&gt;jar-with-dependencies&lt;/descriptorRef&gt;
+                    &lt;/descriptorRefs&gt;
+                &lt;/configuration&gt;
+                &lt;executions&gt;
+                    &lt;execution&gt;
+                        &lt;id&gt;make-assembly&lt;/id&gt;
+                        &lt;phase&gt;package&lt;/phase&gt;
+                        &lt;goals&gt;
+                            &lt;goal&gt;single&lt;/goal&gt;
+                        &lt;/goals&gt;
+                    &lt;/execution&gt;
+                &lt;/executions&gt;
+            &lt;/plugin&gt;
+            &lt;plugin&gt;
+                &lt;groupId&gt;org.apache.maven.plugins&lt;/groupId&gt;
+                &lt;artifactId&gt;maven-compiler-plugin&lt;/artifactId&gt;
+                &lt;version&gt;3.8.0&lt;/version&gt;
+                &lt;configuration&gt;
+                    &lt;source&gt;${java.version}&lt;/source&gt;
+                    &lt;target&gt;${java.version}&lt;/target&gt;
+                    &lt;encoding&gt;UTF-8&lt;/encoding&gt;
+                &lt;/configuration&gt;
+            &lt;/plugin&gt;
+        &lt;/plugins&gt;
+    &lt;/build&gt;
+
+&lt;/project&gt;</code></pre> 
+<ol><li id="uaccd86ed">在PyFlink中引用jar包</li></ol> 
+<pre id="pYmWD"><code class="language-python"># -*-coding:utf-8-*-
+from pyflink.common import Types, Configuration
+from pyflink.datastream import StreamExecutionEnvironment, SourceFunction, ProcessFunction
+from pyflink.java_gateway import get_gateway
+from pyflink.table import EnvironmentSettings, TableEnvironment
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    config = Configuration()
+    # ########################### 指定 jar 依赖 ###########################
+    config.set_string("pipeline.jars", "file:///F:/pycharm_projects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar;file:///F:/pycharm_projects/pyflink/jars/flink_1.16-1.0-SNAPSHOT-jar-with-dependencies.jar")
+
+    env.set_parallelism(1)
+    env.configure(config)
+
+    custom_source = SourceFunction("com.siweicn.flink.test.MyRichSourceFunction")
+    # add_source 就是来源于自定义的source   from_source 就是来源于已有的source
+    ds = env.add_source(custom_source, type_info=Types.ROW([Types.INT(), Types.STRING()]))
+
+    ds.print()
+
+    env.execute()</code></pre> 
+<h4 id="OMAjN">2.1.2. kafka source</h4> 
+<pre id="uPNnV"><code class="language-python"># -*-coding:utf-8-*-
+from pyflink.common import SimpleStringSchema, WatermarkStrategy, Row, Types
+from pyflink.datastream import StreamExecutionEnvironment, TimeCharacteristic
+from pyflink.datastream.connectors.jdbc import JdbcSink, JdbcConnectionOptions, JdbcExecutionOptions
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
+
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    # 使用kafka source需要加入kafka的jar包依赖，jdbc依赖
+    env.add_jars("file:///F:/pycharm_projects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+                 "file:///F:/pycharm_projects/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+                 "file:///F:/pycharm_projects/pyflink/jars/mysql-connector-java-5.1.47.jar")
+    env.set_stream_time_characteristic(TimeCharacteristic.EventTime)
+    env.set_parallelism(1)
+
+    #  构建kafka source
+    source = KafkaSource.builder() \
+        .set_bootstrap_servers("192.168.101.177:9092") \
+        .set_topics("pyflink-test") \
+        .set_group_id("pyflink") \
+        .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+        .set_value_only_deserializer(SimpleStringSchema()) \
+        .build()
+
+    source_stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka Source")
+
+    # 定义数据类型
+    type_info = Types.ROW([Types.INT(), Types.STRING()])
+    # 将源数据进行处理，并对数据类型做转换
+    map_stream = source_stream.map(lambda x: Row(int(x.split(",")[0]), x.split(",")[1]), type_info)
+
+    # 构建mysql sink
+    map_stream.add_sink(
+        JdbcSink.sink(
+            "insert into name_info (id, name) values (?, ?)",
+            type_info,
+            JdbcConnectionOptions.JdbcConnectionOptionsBuilder()
+                .with_url('jdbc:mysql://192.168.101.177:3306/pyflink?autoReconnect=true&amp;useSSL=false')
+                .with_driver_name('com.mysql.jdbc.Driver')
+                .with_user_name('root')
+                .with_password('root')
+                .build(),
+            JdbcExecutionOptions.builder()
+                .with_batch_interval_ms(1000)
+                .with_batch_size(200)
+                .with_max_retries(5)
+                .build()
+        ))
+
+    env.execute()</code></pre> 
+<pre id="Lq0zg"><code class="language-python"># -*-coding:utf-8-*-
+from pyflink.common import SimpleStringSchema, WatermarkStrategy, Types
+from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
+from pyflink.datastream.formats.json import JsonRowDeserializationSchema
+
+
+# 从 kafka读取数据，然后将其转成table
+from pyflink.table import StreamTableEnvironment
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    # 使用kafka source需要加入kafka的jar包依赖
+    env.add_jars("file:///F:/pycharm_projects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar")
+    env.set_parallelism(1)
+
+    t_env = StreamTableEnvironment.create(env)
+
+    # kafka 中的数据是json格式
+    row_type_info = Types.ROW_NAMED(['name', 'age'], [Types.STRING(), Types.INT()])
+    json_format = JsonRowDeserializationSchema.builder().type_info(row_type_info).build()
+
+    source = KafkaSource.builder() \
+        .set_bootstrap_servers("192.168.101.177:9092") \
+        .set_topics("pyflink-test") \
+        .set_group_id("pyflink") \
+        .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+        .set_value_only_deserializer(json_format) \
+        .build()
+
+    source_stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka Source")
+
+    table = t_env.from_data_stream(source_stream)
+    table.execute().print()
+    env.execute()</code></pre> 
+<pre id="AgRoo"><code class="language-python"># -*-coding:utf-8-*-
+from pyflink.common import WatermarkStrategy, Types
+from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
+from pyflink.datastream.formats.csv import CsvRowDeserializationSchema
+
+
+# 从 kafka读取数据，然后将其转成table
+from pyflink.table import StreamTableEnvironment
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    # 使用kafka source需要加入kafka的jar包依赖
+    env.add_jars("file:///F:/pycharm_projects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar")
+    env.set_parallelism(1)
+
+    t_env = StreamTableEnvironment.create(env)
+
+    # kafka中的数据是csv的格式
+    row_type_info = Types.ROW_NAMED(['name', 'age'], [Types.STRING(), Types.INT()])
+    csv_format = CsvRowDeserializationSchema.Builder(row_type_info).build()
+
+    source = KafkaSource.builder() \
+        .set_bootstrap_servers("192.168.101.177:9092") \
+        .set_topics("pyflink-test") \
+        .set_group_id("pyflink") \
+        .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+        .set_value_only_deserializer(csv_format) \
+        .build()
+
+    source_stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka Source")
+
+    table = t_env.from_data_stream(source_stream)
+    table.execute().print()
+    env.execute()</code></pre> 
+<h3 id="g7czk">2.2. transformers</h3> 
+<h4 id="D5pik">2.2.1. max(增量聚合算子)</h4> 
+<p id="u90394d4f">测试数据</p> 
+<pre id="tyqJJ"><code>1,aa,male,4
+2,bb,male,3
+3,cc,male,6
+4,dd,female,7
+5,ff,female,4
+6,gg,female,5</code></pre> 
+<pre id="ldxP5"><code class="language-python">from pyflink.datastream import StreamExecutionEnvironment
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    # 设置算子并行度
+    env.set_parallelism(1)
+
+    file_source = env.read_text_file("../../data/transformation_max_test_data.txt")
+
+    file_source.map(lambda x: (x.split(",")[0], x.split(",")[1], x.split(",")[2], x.split(",")[3])).key_by(lambda x: x[2]).max(3).print()
+
+    env.execute()</code></pre> 
+<p id="u8495cfb5">输出结果</p> 
+<pre id="kDYus"><code>('1', 'aa', 'male', '4')
+('1', 'aa', 'male', '4')
+('1', 'aa', 'male', '6')
+('4', 'dd', 'female', '7')
+('4', 'dd', 'female', '7')
+('4', 'dd', 'female', '7')</code></pre> 
+<h4 id="JbrUO">2.2.2. max_by(增量聚合算子)</h4> 
+<p id="ud7320d4c">测试数据</p> 
+<pre id="ucCCe"><code>1,aa,male,4
+2,bb,male,3
+3,cc,male,6
+4,dd,female,7
+5,ff,female,4
+6,gg,female,5</code></pre> 
+<pre id="SxxQN"><code class="language-python">from pyflink.datastream import StreamExecutionEnvironment
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    # 设置算子并行度
+    env.set_parallelism(1)
+
+    file_source = env.read_text_file("../../data/transformation_max_test_data.txt")
+
+    file_source.map(lambda x: (x.split(",")[0], x.split(",")[1], x.split(",")[2], x.split(",")[3])).key_by(lambda x: x[2]).max_by(3).print()
+    
+    env.execute()</code></pre> 
+<p id="u18cffdde">输出结果</p> 
+<pre id="AyINr"><code>('1', 'aa', 'male', '4')
+('1', 'aa', 'male', '4')
+('3', 'cc', 'male', '6')
+('4', 'dd', 'female', '7')
+('4', 'dd', 'female', '7')
+('4', 'dd', 'female', '7')</code></pre> 
+<h4 id="vrtza">2.2.3. reduce(增量聚合算子)</h4> 
+<p id="ub14c1357">测试数据</p> 
+<pre id="an9a7"><code>1,aa,male,4
+2,bb,male,3
+3,cc,male,6
+4,dd,female,7
+5,ff,female,4
+6,gg,female,5</code></pre> 
+<pre id="iJP5s"><code class="language-python">from pyflink.datastream import StreamExecutionEnvironment, ReduceFunction
+
+
+class MyReduceFunction(ReduceFunction):
+
+    def reduce(self, value1, value2):
+        # 注意：其他字段也要输出，不然会报错
+        return value1[0], value1[1], value1[2], int(value1[3]) + int(value2[3])
+
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    # 设置算子并行度
+    env.set_parallelism(1)
+
+    file_source = env.read_text_file("../../data/transformation_max_test_data.txt")
+
+    file_source.map(lambda x: (x.split(",")[0], x.split(",")[1], x.split(",")[2], x.split(",")[3])).key_by(lambda x: x[2]).reduce(lambda a, b: (a[0], a[1], a[2], int(a[3]) + int(b[3]))).print()
+    # file_source.map(lambda x: (x.split(",")[0], x.split(",")[1], x.split(",")[2], x.split(",")[3])).key_by(lambda x: x[2]).reduce(MyReduceFunction()).print()
+
+    env.execute()</code></pre> 
+<p id="ud3ef0588">输出结果</p> 
+<pre id="x95Ez"><code>('1', 'aa', 'male', '4')
+('1', 'aa', 'male', 7)
+('1', 'aa', 'male', 13)
+('4', 'dd', 'female', '7')
+('4', 'dd', 'female', 11)
+('4', 'dd', 'female', 16)</code></pre> 
+<h4 id="DyYit">2.2.4. process(底层算子)</h4> 
+<p id="u4df9b75e">可以用process算子实现更复杂的需求</p> 
+<h3 id="XnW29">2.3. sinks</h3> 
+<h4 id="fF6xD">2.3.1. FileSink</h4> 
+<p id="u090c927c">A unified sink that emits its input elements to FileSystem files within buckets.</p> 
+<p id="ub44fb151">该sink不但可以将数据写入到各种文件系统中，而且整合了checkpoint机制来保证Exactly Once语义，还可以对文件进行分桶存储(这里的分桶就是把不同时间段的数据写入不同的文件夹)，还支持以列式存储的格式写入。</p> 
+<p id="u080d722d">FileSink输出的文件，其生命周期会经历3种状态：</p> 
+<ul><li id="u9c09d1ce"><strong>in-progress Files</strong>：文件正在被写入的状态</li><li id="uab64711e"><strong>Pending Files</strong>：由于指定了回滚策略，in-progress Files会被关闭，等待被提交</li><li id="ucfdfca2e"><strong>Finished Files</strong>：批模式下当文件已经写完，这时文件的状态就会被转换为“Finished”；流模式下成功进行了checkpoint，这时文件的状态就会被转换为“Finished”</li></ul> 
+<h5 id="yKvOw">2.3.1.1. CSV</h5> 
+<p id="ub5a17779">从本地文件读取数据，然后以csv的格式将数据保存到本地文件系统。</p> 
+<pre id="rHe5M"><code class="language-python">from pyflink.common import Encoder
+from pyflink.datastream import StreamExecutionEnvironment, ReduceFunction, CheckpointingMode
+from pyflink.datastream.connectors.file_system import StreamingFileSink, FileSink, DefaultRollingPolicy, RollingPolicy, \
+    OutputFileConfig, BucketAssigner
+
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    # 设置算子并行度
+    env.set_parallelism(1)
+
+    file_source = env.read_text_file("../../data/transformation_max_test_data.txt")
+    # 设置写入文件的前缀和后缀
+    config = OutputFileConfig.builder().with_part_prefix("prefix").with_part_suffix(".txt").build()
+    # 输出为行格式
+    file_sink = FileSink\
+        .for_row_format("../../data/result", Encoder.simple_string_encoder("utf-8"))\
+        .with_rolling_policy(RollingPolicy.default_rolling_policy(
+            part_size=1024 * 1024 * 3,		# 设置part文件大小，超过就回滚
+            rollover_interval= 6 * 1000,	# 设置滚动时间间隔
+            inactivity_interval= 6 * 1000))\
+        .with_output_file_config(config)\	
+        .build()
+    # 这里只能是sink_to，因为FileSink继承的是Sink，而sink_to传入的参数需要是一个Sink
+    file_source.sink_to(file_sink)
+
+	env.execute()</code></pre> 
+<h5 id="Qfv4f">2.3.1.2. Avro</h5> 
+<p id="u17018175">从本地文件读取数据，然后以avro的格式将数据保存到本地文件系统。</p> 
+<p id="u02bc292c">原始数据</p> 
+<pre id="nJYI9"><code>1,e1
+1,e2
+1,e3
+1,e4
+2,e1
+2,e3
+3,e5
+3,e2</code></pre> 
+<p id="ua285bc36">示例代码</p> 
+<pre id="gv1Nx"><code class="language-python"># -*-coding:utf-8-*-
+from pyflink.datastream import StreamExecutionEnvironment, RuntimeExecutionMode
+from pyflink.datastream.connectors.file_system import FileSink
+from pyflink.datastream.formats.avro import AvroBulkWriters, AvroSchema, GenericRecordAvroTypeInfo
+
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    env.add_jars("file:///F:/pycharm_projects/pyflink/jars/flink-sql-parquet-1.16.2.jar",
+                 "file:///F:/pycharm_projects/pyflink/jars/flink-sql-avro-1.16.2.jar")
+    env.set_parallelism(1)
+    env.set_runtime_mode(RuntimeExecutionMode.BATCH)
+
+    FILE_PATH = "../../data/test.txt"
+
+    # source_stream = env.from_collection([{'id': 1, 'event_id': 'e1'}, {'id': 1, 'event_id': 'e2'}])
+    source_stream = env.read_text_file(FILE_PATH).map(lambda x: {"id": int(x.split(",")[0]), "event_id": x.split(",")[1]})
+
+    # 定义数据的schema
+    schema = AvroSchema.parse_string("""
+    {   "namespace": "example.avro",
+        "type": "record",
+        "name": "User",
+        "fields": [
+             {"name": "id", "type": "int"},
+             {"name": "event_id", "type": "string"}
+        ]
+    }
+    """)
+
+    avro_type_info = GenericRecordAvroTypeInfo(schema)
+    """
+    GenericRecordAvroTypeInfo
+    
+    A :class:`TypeInformation` of Avro's GenericRecord, including the schema. This is a wrapper of
+    Java org.apache.flink.formats.avro.typeutils.GenericRecordAvroTypeInfo.
+
+    Note that this type cannot be used as the type_info of data in
+    :meth:`StreamExecutionEnvironment.from_collection`.
+
+    .. versionadded::1.16.0
+    """
+
+    sink = FileSink.for_bulk_format("../../data/avro", AvroBulkWriters.for_generic_record(schema=schema)).build()
+
+    source_stream.map(lambda e: e, output_type=avro_type_info).sink_to(sink)
+
+    env.execute()</code></pre> 
+<p id="ue17abf1d">GenericRecordAvroTypeInfo继承TypeInformation，是一种数据类型</p> 
+<p id="u98da1189"></p> 
+<p class="img-center"><img alt="" height="717" id="DDjzy" src="https://images2.imgbox.com/7b/a8/jt6LUG4d_o.png" width="1200"></p> 
+<hr id="jGctz"> 
+<p id="udc243b7e">原始数据</p> 
+<pre id="XGQIT"><code>{'id': 1, 'event_id': 'e1'}
+{'id': 1, 'event_id': 'e2'}
+{'id': 1, 'event_id': 'e3'}
+{'id': 1, 'event_id': 'e4'}
+{'id': 2, 'event_id': 'e1'}
+{'id': 2, 'event_id': 'e3'}
+{'id': 3, 'event_id': 'e5'}
+{'id': 3, 'event_id': 'e2'}</code></pre> 
+<p id="uf08751eb">示例代码</p> 
+<pre id="Zo6Pq"><code class="language-python"># -*-coding:utf-8-*-
+import ast
+from pyflink.datastream import StreamExecutionEnvironment, RuntimeExecutionMode
+from pyflink.datastream.connectors.file_system import FileSink, OutputFileConfig, RollingPolicy, \
+    OnCheckpointRollingPolicy
+from pyflink.datastream.formats.avro import AvroBulkWriters, AvroSchema, GenericRecordAvroTypeInfo
+
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    env.add_jars("file:///F:/pycharm_projects/pyflink/jars/flink-sql-parquet-1.16.2.jar",
+                 "file:///F:/pycharm_projects/pyflink/jars/flink-sql-avro-1.16.2.jar")
+    env.set_parallelism(1)
+    env.set_runtime_mode(RuntimeExecutionMode.BATCH)
+
+    FILE_PATH = "../../data/json.txt"
+    # 定义输出文件的前缀和后缀
+    config = OutputFileConfig.builder().with_part_prefix("prefix").with_part_suffix(".avro").build()
+    # 定义数据的schema，用于封装GenericRecordAvroTypeInfo
+    schema = AvroSchema.parse_string("""
+    {   "namespace": "example.avro",
+        "type": "record",
+        "name": "User",
+        "fields": [
+             {"name": "id", "type": "int"},
+             {"name": "event_id", "type": "string"}
+        ]
+    }
+    """)
+
+    avro_type_info = GenericRecordAvroTypeInfo(schema)
+    """
+    GenericRecordAvroTypeInfo
+    
+    A :class:`TypeInformation` of Avro's GenericRecord, including the schema. This is a wrapper of
+    Java org.apache.flink.formats.avro.typeutils.GenericRecordAvroTypeInfo.
+
+    Note that this type cannot be used as the type_info of data in
+    :meth:`StreamExecutionEnvironment.from_collection`.
+
+    .. versionadded::1.16.0
+    """
+
+    # source_stream = env.from_collection([{'id': 1, 'event_id': 'e1'}, {'id': 1, 'event_id': 'e2'}])
+    source_stream = env.read_text_file(FILE_PATH).map(lambda x: ast.literal_eval(x))
+
+    # 这里的文件滚动策略只能是OnCheckpointRollingPolicy.on_checkpoint_rolling_policy()，即在每个 Checkpoint 都会滚动。
+    # # 在pyflink中，AvroParquetWriters只有for_generic_record一种方法
+    sink = FileSink\
+        .for_bulk_format("../../data/avro", AvroBulkWriters.for_generic_record(schema=schema))\
+        .with_rolling_policy(OnCheckpointRollingPolicy.on_checkpoint_rolling_policy())\
+        .with_bucket_check_interval(5)\
+        .with_output_file_config(config)\
+        .build()
+
+    # 必须通过 map 操作将数据转换为GenericRecord，用于数据的序列化，才能sink
+    source_stream.map(lambda e: e, output_type=avro_type_info).sink_to(sink)
+
+    env.execute()</code></pre> 
+<h5 id="gHelx">2.3.1.3. parquet</h5> 
+<p id="u4e0b1140">原始数据</p> 
+<pre id="S4oe3"><code>hadoop
+spark
+hbase
+spark
+hive
+hadoop</code></pre> 
+<p id="ud76464c6">示例代码</p> 
+<pre id="yIXKi"><code class="language-python"># -*-coding:utf-8-*-
+import os
+from pyflink.datastream import StreamExecutionEnvironment, RuntimeExecutionMode
+from pyflink.datastream.connectors.file_system import FileSink, OutputFileConfig, RollingPolicy
+from pyflink.datastream.formats.avro import AvroBulkWriters, AvroSchema, GenericRecordAvroTypeInfo
+from pyflink.datastream.formats.parquet import ParquetBulkWriters, AvroParquetWriters
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    # 添加jar包，这里需要添加hadoop相关依赖
+    jar_directory = 'E:/PycharmProjects/pyflink/jars/lib/'
+    for filename in os.listdir(jar_directory):
+        if filename.endswith('.jar'):
+            env.add_jars("file:///" + jar_directory + filename)
+    env.set_parallelism(1)
+    env.set_runtime_mode(RuntimeExecutionMode.BATCH)
+
+    # 读取文件的路径
+    FILE_PATH = "../../data/test.csv"
+    # 设置输出文件的前缀和后缀
+    config = OutputFileConfig.builder().with_part_prefix("prefix").with_part_suffix(".parquet").build()
+
+    # 将数据处理成record的格式
+    source_stream = env.read_text_file(FILE_PATH).map(
+        lambda x: {"word": x})
+
+    # 定义数据的schema，用于封装GenericRecordAvroTypeInfo
+    schema = AvroSchema.parse_string("""
+    {   "namespace": "example.parquet",
+        "type": "record",
+        "name": "wordcount",
+        "fields": [
+             {"name": "word", "type": "string"}
+        ]
+    }
+    """)
+
+    avro_type_info = GenericRecordAvroTypeInfo(schema)
+
+    # 这里文件的回滚策略只能是on_checkpoint_rolling_policy
+    # 在pyflink中，AvroParquetWriters只有for_generic_record一种方法
+    sink = FileSink\
+        .for_bulk_format("../../data/parquet", AvroParquetWriters.for_generic_record(schema=schema))\
+        .with_rolling_policy(RollingPolicy.on_checkpoint_rolling_policy())\
+        .with_output_file_config(config).build()
+
+    # 必须通过 map 操作将数据转换为GenericRecord，用于数据的序列化，才能sink
+    source_stream.map(lambda e: e, output_type=avro_type_info).sink_to(sink)
+
+    env.execute()</code></pre> 
+<h4 id="FSMGe">2.3.2. StreamingFileSink</h4> 
+<p id="u6d4fdc3b">Sink that emits its input elements to FileSystem files within buckets.</p> 
+<p id="u733faf63">从本地文件读取数据，然后将数据原封不动地写回文件。</p> 
+<pre id="xpRAB"><code class="language-python">from pyflink.common import Encoder
+from pyflink.datastream import StreamExecutionEnvironment, ReduceFunction, CheckpointingMode
+from pyflink.datastream.connectors.file_system import StreamingFileSink, FileSink, DefaultRollingPolicy, RollingPolicy, \
+    OutputFileConfig, BucketAssigner
+
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    # 设置算子并行度
+    env.set_parallelism(1)
+    # 开启checkpoint
+    env.enable_checkpointing(5000, CheckpointingMode.EXACTLY_ONCE)
+    env.get_checkpoint_config().set_checkpoint_storage_dir("file:///e:/ckpt")
+
+    file_source = env.read_text_file("../../data/transformation_max_test_data.txt")
+    # 设置写入文件的前缀和后缀
+    config = OutputFileConfig.builder().with_part_prefix("prefix").with_part_suffix(".txt").build()
+    # *******************************方式二：流处理场景*******************************
+    # 输出为行格式
+    file_sink = StreamingFileSink.for_row_format("../../data/result", Encoder.simple_string_encoder("utf-8"))\
+        .with_rolling_policy(RollingPolicy.default_rolling_policy(
+            part_size=1024 * 1024 * 3,
+            rollover_interval=6 * 1000,
+            inactivity_interval=6 * 1000))\
+        .with_bucket_assigner(BucketAssigner.date_time_bucket_assigner())\
+        .with_bucket_check_interval(5)\
+        .with_output_file_config(config)\
+        .build()
+    # 这里只能是add_sink,因为file_sink继承的是SinkFunction,而add_sink传入的参数需要是一个SinkFunction
+    file_source.add_sink(file_sink)
+
+    env.execute()</code></pre> 
+<h4 id="rN1mN">2.3.3. KafkaSink</h4> 
+<pre id="b57a8"><code class="language-python"># -*-coding:utf-8-*-
+from pyflink.common import SimpleStringSchema, RestartStrategies, Time, RestartStrategyConfiguration, TypeInformation, \
+    Types
+from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.datastream.connectors import DeliveryGuarantee
+from pyflink.datastream.connectors.kafka import KafkaSink, KafkaRecordSerializationSchema
+
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    env.add_jars("file:///F:/pycharm_projects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar")
+    env.set_parallelism(1)
+    # 设置重启策略
+    env.set_restart_strategy(RestartStrategies.fixed_delay_restart(3,  10000))
+
+    # type_info=Types.STRING()：python 是弱类型语言，需要指定数据的类型，这样可以提高代码运行速度
+    source_stream = env.from_collection(["11", "22", "33"], type_info=Types.STRING())
+
+    sink = KafkaSink.builder() \
+        .set_bootstrap_servers("192.168.101.222:9092") \
+        .set_record_serializer(
+        KafkaRecordSerializationSchema.builder()
+            .set_topic("pyflink-test")
+            .set_value_serialization_schema(SimpleStringSchema())
+            .build()
+    ) \
+        .set_delivery_guarantee(DeliveryGuarantee.AT_LEAST_ONCE) \
+        .build()
+
+    source_stream.sink_to(sink)
+    
+    env.execute()</code></pre> 
+<h4 id="RElRL">2.3.4. JDBC Sink</h4> 
+<h5 id="x3U4S">2.3.4.1. at least once</h5> 
+<pre id="n0oo0"><code class="language-python">from pyflink.common import Types, RestartStrategies
+from pyflink.datastream import StreamExecutionEnvironment, CheckpointingMode, HashMapStateBackend
+from pyflink.datastream.connectors.jdbc import JdbcSink, JdbcConnectionOptions, JdbcExecutionOptions
+
+
+if __name__ == '__main__':
+
+    env = StreamExecutionEnvironment.get_execution_environment()
+    env.add_jars("file:///E:/PycharmProjects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/mysql-connector-java-5.1.47.jar", )
+    # 设置checkpoint的时间间隔，以及设置为对齐checkpoint
+    env.enable_checkpointing(1000, CheckpointingMode.EXACTLY_ONCE)
+    env.get_checkpoint_config().set_checkpoint_storage_dir("file:///E:/PycharmProjects/pyflink/eos_ckpt")
+    # 设置task级别的故障重启策略：固定重启次数为3次，每次重启的时间间隔为1000毫秒
+    env.set_restart_strategy(RestartStrategies.fixed_delay_restart(3, 1000))
+    # 设置状态后端,默认是HashMapStateBackend
+    env.set_state_backend(HashMapStateBackend())
+    # 设置算子并行度
+    env.set_parallelism(1)
+
+    type_info = Types.ROW([Types.INT(), Types.STRING(), Types.STRING(), Types.INT()])
+    # 指定数据源
+    data_stream = env.from_collection(
+        [(101, "Stream Processing with Apache Flink", "Fabian Hueske, Vasiliki Kalavri", 2019),
+         (102, "Streaming Systems", "Tyler Akidau, Slava Chernyak, Reuven Lax", 2018),
+         (103, "Designing Data-Intensive Applications", "Martin Kleppmann", 2017),
+         (104, "Kafka: The Definitive Guide", "Gwen Shapira, Neha Narkhede, Todd Palino", 2017)], type_info=type_info)
+
+    # 定义sink_function，不保证exactly once语义,能够保证at least once语义
+    jdbc_sink_function = JdbcSink.sink(
+            "insert into test_flink (id, title, authors, year) values (?, ?, ?, ?)",
+            type_info,
+            JdbcConnectionOptions.JdbcConnectionOptionsBuilder()
+                .with_url('jdbc:mysql://192.168.31.50:3306/test_flink?characterEncoding=utf8&amp;useSSL=false')
+                .with_driver_name('com.mysql.jdbc.Driver')
+                .with_user_name('root')
+                .with_password('000000')
+                .build(),
+            JdbcExecutionOptions.builder()
+                .with_batch_interval_ms(1000)
+                .with_batch_size(200)
+                .with_max_retries(5)
+                .build())
+
+    # sink
+    data_stream.add_sink(jdbc_sink_function)
+
+    env.execute()</code></pre> 
+<h5 id="GmrWZ">2.3.4.2. exactly once</h5> 
+<p id="u65c3b5bd">更有效的精确执行一次可以通过 upsert 语句或幂等更新实现。</p> 
+<pre id="MnI4B"><code class="language-python"># -*-coding:utf-8-*-
+from pyflink.common import Types
+from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.datastream.connectors.jdbc import JdbcSink, JdbcConnectionOptions, JdbcExecutionOptions
+
+
+if __name__ == '__main__':
+
+    env = StreamExecutionEnvironment.get_execution_environment()
+    env.add_jars("file:///F:/pycharm_projects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+                 "file:///F:/pycharm_projects/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+                 "file:///F:/pycharm_projects/pyflink/jars/mysql-connector-java-5.1.47.jar", )
+    # 设置算子并行度
+    env.set_parallelism(1)
+
+    type_info = Types.ROW([Types.INT(), Types.STRING(), Types.STRING(), Types.INT()])
+    # 指定数据源
+    data_stream = env.from_collection(
+        [(101, "Stream Processing with Apache Flink", "Fabian Hueske, Vasiliki Kalavri", 2019),
+         (102, "Streaming Systems", "Tyler Akidau, Slava Chernyak, Reuven Lax", 2018),
+         (102, "Streaming Systems", "Tyler Akidau, Slava Chernyak, Reuven Lax", 2019),
+         (103, "Designing Data-Intensive Applications", "Martin Kleppmann", 2017),
+         (104, "Kafka: The Definitive Guide", "Gwen Shapira, Neha Narkhede, Todd Palino", 2017)], type_info=type_info)
+
+    # 定义sink_function，使用upsert语句来实现更有效的精确一致语义
+    jdbc_sink_function = JdbcSink.sink(
+            # "insert into books (id, title, authors, year) values (?, ?, ?, ?)",
+            "INSERT INTO books(id, title, authors, year) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE id=VALUES(id), title=VALUES(title), authors=VALUES(authors), year=VALUES(year)",
+            type_info,
+            JdbcConnectionOptions.JdbcConnectionOptionsBuilder()
+                .with_url('jdbc:mysql://192.168.101.177:3306/pyflink?characterEncoding=utf8&amp;useSSL=false')
+                .with_driver_name('com.mysql.jdbc.Driver')
+                .with_user_name('root')
+                .with_password('root')
+                .build(),
+            JdbcExecutionOptions.builder()
+                .with_batch_interval_ms(1000)
+                .with_batch_size(200)
+                .with_max_retries(5)
+                .build())
+
+    # sink
+    data_stream.add_sink(jdbc_sink_function)
+
+    env.execute()</code></pre> 
+<h3 id="IIlG2">2.4. flink多流操作</h3> 
+<h4 id="R6YmW">2.4.1. 广播流</h4> 
+<h5 id="lOV8U">2.4.1.1. 使用场景</h5> 
+<p id="u7fb06648">主表关联维表数据，可以将维表数据放到广播流中。</p> 
+<h5 id="FVkWQ">2.4.1.2. 底层原理</h5> 
+<ul><li id="u19ea477c">将需要广播出去的流，调用broadcast方法进行广播转换，得到广播流BroadcastStream</li><li id="ue376b0e8">然后在主流上调用connect方法，来连接广播流(以实现广播状态的共享处理)</li><li id="ud7323ac7">在连接流上调用process算子，就会在同一个ProcessFunction中提供两个方法分别对主流和广播流进行处理，并在这个ProcessFunction实现“广播状态”的共享</li></ul> 
+<p id="u2bc8f67b">没有keyBy的情况</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1053" id="AUKlp" src="https://images2.imgbox.com/39/29/HpWm46gQ_o.jpg" width="1200"></p> 
+<h5 id="pipBr">2.4.1.3. 示例代码</h5> 
+<pre id="q6NyD"><code class="language-python">from pyflink.common import SimpleStringSchema, WatermarkStrategy, Types
+from pyflink.datastream import StreamExecutionEnvironment, TimeCharacteristic
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
+from pyflink.datastream.functions import BroadcastProcessFunction
+from pyflink.datastream.state import MapStateDescriptor
+
+
+"""
+broadcast算子的使用场景
+    用户信息表关联用户维度表，可以将维度表放到广播流中，实际上是将维度表数据放到状态中，用户信息表中的每一个分区都拥共享这份状态数据
+"""
+
+
+class MyBroadcastProcessFunction(BroadcastProcessFunction):
+
+    def process_element(self, value, ctx):
+        state = ctx.get_broadcast_state(descriptor)
+        if state is not None:
+            user_info = state.get(value[0])
+            yield value[0], value[1], user_info[0], user_info[1]
+
+    def process_broadcast_element(self, value, ctx):
+        state = ctx.get_broadcast_state(descriptor)
+        state.put(value[0], [value[1], value[2]])
+
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    env.set_parallelism(1)
+    env.set_stream_time_characteristic(TimeCharacteristic.EventTime)
+    env.add_jars("file:///E:/PycharmProjects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/mysql-connector-java-5.1.47.jar")
+
+    # 主流数据来源
+    source1 = KafkaSource.builder() \
+        .set_bootstrap_servers("192.168.31.50:9092") \
+        .set_topics("main_stream") \
+        .set_group_id("my-group1") \
+        .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+        .set_value_only_deserializer(SimpleStringSchema()) \
+        .set_properties({"commit.offsets.on.checkpoint": "False"}) \
+        .set_properties({"enable.auto.commit": "False"}) \
+        .build()
+
+    # 广播流数据来源
+    source2 = KafkaSource.builder() \
+        .set_bootstrap_servers("192.168.31.50:9092") \
+        .set_topics("broadcast_stream") \
+        .set_group_id("my-group2") \
+        .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+        .set_value_only_deserializer(SimpleStringSchema()) \
+        .set_properties({"commit.offsets.on.checkpoint": "False"}) \
+        .set_properties({"enable.auto.commit": "False"}) \
+        .build()
+
+    # 主流数据
+    source_stream1 = env.from_source(source1, WatermarkStrategy.no_watermarks(), "Kafka Source1", type_info=Types.STRING())
+    # 广播流数据
+    source_stream2 = env.from_source(source2, WatermarkStrategy.no_watermarks(), "Kafka Source2", type_info=Types.STRING())
+
+    # 对主流数据做格式变换
+    map_stream1 = source_stream1.map(lambda x: (x.split(",")[0], x.split(",")[1]))
+    # 对广播流数据做格式变换
+    map_stream2 = source_stream2.map(lambda x: (x.split(",")[0], x.split(",")[1], x.split(",")[2]))
+
+    # 定义广播流状态
+    descriptor = MapStateDescriptor("userInfoStateDesc", Types.STRING(), Types.LIST(Types.PICKLED_BYTE_ARRAY()))
+    broadcast_stream = map_stream2.broadcast(descriptor)
+    # 连接主流数据和广播流数据，并对数据做处理
+    process = map_stream1.connect(broadcast_stream).process(MyBroadcastProcessFunction())
+    process.print()
+
+    env.execute()</code></pre> 
+<h3 id="fCSUf">2.5. watermark</h3> 
+<h4 id="j2dr3">2.5.1. 单并行度算子</h4> 
+<p id="u6e5ea552"><strong>示例代码</strong></p> 
+<pre id="FgVwj"><code class="language-python"># -*-coding:utf-8-*-
+from pyflink.common import SimpleStringSchema, WatermarkStrategy, Row, Types
+from pyflink.common.watermark_strategy import TimestampAssigner
+from pyflink.datastream import StreamExecutionEnvironment, TimeCharacteristic, ProcessFunction
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
+
+
+class MyTimestampAssigner(TimestampAssigner):
+
+    def extract_timestamp(self, row, record_timestamp):
+        return row[1]
+
+
+class MyProcessFunction(ProcessFunction):
+
+    def process_element(self, value, ctx: 'ProcessFunction.Context'):
+        wm = ctx.timer_service().current_watermark()
+        print("当前的数据：", value)
+        print("当前的watermark：", wm)
+
+
+# 单并行度算子的watermark的传递机制
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    # 使用kafka source需要加入kafka的jar包依赖，jdbc依赖
+    env.add_jars("file:///E:/PycharmProjects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/mysql-connector-java-5.1.47.jar")
+    env.set_stream_time_characteristic(TimeCharacteristic.EventTime)
+    # 设置全局并行度为1
+    env.set_parallelism(1)
+
+    #  构建kafka source
+    source = KafkaSource.builder() \
+        .set_bootstrap_servers("192.168.31.50:9092") \
+        .set_topics("pyflink_test") \
+        .set_group_id("pyflink") \
+        .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+        .set_value_only_deserializer(SimpleStringSchema()) \
+        .build()
+
+    source_stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka Source")
+
+    # 定义数据类型
+    type_info = Types.ROW([Types.STRING(), Types.INT()])
+    # 将源数据进行处理，并对数据类型做转换
+    map_stream = source_stream.map(lambda x: Row(x.split(",")[0], int(x.split(",")[1])), type_info)
+    # 构建watermark生成策略
+    watermark_strategy = WatermarkStrategy.for_monotonous_timestamps().with_timestamp_assigner(MyTimestampAssigner())
+    # 将watermark应用到data stream
+    data_stream_wm = map_stream.assign_timestamps_and_watermarks(watermark_strategy)
+    # 调用process方法，拿到wm
+    data_stream_wm.process(MyProcessFunction()).print(
+
+    )
+    env.execute()</code></pre> 
+<p id="u95de8070"><strong>代码流程图</strong></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="834" id="yZkdr" src="https://images2.imgbox.com/a8/84/2A2kQUS4_o.jpg" width="284"></p> 
+<p id="ud2c27630"><strong>输出结果</strong></p> 
+<p id="uff6dd490"></p> 
+<p class="img-center"><img alt="" height="241" id="yBJJ1" src="https://images2.imgbox.com/67/06/QMmYSEX4_o.png" width="1200"></p> 
+<ul><li id="u811d8226">watermark默认是每200ms更新一次</li><li id="ub858990f">watermark是在数据处理之后再更新，当输出第一条数据之后，此时打印的watermark是负的最大值，因为此时还没有更新watermark。</li><li id="u7536fff7">watermark = maxTimestamp - outOfOrdernessMillis - 1。即当前的最大时间戳 - 乱序时间 - 1</li></ul> 
+<h4 id="nhCbE">2.5.2. 多并行度算子</h4> 
+<p id="ube15eba5"><strong>示例代码</strong></p> 
+<p id="u89387a9f">下面的代码是在linux系统上执行的，因为windows系统上多并行度有bug，运行不起来。</p> 
+<pre id="rQusV"><code class="language-python"># -*-coding:utf-8-*-
+from pyflink.common import SimpleStringSchema, WatermarkStrategy, Row, Types, Configuration
+from pyflink.common.watermark_strategy import TimestampAssigner
+from pyflink.datastream import StreamExecutionEnvironment, TimeCharacteristic, ProcessFunction
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
+
+
+class MyTimestampAssigner(TimestampAssigner):
+
+    def extract_timestamp(self, row, record_timestamp):
+        return row[1]
+
+
+class MyProcessFunction(ProcessFunction):
+
+    def process_element(self, value, ctx: 'ProcessFunction.Context'):
+        wm = ctx.timer_service().current_watermark()
+        print("当前的数据：", value)
+        print("当前的watermark：", wm)
+
+
+# 多并行度算子的watermark的传递机制
+if __name__ == '__main__':
+    conf = Configuration()
+    conf.set_string("pipeline.jars", "file:///opt/project/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar;"
+                                     "file:///opt/project/pyflink/jars/flink-connector-jdbc-1.16.1.jar;"
+                                     "file:///opt/project/pyflink/jars/mysql-connector-java-5.1.47.jar")
+    env = StreamExecutionEnvironment.get_execution_environment(conf)
+    # 设置python解释器的路径
+    env.set_python_executable("/root/miniconda3/envs/pyflink_1.16/bin/python3.8")
+	# 为了好观测，先设置一个全局的并行度
+    env.set_parallelism(2)
+
+    #  构建kafka source
+    source = KafkaSource.builder() \
+        .set_bootstrap_servers("192.168.31.50:9092") \
+        .set_topics("pyflink_test") \
+        .set_group_id("pyflink") \
+        .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+        .set_value_only_deserializer(SimpleStringSchema()) \
+        .build()
+	# 将kafka source的并行度设置为1
+    source_stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka Source").set_parallelism(1)
+
+    # 定义数据类型
+    type_info = Types.ROW([Types.STRING(), Types.INT()])
+    # 将源数据进行处理，并对数据类型做转换，并将map算子的并行度设置为2
+    map_stream = source_stream.map(lambda x: Row(x.split(",")[0], int(x.split(",")[1])), type_info).set_parallelism(2)
+    # 构建watermark生成策略
+    watermark_strategy = WatermarkStrategy.for_monotonous_timestamps().with_timestamp_assigner(MyTimestampAssigner())
+    # 将watermark应用到data stream，将assign_timestamps_and_watermarks算子的并行度设置为2
+    data_stream_wm = map_stream.assign_timestamps_and_watermarks(watermark_strategy).set_parallelism(2)
+    # 调用process方法，拿到wm，并将process算子设置为一个新的chain，并行度设置为2
+    data_stream_wm.process(MyProcessFunction()).start_new_chain().set_parallelism(2)
+    # 打印执行计划
+    print(env.get_execution_plan())
+    env.execute()
+
+"""
+以上代码是在linux系统上运行，windows系统上以多并行度运行会报错
+"""</code></pre> 
+<p id="u279ea06b"><strong>代码流程图</strong></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="716" id="DiliO" src="https://images2.imgbox.com/a9/c0/U3tBGbMh_o.jpg" width="697"></p> 
+<p id="u1892b152"><strong>测试数据</strong></p> 
+<pre id="Bit2H"><code>a,1000
+b,2000
+c,3000
+d,4000
+a,5000
+b,6000</code></pre> 
+<p id="u7db4296f"><strong>输出结果</strong></p> 
+<p id="uae63314d">当输入a,1000之后，数据的流转如下所示：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="803" id="ISoFP" src="https://images2.imgbox.com/d4/44/iN8sylBp_o.jpg" width="814"></p> 
+<p id="u6497e5e8">当输入b,2000之后，数据的流转如下所示：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="807" id="tTlGh" src="https://images2.imgbox.com/64/4d/QPxj8j0A_o.jpg" width="856"></p> 
+<p id="ud788e825">当输入c,3000之后，数据的流转如下所示：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="817" id="SSCuc" src="https://images2.imgbox.com/0f/ff/UdcphBnG_o.jpg" width="731"></p> 
+<p id="ue2310bdd">当输入d,4000之后，数据的流转如下所示：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="821" id="brwhG" src="https://images2.imgbox.com/7a/fd/n73Z4O9p_o.jpg" width="751"></p> 
+<p id="udc0391e7">当输入a,5000之后，数据的流转如下所示：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="819" id="imuyl" src="https://images2.imgbox.com/29/a6/aUu244Du_o.jpg" width="737"></p> 
+<p id="u1462f622">当输入b,6000之后，数据的流转如下所示：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="803" id="govO8" src="https://images2.imgbox.com/ed/6c/Hr5O0BKX_o.jpg" width="734"></p> 
+<h4 id="hAzc4">2.5.3. watermark传递机制</h4> 
+<p id="uc1278f11">以上面的多并行度算子为例，用画图的方式来解释watermark的传递机制</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" id="M3mJC" src="https://images2.imgbox.com/2c/06/H4Zo21UB_o.jpg" width="1200"></p> 
+<h4 id="VxZMO">2.5.4. 事件时间语义中的watermark</h4> 
+<ul><li id="u399485a3">作用：就是在<strong>事件时间语义</strong>中，用于单调递增地向前推进时间的一种标记；</li><li id="ub74aa8e6">原理：从wm源头开始，根据数据中的事件时间，在数据流中<strong>周期性地插入</strong>一种单调递增的<strong>时间戳</strong>（一种特殊数据），并向下游传递。</li></ul> 
+<h3 id="gLcFP">2.6. windows</h3> 
+<h4 id="vQRVq">2.6.1. sliding window</h4> 
+<p id="ue15a9a5a">滑动窗口测试代码</p> 
+<pre id="IHmFP"><code class="language-python"># -*-coding:utf-8-*-
+from typing import Iterable
+import os
+from pyflink.common import WatermarkStrategy, Duration, Types, Time, SimpleStringSchema, Row
+from pyflink.common.watermark_strategy import TimestampAssigner
+from pyflink.datastream import StreamExecutionEnvironment, TimeCharacteristic, AggregateFunction, ProcessWindowFunction
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
+from pyflink.datastream.functions import KEY, IN, OUT
+from pyflink.datastream.window import SlidingEventTimeWindows
+
+
+#  测试滑动窗口的触发时机
+"""
+1,e1,1687745731000,20
+1,e2,1687745733000,30
+1,e3,1687745734001,40
+1,e4,1687745737000,50
+1,e5,1687745741000,20
+1,e1,1687745742000,20
+1,e2,1687745744000,30
+1,e3,1687745751000,40
+"""
+
+class MyTimestampAssigner(TimestampAssigner):
+
+    def extract_timestamp(self, row, record_timestamp):
+        return row[2]
+
+class MyProcessWindowFunction(ProcessWindowFunction):
+	"""
+     在process方法中打印窗口的起始时间，窗口的结束时间，以及在该窗口内的数据
+     触发一个窗口就会调用一次process方法
+ 	"""
+    def process(self, key: KEY, context: 'ProcessWindowFunction.Context', elements: Iterable[IN]) -&gt; Iterable[OUT]:
+        wm = context.current_watermark()
+        window_st = context.window().start
+        window_et = context.window().end
+        yield "窗口的起始时间：" + str(window_st) + ", 窗口的结束时间：" + str(window_et) + ", 数据：" + str(elements)
+
+
+def main():
+    os.environ["JAVA_TOOL_OPTIONS"] = "-Dfile.encoding=utf-8"
+    env = StreamExecutionEnvironment.get_execution_environment()
+    env.add_jars("file:///F:/pycharm_projects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+                 "file:///F:/pycharm_projects/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+                 "file:///F:/pycharm_projects/pyflink/jars/mysql-connector-java-5.1.47.jar")
+    env.set_parallelism(1)
+
+    watermark_strategy = WatermarkStrategy.for_bounded_out_of_orderness(Duration.of_seconds(1)).with_timestamp_assigner(MyTimestampAssigner())
+    source = KafkaSource.builder() \
+        .set_bootstrap_servers("192.168.101.177:9092") \
+        .set_topics("pyflink-test") \
+        .set_group_id("pyflink") \
+        .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+        .set_value_only_deserializer(SimpleStringSchema()) \
+        .build()
+
+    input_stream = env.from_source(source, watermark_strategy, "Kafka Source")
+
+    # 定义数据类型
+    type_info = Types.ROW([Types.INT(), Types.STRING(), Types.LONG(), Types.INT()])
+    # 将源数据进行处理，并对数据类型做转换
+    map_stream = input_stream.map(lambda x: Row(int(x.split(",")[0]), x.split(",")[1], int(x.split(",")[2]), int(x.split(",")[3])), type_info)
+    map_stream.print()
+    # 分配时间戳和wm
+    map_stream_with_wm = map_stream.assign_timestamps_and_watermarks(watermark_strategy)
+    # 处理数据
+    window_stream = map_stream_with_wm.key_by(lambda x: x[0])\
+        .window(SlidingEventTimeWindows.of(Time.seconds(10), Time.seconds(3)))\
+        .process(MyProcessWindowFunction())
+    # 输出数据
+    window_stream.print()
+
+    env.execute("SlidingEventTimeWindows")
+
+
+if __name__ == '__main__':
+    main()</code></pre> 
+<p id="u895b1d63">滑动窗口触发机制</p> 
+<p id="u9162e66a">当flink读取到一条数据之后，该条数据所属的所有的滑动窗口的开始时间和结束时间就确定好了。最后一个滑动窗口对应的开始时间和结束时间的计算公式如下：</p> 
+<pre id="XDm8B"><code class="language-java">    /**
+     * Method to get the window start for a timestamp.
+     *
+     * @param timestamp epoch millisecond to get the window start.
+     * @param offset The offset which window start would be shifted by.
+     * @param windowSize The size of the generated windows.
+     * @return window start
+     */
+    public static long getWindowStartWithOffset(long timestamp, long offset, long windowSize) {
+        final long remainder = (timestamp - offset) % windowSize;
+        // handle both positive and negative cases
+        if (remainder &lt; 0) {
+            return timestamp - (remainder + windowSize);
+        } else {
+            return timestamp - remainder;
+        }
+    }</code></pre> 
+<p id="u346a52f4">对于正常情况来说，windowStartWithOffset = timestamp - (timestamp - offset) % windowSize ，其中：</p> 
+<ul><li id="u67e121a8">timestamp：当前数据的时间戳</li><li id="uab80a831">offset：窗口起始时间的偏移量</li><li id="u36412ba9">windowSize：窗口的滑动步长</li></ul> 
+<p id="uc67684b0">一条数据所属的滑动窗口的计算代码如下：</p> 
+<pre id="hCUjh"><code class="language-java">    @Override
+    public Collection&lt;TimeWindow&gt; assignWindows(
+            Object element, long timestamp, WindowAssignerContext context) {
+        if (timestamp &gt; Long.MIN_VALUE) {
+            List&lt;TimeWindow&gt; windows = new ArrayList&lt;&gt;((int) (size / slide));
+            long lastStart = TimeWindow.getWindowStartWithOffset(timestamp, offset, slide);
+            // 这里就是在计算这条数据所属的滑动窗口，有可能属于多个滑动窗口，从最后一个滑动窗口往前推
+            for (long start = lastStart; start &gt; timestamp - size; start -= slide) {
+                windows.add(new TimeWindow(start, start + size));
+            }
+            return windows;
+        } else {
+            throw new RuntimeException(
+                    "Record has Long.MIN_VALUE timestamp (= no timestamp marker). "
+                            + "Is the time characteristic set to 'ProcessingTime', or did you forget to call "
+                            + "'DataStream.assignTimestampsAndWatermarks(...)'?");
+        }
+    }</code></pre> 
+<p id="ufc5f9ada">比如：1687745731000这个事件时间所属的滑动窗口有</p> 
+<ul><li id="u2ea5850f">[1687745730000, 1687745733000)</li><li id="uc39c0e07">[1687745727000, 1687745737000)</li><li id="u651c83b7">[1687745724000, 1687745734000)</li></ul> 
+<p id="u3df68344">滑动窗口开发案例</p> 
+<p id="u4fe02ce3">在pyflink中，开窗之后仅支持<strong>aggregate、reduce、process</strong>、apply（能用但已过时）四种算子</p> 
+<pre id="r7dtt"><code class="language-python">from typing import Iterable
+
+from pyflink.common import SimpleStringSchema, WatermarkStrategy, Types, Row, Time, Duration
+from pyflink.common.watermark_strategy import TimestampAssigner
+from pyflink.datastream import StreamExecutionEnvironment, AggregateFunction, KeyedProcessFunction, \
+    ProcessWindowFunction
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
+from pyflink.datastream.functions import KEY, IN, OUT
+from pyflink.datastream.window import SlidingEventTimeWindows
+
+"""
+1,e1,1687745731000,20
+1,e2,1687745733000,30
+1,e3,1687745734001,40
+1,e4,1687745737000,50
+1,e5,1687745741000,20
+1,e1,1687745742000,20
+1,e2,1687745744000,30
+1,e3,1687745751000,40
+"""
+
+
+class MyTimestampAssigner(TimestampAssigner):
+
+    def extract_timestamp(self, row, record_timestamp):
+        print(row)
+        return row[2]
+
+
+class MyAggregateFunction(AggregateFunction):
+
+    def create_accumulator(self):
+        # 初始值设置为0
+        return 0
+
+    def add(self, value, accumulator):
+        # 滚动聚合规则
+        if (value[3]) &gt; accumulator:
+            accumulator = value[3]
+        return accumulator
+
+    def get_result(self, accumulator):
+        # 获取最终的结果
+        return accumulator
+
+    def merge(self, acc_a, acc_b):
+        # 合并规则
+        if acc_a &gt;= acc_b:
+            return acc_a
+        else:
+            return acc_b
+
+
+class MyProcessWindowFunction(ProcessWindowFunction):
+
+    def process(self, key: KEY, context: 'ProcessWindowFunction.Context', elements: Iterable[IN]) -&gt; Iterable[OUT]:
+        max_count = 0
+        for ele in elements:
+            curr_count = ele[3]
+            if curr_count &gt; max_count:
+                max_count = curr_count
+        wm = context.current_watermark()
+        window_st = context.window().start
+        window_et = context.window().end
+        yield "窗口的起始时间：" + str(window_st) + ", 窗口的结束时间：" + str(window_et) + ", 最大行为时长：" + str(max_count)
+
+
+class MyWindowFunction(WindowFunction):
+
+    def apply(self, key: KEY, window: W, inputs: Iterable[IN]) -&gt; Iterable[OUT]:
+        max_count = 0
+        window_st = window.start
+        window_et = window.end
+        for input in inputs:
+            curr_count = input[3]
+            if curr_count &gt; max_count:
+                max_count = curr_count
+        yield "窗口的起始时间：" + str(window_st) + ", 窗口的结束时间：" + str(window_et) + ", 最大行为时长：" + str(max_count)
+
+
+if __name__ == '__main__':
+
+    env = StreamExecutionEnvironment.get_execution_environment()
+    env.set_parallelism(1)
+    env.add_jars("file:///opt/project/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+                 "file:///opt/project/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+                 "file:///opt/project/pyflink/jars/mysql-connector-java-5.1.47.jar")
+    env.set_python_executable("/root/miniconda3/envs/pyflink_1.16/bin/python3.8")
+
+    # 从kafka读取数据   用户id,事件id,事件时间,停留时间    1,w01,10000,10
+    source = KafkaSource.builder() \
+        .set_bootstrap_servers("192.168.31.50:9092") \
+        .set_topics("pyflink_test") \
+        .set_group_id("my-group1") \
+        .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+        .set_value_only_deserializer(SimpleStringSchema()) \
+        .set_properties({"commit.offsets.on.checkpoint": "False"}) \
+        .set_properties({"enable.auto.commit": "False"}) \
+        .build()
+
+    source_stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka Source")
+
+    # 定义数据类型
+    type_info = Types.ROW([Types.INT(), Types.STRING(), Types.LONG(), Types.INT()])
+    # 将源数据进行处理，并对数据类型做转换
+    map_stream = source_stream.map(lambda x: Row(int(x.split(",")[0]), x.split(",")[1], int(x.split(",")[2]), int(x.split(",")[3])), type_info)
+    # 构建watermark生成策略
+    watermark_strategy = WatermarkStrategy.for_bounded_out_of_orderness(Duration.of_seconds(1)).with_timestamp_assigner(MyTimestampAssigner())
+    # 将watermark应用到data stream
+    data_stream_wm = map_stream.assign_timestamps_and_watermarks(watermark_strategy)
+    # 需求1：每隔3秒统计最近10秒内每个用户的总访问时长
+    # data_stream_wm.key_by(lambda x: x[0]).window(SlidingEventTimeWindows.of(Time.seconds(10), Time.seconds(3))).reduce(lambda a, b: Row(a[0], a[1], a[2], a[3] + b[3])).print()
+    # 需求2：每隔3秒统计最近10秒内每个用户的最大行为时长
+    # data_stream_wm.key_by(lambda x: x[0]).window(SlidingEventTimeWindows.of(Time.seconds(10), Time.seconds(3))).process(MyProcessWindowFunction()).print()
+    # data_stream_wm.key_by(lambda x: x[0]).window(SlidingEventTimeWindows.of(Time.seconds(10), Time.seconds(3))).apply(MyWindowFunction()).print()
+    data_stream_wm.key_by(lambda x: x[0]).window(SlidingEventTimeWindows.of(Time.seconds(10), Time.seconds(3))).aggregate(MyAggregateFunction()).print()
+    
+    env.execute()</code></pre> 
+<pre id="BR0bA"><code class="language-python">from typing import Iterable
+
+from pyflink.common import SimpleStringSchema, WatermarkStrategy, Types, Row, Time, Duration
+from pyflink.common.watermark_strategy import TimestampAssigner
+from pyflink.datastream import StreamExecutionEnvironment, AggregateFunction, ProcessWindowFunction
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
+from pyflink.datastream.functions import KEY, IN, OUT
+from pyflink.datastream.window import SlidingEventTimeWindows
+
+"""
+1,e1,1687745731000,20
+1,e2,1687745733000,30
+1,e3,1687745734001,40
+1,e4,1687745737000,50
+1,e5,1687745741000,20
+1,e1,1687745742000,20
+1,e2,1687745744000,30
+1,e3,1687745751000,40
+
+aggregate与porcess算子相结合，使用aggregate进行增量聚合的同时，还能使用process算子获取到窗口的信息
+"""
+
+
+class MyTimestampAssigner(TimestampAssigner):
+
+    def extract_timestamp(self, row, record_timestamp):
+        print(row)
+        return row[2]
+
+
+class MyAggregateFunction(AggregateFunction):
+
+    def create_accumulator(self):
+        # 初始值设置为0
+        return 0
+
+    def add(self, value, accumulator):
+        # 滚动聚合规则
+        if (value[3]) &gt; accumulator:
+            accumulator = value[3]
+        return accumulator
+
+    def get_result(self, accumulator):
+        # 获取最终的结果
+        return accumulator
+
+    def merge(self, acc_a, acc_b):
+        # 合并规则
+        if acc_a &gt;= acc_b:
+            return acc_a
+        else:
+            return acc_b
+
+
+class MyProcessWindowFunction(ProcessWindowFunction):
+
+    def process(self, key: KEY, context: 'ProcessWindowFunction.Context', elements: Iterable[IN]) -&gt; Iterable[OUT]:
+        # 这里是已经计算好的最大值了，elements中起始只有一个元素，就是那个最大值
+        max = next(iter(elements))
+        window_st = context.window().start
+        window_et = context.window().end
+        yield "窗口的起始时间：" + str(window_st) + ", 窗口的结束时间：" + str(window_et) + ", 最大行为时长：" + str(max)
+
+
+if __name__ == '__main__':
+
+    env = StreamExecutionEnvironment.get_execution_environment()
+    env.set_parallelism(1)
+    env.add_jars("file:///opt/project/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+                 "file:///opt/project/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+                 "file:///opt/project/pyflink/jars/mysql-connector-java-5.1.47.jar")
+    env.set_python_executable("/root/miniconda3/envs/pyflink_1.16/bin/python3.8")
+
+    # 从kafka读取数据   用户id,事件id,事件时间,停留时间    1,w01,10000,10
+    source = KafkaSource.builder() \
+        .set_bootstrap_servers("192.168.31.50:9092") \
+        .set_topics("pyflink_test") \
+        .set_group_id("my-group1") \
+        .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+        .set_value_only_deserializer(SimpleStringSchema()) \
+        .set_properties({"commit.offsets.on.checkpoint": "False"}) \
+        .set_properties({"enable.auto.commit": "False"}) \
+        .build()
+
+    source_stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka Source")
+
+    # 定义数据类型
+    type_info = Types.ROW([Types.INT(), Types.STRING(), Types.LONG(), Types.INT()])
+    # 将源数据进行处理，并对数据类型做转换
+    map_stream = source_stream.map(lambda x: Row(int(x.split(",")[0]), x.split(",")[1], int(x.split(",")[2]), int(x.split(",")[3])), type_info)
+    # 构建watermark生成策略
+    watermark_strategy = WatermarkStrategy.for_bounded_out_of_orderness(Duration.of_seconds(1)).with_timestamp_assigner(MyTimestampAssigner())
+    # 将watermark应用到data stream
+    data_stream_wm = map_stream.assign_timestamps_and_watermarks(watermark_strategy)
+    # 需求：每隔3秒统计最近10秒内每个用户的最大行为时长
+    data_stream_wm\
+        .key_by(lambda x: x[0])\
+        .window(SlidingEventTimeWindows.of(Time.seconds(10), Time.seconds(3)))\
+        .aggregate(MyAggregateFunction(), MyProcessWindowFunction())\
+        .print()
+
+    env.execute()</code></pre> 
+<pre id="TjMMV"><code class="language-python">from typing import Iterable
+
+from pyflink.common import SimpleStringSchema, WatermarkStrategy, Types, Row, Time, Duration
+from pyflink.common.watermark_strategy import TimestampAssigner
+from pyflink.datastream import StreamExecutionEnvironment, AggregateFunction, ProcessWindowFunction
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
+from pyflink.datastream.functions import KEY, IN, OUT
+from pyflink.datastream.window import SlidingEventTimeWindows
+
+"""
+1,e1,1687745731000,20
+1,e2,1687745733000,30
+1,e3,1687745734001,40
+1,e4,1687745737000,50
+1,e5,1687745741000,20
+1,e1,1687745742000,20
+1,e2,1687745744000,30
+1,e3,1687745751000,40
+
+reduce与porcess算子相结合，使用reduce进行增量聚合的同时，还能使用process算子获取到窗口的信息
+"""
+
+
+class MyTimestampAssigner(TimestampAssigner):
+
+    def extract_timestamp(self, row, record_timestamp):
+        return row[2]
+
+
+class MyProcessWindowFunction(ProcessWindowFunction):
+
+    def process(self, key: KEY, context: 'ProcessWindowFunction.Context', elements: Iterable[IN]) -&gt; Iterable[OUT]:
+        # 这里是已经计算好的最大值了，elements中起始只有一个元素，就是那个最大值
+        max = next(iter(elements))
+        window_st = context.window().start
+        window_et = context.window().end
+        yield "窗口的起始时间：" + str(window_st) + ", 窗口的结束时间：" + str(window_et) + ", 最大行为时长：" + str(max)
+
+
+if __name__ == '__main__':
+
+    env = StreamExecutionEnvironment.get_execution_environment()
+    env.set_parallelism(1)
+    env.add_jars("file:///opt/project/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+                 "file:///opt/project/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+                 "file:///opt/project/pyflink/jars/mysql-connector-java-5.1.47.jar")
+    env.set_python_executable("/root/miniconda3/envs/pyflink_1.16/bin/python3.8")
+
+    # 从kafka读取数据   用户id,事件id,事件时间,停留时间    1,w01,10000,10
+    source = KafkaSource.builder() \
+        .set_bootstrap_servers("192.168.31.50:9092") \
+        .set_topics("pyflink_test") \
+        .set_group_id("my-group1") \
+        .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+        .set_value_only_deserializer(SimpleStringSchema()) \
+        .set_properties({"commit.offsets.on.checkpoint": "False"}) \
+        .set_properties({"enable.auto.commit": "False"}) \
+        .build()
+
+    source_stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka Source")
+
+    # 定义数据类型
+    type_info = Types.ROW([Types.INT(), Types.STRING(), Types.LONG(), Types.INT()])
+    # 将源数据进行处理，并对数据类型做转换
+    map_stream = source_stream.map(lambda x: Row(int(x.split(",")[0]), x.split(",")[1], int(x.split(",")[2]), int(x.split(",")[3])), type_info)
+    map_stream.print()
+    # 构建watermark生成策略
+    watermark_strategy = WatermarkStrategy.for_bounded_out_of_orderness(Duration.of_seconds(1)).with_timestamp_assigner(MyTimestampAssigner())
+    # 将watermark应用到data stream
+    data_stream_wm = map_stream.assign_timestamps_and_watermarks(watermark_strategy)
+    # 需求：每隔3秒统计最近10秒内每个用户的最大行为时长
+    data_stream_wm\
+        .key_by(lambda x: x[0])\
+        .window(SlidingEventTimeWindows.of(Time.seconds(10), Time.seconds(3)))\
+        .reduce(lambda a, b: b if b[3] &gt; a[3] else a, window_function=MyProcessWindowFunction())\
+        .print()
+
+    env.execute()</code></pre> 
+<h4 id="ofVnj">2.6.2. tumbling window</h4> 
+<pre id="pdS8l"><code class="language-python"># key_by前
+stream.window_all(tumblingEventTimeWindows.of(Time.seconds(10)))	# 10秒的滚动窗口
+# key_by后
+stream.window(tumblingEventTimeWindows.of(Time.seconds(10))</code></pre> 
+<h3 id="dwupt">2.7. state</h3> 
+<h4 id="BoslK">2.7.1. operator state</h4> 
+<p id="u6a6099aa"><strong>注意：</strong> <strong>Python DataStream API 仍无法支持算子状态。</strong></p> 
+<h4 id="hJfK3">2.7.2. keyed state</h4> 
+<p id="uf60d90de">key_by(...)之后可以使用keyed state</p> 
+<p id="u014b6676">keyed state支持的状态类型</p> 
+<ul><li id="ud9de67f1">ValueState&lt;T&gt;: 保存一个可以更新和检索的值，这个值可以通过 update(T) 进行更新，通过 T value() 进行检索。</li><li id="u26b86a75">ListState&lt;T&gt;: 保存一个元素的列表。可以往这个列表中追加数据，并在当前的列表上进行检索。可以通过 add(T) 或者 addAll(List&lt;T&gt;) 进行添加元素，通过 Iterable&lt;T&gt; get() 获得整个列表。还可以通过 update(List&lt;T&gt;) 覆盖当前的列表。ListState中的每一个元素都有一个TTL。</li><li id="u74ba330e">ReducingState&lt;T&gt;: 保存一个单值，表示添加到状态的所有值的聚合。接口与 ListState 类似，但使用 add(T) 增加元素，会使用提供的 ReduceFunction 进行聚合。</li><li id="ucd185192">AggregatingState&lt;IN, OUT&gt;: 保留一个单值，表示添加到状态的所有值的聚合。和 ReducingState 相反的是, 聚合类型可能与 添加到状态的元素的类型不同。 接口与 ListState 类似，但使用 add(IN) 添加的元素会用指定的 AggregateFunction 进行聚合。</li><li id="u4792d521">MapState&lt;UK, UV&gt;: 维护了一个映射列表。 你可以添加键值对到状态中，也可以获得反映当前所有映射的迭代器。使用 put(UK，UV) 或者 putAll(Map&lt;UK，UV&gt;) 添加映射。 使用 get(UK) 检索特定 key。 使用 entries()，keys() 和 values() 分别检索映射、键和值的可迭代视图。你还可以通过 isEmpty() 来判断是否包含任何键值对。MapState中的每一个元素都有一个TTL。</li></ul> 
+<h5 id="dA5YN">TTL</h5> 
+<p id="u799f5cd4">TTL的使用说明</p> 
+<ul><li id="u3790277b">任何类型的<strong> keyed state</strong> 都可以有<em>有效期</em> (TTL)。在使用状态 TTL 前，需要先构建一个StateTtlConfig 配置对象。 然后把配置传递到 state descriptor 中启用 TTL 功能。</li><li id="ucf056a5f"><strong>暂时只支持基于 </strong><strong><em>processing time</em></strong><strong> 的 TTL</strong>。意思是说状态的过期时间是采用现实中的时间来算的，即如果定义了一个1小时的过期时间，那么就是从当前时间算起，一个小时之后状态会过期。而不是根据数据中的事件时间来往后推一个小时。</li><li id="u76fcf06e"><strong>在窗口计算中，一般不需要显式指定状态数据的TTL，flink会在窗口触发后，自动清理相关的状态数据。</strong></li></ul> 
+<p id="u2b3bdc96">TTL的更新策略</p> 
+<ul><li id="u92adbddc"><strong>StateTtlConfig.UpdateType.OnCreateAndWrite</strong> - 仅在创建和写入时更新</li><li id="ue345d740"><strong>StateTtlConfig.UpdateType.OnReadAndWrite</strong> - 读取时也更新</li></ul> 
+<p id="ua7abf97d"><strong>注意:</strong> 如果在设置TTL的更新策略为<strong>StateTtlConfig.UpdateType.OnReadAndWrite</strong> 的同时将状态的可见性配置为 <strong>StateTtlConfig.StateVisibility.ReturnExpiredIfNotCleanedUp</strong>， 那么在PyFlink作业中，状态的读缓存将会失效，这将导致一部分的性能损失)数据在过期但还未被清理时的可见性配置如下（默认为 NeverReturnExpired)。</p> 
+<p id="u0526d5a3">过期数据的可见性</p> 
+<ul><li id="u00af0df9"><strong>StateTtlConfig.StateVisibility.NeverReturnExpired</strong> - 不返回过期数据</li><li id="u1cb9cf1f"><strong>StateTtlConfig.StateVisibility.ReturnExpiredIfNotCleanedUp</strong> - 会返回过期但未清理的数据</li></ul> 
+<p id="u434a8dc5">过期数据的清理策略</p> 
+<ul><li id="u34073fdd"><strong>cleanup_incrementally</strong> - 增量数据清理（默认的清理策略）</li></ul> 
+<ul><li> 
+  <ul><li id="u01bc3a94">如果没有 state 访问，也没有处理数据，则不会清理过期数据。</li><li id="u7960ca1d">增量清理会增加数据处理的耗时。</li><li id="uc34e9ad4">现在仅 Heap state backend 支持增量清除机制。在 RocksDB state backend 上启用该特性无效。</li><li id="ua5ee0b28">如果 Heap state backend 使用同步快照方式，则会保存一份所有 key 的拷贝，从而防止并发修改问题，因此会增加内存的使用。但异步快照则没有这个问题。</li><li id="u1a32c7a6">对已有的作业，这个清理方式可以在任何时候通过 StateTtlConfig 启用或禁用该特性，比如从 savepoint 重启后。</li></ul></li></ul> 
+<p id="ua42b41db">清理原理图如下：</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" id="PEKAF" src="https://images2.imgbox.com/b3/48/gmnTfv5P_o.jpg" width="1200"></p> 
+<ul><li id="uef4cd2cf"><strong>cleanup_full_snapshot</strong> - 全量快照清理，即在进行checkpoint的时候进行清理</li><li id="u99ec5c97"><strong>cleanup_in_rocksdb_compact_filter</strong> - 在RocksDB 压缩时清理</li></ul> 
+<pre id="eP4SX"><code class="language-python">from pyflink.common import SimpleStringSchema, WatermarkStrategy, Types, Row, Time, Duration
+from pyflink.common.watermark_strategy import TimestampAssigner
+from pyflink.datastream import StreamExecutionEnvironment, KeyedProcessFunction, RuntimeContext, RuntimeExecutionMode, \
+    TimeCharacteristic
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
+from pyflink.datastream.state import ListStateDescriptor, StateTtlConfig
+
+"""
+输入数据
+    1,e1,1687745731000,20
+    1,e2,1687745733000,30
+    1,e3,1687745734001,40
+    1,e4,1687745737000,50
+    2,e5,1687745741000,20
+    2,e1,1687745742000,20
+    2,e2,1687745744000,30
+    2,e3,1687745751000,40
+输出结果
+    20
+    50
+    90
+    140
+    20
+    40
+    70
+    110
+"""
+
+
+class MyTimestampAssigner(TimestampAssigner):
+
+    def extract_timestamp(self, row, record_timestamp):
+        return row[2]
+
+
+class MyKeyedProcessFunction(KeyedProcessFunction):
+    def __init__(self):
+        self.state = None
+
+    def open(self, runtime_context: RuntimeContext):
+        # 通过open方法拿到状态
+        descriptor = ListStateDescriptor("mystate", Types.INT())
+        """
+        ttl的相关配置
+        - Time.seconds(4):指定状态的过期时间
+        - set_update_type：如果两种过期时间的更新策略都配置了，后面设置的策略会覆盖掉前面设置的策略
+        - set_state_visibility：如果两种过期数据可见性策略都设置了，后面设置的策略会覆盖掉前面设置的策略 
+        
+        - cleanup_incrementally 是在访问状态数据的时候就去检查是否有状态数据过期
+        - cleanup_full_snapshot 是在进行checkpoint的时候，对过期的状态进行过滤，只存储未过期的状态数据
+        - cleanup_in_rocksdb_compact_filter 这种过期状态数据清除策略只适用于RocksDBStateBackend
+            上面三种策略如果都设置了，不是覆盖，而是添加，只是不同的策略会在不同的情况下才生效
+            如果都没指定，默认是cleanup_incrementally策略，且cleanup_size参数的值是5，表示每次随机检查5个key的状态数据；
+            run_cleanup_for_every_record参数的值是False，表示每次访问不都把状态数据全部检查一遍，然后对过期的数据进行清理
+        """
+        ttl_config = StateTtlConfig \
+            .new_builder(Time.seconds(4)) \
+            .set_update_type(StateTtlConfig.UpdateType.OnCreateAndWrite)\
+            .set_update_type(StateTtlConfig.UpdateType.OnReadAndWrite)\
+            .set_state_visibility(StateTtlConfig.StateVisibility.ReturnExpiredIfNotCleanedUp) \
+            .set_state_visibility(StateTtlConfig.StateVisibility.NeverReturnExpired)\
+            .cleanup_in_rocksdb_compact_filter()\
+            .cleanup_incrementally() \
+            .cleanup_full_snapshot() \
+            .build()
+        descriptor.enable_time_to_live(ttl_config)
+        self.state = runtime_context.get_list_state(descriptor)
+        # get_list_state方法是根据name去获取状态的，即使是每次创建一个ListStateDescriptor对象，也不影响获取状态
+        # self.state = runtime_context.get_list_state(ListStateDescriptor("mystate", Types.INT()))
+
+    def process_element(self, value, ctx: 'KeyedProcessFunction.Context'):
+        self.state.add(value[3])
+        out = 0
+        list_state = self.state.get()
+        for s in list_state:
+            out += s
+        yield out
+
+
+# keyed state的用法
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    env.set_parallelism(1)
+    env.add_jars("file:///opt/project/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+                 "file:///opt/project/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+                 "file:///opt/project/pyflink/jars/mysql-connector-java-5.1.47.jar")
+    env.set_python_executable("/root/miniconda3/envs/pyflink_1.16/bin/python3.8")
+
+    # 从kafka读取数据   用户id,事件id,事件时间,停留时间    1,w01,10000,10
+    source = KafkaSource.builder() \
+        .set_bootstrap_servers("192.168.31.50:9092") \
+        .set_topics("pyflink_test") \
+        .set_group_id("my-group1") \
+        .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+        .set_value_only_deserializer(SimpleStringSchema()) \
+        .set_properties({"commit.offsets.on.checkpoint": "False"}) \
+        .set_properties({"enable.auto.commit": "False"}) \
+        .build()
+
+    source_stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka Source")
+
+    # 定义数据类型
+    type_info = Types.ROW([Types.INT(), Types.STRING(), Types.LONG(), Types.INT()])
+    # 将源数据进行处理，并对数据类型做转换
+    map_stream = source_stream.map(lambda x: Row(int(x.split(",")[0]), x.split(",")[1], int(x.split(",")[2]), int(x.split(",")[3])), type_info)
+    # 构建watermark生成策略
+    watermark_strategy = WatermarkStrategy.for_bounded_out_of_orderness(Duration.of_seconds(0)).with_timestamp_assigner(MyTimestampAssigner())
+    # 将watermark应用到data stream
+    data_stream_wm = map_stream.assign_timestamps_and_watermarks(watermark_strategy)
+    # key by 之后使用状态
+    map_stream.key_by(lambda x: x[0]).process(MyKeyedProcessFunction()).print()
+
+    env.execute()</code></pre> 
+<h4 id="WHwNo">2.7.3. state backend</h4> 
+<p id="u64eec614">状态数据怎么存？存在哪？在进行checkpoint将状态数据保存到hdfs是以什么样的格式存储？都是状态后端来决定的。</p> 
+<p id="u90df80f3">HashMapStateBackend（默认的状态后端）</p> 
+<ul><li id="u7196e87d">状态是存储在堆内存中，如果内存中放不下，再溢出到磁盘中</li><li id="u75dd3989">状态中的数据是以对象的形式存在</li><li id="u455e14cd">支持<strong>大规模</strong>的状态数据</li></ul> 
+<p id="u67a31e7c">RocksDBStateBackend</p> 
+<ul><li id="u5ec36151">状态是存储在RocksDB（一种嵌入式数据库）中，本地磁盘（tmp dir）</li><li id="u22b8385b">状态中的数据是以序列化的kv字节形式存储</li><li id="uc6f33858">RocksDB的磁盘文件数据读写速度相对还是较快的，所以在支持<strong>超大规模</strong>状态数据时，数据的读写效率不会有太大的降低</li></ul> 
+<p id="udd93495e"><strong>注意：上述两种状态后端在生成checkpoint快照文件时，生成的文件格式是</strong><strong>完全一致</strong><strong>的。所以，当用户的flink程序在更改状态后端后，重启时依然可以加载和恢复此前的状态。</strong></p> 
+<h3 id="sdiIS">2.8. checkpoint</h3> 
+<p id="u7452c04b">概述</p> 
+<p id="u2c31cd7a"><strong>Checkpoint （状态快照）</strong>使 Flink 的状态具有良好的容错性，通过 checkpoint 机制，Flink 可以对作业的<strong>状态和计算位置进行恢复</strong>。</p> 
+<p id="ue9f1908a">正常数据处理过程</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" id="or3pV" src="https://images2.imgbox.com/ce/84/jqdtDHAz_o.jpg" width="1200"></p> 
+<p id="ue9767e4a">当source算子读取到“1”这条数据时，source算子会在状态中保存好该条数据的偏移量，然后向下传递数据，map1算子接收到“1”之后会执行map1算子中的逻辑，将计算好之后的结果保存在状态中，然后继续向下传递数据，map2接收到map1算子的输出之后会执行map2算子中的逻辑，将计算好之后的结果保存在状态中，最后将计算结果保存到数据库。后面数据的处理逻辑也是一样的。</p> 
+<p id="ud2fecf46"><strong>上面是正常情况下数据的流转过程，如果中间某个过程发生故障了，等重启之后，继续处理数据，如何能保证数据能够被精确处理一次呢？</strong></p> 
+<p id="uddcf7c0a">数据处理异常情况</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" id="kOrV1" src="https://images2.imgbox.com/49/bb/b6DmcOHn_o.jpg" width="1200"></p> 
+<p id="ud8a966fb">任务重启之后计算结果同正常情况不一致的原因在于：source算子保存的状态是3，表示“3”这条数据我已经处理过了，我应该从“4”开始读取，然后向下传递数据，map1算子中保存的状态值为6，经过map1的处理逻辑后，向下传递数据，map2中保存的状态值为4，经过map2的处理逻辑后，将结果保存为到数据库。</p> 
+<p id="u09e4c808"><strong>为了保证任务重启之后数据处理的正确性，需要引入checkpoint barrier。</strong></p> 
+<p id="u40e7e2ae">底层逻辑</p> 
+<p id="uf1d7d641">通过在数据流中插入序号单调递增的barrier，把无界流数据划分成逻辑上的数据段，当所有算子<strong>都处理完同一条数据段</strong>，并成功进行checkpoint，当前轮的checkpoint才算成功。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="419" id="trZ8X" src="https://images2.imgbox.com/cd/ef/oUhvsy8W_o.jpg" width="1200"></p> 
+<p id="u0d280894">详细流程</p> 
+<ul><li id="u3ad276d2">JobManager即CheckpointCoordinator会定期向source算子的每个subTask发送 start checkpoint的命令；</li><li id="uef1f0ab3">当source算的每个subTask收到trigger checkpoint指令后，产生barrier并通过广播的方式发送到下游。source算的每个subTask同时会执行本地checkpoint n，当checkpoint n完成后，向JobManager发送ack；</li><li id="ucc94575e">当所有的算子都完成checkpoint n，JobManager会收到所有节点的ack，那么就表示当前轮的checkpoint完成。</li></ul> 
+<h3 id="i1Aa4">2.9. eos</h3> 
+<p id="u7955a7fa">端到端一致性</p> 
+<h4 id="mOZaC">2.9.1. source端容错机制</h4> 
+<p id="u35e0450d">source端必须可以重放数据</p> 
+<h4 id="KS5J2">2.9.2. sink端容错机制</h4> 
+<p id="ub8a3fc77">sink端必须是事务的（或者幂等的）</p> 
+<p id="u51aa6bb4">幂等写入</p> 
+<p id="u9acb5d5f"><strong>幂等写入</strong>的方式能实现最终一致，但有可能存在“<strong>过程中的不一致</strong>”。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" id="RdGYK" src="https://images2.imgbox.com/4e/77/ZqtzRfvH_o.jpg" width="1200"></p> 
+<p id="u31e0db8b">kafka sink 是<strong>不支持</strong>幂等写入的；但是，在Kafka内部，producer和broker之间是<strong>支持</strong>幂等写入的。如何理解？</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1200" id="VTvr4" src="https://images2.imgbox.com/bd/46/VVf4Queh_o.jpg" width="1200"></p> 
+<p id="u23f4500d">因此如果要将数据写入到kafka，应该使用事务提交的方式。</p> 
+<p id="u681283c5">两阶段事务写入</p> 
+<p id="u905af9a4">以 mysql为例，画图详解两阶段事务提交的流程</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="1082" id="pw638" src="https://images2.imgbox.com/f8/37/SJpvdzlI_o.jpg" width="1200"></p> 
+<p id="u707d54eb">两阶段预写日志写入</p> 
+<p id="u56bfe7ca">对应目标系统既不支持事务，也不支持幂等性的情况下，可以使用两阶段预写日志写入的方式将数据写入到外部存储系统。其实现原理同两阶段事务写入很像，只是当前checkpoint的数据是<strong>存储在sink的状态</strong>中，等notify之后，再将状态中的数据写入到外部存储系统。</p> 
+<h2 id="xz17Z">3. Table API</h2> 
+<h3 id="oS9q6">3.1. 重要概念</h3> 
+<ul><li id="u595e0129"><strong>动态表</strong>：数据是源源不断来的，不是由固定数据组成的表；</li><li id="u78b829f3"><strong>ChangelogStream</strong>：下游的数据流中会为每条数据添加标记。例如：<strong>+I、-D、-U、+U</strong>，分别表示<strong>新增数据</strong>、<strong>删除数据</strong>、<strong>更新前的数据</strong>、<strong>更新后的数据；</strong></li><li id="u0dc407d7"><strong>Row</strong>：表中的每条数据都是封装成Row对象</li></ul> 
+<h3 id="ljemQ">3.2. 数据类型映射</h3> 
+<table id="sXeFm"><tbody><tr><td> <p id="u9e1179c3"><a href="https://dev.mysql.com/doc/refman/8.0/en/data-types.html" rel="nofollow" title="MySQL type">MySQL type</a></p> </td><td> <p id="u2c442723"><a href="https://docs.oracle.com/database/121/SQLRF/sql_elements001.htm#SQLRF30020" rel="nofollow" title="Oracle type">Oracle type</a></p> </td><td> <p id="uac22781a"><a href="https://www.postgresql.org/docs/12/datatype.html" rel="nofollow" title="PostgreSQL type">PostgreSQL type</a></p> </td><td> <p id="u9d63c1d5"><a href="https://docs.microsoft.com/en-us/sql/t-sql/data-types/data-types-transact-sql?view=sql-server-ver16" rel="nofollow" title="SQL Server type">SQL Server type</a></p> </td><td> <p id="ub4962060"><a href="https://nightlies.apache.org/flink/flink-docs-release-1.17/zh/docs/dev/table/types/" rel="nofollow" title="Flink SQL type">Flink SQL type</a></p> </td></tr><tr><td> <p id="u51a31c7e">TINYINT</p> </td><td></td><td></td><td> <p id="u2d949d05">TINYINT</p> </td><td> <p id="u7146f3c6">TINYINT</p> </td></tr><tr><td> <p id="u88a14531">SMALLINT<br> TINYINT UNSIGNED</p> </td><td></td><td> <p id="ue7ba61ef">SMALLINT<br> INT2<br> SMALLSERIAL<br> SERIAL2</p> </td><td> <p id="u0494a4d6">SMALLINT</p> </td><td> <p id="u270765ba">SMALLINT</p> </td></tr><tr><td> <p id="u1f8655d2">INT<br> MEDIUMINT<br> SMALLINT UNSIGNED</p> </td><td></td><td> <p id="ud91fa3be">INTEGER<br> SERIAL</p> </td><td> <p id="ubbba90f7">INT</p> </td><td> <p id="u9735f065">INT</p> </td></tr><tr><td> <p id="ue9a4b0a9">BIGINT<br> INT UNSIGNED</p> </td><td></td><td> <p id="u89f9e08c">BIGINT<br> BIGSERIAL</p> </td><td> <p id="uf0b8e577">BIGINT</p> </td><td> <p id="u47858669">BIGINT</p> </td></tr><tr><td> <p id="u241f6d13">BIGINT UNSIGNED</p> </td><td></td><td></td><td></td><td> <p id="u85d252ea">DECIMAL(20, 0)</p> </td></tr><tr><td> <p id="ud8c54beb">BIGINT</p> </td><td></td><td> <p id="ud1681b49">BIGINT</p> </td><td> <p id="u2581bc22">BIGINT</p> </td><td></td></tr><tr><td> <p id="ud474cfb7">FLOAT</p> </td><td> <p id="u0f4a41bf">BINARY_FLOAT</p> </td><td> <p id="uebcee409">REAL<br> FLOAT4</p> </td><td> <p id="u2a1c96e3">REAL</p> </td><td> <p id="ua678afbb">FLOAT</p> </td></tr><tr><td> <p id="u9cbfc022">DOUBLE<br> DOUBLE PRECISION</p> </td><td> <p id="u3e061609">BINARY_DOUBLE</p> </td><td> <p id="u3f044bba">FLOAT8<br> DOUBLE PRECISION</p> </td><td> <p id="u33f3dc79">FLOAT</p> </td><td> <p id="u9cee6816">DOUBLE</p> </td></tr><tr><td> <p id="u2ec2f809">NUMERIC(p, s)<br> DECIMAL(p, s)</p> </td><td> <p id="u72c168ad">SMALLINT<br> FLOAT(s)<br> DOUBLE PRECISION<br> REAL<br> NUMBER(p, s)</p> </td><td> <p id="u80e39857">NUMERIC(p, s)<br> DECIMAL(p, s)</p> </td><td> <p id="ua5458f55">DECIMAL(p, s)</p> </td><td> <p id="u811984e4">DECIMAL(p, s)</p> </td></tr><tr><td> <p id="u96b24804">BOOLEAN<br> TINYINT(1)</p> </td><td></td><td> <p id="u80e802e4">BOOLEAN</p> </td><td> <p id="uce609ede">BIT</p> </td><td> <p id="u6fdc9b2c">BOOLEAN</p> </td></tr><tr><td> <p id="u52ad58bf">DATE</p> </td><td> <p id="u94eb3244">DATE</p> </td><td> <p id="u3e55e081">DATE</p> </td><td> <p id="ude51c6d0">DATE</p> </td><td> <p id="u97e0a578">DATE</p> </td></tr><tr><td> <p id="ue0da3901">TIME [(p)]</p> </td><td> <p id="u67737975">DATE</p> </td><td> <p id="u252c04c3">TIME [(p)] [WITHOUT TIMEZONE]</p> </td><td> <p id="u998b7903">TIME(0)</p> </td><td> <p id="u8a0d4a2f">TIME [(p)] [WITHOUT TIMEZONE]</p> </td></tr><tr><td> <p id="u5dee2d75">DATETIME [(p)]</p> </td><td> <p id="u781ea166">TIMESTAMP [(p)] [WITHOUT TIMEZONE]</p> </td><td> <p id="u3d4ba8de">TIMESTAMP [(p)] [WITHOUT TIMEZONE]</p> </td><td> <p id="u69d2db9c">DATETIME DATETIME2</p> </td><td> <p id="uceb32406">TIMESTAMP [(p)] [WITHOUT TIMEZONE]</p> </td></tr><tr><td> <p id="u38843ad5">CHAR(n)<br> VARCHAR(n)<br> TEXT</p> </td><td> <p id="ub78569b5">CHAR(n)<br> VARCHAR(n)<br> CLOB</p> </td><td> <p id="u0ac228c1">CHAR(n)<br> CHARACTER(n)<br> VARCHAR(n)<br> CHARACTER VARYING(n)<br> TEXT</p> </td><td> <p id="u2f3211d2">CHAR(n)<br> NCHAR(n)<br> VARCHAR(n)<br> NVARCHAR(n)<br> TEXT<br> NTEXT</p> </td><td> <p id="ud5c63556">STRING</p> </td></tr><tr><td> <p id="u948ab42a">BINARY<br> VARBINARY<br> BLOB</p> </td><td> <p id="u5e35896f">RAW(s)<br> BLOB</p> </td><td> <p id="u62ee56c9">BYTEA</p> </td><td> <p id="ue5787223">BINARY(n)<br> VARBINARY(n)<br>  </p> </td><td> <p id="ue5874cd0">BYTES</p> </td></tr><tr><td></td><td></td><td> <p id="u62ee3490">ARRAY</p> </td><td></td><td> <p id="u2c8122a7">ARRAY</p> </td></tr></tbody></table> 
+<h3 id="OTlFA">3.3. Table Environment</h3> 
+<h4 id="QgzTY">3.3.1. 方式一</h4> 
+<pre id="t0xEW"><code class="language-python"># 初始化表环境
+configuration = Configuration()
+settings = EnvironmentSettings.new_instance() \
+    .in_streaming_mode() \
+    .with_configuration(configuration) \
+    .build()
+t_env = TableEnvironment.create(settings)
+
+# 将flink的相关参数设置到表环境中
+table_config = t_env.get_config()
+table_config.set("table.exec.mini-batch.enabled", "true")
+table_config.set("table.exec.mini-batch.allow-latency", "5 s")
+table_config.set("table.exec.mini-batch.size", "5000")
+table_config.set("pipeline.jars", "file:///E:/PycharmProjects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar;"
+                                  "file:///E:/PycharmProjects/pyflink/jars/flink-connector-jdbc-1.16.1.jar;"
+                                  "file:///E:/PycharmProjects/pyflink/jars/mysql-connector-java-5.1.47.jar")</code></pre> 
+<h4 id="d7oVc">3.3.2. 方式二</h4> 
+<pre id="WGfEK"><code class="language-python">env = StreamExecutionEnvironment.get_execution_environment()
+# -------------------------设置各种参数------------------------------------------
+# 添加jar包
+env.add_jars("file:///E:/PycharmProjects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+             "file:///E:/PycharmProjects/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+             "file:///E:/PycharmProjects/pyflink/jars/mysql-connector-java-5.1.47.jar", )
+# 设置checkpoint的时间间隔，以及设置为对齐checkpoint
+env.enable_checkpointing(1000, CheckpointingMode.EXACTLY_ONCE)
+env.get_checkpoint_config().set_checkpoint_storage_dir("file:///E:/PycharmProjects/pyflink/eos_ckpt")
+# 设置task级别的故障重启策略：固定重启次数为3次，每次重启的时间间隔为1000毫秒
+env.set_restart_strategy(RestartStrategies.fixed_delay_restart(3, 1000))
+# 设置状态后端,默认是HashMapStateBackend
+env.set_state_backend(HashMapStateBackend())
+# 设置算子并行度
+env.set_parallelism(1)
+
+t_env = StreamTableEnvironment.create(env)</code></pre> 
+<h3 id="rfeBA">3.4. formats</h3> 
+<h4 id="txQWN">3.4.1. JSON</h4> 
+<p id="u22613b3f">样本数据</p> 
+<pre id="UQLR8"><code>{"id": 1, "friends": [{"name": "a", "info": {"addr": "bj", "gender": "male"}}, {"name": "b", "info": {"addr": "sh", "gender": "female"}}]}</code></pre> 
+<p id="ue871b948">示例代码</p> 
+<pre id="ROqOt"><code class="language-python">from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.table import StreamTableEnvironment
+
+if __name__ == '__main__':
+    env: StreamExecutionEnvironment = StreamExecutionEnvironment.get_execution_environment()
+    env.add_jars("file:///E:/PycharmProjects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-json-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-table-common-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/mysql-connector-java-5.1.47.jar", )
+    table_env: StreamTableEnvironment = StreamTableEnvironment.create(env)
+
+    table_env.execute_sql("CREATE TABLE users ("
+                              "id INT,"
+                              "friends ARRAY&lt;ROW&lt;name STRING, info ROW&lt;addr STRING, gender STRING&gt;&gt;&gt;"  -- 复杂JSON的类型的定义
+                              ") "
+                          "WITH ("
+                          "'connector' = 'filesystem',"
+                          "'path' = 'file:///E:/PycharmProjects/pyflink/data/users.json',"
+                          "'format' = 'json')")
+	# 方式一，注意下标从1开始
+    table_env.execute_sql("""select id, friends[2].name as name, friends[2].info.gender as gender from users""").print()
+    # 方式二
+    table_env.execute_sql("""select id, friends[2]['name'] as name, friends[2]['info']['gender'] as gender from users""").print()</code></pre> 
+<h3 id="CtsL4">3.5. connectors</h3> 
+<h4 id="yZ3H3">3.5.1. kafka</h4> 
+<p id="u342930c3">将kafka中的一个主题映射成flink中的一张表，示例代码如下：</p> 
+<pre id="gOkoP"><code class="language-python">from pyflink.common import Configuration
+from pyflink.table import TableEnvironment, EnvironmentSettings
+
+# 将kafka中的一个topic的数据映射成一张flinksql表
+if __name__ == '__main__':
+    # 初始化表环境
+    configuration = Configuration()
+    settings = EnvironmentSettings.new_instance() \
+        .in_streaming_mode() \
+        .with_configuration(configuration) \
+        .build()
+    t_env = TableEnvironment.create(settings)
+
+    # 将flink的相关参数设置到表环境中
+    table_config = t_env.get_config()
+    table_config.set("table.exec.mini-batch.enabled", "true")
+    table_config.set("table.exec.mini-batch.allow-latency", "5s")
+    table_config.set("table.exec.mini-batch.size", "5000")
+    table_config.set("pipeline.jars", "file:///E:/PycharmProjects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar;"
+                                      "file:///E:/PycharmProjects/pyflink/jars/flink-connector-jdbc-1.16.1.jar;"
+                                      "file:///E:/PycharmProjects/pyflink/jars/mysql-connector-java-5.1.47.jar")
+
+    # 执行sql语句，创建kafka动态表
+    t_env.execute_sql(
+        """
+        CREATE TABLE KafkaTable (
+          `user_id` BIGINT,		-- 物理字段
+          `item_id` BIGINT,		-- 物理字段
+          `behavior` STRING,	-- 物理字段
+          `id` as user_id,		-- 表达式字段
+          `offset` BIGINT METADATA VIRTUAL, -- 元数据字段，不需要重命名
+          `ts` TIMESTAMP(3) METADATA FROM 'timestamp'  -- 元数据字段，kafka连接器暴露出来的元数据字段timestamp，如果需要对元数据进行重命名，则需要使用 METADATA FROM
+        ) WITH (
+          'connector' = 'kafka',
+          'topic' = 'user_behavior',
+          'properties.bootstrap.servers' = '192.168.31.50:9092',
+          'properties.group.id' = 'testGroup',
+          'scan.startup.mode' = 'latest-offset',
+          'format' = 'csv',
+           -- 下面是关于csv格式的一些参数
+          'csv.ignore-parse-errors' = 'true',		 -- csv解析失败是否需要忽略
+          'csv.allow-comments' = 'true'              -- 是否允许注释，#开始的表示注释
+        )"""
+    )
+
+    # t_env.execute_sql("""select * from KafkaTable""").print()
+    t_env.execute_sql("select user_id, count(distinct (item_id)) from KafkaTable group by user_id").print()</code></pre> 
+<ul><li id="ueff8fade">上面代码中所使用到的参数可以参考官网：<a href="https://nightlies.apache.org/flink/flink-docs-release-1.17/zh/docs/connectors/table/kafka/" rel="nofollow" title="Kafka | Apache Flink">Kafka | Apache Flink</a></li><li id="u5f879ec7">所有Kafka consumer和producer支持的配置项均可在配置前添加<strong>properties.</strong>前缀后在WITH参数中使用。例如需要配置Kafka consumer或producer的超时时间<strong>request.timeout.ms</strong>为60000毫秒，则可以在WITH参数中配置<strong>'properties.request.timeout.ms'='60000'</strong>。Kafka consumer和Kafka producer的配置项详情请参见<a href="https://kafka.apache.org/28/documentation.html?spm=a2c4g.608758.0.0.73c62b87epP7rk" rel="nofollow" title="Apache Kafka官方文档">Apache Kafka官方文档</a>。</li></ul> 
+<h4 id="l8sY7">3.5.2. upsert-kafka</h4> 
+<p id="u1d260fc3">upsert-kafka sink：从kafka接收数据，对数据做处理之后，再写回kafka。</p> 
+<pre id="j6j85"><code class="language-python">from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.table import StreamTableEnvironment
+
+
+# 测试upsert kafka 连接器的用法
+if __name__ == '__main__':
+
+    env: StreamExecutionEnvironment = StreamExecutionEnvironment.get_execution_environment()
+    env.add_jars("file:///E:/PycharmProjects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-json-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-table-common-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/mysql-connector-java-5.1.47.jar", )
+    table_env: StreamTableEnvironment = StreamTableEnvironment.create(env)
+
+    table_env.execute_sql("""
+        CREATE TABLE user_info (
+              user_id BIGINT,
+              name STRING,
+              nick STRING,
+              age bigint,
+              gender STRING
+            ) WITH (
+              'connector' = 'kafka',
+              'topic' = 'user_info',
+              'properties.group.id' = 'group1',
+              'properties.bootstrap.servers' = '192.168.31.50:9092',
+              'scan.startup.mode' = 'earliest-offset',
+              'format' = 'json'
+            )
+    """)
+
+    table_env.execute_sql("""
+        CREATE TABLE nick_count (
+              nick STRING,
+              user_count BIGINT,
+              PRIMARY KEY (nick) NOT ENFORCED
+            ) WITH (
+              'connector' = 'upsert-kafka',
+              'topic' = 'nick_count',
+              'properties.bootstrap.servers' = '192.168.31.50:9092',
+              'key.format' = 'json',
+              'value.format' = 'json'
+            )
+    """)
+
+    # insert into 语句 后面需要加上wait()
+    table_env.execute_sql("""insert into nick_count select nick,count(distinct (user_id)) as user_count from user_info group by nick""").wait()
+    # 打印到屏幕上可以看到-u +u的标记
+    table_env.execute_sql("sselect nick,count(distinct (user_id)) as user_count from user_info group by nick").print()</code></pre> 
+<h4 id="o8rLE">3.5.3. mysql-cdc</h4> 
+<ul><li id="uf6a8b32e">需要开启mysql的binlog服务</li><li id="u2df756e9">在flink中，需要开启checkpoint</li></ul> 
+<pre id="OiDDR"><code class="language-python">from pyflink.datastream import StreamExecutionEnvironment, CheckpointingMode
+from pyflink.table import StreamTableEnvironment
+
+if __name__ == '__main__':
+
+    env: StreamExecutionEnvironment = StreamExecutionEnvironment.get_execution_environment()
+    env.add_jars("file:///E:/PycharmProjects/pyflink/jars/mysql-connector-java-5.1.47.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-sql-connector-mysql-cdc-2.3.0.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-connector-jdbc-1.16.1.jar")
+    # 使用cdc连接器必须要开启checkpoint
+    env.enable_checkpointing(5000, CheckpointingMode.EXACTLY_ONCE)
+    env.get_checkpoint_config().set_checkpoint_storage_dir("file:///d:/checkpoint")
+    t_env = StreamTableEnvironment.create(env)
+
+    t_env.execute_sql("""create table flink_score(
+        id int,
+        name string,
+        gender string,
+        score double,
+        primary key(id) not enforced
+    )with(
+        'connector'='mysql-cdc',
+        'hostname'='192.168.31.50',
+        'port'='3306',
+        'username'='root',
+        'password'='000000',
+        'database-name'='test_flink',
+        'table-name'='score'
+    )
+""")
+
+    t_env.execute_sql("select * from flink_score").print()</code></pre> 
+<h3 id="C10f4">3.6. catelogs</h3> 
+<p id="u60901528">元数据的保存位置，默认是保存在内存中，程序停止之后再启动就没有了。</p> 
+<h4 id="XsTQI">3.6.1. GenericInMemoryCatalog</h4> 
+<p id="uc2219d2e">GenericInMemoryCatalog 是基于内存实现的 Catalog，所有元数据只在 session 的生命周期内可用。</p> 
+<h4 id="xLp2l">3.6.2. JdbcCatalog</h4> 
+<p id="u8f55e45a">JdbcCatalog 允许用户通过 JDBC 协议将 Flink 连接到关系数据库。</p> 
+<h5 id="knrcM">3.6.2.1. JDBCCatalog 的使用</h5> 
+<p id="ue831b4f1"><a href="https://nightlies.apache.org/flink/flink-docs-release-1.17/zh/docs/connectors/table/jdbc/" rel="nofollow" title="JDBC | Apache Flink">JDBC | Apache Flink</a></p> 
+<p id="ue6848e90">本小节主要描述如何创建并使用 Postgres Catalog 或 MySQL Catalog。</p> 
+<p id="u642aab26">JDBC catalog 支持以下参数:</p> 
+<ul><li id="u9213b6d9">name：必填，catalog 的名称。</li><li id="u572fbdcd">default-database：必填，默认要连接的数据库。</li><li id="ub09d3cc6">username：必填，Postgres/MySQL 账户的用户名。</li><li id="u3de5d7f0">password：必填，账户的密码。</li><li id="u1c5d823b">base-url：必填，（不应该包含数据库名）</li></ul> 
+<ul><li> 
+  <ul><li id="u31a3623a">对于 Postgres Catalog base-url 应为 "jdbc:postgresql://&lt;ip&gt;:&lt;port&gt;" 的格式。</li><li id="u652574ec">对于 MySQL Catalog base-url 应为 "jdbc:mysql://&lt;ip&gt;:&lt;port&gt;" 的格式。</li></ul></li></ul> 
+<pre id="cIszQ"><code class="language-python">import os
+from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.table import EnvironmentSettings, TableEnvironment, StreamTableEnvironment
+from pyflink.table.catalog import JdbcCatalog
+
+
+if __name__ == '__main__':
+
+    env: StreamExecutionEnvironment = StreamExecutionEnvironment.get_execution_environment()
+    jar_directory = 'E:/PycharmProjects/pyflink/jars/lib/'
+    for filename in os.listdir(jar_directory):
+        if filename.endswith('.jar'):
+            env.add_jars("file:///" + jar_directory + filename)
+    t_env = StreamTableEnvironment.create(env)
+
+    name = "my_jdbc_catalog"
+    default_database = "mysql"
+    username = "root"
+    password = "000000"
+    base_url = "jdbc:mysql://192.168.31.50:3306"
+
+    catalog = JdbcCatalog(name, default_database, username, password, base_url)
+    t_env.register_catalog("my_jdbc_catalog", catalog)
+
+    # 设置 JdbcCatalog 为会话的当前 catalog
+    t_env.execute_sql("show catalogs").print()
+    t_env.execute_sql("use catalog my_jdbc_catalog").print()
+    t_env.execute_sql("show databases").print()</code></pre> 
+<h4 id="lIERm">3.6.3. HiveCatalog</h4> 
+<p id="ub0409a0c">将flink表的元数据信息<strong>保存到hive</strong>，hive在去执行show tables命令时也是能看见flink的表的，但是hive不能查flink表的数据。</p> 
+<p id="ue55672d2">为什么能看见呢？hive的元数据表中装了包括表名、表字段、表参数等信息，而flink在创建表时也有<strong>表名（create table test）</strong>、<strong>表字段（</strong><strong>`user_id` BIGINT,`item_id` BIGINT,</strong><strong>）</strong>和<strong>表参数信息（with......）</strong>，因此可以将其保存到元数据表中。</p> 
+<p id="u2ca64aec">但是为什么又不能查flink中的表数据呢？因为hive表的定义和flink表的定义是完全不一样的。</p> 
+<h5 id="TjfD7">3.6.3.1. HiveCatalog的使用</h5> 
+<p id="ub7885eaf"><a href="https://nightlies.apache.org/flink/flink-docs-release-1.17/zh/docs/connectors/table/hive/overview/" rel="nofollow" title="Overview | Apache Flink">Overview | Apache Flink</a></p> 
+<pre id="JuSso"><code class="language-python">import os
+from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.table import *
+from pyflink.table.catalog import HiveCatalog
+
+if __name__ == '__main__':
+    os.environ['HADOOP_USER_NAME'] = '能够创建hdfs目录的用户'
+    env: StreamExecutionEnvironment = StreamExecutionEnvironment.get_execution_environment()
+    jar_directory = 'E:/PycharmProjects/pyflink/jars/lib/'
+    for filename in os.listdir(jar_directory):
+        if filename.endswith('.jar'):
+            env.add_jars("file:///" + jar_directory + filename)
+    t_env = StreamTableEnvironment.create(env)
+
+    catalog_name = "hive1"				                # 自定义catalog名
+    default_database = "test"		                    # 自定义hive中存储元数据的默认数据库
+    hive_conf_dir = "E:/PycharmProjects/pyflink/conf"	# 自定义hive配置文件的路径
+
+    hive_catalog = HiveCatalog(catalog_name, default_database, hive_conf_dir)
+    # 将自定义的catalog注册到catalogManager中
+    t_env.register_catalog("myhive", hive_catalog)
+	# 创建hivecatalog表
+    t_env.execute_sql("CREATE TABLE `myhive`.`test`.`MyUserTable` (id INT,name STRING,age INT) "
+                          "WITH ("
+                          "'connector' = 'filesystem',"
+                          "'path' = 'file:///E:/PycharmProjects/pyflink/data/person.txt',"
+                          "'format' = 'json')")
+    # 打印所有的catalog
+    t_env.execute_sql("show catalogs").print()
+    # 切换到自定义的catalog
+    t_env.execute_sql("use catalog myhive")
+    # 打印当前catalog中的库
+    t_env.execute_sql("show databases").print()</code></pre> 
+<h3 id="nuFVp">3.7. Watermark</h3> 
+<p id="u603f2efe">在Flink批处理中，默认使用的是处理时间（Processing Time）而不是事件时间（Event Time）。因此不需要指定Watermark字段。</p> 
+<h4 id="LOT3K">3.7.1. 流转表</h4> 
+<p id="uabec1a1a">流转表，watermark<strong>不会</strong>自动传递，需要<strong>显式声明。</strong></p> 
+<pre id="vOyp0"><code class="language-python"># -*-coding:utf-8-*-
+import json
+from pyflink.common import WatermarkStrategy, SimpleStringSchema, Types, Duration
+from pyflink.common.watermark_strategy import TimestampAssigner
+from pyflink.datastream import StreamExecutionEnvironment, MapFunction
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
+from pyflink.table import StreamTableEnvironment, Schema
+from pyflink.common.types import Row
+
+
+class MyTimestampAssigner(TimestampAssigner):
+
+    def extract_timestamp(self, row, record_timestamp):
+        return row[2]
+
+class MyMapFunction(MapFunction):
+    # 输入的数据格式：1,e02,1683734401600,p001
+    def map(self, value):
+        fields = value.split(",")
+        return Row(int(fields[0]), str(fields[1]), int(fields[2]), str(fields[3]))
+
+class MyMapFunction1(MapFunction):
+     # 输入的数据格式：{"guid": 1, "event_id": "e02", "event_time": 1683734400000, "page_id": "p001"}
+    def map(self, json_str):
+        return Row(**json.loads(json_str))
+
+
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    # 使用kafka source需要加入kafka的jar包依赖
+    env.add_jars("file:///F:/pycharm_projects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar")
+    env.set_parallelism(1)
+
+    t_env = StreamTableEnvironment.create(env)
+
+    source = KafkaSource.builder() \
+        .set_bootstrap_servers("192.168.101.177:9092") \
+        .set_topics("pyflink-test") \
+        .set_group_id("pyflink2") \
+        .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+        .set_value_only_deserializer(SimpleStringSchema()) \
+        .build()
+
+    source_stream = env.from_source(source=source,
+                                    watermark_strategy=WatermarkStrategy.no_watermarks(),
+                                    source_name="Kafka Source")
+
+    watermark_strategy = WatermarkStrategy.for_bounded_out_of_orderness(Duration.of_millis(1)).with_timestamp_assigner(MyTimestampAssigner())
+
+    row_stream = source_stream\
+        .map(MyMapFunction1(), Types.ROW_NAMED(['guid', 'event_id', 'event_time', 'page_id'], [Types.INT(), Types.STRING(), Types.LONG(), Types.STRING()]))\
+        .assign_timestamps_and_watermarks(watermark_strategy)
+
+    # 重新定义watermark
+    table = t_env.from_data_stream(row_stream,
+                                   Schema
+                                   .new_builder()
+                                   .column("guid", "INT")
+                                   .column("event_id", "STRING")
+                                   .column("event_time", "BIGINT")
+                                   .column("page_id", "STRING")
+                                   .column_by_expression("rowtime", "TO_TIMESTAMP_LTZ(event_time, 3)")
+                                   .watermark("rowtime", "rowtime - INTERVAL '3' SECOND")
+                                   .build())
+
+    # 沿用流中的watermark
+    # table = t_env.from_data_stream(row_stream,
+    #                                Schema
+    #                                .new_builder()
+    #                                .column("guid", "INT")
+    #                                .column("event_id", "STRING")
+    #                                .column("event_time", "BIGINT")
+    #                                .column("page_id", "STRING")
+    #                                .column_by_metadata("rt", "TIMESTAMP_LTZ(3)", "rowtime")
+    #                                .watermark('rt', "source_watermark()")
+    #                                .build())
+    
+    # 打印表的字段信息
+    table.print_schema()
+    # 将表对象转换成有名字的表
+    t_env.create_temporary_view("event", table)
+    # 查询数据
+    t_env.execute_sql("select guid, event_id, event_time, page_id, rowtime, CURRENT_WATERMARK(rowtime) from event").print()
+    # t_env.execute_sql("select guid, event_id, event_time, page_id, rt, CURRENT_WATERMARK(rt) from event").print()
+    env.execute()</code></pre> 
+<h4 id="TcMSQ">3.7.2. 表转流</h4> 
+<p id="uf56d4e4d">表转流，watermark<strong>会自动</strong>传递。</p> 
+<h4 id="vQVo1">3.7.3. 直接使用sql创建表</h4> 
+<h5 id="yVeE6">3.7.3.1. 样本数据</h5> 
+<pre id="zjJB9"><code>{"guid": 1, "eventId": "e02", "eventTime": 1683734400000, "pageId": "p001"}
+{"guid": 1, "eventId": "e02", "eventTime": 1683734401000, "pageId": "p001"}
+{"guid": 1, "eventId": "e02", "eventTime": 1683734402000, "pageId": "p001"}
+{"guid": 1, "eventId": "e02", "eventTime": 1683734403000, "pageId": "p001"}</code></pre> 
+<h5 id="nbOCH">3.7.3.2. 示例代码</h5> 
+<pre id="cjMFh"><code class="language-python">from pyflink.datastream import StreamExecutionEnvironment, RuntimeExecutionMode
+from pyflink.table import StreamTableEnvironment
+
+if __name__ == '__main__':
+    env: StreamExecutionEnvironment = StreamExecutionEnvironment.get_execution_environment()
+    env.add_jars("file:///E:/PycharmProjects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-json-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-table-common-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/mysql-connector-java-5.1.47.jar", )
+    # 指定了批处理模式就不能在建表的时候指定Watermark。在Flink批处理中，默认使用的是处理时间（Processing Time）而不是事件时间（Event Time）。
+    # env.set_runtime_mode(RuntimeExecutionMode.BATCH)
+    table_env: StreamTableEnvironment = StreamTableEnvironment.create(env)
+
+    table_env.execute_sql("CREATE TABLE users ("
+                              "guid INT,"
+                              "eventId string, "
+                              "eventTime bigint, "
+                              "ts as TO_TIMESTAMP_LTZ(eventTime, 3)"	            -- watermark字段的数据类型必须是timestamp或者timestamp_ltz
+                              "watermark for ts as ts - interval '1' second "		-- 指定watermark，如果是批处理模式就不需要
+                              ") "
+                          "WITH ("
+                          "'connector' = 'filesystem',"
+                          "'path' = 'file:///E:/PycharmProjects/pyflink/data/wm.txt',"
+                          "'format' = 'json')")
+
+    table_env.execute_sql("select * from users").print()</code></pre> 
+<h3 id="xOE4w">3.8. 表创建</h3> 
+<h4 id="w4z6o">3.8.1. 使用from_xxx的方式得到一个表对象</h4> 
+<p id="uef8ff80c"><strong>从流转成表，得到一个表对象，且需要将流中的字段对应到表字段中</strong>。</p> 
+<p id="u5592f582">Kafka 将消息键值以二进制进行存储，因此 Kafka 并不存在 schema 或数据类型。Kafka 消息使用格式配置进行序列化和反序列化，例如 csv，json，avro。 因此，如果要想解析kafka中的数据需要<strong>自定义反序列化器</strong>。</p> 
+<pre id="e94TV"><code class="language-python">from pyflink.common import WatermarkStrategy, Types
+from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
+from pyflink.datastream.formats.json import JsonRowDeserializationSchema
+from pyflink.table import StreamTableEnvironment
+
+
+# 从 kafka中读取数据（数据的格式是json字符串），然后将其转成table
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    # 使用kafka source需要加入kafka的jar包依赖
+    env.add_jars("file:///F:/pycharm_projects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar")
+    env.set_parallelism(1)
+
+    t_env = StreamTableEnvironment.create(env)
+
+    # kafka中的数据是json格式，需要指定json的反序列化器，其中Row的字段需要同json字段一一对应
+    row_type_info = Types.ROW_NAMED(['name', 'age'], [Types.STRING(), Types.INT()])
+    json_format = JsonRowDeserializationSchema.builder().type_info(row_type_info).build()
+
+    source = KafkaSource.builder() \
+        .set_bootstrap_servers("192.168.101.177:9092") \
+        .set_topics("pyflink-test") \
+        .set_group_id("pyflink") \
+        .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+        .set_value_only_deserializer(json_format) \
+        .build()
+
+    source_stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka Source")
+
+    table = t_env.from_data_stream(source_stream)
+    table.execute().print()
+    env.execute()</code></pre> 
+<pre id="EXWmI"><code class="language-python">from pyflink.common import WatermarkStrategy, Types
+from pyflink.datastream import StreamExecutionEnvironment 
+from pyflink.datastream.connectors.kafka import KafkaSource, KafkaOffsetsInitializer
+from pyflink.datastream.formats.csv import CsvRowDeserializationSchema
+from pyflink.table import StreamTableEnvironment
+
+
+# 从 kafka中读取数据（数据的格式是csv），然后将其转成table
+if __name__ == '__main__':
+    env = StreamExecutionEnvironment.get_execution_environment()
+    # 使用kafka source需要加入kafka的jar包依赖
+    env.add_jars("file:///F:/pycharm_projects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar")
+    env.set_parallelism(1)
+
+    t_env = StreamTableEnvironment.create(env)
+
+    # kafka中的数据是csv的格式，需要指定csv的反序列化器，其中Row的字段名同csv的字段值对应，Row的字段类型需要同csv的字段类型保持一致
+    row_type_info = Types.ROW_NAMED(['name', 'age'], [Types.STRING(), Types.INT()])
+    csv_format = CsvRowDeserializationSchema.Builder(row_type_info).build()
+
+    source = KafkaSource.builder() \
+    .set_bootstrap_servers("192.168.101.177:9092") \
+    .set_topics("pyflink-test") \
+    .set_group_id("pyflink") \
+    .set_starting_offsets(KafkaOffsetsInitializer.latest()) \
+    .set_value_only_deserializer(csv_format) \
+    .build()
+
+    source_stream = env.from_source(source, WatermarkStrategy.no_watermarks(), "Kafka Source")
+
+    table = t_env.from_data_stream(source_stream)
+    table.execute().print()
+    env.execute()</code></pre> 
+<h4 id="K5ViP">3.8.2. 使用create_xxx的方式得到一个有名字的表</h4> 
+<pre id="oYAGI"><code class="language-python">from pyflink.common import Types
+from pyflink.datastream import StreamExecutionEnvironment
+from pyflink.table import StreamTableEnvironment, TableDescriptor, Schema
+from pyflink.table.types import DataTypes
+
+if __name__ == '__main__':
+    env: StreamExecutionEnvironment = StreamExecutionEnvironment.get_execution_environment()
+    env.add_jars("file:///E:/PycharmProjects/pyflink/jars/flink-sql-connector-kafka-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-connector-jdbc-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-json-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/flink-table-common-1.16.1.jar",
+                 "file:///E:/PycharmProjects/pyflink/jars/mysql-connector-java-5.1.47.jar", )
+
+    table_env = StreamTableEnvironment.create(env)
+
+    table_descriptor = TableDescriptor.for_connector("filesystem").schema(
+        Schema.new_builder()
+            .column("id", DataTypes.INT())
+            .column("name", DataTypes.STRING())
+            .column("age",DataTypes.INT()).build())\
+        .format("json")\
+        .option("path", "file:///E:/PycharmProjects/pyflink/data/person.txt")\
+        .build()
+    # 得到一个有名字的表
+    table_env.create_table("stu", table_descriptor)
+    # 根据表名进行查询
+    table_env.execute_sql("select * from stu").print()</code></pre> 
+<h3 id="F6YLc">3.9. 自定义函数</h3> 
+<p id="u0c0923d4">具体使用参考官网：<a href="https://nightlies.apache.org/flink/flink-docs-release-1.16/zh/docs/dev/python/table/udfs/python_udfs/" rel="nofollow" title="普通自定义函数 | Apache Flink">普通自定义函数 | Apache Flink</a></p> 
+<h4 id="p4djv">3.9.1. 标量函数</h4> 
+<ul><li id="uf6b138f6">输入：零个，一个或者多个列</li><li id="uf5c124f0">输出：<strong>单个值</strong></li></ul> 
+<h4 id="ES36R">3.9.2. 表值函数</h4> 
+<ul><li id="u8f2829cd">输入：零个，一个或者多个列</li><li id="u707ffe44"><strong>任意数量的行</strong></li></ul> 
+<p id="u684f1bed"><strong>NOTE: </strong><strong>表值函数与标量函数唯一的区别是，Python 表值函数的返回类型必须是 iterable（可迭代子类）, iterator（迭代器） or generator（生成器）。</strong></p> 
+<h4 id="BQSjc">3.9.3. 普通聚合函数</h4> 
+<p id="uf7715e9c">用户自定义聚合函数可以将多行中的标量值映射成一个标量值。</p> 
+<p id="ue23337b7"><strong>NOTE: </strong>目前用户自定义聚合函数只支持在流处理模式中使用<strong>GroupBy aggregation</strong>和<strong>Group Window Aggregation</strong><strong>，如果是在批处理模式中，需要使用</strong><a href="https://nightlies.apache.org/flink/flink-docs-release-1.16/zh/docs/dev/python/table/udfs/vectorized_python_udfs/#vectorized-aggregate-functions" rel="nofollow" title="Vectorized Aggregate Functions">Vectorized Aggregate Functions</a><strong>。</strong></p> 
+<h4 id="dUFXq">3.9.4. 表聚合函数</h4> 
+<p id="u9686c75c">用户自定义表聚合函数可以将多行中的标量值映射成零行，一行或者多行。</p> 
+<h2 id="ec4g7">4. 生产环境的参数配置</h2> 
+<pre id="FNG0k"><code class="language-python">env = StreamExecutionEnvironment.get_execution_environment()
+# 如果是从Kafka读取数据，那么设置为kafka主题的分区数
+env.set_parallelism(4)
+# 设置checkpoint
+env.enable_checkpointing(5 * 60000, CheckpointingMode.EXACTLY_ONCE)				# 5分钟
+# 设置checkpoint的保存路径，如果部署在YARN，那么最好是HDFS路径
+env.get_checkpoint_config().set_checkpoint_storage_dir("hdfs://hadoop102:8020/pyflink/ck")
+# 设置checkpoint的超时时间
+env.get_checkpoint_config().set_checkpoint_timeout(10 * 60000)                  # 10分钟
+# 设置两个 checkpoints 之间最少的间隔时间
+env.get_checkpoint_config().set_min_pause_between_checkpoints(120000)           # 2分钟
+# 同时可以存在几个checkpoint
+env.get_checkpoint_config().set_max_concurrent_checkpoints(1)                   # 1个
+# 取消作业时保留 checkpoint，因为有时候任务 savepoint 可能不可用，这时我们就可以直接从 checkpoint 重启任务
+env.get_checkpoint_config().enable_externalized_checkpoints(ExternalizedCheckpointCleanup.RETAIN_ON_CANCELLATION)
+# 是否允许checkpoint失败
+env.get_checkpoint_config().set_fail_on_checkpointing_errors(False)             # 允许，即checkpoint失败时，task不失败
+# 设置重启策略
+env.set_restart_strategy(RestartStrategies.fixed_delay_restart(3, 5000))        # 重启3次，每次重启的间隔时间为5s，如果3次都重启失败，那么这个任务也就失败了
+# 设置状态后端
+env.set_state_backend(RocksDBStateBackend())                                    # RocksDB状态后端</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/46ebc955bad4d870d96538282b449e24/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">macOS安装Python&amp;&amp;Pycharm详解！保姆级教程,一学就会！</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e810ca87f7b90260f60979a9911636e4/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">怎么降低AIGC论文检测</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

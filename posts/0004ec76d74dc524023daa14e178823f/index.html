@@ -1,0 +1,464 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Spring Cloud系列——使用Sentinel进行微服务保护 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/0004ec76d74dc524023daa14e178823f/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Spring Cloud系列——使用Sentinel进行微服务保护">
+  <meta property="og:description" content="文章目录 一、引言1. 雪崩问题的产生原因2. 解决雪崩问题的思路 二、微服务保护1. 服务保护方案1.1 请求限流1.2 线程隔离1.3 服务熔断 2. Sentinel2.1 安装2.2 微服务整合2.2.1 请求限流2.2.2 线程隔离①OpenFeign整合Sentinel②配置线程隔离 2.2.3 服务熔断①编写降级逻辑②配置熔断规则 2.2.3 规则持久化①添加依赖：②修改 bootstrap.yml 配置文件③在nacos中添加共享配置 3 . 总结 一、引言 微服务架构虽然解决了单体应用的诸多问题，但也带来了新的挑战，其中之一就是雪崩问题（Cascade Failure）。当一个或多个服务出现故障，会引发连锁反应，使得其他依赖这些服务的服务也出现问题，从局部故障变为整体故障，最后就像生活中的雪崩那样，整个系统崩溃。
+1. 雪崩问题的产生原因 服务依赖链条过长：在微服务架构中，服务A可能依赖于服务B，而服务B又依赖于服务C，当服务C出现问题时，整个链条可能都会受到影响。服务过载：某个服务的突然高负载或流量激增，可能导致下游服务的资源耗尽，从而导致更多的服务失败。资源耗尽：某个服务由于内存泄漏或其他原因，导致资源耗尽（如内存、CPU、数据库连接等），从而影响整个系统的状态。网络问题：网络延迟或断连可能导致服务间通信失败，从而引发雪崩效应。Bug引起的失败：某个服务中存在未处理的异常，在运行时被触发，导致服务崩溃，依赖该服务的其他服务也因此出现问题。 2. 解决雪崩问题的思路 熔断机制（Circuit Breaker）
+通过监控服务的调用状况，当检测到调用失败率过高时，自动断开与问题服务的调用连接，防止故障扩散。
+应用场景：服务依赖链条过长、网络问题、Bug引起的失败
+限流（Rate Limiting）
+通过限制单个服务的最大请求数来防止因为流量过大而导致的资源耗尽，从而保护服务的可用性。
+应用场景：服务过载
+服务降级（Fallback）
+设置备用方案或降级处理，在服务不可用时返回预设的降级响应。
+应用场景：服务依赖链条过长、服务过载
+隔离（Bulkhead Pattern）
+通过将服务实例的资源进行隔离，防止单个服务实例的故障影响到其他服务实例。
+应用场景：资源耗尽
+健康检查和监控（Health Check and Monitoring）
+实时监控服务的运行状态，通过健康检查及时发现和解决潜在问题。
+应用场景：资源耗尽、网络问题、Bug引起的失败
+二、微服务保护 1. 服务保护方案 1.1 请求限流 请求限流是一种常用的保护服务的手段，当系统接收到的请求量超过预设的阈值时，限流器会拒绝或者延迟一些请求，以防止系统过载导致崩溃，是一种预防措施。
+请求限流往往会有一个限流器，数量高低起伏的并发请求曲线，经过限流器就变的非常平稳。这就像是水电站的大坝，起到蓄水的作用，可以通过开关控制水流出的大小，让下游水流始终维持在一个平稳的量。
+比如我们有一个订单服务，恰逢双十一购物节，订单服务在促销活动期间会受到大量用户的访问，导致系统负载急剧增加，甚至出现服务崩溃的情况。
+而如果我们使用限流器限制每秒钟最多只能处理1000个请求，如果请求量超过这个阈值，多余的请求将被拒绝或者延后处理，这样我们可以有效防止因短时间内大量请求涌入而导致的系统过载和崩溃。
+1.2 线程隔离 线程隔离是一种将不同的任务隔离运行在不同的线程池中的方法，防止某一任务的故障蔓延，影响其他任务的正常执行，是一种补救措施。
+当一个业务接口响应时间长，而且并发高时，就可能耗尽服务器的线程资源，导致服务内的其它接口受到影响。所以我们必须把这种影响降低，或者缩减影响的范围。线程隔离正是解决这个问题的好办法。
+线程隔离的思想来自轮船的舱壁模式：
+就像一艘轮船被划分为若干个独立的空间（分隔开的水密隔舱），当船体破损时，只会导致损坏的部分隔舱进水，而其他隔舱由于隔离，并不会进水，以确保即使一个隔舱进水，其他隔舱不会进水，从而防止整艘船的沉没。泰坦尼克号沉没的主要原因之一，就是它的舱壁有一个设计上的失败，水可以通过舱壁顶部上的甲板注入，淹没整个船体。
+同样，在微服务架构中，我们通过隔离不同的服务及其资源，防止一个服务出现问题时影响到其他服务。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-07T13:28:50+08:00">
+    <meta property="article:modified_time" content="2024-06-07T13:28:50+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Spring Cloud系列——使用Sentinel进行微服务保护</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_2" rel="nofollow">一、引言</a></li><li><ul><li><a href="#1__8" rel="nofollow">1. 雪崩问题的产生原因</a></li><li><a href="#2__16" rel="nofollow">2. 解决雪崩问题的思路</a></li></ul> 
+  </li><li><a href="#_43" rel="nofollow">二、微服务保护</a></li><li><ul><li><a href="#1__45" rel="nofollow">1. 服务保护方案</a></li><li><ul><li><a href="#11__47" rel="nofollow">1.1 请求限流</a></li><li><a href="#12__61" rel="nofollow">1.2 线程隔离</a></li><li><a href="#13__83" rel="nofollow">1.3 服务熔断</a></li></ul> 
+   </li><li><a href="#2_Sentinel_96" rel="nofollow">2. Sentinel</a></li><li><ul><li><a href="#21__127" rel="nofollow">2.1 安装</a></li><li><a href="#22__177" rel="nofollow">2.2 微服务整合</a></li><li><ul><li><a href="#221__226" rel="nofollow">2.2.1 请求限流</a></li><li><a href="#222__273" rel="nofollow">2.2.2 线程隔离</a></li><li><ul><li><a href="#OpenFeignSentinel_277" rel="nofollow">①OpenFeign整合Sentinel</a></li><li><a href="#_293" rel="nofollow">②配置线程隔离</a></li></ul> 
+     </li><li><a href="#223__305" rel="nofollow">2.2.3 服务熔断</a></li><li><ul><li><a href="#_315" rel="nofollow">①编写降级逻辑</a></li><li><a href="#_388" rel="nofollow">②配置熔断规则</a></li></ul> 
+     </li><li><a href="#223__443" rel="nofollow">2.2.3 规则持久化</a></li><li><ul><li><a href="#_447" rel="nofollow">①添加依赖：</a></li><li><a href="#_bootstrapyml__457" rel="nofollow">②修改 bootstrap.yml 配置文件</a></li><li><a href="#nacos_488" rel="nofollow">③在nacos中添加共享配置</a></li></ul> 
+    </li></ul> 
+   </li></ul> 
+   </li><li><a href="#3___565" rel="nofollow">3 . 总结</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_2"></a>一、引言</h2> 
+<p>微服务架构虽然解决了单体应用的诸多问题，但也带来了新的挑战，其中之一就是雪崩问题（Cascade Failure）。当一个或多个服务出现故障，会引发连锁反应，使得其他依赖这些服务的服务也出现问题，从局部故障变为整体故障，最后就像生活中的雪崩那样，整个系统崩溃。</p> 
+<p><img src="https://images2.imgbox.com/b6/c1/C7hWJHCj_o.png" alt="chain"></p> 
+<h3><a id="1__8"></a>1. 雪崩问题的产生原因</h3> 
+<ol><li><strong>服务依赖链条过长</strong>：在微服务架构中，服务A可能依赖于服务B，而服务B又依赖于服务C，当服务C出现问题时，整个链条可能都会受到影响。</li><li><strong>服务过载</strong>：某个服务的突然高负载或流量激增，可能导致下游服务的资源耗尽，从而导致更多的服务失败。</li><li><strong>资源耗尽</strong>：某个服务由于内存泄漏或其他原因，导致资源耗尽（如内存、CPU、数据库连接等），从而影响整个系统的状态。</li><li><strong>网络问题</strong>：网络延迟或断连可能导致服务间通信失败，从而引发雪崩效应。</li><li><strong>Bug引起的失败</strong>：某个服务中存在未处理的异常，在运行时被触发，导致服务崩溃，依赖该服务的其他服务也因此出现问题。</li></ol> 
+<h3><a id="2__16"></a>2. 解决雪崩问题的思路</h3> 
+<ol><li> <p><strong>熔断机制（Circuit Breaker）</strong><br> 通过监控服务的调用状况，当检测到调用失败率过高时，自动断开与问题服务的调用连接，防止故障扩散。</p> <p>应用场景：服务依赖链条过长、网络问题、Bug引起的失败</p> </li><li> <p><strong>限流（Rate Limiting）</strong><br> 通过限制单个服务的最大请求数来防止因为流量过大而导致的资源耗尽，从而保护服务的可用性。</p> <p>应用场景：服务过载</p> </li><li> <p><strong>服务降级（Fallback）</strong><br> 设置备用方案或降级处理，在服务不可用时返回预设的降级响应。</p> <p>应用场景：服务依赖链条过长、服务过载</p> </li><li> <p><strong>隔离（Bulkhead Pattern）</strong><br> 通过将服务实例的资源进行隔离，防止单个服务实例的故障影响到其他服务实例。</p> <p>应用场景：资源耗尽</p> </li><li> <p><strong>健康检查和监控（Health Check and Monitoring）</strong><br> 实时监控服务的运行状态，通过健康检查及时发现和解决潜在问题。</p> <p>应用场景：资源耗尽、网络问题、Bug引起的失败</p> </li></ol> 
+<h2><a id="_43"></a>二、微服务保护</h2> 
+<h3><a id="1__45"></a>1. 服务保护方案</h3> 
+<h4><a id="11__47"></a>1.1 请求限流</h4> 
+<p><strong>请求限流</strong>是一种常用的保护服务的手段，当系统接收到的请求量超过预设的阈值时，限流器会拒绝或者延迟一些请求，以防止系统过载导致崩溃，是一种<strong>预防措施</strong>。</p> 
+<p>请求限流往往会有一个限流器，数量高低起伏的并发请求曲线，经过限流器就变的非常平稳。这就像是水电站的大坝，起到蓄水的作用，可以通过开关控制水流出的大小，让下游水流始终维持在一个平稳的量。</p> 
+<p><img src="https://images2.imgbox.com/63/ba/O4uTchkr_o.jpg" alt="img"></p> 
+<p>比如我们有一个订单服务，恰逢双十一购物节，订单服务在促销活动期间会受到大量用户的访问，导致系统负载急剧增加，甚至出现服务崩溃的情况。</p> 
+<p>而如果我们使用限流器限制每秒钟最多只能处理1000个请求，如果请求量超过这个阈值，多余的请求将被拒绝或者延后处理，这样我们可以有效防止因短时间内大量请求涌入而导致的系统过载和崩溃。</p> 
+<h4><a id="12__61"></a>1.2 线程隔离</h4> 
+<p><strong>线程隔离</strong>是一种将不同的任务隔离运行在不同的线程池中的方法，防止某一任务的故障蔓延，影响其他任务的正常执行，是一种<strong>补救措施</strong>。</p> 
+<p>当一个业务接口响应时间长，而且并发高时，就可能耗尽服务器的线程资源，导致服务内的其它接口受到影响。所以我们必须把这种影响降低，或者缩减影响的范围。线程隔离正是解决这个问题的好办法。</p> 
+<p>线程隔离的思想来自轮船的舱壁模式：</p> 
+<img src="https://images2.imgbox.com/07/50/G3j1uHRU_o.png" alt="3ec1b56e-4ec7-4ff8-bb52-e2f8c1703247_upscayl_2x_remacri_upscayl_2x_ultramix_balanced"> 
+<p>就像一艘轮船被划分为若干个独立的空间（分隔开的水密隔舱），当船体破损时，只会导致损坏的部分隔舱进水，而其他隔舱由于隔离，并不会进水，以确保即使一个隔舱进水，其他隔舱不会进水，从而防止整艘船的沉没。泰坦尼克号沉没的主要原因之一，就是它的舱壁有一个设计上的失败，水可以通过舱壁顶部上的甲板注入，淹没整个船体。</p> 
+<p>同样，在微服务架构中，我们通过隔离不同的服务及其资源，防止一个服务出现问题时影响到其他服务。</p> 
+<p>于此类似，为了避免某个接口故障或压力过大导致整个服务不可用，我们可以限定每个业务能使用的线程数，避免耗尽整个Tomcat的资源，因此也叫<strong>线程隔离。</strong></p> 
+<p><img src="https://images2.imgbox.com/73/47/qZcZ6GEx_o.png" alt="image-20240603194011171"></p> 
+<p>如图所示，我们给查询购物车业务限定可用线程数量上限为20，这样即便查询购物车的请求因为查询商品服务而出现故障，也不会导致服务器的线程资源被耗尽，不会影响到其它接口。</p> 
+<h4><a id="13__83"></a>1.3 服务熔断</h4> 
+<p><strong>服务熔断</strong>是一种保护机制，当某个服务的故障率超过预设阈值时，自动断开对该服务的调用，避免故障影响到更多的服务，是一种<strong>补救措施</strong>。</p> 
+<p>假如一个商品服务（故障服务）在一段时间内连续超过一定数量的失败请求，我们可以触发熔断，避免购物车服务（服务调用方）频繁调用故障的商品服务导致购物车服务也故障。</p> 
+<p>所以，我们要做两件事情：</p> 
+<ul><li><strong>编写服务降级逻辑</strong>：就是服务调用失败后的处理逻辑，根据业务场景，可以抛出异常，也可以返回友好提示或默认数据。</li><li><strong>异常统计和熔断</strong>：统计服务提供方的异常比例，当比例过高表明该接口会影响到其它服务，应该拒绝调用该接口，而是直接走降级逻辑。</li></ul> 
+<img src="https://images2.imgbox.com/69/aa/xEXr1kzw_o.png" alt="image-20240603194954790"> 
+<h3><a id="2_Sentinel_96"></a>2. Sentinel</h3> 
+<blockquote> 
+ <p>针对服务过载、线程隔离以及熔断降级，我们可以使用 Alibaba Sentinel 来提供全面的解决方案。Sentinel 是 Alibaba 开源的一个流量防卫组件，专注于服务端的流量控制、熔断降级以及系统保护</p> 
+ <p><a href="https://sentinelguard.io/zh-cn/" rel="nofollow">home | Sentinel (sentinelguard.io)</a></p> 
+ <p><img src="https://images2.imgbox.com/8f/8a/nlOIVb15_o.png" alt="Sentinel 的开源生态"></p> 
+</blockquote> 
+<p><strong>Sentinel和Hystrix对比</strong>：</p> 
+<table><thead><tr><th>Sentinel</th><th>Hystrix</th><th></th></tr></thead><tbody><tr><td>隔离策略</td><td>信号量隔离</td><td>线程池隔离/信号量隔离</td></tr><tr><td>熔断降级策略</td><td>基于响应时间或失败比率</td><td>基于失败比率</td></tr><tr><td>实时指标实现</td><td>滑动窗口</td><td>滑动窗口（基于 RxJava）</td></tr><tr><td>规则配置</td><td>支持多种数据源</td><td>支持多种数据源</td></tr><tr><td>扩展性</td><td>多个扩展点</td><td>插件的形式</td></tr><tr><td>基于注解的支持</td><td>支持</td><td>支持</td></tr><tr><td>限流</td><td>基于 QPS，支持基于调用关系的限流</td><td>有限的支持</td></tr><tr><td>流量整形</td><td>支持慢启动、匀速器模式</td><td>不支持</td></tr><tr><td>系统负载保护</td><td>支持</td><td>不支持</td></tr><tr><td>控制台</td><td>开箱即用，可配置规则、查看秒级监控、机器发现等</td><td>不完善</td></tr><tr><td>常见框架的适配</td><td>Servlet、Spring Cloud、Dubbo、gRPC 等</td><td>Servlet、Spring Cloud Netflix</td></tr></tbody></table> 
+<p>Sentinel 的使用可以分为两个部分:</p> 
+<ul><li><strong>核心库</strong>（Jar包）：不依赖任何框架/库，能够运行于 Java 8 及以上的版本的运行时环境，同时对 Dubbo / Spring Cloud 等框架也有较好的支持。在项目中引入依赖即可实现服务限流、隔离、熔断等功能。</li><li><strong>控制台</strong>（Dashboard）：亦称 <strong>Sentinel 服务器</strong>。基于 Spring Boot 开发，打包后可以直接运行，不需要额外的 Tomcat 等应用容器，Dashboard 主要负责管理推送规则、监控、管理机器信息等。</li></ul> 
+<p>为了方便监控微服务，我们先把Sentinel的控制台搭建出来。</p> 
+<h4><a id="21__127"></a>2.1 安装</h4> 
+<ol><li>下载jar包</li></ol> 
+<p>下载地址：<a href="https://github.com/alibaba/Sentinel/releases/tag/1.8.7">Release v1.8.7 · alibaba/Sentinel (github.com)</a></p> 
+<p><img src="https://images2.imgbox.com/c5/92/x2RyQtBb_o.png" alt="image-20240603201937169"></p> 
+<blockquote> 
+ <p>如果觉得下载慢可以从镜像下载地址下载：https://mirror.ghproxy.com/https://github.com/alibaba/Sentinel/releases/download/1.8.7/sentinel-dashboard-1.8.7.jar</p> 
+</blockquote> 
+<ol start="2"><li>运行</li></ol> 
+<blockquote> 
+ <p>将jar包放在任意非中文、不包含特殊字符的目录下，重命名为<code>sentinel-dashboard.jar</code>：</p> 
+</blockquote> 
+<p>然后在命令行运行如下命令(端口如果冲突可以换其他端口)：</p> 
+<pre><code class="prism language-shell"><span class="token function">java</span> <span class="token parameter variable">-Dserver.port</span><span class="token operator">=</span><span class="token number">8090</span> <span class="token parameter variable">-Dcsp.sentinel.dashboard.server</span><span class="token operator">=</span>localhost:8090 <span class="token parameter variable">-Dproject.name</span><span class="token operator">=</span>sentinel-dashboard <span class="token parameter variable">-jar</span> sentinel-dashboard.jar
+</code></pre> 
+<p>其它启动时可配置参数可参考官方文档：</p> 
+<p><a href="https://github.com/alibaba/Sentinel/wiki/%E5%90%AF%E5%8A%A8%E9%85%8D%E7%BD%AE%E9%A1%B9">启动配置项 · alibaba/Sentinel Wiki (github.com)</a></p> 
+<p><img src="https://images2.imgbox.com/c1/91/O8K6NNxY_o.png" alt="image-20240603202715699"></p> 
+<ol start="3"><li>访问</li></ol> 
+<p>访问<a href="http://localhost:8080" rel="nofollow">http://localhost:8090</a>页面，就可以看到sentinel的控制台了：</p> 
+<p><img src="https://images2.imgbox.com/d3/88/WtqzS6sp_o.png" alt="image-20240603202910829"></p> 
+<p>输入账号和密码，默认都是：sentinel</p> 
+<p>登录后，即可看到控制台，默认会监控sentinel-dashboard服务本身：</p> 
+<p><img src="https://images2.imgbox.com/df/d4/CzmR6iRM_o.png" alt="image-20240603203002228"></p> 
+<blockquote> 
+ <p><strong>控制台页面分析：</strong></p> 
+ <ul><li><strong>实时监控：</strong> 展示当前应用的实时流量情况，包括 QPS、线程数等信息。</li><li><strong>簇点链路：</strong> 展示服务的调用链路，帮助用户快速定位问题。</li><li><strong>流控规则：</strong> 用于配置流量控制规则，例如限制每秒请求数、并发线程数等。</li><li><strong>熔断规则：</strong> 用于配置熔断降级规则，当服务出现异常时，可以快速熔断，避免级联故障。</li><li><strong>热点规则：</strong> 用于配置热点参数限流，例如限制某个用户每秒的请求数。</li><li><strong>系统规则：</strong> 用于配置系统级别的保护规则，例如限制 CPU 使用率、Load 等。</li><li><strong>授权规则：</strong> 用于配置访问权限控制，例如限制某些 IP 访问。</li><li><strong>集群流控：</strong> 用于配置集群级别的流量控制。</li><li><strong>机器列表：</strong> 展示当前应用接入的所有机器。</li></ul> 
+</blockquote> 
+<h4><a id="22__177"></a>2.2 微服务整合</h4> 
+<ol><li> <p>添加<code>Sentinel</code>依赖</p> <pre><code class="prism language-xml"><span class="token comment">&lt;!--sentinel--&gt;</span>
+<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>com.alibaba.cloud<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span> 
+    <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>spring-cloud-starter-alibaba-sentinel<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+  <ol start="2"><li>添加配置文件</li></ol> <pre><code class="prism language-yaml"><span class="token key atrule">spring</span><span class="token punctuation">:</span>
+  <span class="token key atrule">cloud</span><span class="token punctuation">:</span> 
+    <span class="token key atrule">sentinel</span><span class="token punctuation">:</span>
+      <span class="token key atrule">transport</span><span class="token punctuation">:</span>
+        <span class="token key atrule">dashboard</span><span class="token punctuation">:</span> localhost<span class="token punctuation">:</span><span class="token number">8090</span> <span class="token comment"># Sentinel控制台地址，用于与控制台链接，便于控制台推送规则，监控和管理应用程序的流量控制和熔断策略。</span>
+</code></pre> 
+  <ol start="3"><li> <p>访问添加<code>Sentinel</code>的服务端口，之后查看<code>Sentinel</code>控制台</p> <p><img src="https://images2.imgbox.com/47/6c/LT1AAcrj_o.png" alt="image-20240603204300407"></p> </li></ol> </li></ol> 
+<p><strong>簇点链路</strong></p> 
+<blockquote> 
+ <p><strong>簇点链路</strong>，就是单机调用链路。是一次请求进入服务后经过的每一个被Sentinel监控的资源链。默认Sentinel会监控SpringMVC的每一个Endpoint（http接口）。限流、熔断等都是针对簇点链路中的资源设置的。而资源名默认就是接口的请求路径。</p> 
+</blockquote> 
+<p>如果你的项目的API接口风格采用的是Restful风格，由于请求路径一般都相同，这会导致点资源名称重复,因此需要修改配置。</p> 
+<img src="https://images2.imgbox.com/44/0e/4KAFmZ32_o.png" alt="image-20240603205758015"> 
+<p>修改配置，把<strong>请求方式+请求路径</strong>作为簇点资源名称：</p> 
+<pre><code class="prism language-yaml"><span class="token key atrule">spring</span><span class="token punctuation">:</span>
+  <span class="token key atrule">cloud</span><span class="token punctuation">:</span>
+    <span class="token key atrule">sentinel</span><span class="token punctuation">:</span>
+      <span class="token key atrule">transport</span><span class="token punctuation">:</span>
+        <span class="token key atrule">dashboard</span><span class="token punctuation">:</span> localhost<span class="token punctuation">:</span><span class="token number">8090</span>
+      <span class="token key atrule">http-method-specify</span><span class="token punctuation">:</span> <span class="token boolean important">true</span> <span class="token comment"># 开启请求方式前缀</span>
+</code></pre> 
+<p>再次访问该服务的各个接口，之后查看<code>Sentinel</code>控制台：</p> 
+<p><img src="https://images2.imgbox.com/85/16/0KLAA4OS_o.png" alt="image-20240603210151127"></p> 
+<h5><a id="221__226"></a>2.2.1 请求限流</h5> 
+<p>在簇点链路后面点击流控按钮，即可对其做限流配置：</p> 
+<p><img src="https://images2.imgbox.com/65/5d/a3TjpSU7_o.png" alt="image-20240603211054712"></p> 
+<p><strong>分析：</strong></p> 
+<ol><li> <p><strong>资源名</strong></p> 
+  <ul><li>这是限流规则所作用的具体资源。图中，资源名为<code>/carts</code>，表示该限流规则是针对<code>/carts</code>这个资源设置的。资源名一般是服务的 URL 地址或业务方法名。</li></ul> </li><li> <p><strong>针对来源</strong></p> 
+  <ul><li>表示该限流规则针对的是哪个调用来源。<code>default</code>，表示不限具体的调用来源，也即对所有调用该资源的请求都适用此规则。</li></ul> </li><li> <p><strong>阈值类型</strong></p> 
+  <ul><li>这里可以选择限流的类型，通常有 QPS（每秒查询次数）或并发线程数。默认的是类型是<code>QPS</code>，表示采用每秒最大请求数来进行限流控制。</li></ul> </li><li> <p><strong>单机阈值</strong></p> 
+  <ul><li>设置每秒最多允许的请求数（或并发线程数）。如果实际请求数超过该阈值，多余的请求将被拒绝或延迟处理。例如填入1000表示每秒最多允许1000次请求。</li></ul> </li><li> <p><strong>是否集群</strong></p> 
+  <ul><li>表示是否启用集群流控。如果启用，Threshold 将按集群模式进行分布式统计和计算。</li></ul> </li><li> <p><strong>高级选项</strong></p> 
+  <ul><li>可以展开设置一些高级参数，比如流控模式、冷启动时间等。</li></ul> </li></ol> 
+<blockquote> 
+ <p>而如果想要对接口限流进行测试，可以使用jmeter这个软件，里面有详细的教程（可以只下载文档）：</p> 
+ <p>链接:https://pan.baidu.com/s/1Y_qxYVVEns6qBsvltyyOXg?pwd=tutu<br> 提取码:tutu</p> 
+ <p>或者直接去官方网站下载安装包（度盘限的真狠）：</p> 
+ <p><a href="https://jmeter.apache.org/download_jmeter.cgi" rel="nofollow">Apache JMeter - 下载 Apache JMeter — Apache JMeter - Download Apache JMeter</a></p> 
+ <p>或者去国内镜像下载：</p> 
+ <p><a href="https://mirrors.aliyun.com/apache/jmeter/?spm=a2c6h.25603864.0.0.330751bbsTjrCf" rel="nofollow">apache-jmeter安装包下载_开源镜像站-阿里云 (aliyun.com)</a></p> 
+</blockquote> 
+<p>这里我们使用QPS限流策略，每秒最多请求数设为6，使用jmeter测试后查看控制台：</p> 
+<p><img src="https://images2.imgbox.com/f2/cf/ExP9sNzP_o.png" alt="image-20240603214631683"></p> 
+<p><img src="https://images2.imgbox.com/b0/52/SPn5V3Hm_o.png" alt="image-20240603214539459"> 可以看到10个请求其中有4个被拒绝，符合我们的QPS限流策略。</p> 
+<h5><a id="222__273"></a>2.2.2 线程隔离</h5> 
+<blockquote> 
+ <p>限流可以降低服务器压力，尽量减少因并发流量引起的服务故障的概率，但并不能完全避免服务故障。一旦某个服务出现故障，我们必须隔离对这个服务的调用，避免发生雪崩。</p> 
+</blockquote> 
+<h6><a id="OpenFeignSentinel_277"></a>①OpenFeign整合Sentinel</h6> 
+<blockquote> 
+ <p>由于微服务的各个服务之间经常使用OpenFeign进行请求，要FeignClient接口做线程隔离，需要将OpenFeign整合Sentinel</p> 
+</blockquote> 
+<p>修改服务调用方的<code>application.yml</code>文件，开启Feign的sentinel功能：</p> 
+<pre><code class="prism language-yaml"><span class="token key atrule">feign</span><span class="token punctuation">:</span>
+  <span class="token key atrule">sentinel</span><span class="token punctuation">:</span>
+    <span class="token key atrule">enabled</span><span class="token punctuation">:</span> <span class="token boolean important">true</span> <span class="token comment"># 开启feign对sentinel的支持</span>
+</code></pre> 
+<p>重启服务会发现要服务调用方要调用的接口FeignClient自动变成了一个簇点资源：</p> 
+<p><img src="https://images2.imgbox.com/a2/e7/AoE34wOi_o.png" alt="image-20240604090138056"></p> 
+<h6><a id="_293"></a>②配置线程隔离</h6> 
+<blockquote> 
+ <p>勾选"并发线程数限制"，也就是说这个接口最多使用5个线程。如果该接口每秒处理2个请求，则5个线程的实际QPS在10左右，而超出的请求自然会被拒绝。</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/d6/9f/dQwKjNPU_o.png" alt="image-20240603221734144"></p> 
+<p>再次使用jemeter进行测试：</p> 
+<p>很容易就能发现端口的QPS完全不同，服务调用方本身的接口的QPS为100，而被调用的接口的QPS为10（接口每秒处理2个请求，则5个线程的实际QPS在10左右）。</p> 
+<p><img src="https://images2.imgbox.com/74/aa/ZHJQ3Du3_o.png" alt="image-20240604090918466"></p> 
+<h5><a id="223__305"></a>2.2.3 服务熔断</h5> 
+<blockquote> 
+ <p>熔断是解决雪崩问题的重要手段。思路是由<strong>断路器</strong>统计服务调用的异常比例、慢请求比例，如果超出阈值则会<strong>熔断</strong>该服务。即拦截访问该服务的一切请求；而当服务恢复时，断路器会放行访问该服务的请求。</p> 
+</blockquote> 
+<p>在前面，我们使用线程隔离对服务调用方进行隔离，保护了微服务的其它接口。但由于线程隔离导致被调用服务QPS较低，导致接口吞吐能力有限，这也导致了下面几个问题：</p> 
+<p>第一，超出的QPS上限的请求就只能抛出异常，从而导致上游服务中想要请求该接口获取资源的接口请求失败。但从业务角度来说，即便上游服务没有请求成功，上游服务也应该展示给用户，用户体验更好。也就是给请求失败设置一个<strong>降级处理</strong>逻辑。</p> 
+<p>第二，由于下游接口的延迟较高（模拟的500ms），从而导致上游服务接口的响应时间也变的很长。这样不仅拖慢了上游服务，消耗了上游服务的更多资源，而且用户体验也很差。对于下游服务中这种不太健康的接口，我们应该直接停止调用，直接走降级逻辑，避免影响到当前服务。也就是将下游服务的该接口<strong>熔断</strong>。</p> 
+<h6><a id="_315"></a>①编写降级逻辑</h6> 
+<p>触发限流或熔断后的请求不一定要直接报错，也可以返回一些默认数据或者友好提示，用户体验会更好。</p> 
+<p>给FeignClient编写失败后的降级逻辑有两种方式：</p> 
+<ul><li>方式一：FallbackClass，无法对远程调用的异常做处理</li><li>方式二：FallbackFactory，可以对远程调用的异常做处理，我们一般选择这种方式。</li></ul> 
+<p>这里我们演示方式二的失败降级处理。</p> 
+<p><strong>步骤一：</strong></p> 
+<blockquote> 
+ <p>这里默认已经在上游服务配置文件中将OpenFeign整合了Sentinel：</p> 
+ <pre><code class="prism language-yaml"><span class="token key atrule">feign</span><span class="token punctuation">:</span>
+  <span class="token key atrule">sentinel</span><span class="token punctuation">:</span>
+    <span class="token key atrule">enabled</span><span class="token punctuation">:</span> <span class="token boolean important">true</span> <span class="token comment"># 开启feign对sentinel的支持</span>
+</code></pre> 
+</blockquote> 
+<p>在相应的FeignClient所在模块定义降级处理类，实现<code>FallbackFactory</code>：</p> 
+<pre><code class="prism language-java"><span class="token keyword">import</span> <span class="token import"><span class="token namespace">feign<span class="token punctuation">.</span>hystrix<span class="token punctuation">.</span></span><span class="token class-name">FallbackFactory</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>stereotype<span class="token punctuation">.</span></span><span class="token class-name">Component</span></span><span class="token punctuation">;</span>
+
+<span class="token annotation punctuation">@Component</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">ItemServiceFallbackFactory</span> <span class="token keyword">implements</span> <span class="token class-name">FallbackFactory</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">ItemServiceClient</span><span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token class-name">ItemServiceClient</span> <span class="token function">create</span><span class="token punctuation">(</span><span class="token class-name">Throwable</span> throwable<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">ItemServiceClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token annotation punctuation">@Override</span>
+            <span class="token keyword">public</span> <span class="token class-name">Item</span> <span class="token function">getItemById</span><span class="token punctuation">(</span><span class="token class-name">Long</span> id<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">// 降级之后返回的默认数据</span>
+                <span class="token class-name">Item</span> defaultItem <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Item</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                defaultItem<span class="token punctuation">.</span><span class="token function">setId</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                defaultItem<span class="token punctuation">.</span><span class="token function">setName</span><span class="token punctuation">(</span><span class="token string">"默认Item"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                defaultItem<span class="token punctuation">.</span><span class="token function">setDescription</span><span class="token punctuation">(</span><span class="token string">"由于系统负载，这是一个默认的Item描述。"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">return</span> defaultItem<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>分析：</strong></p> 
+<ol><li><code>ItemServiceFallbackFactory</code> 实现了 <code>FallbackFactory</code> 接口，而<code>FallbackFactory</code> 接口允许我们创建一个 Fallback 实例，此实例可以用于处理远程调用失败后的逻辑。</li><li><code>create(Throwable throwable)</code> 方法是 <code>FallbackFactory</code> 接口中的唯一方法，用于生成一个 <code>ItemServiceClient</code> 的降级处理实现。在调用失败时，该方法会接收到一个 <code>Throwable</code> 对象，表示调用失败的原因。</li><li>在 <code>create</code> 方法中，返回了一个匿名内部类实现 <code>ItemServiceClient</code> 接口的降级处理逻辑。当 Feign 客户端的远程调用失败时，将调用这个降级处理器的方法。</li><li>这里是 <code>getItemById</code> 方法的降级实现，当请求远程 <code>getItemById</code> 方法失败时，返回一个默认的 <code>Item</code> 对象。</li></ol> 
+<p>通过这种方式，即使远程服务不可用，上游服务仍然可以返回友好的默认数据，避免直接暴露问题，并提升用户体验。</p> 
+<p><strong>步骤二：</strong></p> 
+<p>注册配置，在 FeignClient 接口中添加注解，指明降级处理类：</p> 
+<pre><code class="prism language-java"><span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>cloud<span class="token punctuation">.</span>openfeign<span class="token punctuation">.</span></span><span class="token class-name">FeignClient</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>bind<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">GetMapping</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>springframework<span class="token punctuation">.</span>web<span class="token punctuation">.</span>bind<span class="token punctuation">.</span>annotation<span class="token punctuation">.</span></span><span class="token class-name">PathVariable</span></span><span class="token punctuation">;</span>
+
+<span class="token annotation punctuation">@FeignClient</span><span class="token punctuation">(</span>name <span class="token operator">=</span> <span class="token string">"item-service"</span><span class="token punctuation">,</span> fallbackFactory <span class="token operator">=</span> <span class="token class-name">ItemServiceFallbackFactory</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> <span class="token keyword">interface</span> <span class="token class-name">ItemServiceClient</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token annotation punctuation">@GetMapping</span><span class="token punctuation">(</span><span class="token string">"/items/{id}"</span><span class="token punctuation">)</span>
+    <span class="token class-name">Item</span> <span class="token function">getItemById</span><span class="token punctuation">(</span><span class="token annotation punctuation">@PathVariable</span><span class="token punctuation">(</span><span class="token string">"id"</span><span class="token punctuation">)</span> <span class="token class-name">Long</span> id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这样上游服务就不会受到下游服务的影响，延迟会变得很低，这就是给请求失败设置的<strong>降级处理</strong>逻辑。</p> 
+<h6><a id="_388"></a>②配置熔断规则</h6> 
+<blockquote> 
+ <p>在前面我们知道：对于下游服务中这种不太健康的接口，我们应该直接停止调用，直接走降级逻辑，避免影响到当前服务。也就是将下游服务的该接口<strong>熔断</strong>。当下游服务恢复正常时再允许调用。这其实就是<strong>断路器</strong>的工作模式。</p> 
+</blockquote> 
+<p>Sentinel中的断路器不仅可以统计某个接口的<strong>慢请求比例</strong>，还可以统计<strong>异常请求比例</strong>。当这些比例超出阈值时，就会<strong>熔断</strong>该接口，即拦截访问该接口的一切请求，降级处理；当该接口恢复正常时，再放行对于该接口的请求。</p> 
+<p>断路器的工作状态切换有一个状态机来控制：</p> 
+<p><img src="https://images2.imgbox.com/41/f2/9NgB0Nnp_o.png" alt="image-20240603230804731"></p> 
+<p>状态机包括三个状态：</p> 
+<ul><li><strong>closed</strong>：关闭状态，断路器放行所有请求，并开始统计异常比例、慢请求比例。超过阈值则切换到open状态</li><li><strong>open</strong>：打开状态，服务调用被<strong>熔断</strong>，访问被熔断服务的请求会被拒绝，快速失败，直接走降级逻辑。Open状态持续一段时间后会进入half-open状态</li><li><strong>half-open</strong>：半开状态，放行一次请求，根据执行结果来判断接下来的操作。 
+  <ul><li>请求成功：则切换到closed状态</li><li>请求失败：则切换到open状态</li></ul> </li></ul> 
+<p>接下来配置熔断规则，在上游服务下拉栏中选择下游接口进行配置：<br> <img src="https://images2.imgbox.com/c2/27/iijjMaHy_o.png" alt="image-20240603233028254"></p> 
+<p><img src="https://images2.imgbox.com/9f/60/tQQDVArI_o.png" alt="image-20240603232930105"></p> 
+<ol><li><strong>熔断策略</strong> 
+  <ul><li>有三种熔断策略可供选择： 
+    <ol><li><strong>慢调用比例</strong>：根据调用响应时间来触发熔断。</li><li><strong>异常比例</strong>：根据调用异常比例来触发熔断。</li><li><strong>异常数</strong>：根据调用异常数来触发熔断。</li></ol> </li></ul> </li><li><strong>最大 RT</strong> 
+  <ul><li>最大 RT 是指响应时间，如果请求的响应时间超过这个值即认为是慢调用。</li><li>例如，设为 <code>500</code> 毫秒，表示响应时间超过 500 毫秒的请求被视为慢调用。</li></ul> </li><li><strong>比例阈值</strong> 
+  <ul><li>当慢调用的比例达到这个阈值时触发熔断。取值范围在 <code>[0.0, 1.0]</code> 之间。</li><li>例如设为 <code>0.5</code>，表示慢调用比例达到 50% 时触发熔断。</li></ul> </li><li><strong>熔断时长</strong> 
+  <ul><li>设置熔断持续的时间，即熔断发生后的休眠期，在此期间请求将会直接失败。</li><li>例如设为 <code>5</code> 秒，表示一旦触发熔断，这个接口将在接下来的 5 秒内直接返回降级处理结果。</li></ul> </li><li><strong>最小请求数</strong> 
+  <ul><li>表示触发熔断机制的最小请求数量。如果请求数不足这个数量，即使比例达到阈值也不会触发熔断。</li><li>默认设置为 5，表示在熔断检测计算的时间窗口内，至少必须有 5 个请求才会进行熔断判断。</li></ul> </li><li><strong>统计时长</strong> 
+  <ul><li>表示进行统计的时间窗口大小，以毫秒为单位。</li><li>默认设置为 1000 毫秒，也即 1 秒。这是统计时间窗口的长度，熔断策略将在这个时间窗口内计算和统计。</li></ul> </li></ol> 
+<p>比如：</p> 
+<p>如果配置成下面这样：</p> 
+<p><img src="https://images2.imgbox.com/4f/49/prH7WSsK_o.png" alt="image-20240604104153057"></p> 
+<p><strong>实际效果</strong>：</p> 
+<p>如果该接口在 1 秒内超过 50% 的请求响应时间超过 200 毫秒，同时请求数至少有 5 个，则触发熔断。此时，接口将在接下来的 20 秒内直接返回降级处理结果，相当于在这 20 秒内停止向目标接口发送真实请求，从而保护下游服务避免进一步的压力。</p> 
+<h5><a id="223__443"></a>2.2.3 规则持久化</h5> 
+<blockquote> 
+ <p>由于每次重启应用，Sentinel 规则将消失在生产环境中，我们需要确保 Sentinel 的配置规则在应用重启后仍然有效。为了达成这一目标，可以使用 Nacos 来持久化 Sentinel 规则，当我们刷新 REST 地址时，Sentinel 控制台的流控规则可以从 Nacos 中读取并继续生效。</p> 
+</blockquote> 
+<h6><a id="_447"></a>①添加依赖：</h6> 
+<pre><code class="prism language-xml"><span class="token comment">&lt;!-- Sentinel 持久化相关 --&gt;</span>
+<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>dependency</span><span class="token punctuation">&gt;</span></span>
+   <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>groupId</span><span class="token punctuation">&gt;</span></span>com.alibaba.csp<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>groupId</span><span class="token punctuation">&gt;</span></span>
+   <span class="token tag"><span class="token tag"><span class="token punctuation">&lt;</span>artifactId</span><span class="token punctuation">&gt;</span></span>sentinel-datasource-nacos<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>artifactId</span><span class="token punctuation">&gt;</span></span>
+<span class="token tag"><span class="token tag"><span class="token punctuation">&lt;/</span>dependency</span><span class="token punctuation">&gt;</span></span>
+</code></pre> 
+<h6><a id="_bootstrapyml__457"></a>②修改 bootstrap.yml 配置文件</h6> 
+<pre><code class="prism language-yaml"><span class="token key atrule">spring</span><span class="token punctuation">:</span>
+  <span class="token key atrule">application</span><span class="token punctuation">:</span>
+    <span class="token key atrule">name</span><span class="token punctuation">:</span> cart<span class="token punctuation">-</span>service
+  <span class="token key atrule">profiles</span><span class="token punctuation">:</span>
+    <span class="token key atrule">active</span><span class="token punctuation">:</span> dev
+  <span class="token key atrule">cloud</span><span class="token punctuation">:</span>
+    <span class="token key atrule">nacos</span><span class="token punctuation">:</span>
+      <span class="token key atrule">server-addr</span><span class="token punctuation">:</span> 192.168.56.101<span class="token punctuation">:</span><span class="token number">8848</span>
+      <span class="token key atrule">config</span><span class="token punctuation">:</span>
+        <span class="token key atrule">file-extension</span><span class="token punctuation">:</span> yaml <span class="token comment"># 文件后缀名</span>
+        <span class="token key atrule">shared-configs</span><span class="token punctuation">:</span> <span class="token comment"># 共享配置</span>
+          <span class="token punctuation">-</span> <span class="token key atrule">dataId</span><span class="token punctuation">:</span> shared<span class="token punctuation">-</span>jdbc.yaml <span class="token comment"># 共享mybatis配置</span>
+          <span class="token punctuation">-</span> <span class="token key atrule">dataId</span><span class="token punctuation">:</span> shared<span class="token punctuation">-</span>log.yaml <span class="token comment"># 共享日志配置</span>
+          <span class="token punctuation">-</span> <span class="token key atrule">dataId</span><span class="token punctuation">:</span> shared<span class="token punctuation">-</span>swagger.yaml <span class="token comment"># 共享日志配置</span>
+	<span class="token comment"># 添加以下内容------------------------------------</span>
+    <span class="token key atrule">sentinel</span><span class="token punctuation">:</span>
+      <span class="token key atrule">datasource</span><span class="token punctuation">:</span>
+        <span class="token key atrule">ds0</span><span class="token punctuation">:</span>
+          <span class="token key atrule">nacos</span><span class="token punctuation">:</span>
+            <span class="token key atrule">server-addr</span><span class="token punctuation">:</span> 192.168.56.101<span class="token punctuation">:</span><span class="token number">8848</span> <span class="token comment"># Nacos 服务地址</span>
+            <span class="token key atrule">dataId</span><span class="token punctuation">:</span> $<span class="token punctuation">{<!-- --></span>spring.application.name<span class="token punctuation">}</span><span class="token punctuation">-</span>degrade<span class="token punctuation">-</span>rules.json  <span class="token comment"># 数据 ID</span>
+            <span class="token key atrule">groupId</span><span class="token punctuation">:</span> DEFAULT_GROUP <span class="token comment"># 分组</span>
+            <span class="token key atrule">data-type</span><span class="token punctuation">:</span> json <span class="token comment"># 数据格式</span>
+            <span class="token key atrule">rule-type</span><span class="token punctuation">:</span> degrade <span class="token comment"># 规则类型，这里指定为 degrade，表示是熔断降级规则</span>
+</code></pre> 
+<h6><a id="nacos_488"></a>③在nacos中添加共享配置</h6> 
+<blockquote> 
+ <p>这里添加的是熔断规则，如果采用限流规则可以看这个：</p> 
+ <pre><code class="prism language-json"><span class="token punctuation">[</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"resource"</span><span class="token operator">:</span> <span class="token string">"GET:http://item-service/items"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"limitApp"</span><span class="token operator">:</span> <span class="token string">"default"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"grade"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"count"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"strategy"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"controlBehavior"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"clusterMode"</span><span class="token operator">:</span> <span class="token boolean">false</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+ <ul><li><strong><code>resource</code></strong>: 资源名，表示要保护的资源，对应代码中配置的资源名，例如某个接口的路径。</li><li><code>limitApp</code>: 流控针对的调用来源，表示只有来自哪些应用的调用才会被限流。 
+   <ul><li><code>default</code> 表示不区分调用来源，所有调用都会被限流。</li><li>也可以设置为具体的应用名，例如 <code>user-service</code>，表示只有来自 <code>user-service</code> 应用的调用才会被限流。</li></ul> </li><li><code>grade</code>: 限流级别，可选值包括： 
+   <ul><li><code>0</code>：线程数限流，限制并发线程数。</li><li><code>1</code>：QPS 限流，限制每秒请求数（这里使用的就是 QPS 限流）。</li></ul> </li><li><code>count</code>: 限流阈值，根据grade 的不同含义也不同： 
+   <ul><li>当 <code>grade</code> 为 0 时，表示最大并发线程数。</li><li>当 <code>grade</code> 为 1 时，表示每秒允许通过的请求数，这里设置为 <code>10</code>，表示每秒最多允许通过 10 个请求。</li></ul> </li><li><code>strategy</code>: 流控策略，可选值包括： 
+   <ul><li><code>0</code>：直接拒绝策略，超过阈值直接拒绝后续请求。</li><li><code>1</code>：关联资源限流策略，当关联资源的流量达到阈值时，对当前资源进行限流。</li><li><code>2</code>：链路限流策略，统计整个调用链路上的流量，对超过阈值的请求进行限流。</li></ul> </li><li><code>controlBehavior</code>: 流控效果，可选值包括： 
+   <ul><li><code>0</code>：快速失败，超过阈值直接拒绝后续请求。</li><li><code>1</code>：Warm Up 预热模式，逐渐增加流量，避免系统过载。</li><li><code>2</code>：排队等待模式，将超过阈值的请求放入队列中等待，直到有资源可用。</li></ul> </li><li><strong><code>clusterMode</code></strong>: 是否开启集群限流模式，<code>false</code> 表示不开启，<code>true</code> 表示开启。</li></ul> 
+</blockquote> 
+<pre><code class="prism language-json"><span class="token punctuation">[</span>
+  <span class="token punctuation">{<!-- --></span>
+    <span class="token string-property property">"resource"</span><span class="token operator">:</span> <span class="token string">"GET:http://item-service/items"</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"count"</span><span class="token operator">:</span> <span class="token number">0.5</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"grade"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"timeWindow"</span><span class="token operator">:</span> <span class="token number">20</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"minRequestAmount"</span><span class="token operator">:</span> <span class="token number">5</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"statIntervalMs"</span><span class="token operator">:</span> <span class="token number">10000</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"slowRatioThreshold"</span><span class="token operator">:</span> <span class="token number">0.5</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/1e/df/z4zifNiP_o.png" alt="image-20240604190644597"></p> 
+<p><strong>字段解释：</strong></p> 
+<ol><li><strong><code>resource</code></strong>： 
+  <ul><li>资源名称，表示熔断规则应用于的具体资源。</li></ul> </li><li><strong><code>count</code></strong>： 
+  <ul><li>触发熔断的阈值，数值的含义取决于熔断策略的类型（grade）。 
+    <ul><li>如果 <code>grade</code> 是 0（慢调用比例），则 <code>count</code> 表示慢调用占比的阈值，即当慢调用比例达到 50% 时触发熔断。</li><li>如果 <code>grade</code> 是 1（异常比例），则 <code>count</code> 表示异常请求占比的阈值。</li><li>如果 <code>grade</code> 是 2（异常数），<code>count</code> 表示触发熔断的异常请求数阈值。</li></ul> </li></ul> </li><li><strong><code>grade</code></strong>： 
+  <ul><li>熔断策略类型： 
+    <ul><li><code>0</code>：表示按<strong>异常比例</strong>触发熔断。</li><li><code>1</code>：表示按<strong>慢调用比例</strong>触发熔断。</li><li><code>2</code>：表示按<strong>异常数</strong>触发熔断。</li></ul> </li></ul> </li><li><strong><code>timeWindow</code></strong>：熔断持续的时间窗口，单位为秒。表示当熔断条件满足时，该资源将进入熔断状态，并在 <code>20</code> 秒内直接拒绝请求或执行降级处理。</li><li><strong><code>minRequestAmount</code></strong>：触发熔断判定的最小请求数。统计时窗口内请求数量需至少达到该值时才会根据熔断策略进行判定。</li><li><strong><code>statIntervalMs</code></strong>：统计时间窗口，单位为毫秒。</li><li><strong><code>slowRatioThreshold</code></strong>：慢调用比例触发熔断的阈值，这个值跟 <code>count</code> 是同样用途，用于定义慢调用比例（如果 <code>grade</code> 是 1）。一般情况下这个值和 <code>count</code> 值一致。</li></ol> 
+<p>重新启动服务，测试。请求一下相应的接口，然后查看Sentinel 控制台，发现控制台多出来了一个熔断规则：</p> 
+<p><img src="https://images2.imgbox.com/aa/65/kDc9Hmmg_o.png" alt="image-20240604190621955"></p> 
+<h3><a id="3___565"></a>3 . 总结</h3> 
+<p>通过本篇文章，我们简单地了解了如何使用 Alibaba Sentinel 进行微服务保护，并且详细讲解了三种主要的服务保护策略——请求限流、线程隔离以及服务熔断。其实Sentinel相关的知识内容还有很多很多（太多了！），所以这里就简单讲解一下，提供一些基本的用法，希望对大家有所帮助！</p> 
+<hr> 
+<p>参考文章：</p> 
+<p><a href="https://blog.risingstack.com/designing-microservices-architecture-for-failure/?spm=a2c6h.12873639.article-detail.9.434d4112MtdebQ" rel="nofollow">为故障设计微服务架构 - RisingStack Engineering</a></p> 
+<p><a href="https://www.cnblogs.com/sss4/p/16445583.html" rel="nofollow">微服务之微服务保护(Sentinal) - Martin8866 - 博客园 (cnblogs.com)</a></p> 
+<p><a href="https://sentinelguard.io/zh-cn/docs/dashboard.html" rel="nofollow">dashboard | Sentinel (sentinelguard.io)</a></p> 
+<p><a href="https://developer.aliyun.com/article/863740#slide-12" rel="nofollow">微服务架构 | 5.2 基于 Sentinel 的服务限流及熔断-阿里云开发者社区 (aliyun.com)</a></p> 
+<p><a href="https://juejin.cn/post/6994382530237448228#heading-13" rel="nofollow">第十章 Sentinel微服务熔断限流 - 掘金 (juejin.cn)</a></p> 
+<p><a href="https://b11et3un53m.feishu.cn/wiki/QfVrw3sZvihmnPkmALYcUHIDnff?from=from_copylink" rel="nofollow">服务保护和分布式事务</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3c2072bf9a29cc0755701cac29a94c6e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">数据结构~~排序</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/acb71e4f54872f45ed0b8bda91025a63/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Flink CDC3.1版本数据同步记录</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

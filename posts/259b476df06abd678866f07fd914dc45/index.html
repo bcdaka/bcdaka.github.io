@@ -1,0 +1,407 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>RabbitMQ——基于 KeepAlived &#43; HAProxy 搭建 RabbitMQ 高可用负载均衡集群 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/259b476df06abd678866f07fd914dc45/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="RabbitMQ——基于 KeepAlived &#43; HAProxy 搭建 RabbitMQ 高可用负载均衡集群">
+  <meta property="og:description" content="一、集群简介 1.1 集 群架构
+当单台 RabbitMQ 服务器的处理消息的能力达到瓶颈时，此时可以通过 RabbitMQ 集群来进行扩展，从而达到提升吞吐量的目的。
+RabbitMQ 集群是一个或多个节点的逻辑分组，集群中的每个节点都是对等的，每个节点共享所有的用户，虚拟主机，队列，交换器，绑定关系，运行时参数和其他分布式状态等信息。一个高可用，负载均衡的 RabbitMQ 集群架构应类似下图： 这里对上面的集群架构做一下解释说明：
+首先，一个基本的 RabbitMQ 集群不是高可用的，虽然集群共享队列，但在默认情况下，消息只会被路由到某一个节点的符合条件的队列上，并不会同步到其他节点的相同队列上。假设消息路由到 node1 的 my-queue 队列上，但是 node1 突然宕机了，那么消息就会丢失，想要解决这个问题，需要开启队列镜像，将集群中的队列彼此之间进行镜像，此时消息就会被拷贝到处于同一个镜像分组中的所有队列上。
+其次 ，RabbitMQ 集群本身并没有提供负载均衡的功能，也就是说对于一个三节点的集群，每个节点的负载可能都是不相同的，想要解决这个问题可以通过硬件负载均衡或者软件负载均衡的方式，这里我们选择使用 HAProxy 来进行负载均衡，当然也可以使用其他负载均衡中间件，如 LVS 等。HAProxy 同时支持四层和七层负载均衡，并基于单一进程的事件驱动模型，因此它可以支持非常高的井发连接数。
+接着，假设我们只采用一台 HAProxy ，那么它就存在明显的单点故障的问题，所以至少需要两台 HAProxy ，同时这两台 HAProxy 之间需要能够自动进行故障转移，通常的解决方案就是 KeepAlived 。KeepAlived 采用 VRRP (Virtual Router Redundancy Protocol，虚拟路由冗余协议) 来解决单点失效的问题，它通常由一组一备两个节点组成，同一时间内只有主节点会提供对外服务，并同时提供一个虚拟的 IP 地址(Virtual Internet Protocol Address ，简称 VIP) 。 如果主节点故障，那么备份节点会自动接管 VIP 并成为新的主节点 ，直到原有的主节点恢复。
+最后，任何想要连接到 RabbitMQ 集群的客户端只需要连接到虚拟 IP，而不必关心集群是何种架构，示例如下：
+ConnectionFactory factory = new ConnectionFactory(); // 假设虚拟ip为 192.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-02-04T14:41:29+08:00">
+    <meta property="article:modified_time" content="2024-02-04T14:41:29+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">RabbitMQ——基于 KeepAlived &#43; HAProxy 搭建 RabbitMQ 高可用负载均衡集群</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p></p> 
+<h2 style="background-color:transparent;"><strong>一、集群简介</strong></h2> 
+<h3 style="background-color:transparent;"><strong>1.1 集</strong></h3> 
+<p><strong>群架构</strong></p> 
+<p>当单台 RabbitMQ 服务器的处理消息的能力达到瓶颈时，此时可以通过 RabbitMQ 集群来进行扩展，从而达到提升吞吐量的目的。</p> 
+<p>RabbitMQ 集群是一个或多个节点的逻辑分组，集群中的每个节点都是对等的，每个节点共享所有的用户，虚拟主机，队列，交换器，绑定关系，运行时参数和其他分布式状态等信息。一个高可用，负载均衡的 RabbitMQ 集群架构应类似下图： <img alt="" height="514" src="https://images2.imgbox.com/d2/41/oO95axmk_o.jpg" width="720"></p> 
+<p>这里对上面的集群架构做一下解释说明：</p> 
+<p>首先，一个基本的 RabbitMQ 集群不是高可用的，虽然集群共享队列，但在默认情况下，消息只会被路由到某一个节点的符合条件的队列上，并不会同步到其他节点的相同队列上。假设消息路由到 node1 的 my-queue 队列上，但是 node1 突然宕机了，那么消息就会丢失，想要解决这个问题，需要开启队列镜像，将集群中的队列彼此之间进行镜像，此时消息就会被拷贝到处于同一个镜像分组中的所有队列上。</p> 
+<p>其次 ，RabbitMQ 集群本身并没有提供负载均衡的功能，也就是说对于一个三节点的集群，每个节点的负载可能都是不相同的，想要解决这个问题可以通过硬件负载均衡或者软件负载均衡的方式，这里我们选择使用 HAProxy 来进行负载均衡，当然也可以使用其他负载均衡中间件，如 LVS 等。HAProxy 同时支持四层和七层负载均衡，并基于单一进程的事件驱动模型，因此它可以支持非常高的井发连接数。</p> 
+<p>接着，假设我们只采用一台 HAProxy ，那么它就存在明显的单点故障的问题，所以至少需要两台 HAProxy ，同时这两台 HAProxy 之间需要能够自动进行故障转移，通常的解决方案就是 KeepAlived 。KeepAlived 采用 VRRP (Virtual Router Redundancy Protocol，虚拟路由冗余协议) 来解决单点失效的问题，它通常由一组一备两个节点组成，同一时间内只有主节点会提供对外服务，并同时提供一个虚拟的 IP 地址(Virtual Internet Protocol Address ，简称 VIP) 。 如果主节点故障，那么备份节点会自动接管 VIP 并成为新的主节点 ，直到原有的主节点恢复。</p> 
+<p>最后，任何想要连接到 RabbitMQ 集群的客户端只需要连接到虚拟 IP，而不必关心集群是何种架构，示例如下：</p> 
+<pre><code class="language-cs">ConnectionFactory factory = new ConnectionFactory();
+// 假设虚拟ip为 192.168.0.200
+factory.setHost("192.168.0.200");</code></pre> 
+<h3 style="background-color:transparent;"><strong>1.2 部署情况</strong></h3> 
+<p>下面我们开始进行搭建，这里我使用三台主机进行演示，主机名分别为 rabbit-1，2 和 3 ，其功能分配如下：</p> 
+<ul><li> <p>rabbit-1 服务器：部署 RabbitMQ + HAProxy + KeepAlived ；</p> </li><li> <p>rabbit-2 服务器：部署 RabbitMQ + HAProxy + KeepAlived ；</p> </li><li> <p>rabbit-3 服务器：部署 RabbitMQ</p> </li></ul> 
+<h2 style="background-color:transparent;"><strong>二、HAProxy 环境搭建</strong></h2> 
+<h3><strong>2.1 下载</strong></h3> 
+<p></p> 
+<p>HAProxy 官方下载地址为：<a href="https://www.haproxy.org/#down" rel="nofollow" title="www.haproxy.org/#down">www.haproxy.org/#down</a> ，如果这个网站无法访问，也可以从 <a href="https://src.fedoraproject.org/repo/pkgs/haproxy/" rel="nofollow" title="src.fedoraproject.org/repo/pkgs/h…">src.fedoraproject.org/repo/pkgs/h…</a> 上进行下载。</p> 
+<p>这里我下载的是 2.x 的版本，下载后进行解压：</p> 
+<pre><code class="language-bash">tar -zxvf haproxy-2.0.3.tar.gz</code></pre> 
+<h3><strong>2.2 编译</strong></h3> 
+<p>进入解压后根目录，执行下面的编译命令：</p> 
+<pre><code class="language-bash">make TARGET=linux-glibc  PREFIX=/usr/app/haproxy-2.0.3
+make install PREFIX=/usr/app/haproxy-2.0.3</code></pre> 
+<h3><strong>2.3 配置环境变量</strong></h3> 
+<p>配置环境变量：</p> 
+<pre><code class="language-bash">vim /etc/profile</code></pre> 
+<pre><code class="language-bash">export HAPROXY_HOME=/usr/app/haproxy-2.0.3
+export PATH=$PATH:$HAPROXY_HOME/sbin</code></pre> 
+<h3><strong>2.4 负载均衡配置</strong></h3> 
+<pre><code class="language-bash"># 全局配置
+global
+    # 日志输出配置、所有日志都记录在本机，通过 local0 进行输出
+    log 127.0.0.1 local0 info
+    # 最大连接数
+    maxconn 4096
+    # 改变当前的工作目录
+    chroot /usr/app/haproxy-2.0.3
+    # 以指定的 UID 运行 haproxy 进程
+    uid 99
+    # 以指定的 GID 运行 haproxy 进程
+    gid 99
+    # 以守护进行的方式运行
+    daemon
+    # 当前进程的 pid 文件存放位置
+    pidfile /usr/app/haproxy-2.0.3/haproxy.pid
+
+# 默认配置
+defaults
+    # 应用全局的日志配置
+    log global
+    # 使用4层代理模式，7层代理模式则为"http"
+    mode tcp
+    # 日志类别
+    option tcplog
+    # 不记录健康检查的日志信息
+    option dontlognull
+    # 3次失败则认为服务不可用
+    retries 3
+    # 每个进程可用的最大连接数
+    maxconn 2000
+    # 连接超时
+    timeout connect 5s
+    # 客户端超时
+    timeout client 120s
+    # 服务端超时
+    timeout server 120s
+
+# 绑定配置
+listen rabbitmq_admin
+    bind :15673
+    mode tcp
+    balance roundrobin
+    server node1 rabbit-1:15672
+    server node2 rabbit-2:15672
+    server node3 rabbit-3:15672
+
+# 绑定配置
+listen rabbitmq_cluster
+    bind :5673
+    # 配置TCP模式
+    mode tcp
+    # 采用加权轮询的机制进行负载均衡
+    balance roundrobin
+    # RabbitMQ 集群节点配置
+    server node1 rabbit-1:5672 check inter 5000 rise 2 fall 3 weight 1
+    server node2 rabbit-2:5672 check inter 5000 rise 2 fall 3 weight 1
+    server node3 rabbit-3:5672 check inter 5000 rise 2 fall 3 weight 1
+
+# 配置监控页面
+listen monitor
+    bind :8100
+    mode http
+    option httplog
+    stats enable
+    stats uri /stats
+    stats refresh 5s</code></pre> 
+<p>负载均衡的主要配置在 <code>listen rabbitmq_cluster</code> 下，这里指定负载均衡的方式为加权轮询，同时定义好健康检查机制：</p> 
+<pre><code class="language-bash">server node1 rabbit-1:5672 check inter 5000 rise 2 fall 3 weight 1</code></pre> 
+<p>以上配置代表对地址为 rabbit-1:5672 的 node1 节点每隔 5 秒进行一次健康检查，如果连续两次的检查结果都是正常，则认为该节点可用，此时可以将客户端的请求轮询到该节点上；如果连续 3 次的检查结果都不正常，则认为该节点不可用。weight 用于指定节点在轮询过程中的权重。</p> 
+<h3><strong>2.5 启动服务</strong></h3> 
+<p>以上搭建步骤在 rabbit-1 和 rabbit-2 上完全相同，搭建完成使用以下命令启动服务：</p> 
+<pre><code class="language-bash">haproxy -f /etc/haproxy/haproxy.cfg</code></pre> 
+<p>启动后可以在监控页面进行查看，端口为设置的 8100，完整地址为：<a href="http://hadoop001:8100/stats" rel="nofollow" title="http://rabbit-1:8100/stats">http://rabbit-1:8100/stats</a> ，页面情况如下：</p> 
+<p><img alt="" height="352" src="https://images2.imgbox.com/46/40/F1CVhT4S_o.png" width="939"></p> 
+<p>所有节点都为绿色，代表节点健康。此时证明 HAProxy 搭建成功，并已经对 RabbitMQ 集群进行监控。 </p> 
+<h2><strong>三、KeepAlived 环境搭建</strong></h2> 
+<p>接着就可以搭建 Keepalived 来解决 HAProxy 故障转移的问题。这里我在 rabbit-1 和 rabbit-2 上安装 KeepAlived ，两台主机上的搭建的步骤完全相同，只是部分配置略有不同。</p> 
+<h3><strong>3.1 下载</strong></h3> 
+<p>直接从 Keepalived 官方下载所需版本，这里我下载的为 2.x 的版本。下载后进行解压：</p> 
+<pre><code class="language-bash">wget https://www.keepalived.org/software/keepalived-2.2.2.tar.gz</code></pre> 
+<h3><strong>3.2 编译</strong></h3> 
+<p>安装相关依赖后进行编译：</p> 
+<pre><code class="language-bash"># 安装依赖
+yum -y install libnl libnl-devel
+yum install gcc gcc-c++ openssl openssl-devel -y
+yum update glib* -y
+
+# 解压
+cd /opt/soft/keepalived
+tar -xvf keepalived-2.2.2.tar.gz
+
+# 编译安装
+mkdir /opt/soft/keepalived/keepalived-2.2.2/build
+cd /opt/soft/keepalived/keepalived-2.2.2/build
+../configure --prefix=/usr/local/keepalived-2.2.2
+make &amp;&amp; make install</code></pre> 
+<h3><strong>3.3 环境配置</strong></h3> 
+<p>由于不是采用 yum 的方式进行安装，而是采用压缩包的方式进行安装，此时需要进行环境配置，具体如下：</p> 
+<p>Keepalived 默认会从 <code>/etc/keepalived/keepalived.conf</code> 路径读取配置文件，所以需要将安装后的配置文件链接到该路径：</p> 
+<pre><code class="language-bash"># 创建目录
+mkdir /etc/keepalived
+# 备份
+cp /usr/local/keepalived-2.2.2/etc/keepalived/keepalived.conf /usr/local/keepalived-2.2.2/etc/keepalived/keepalived.conf_bak
+# 链接
+ln -s /usr/local/keepalived-2.2.2/etc/keepalived/keepalived.conf /etc/keepalived/</code></pre> 
+<p>将所有 Keepalived 脚本拷贝到 /etc/init.d/ 目录下：</p> 
+<pre><code class="language-bash"># 编译目录中的脚本
+cp /opt/soft/keepalived/keepalived-2.2.2/keepalived/etc/init.d/keepalived /etc/init.d/
+# 安装目录中的脚本
+cp /usr/local/keepalived-2.2.2/etc/sysconfig/keepalived /etc/sysconfig/
+cp /usr/local/keepalived-2.2.2/sbin/keepalived /usr/sbin/</code></pre> 
+<p>设置开机自启动：</p> 
+<pre><code class="language-bash">chmod +x /etc/init.d/keepalived
+chkconfig --add keepalived
+systemctl enable keepalived.service</code></pre> 
+<h3><strong>3.4 配置 Keepalived</strong></h3> 
+<p>这里先对 rabbit-1 上 keepalived.conf 配置文件进行修改：</p> 
+<pre><code class="language-bash">vi /etc/keepalived/keepalived.conf</code></pre> 
+<p>完整内容如下：</p> 
+<pre><code class="language-bash">global_defs {
+   # 路由id,主备节点不能相同
+   router_id rabbit-1
+}
+
+# 自定义监控脚本
+vrrp_script chk_haproxy {
+    # 脚本位置
+    script "/etc/keepalived/haproxy_check.sh" 
+    # 脚本执行的时间间隔
+    interval 5 
+    weight 10
+}
+
+vrrp_instance VI_1 {
+    # Keepalived的角色，MASTER 表示主节点，BACKUP 表示备份节点
+    state MASTER  
+    # 指定监测的网卡，可以使用 ifconfig 进行查看
+    interface enp0s8
+    # 虚拟路由的id，主备节点需要设置为相同
+    virtual_router_id 1
+    # 优先级，主节点的优先级需要设置比备份节点高
+    priority 100 
+    # 设置主备之间的检查时间，单位为秒 
+    advert_int 1 
+    # 定义验证类型和密码
+    authentication { 
+        auth_type PASS
+        auth_pass 123456
+    }
+
+    # 调用上面自定义的监控脚本
+    track_script {
+        chk_haproxy
+    }
+
+    virtual_ipaddress {
+        # 虚拟IP地址，可以设置多个
+        10.88.9.218  
+    }
+}</code></pre> 
+<p>以上配置定义了 rabbit-1上的 Keepalived 节点为 MASTER 节点，并设置对外提供服务的虚拟 IP 为 <a href="http://192.168.0.200" rel="nofollow" title="10.88.9.218">10.88.9.218</a>。</p> 
+<h3><strong>3.5 编写HAProxy状态检测脚本</strong></h3> 
+<p>此外最主要的是定义了通过 <code>haproxy_</code><a href="http://check.sh" rel="nofollow" title="check.sh">check.sh</a> 来对 HAProxy 进行监控，这个脚本需要我们自行创建。</p> 
+<pre><code class="language-bash"># 创建存放检测脚本的日志目录
+mkdir -p /usr/local/keepalived-2.2.2/log
+
+# 创建检测脚本
+vim /etc/keepalived/haproxy_check.sh</code></pre> 
+<p>内容如下：</p> 
+<pre><code class="language-bash">#!/bin/bash
+
+LOGFILE="/usr/local/keepalived-2.2.2/log/haproxy-check.log"
+echo "[$(date)]：check_haproxy status" &gt;&gt; $LOGFILE
+
+# 判断haproxy是否已经启动
+HAProxyStatusA=`ps -C haproxy --no-header|wc -l`
+if [ $HAProxyStatusA -eq 0 ];then
+    echo "[$(date)]：启动haproxy服务......" &gt;&gt; $LOGFILE
+    # 如果没有启动，则启动
+    /usr/local/haproxy-2.3.10/sbin/haproxy -f /usr/local/haproxy-2.3.10/haproxy.cfg &gt;&gt; $LOGFILE 2&gt;&amp;1
+fi
+
+# 睡眠5秒以便haproxy完全启动
+sleep5
+
+# 如果haproxy还是没有启动，此时需要将本机的keepalived服务停掉，以便让VIP自动漂移到另外一台haproxy
+HAProxyStatusB=`ps -C haproxy --no-header|wc -l`
+if [ $HAProxyStatusB eq 0 ];then
+    echo "[$(date)]：haproxy启动失败，睡眼5秒后haproxy服务还是没有启动，现在关闭keepalived服务，以便让VIP自动漂移到另外一台haproxy" &gt;&gt; $LOGFILE
+    systemctl stop keepalived
+fi</code></pre> 
+<p> 创建后为其赋予执行权限：</p> 
+<pre><code class="language-bash">chmod +x /etc/keepalived/haproxy_check.sh</code></pre> 
+<p>这个脚本主要用于判断 HAProxy 服务是否正常，如果不正常且无法启动，此时就需要将本机 Keepalived 关闭，从而让虚拟 IP 漂移到备份节点。</p> 
+<p>备份节点的配置与主节点基本相同，但是需要修改其 state 为 BACKUP；同时其优先级 priority 需要比主节点低。完整配置如下：</p> 
+<pre><code class="language-bash">global_defs {
+   # 路由id,主备节点不能相同    
+   router_id rabbit-2  
+}
+
+vrrp_script chk_haproxy {
+    script "/etc/keepalived/haproxy_check.sh" 
+    interval 5 
+    weight 10
+}
+
+vrrp_instance VI_1 {
+    # BACKUP 表示备份节点
+    state BACKUP 
+    interface enp0s8
+    virtual_router_id 1
+    # 优先级，备份节点要比主节点低
+    priority 50 
+    advert_int 1 
+    authentication { 
+        auth_type PASS
+        auth_pass 123456
+    }
+    
+    track_script {
+        chk_haproxy
+    }
+
+    virtual_ipaddress {
+        192.168.0.200  
+    }
+}</code></pre> 
+<h3><strong>3.6 配置开机自动启动服务</strong></h3> 
+<p>将所有 Keepalived 脚本拷贝/链接到相关目录下： </p> 
+<pre><code class="language-bash"># 将编译目录中的keepalived脚本复制到/etc/init.d/目录下
+cp /opt/soft/keepalived/keepalived-2.2.2/keepalived/etc/init.d/keepalived /etc/init.d/
+
+# 将安装目录中的keepalived脚本复制到/etc/sysconfig/目录下
+cp /usr/local/keepalived-2.2.2/etc/sysconfig/keepalived /etc/sysconfig/
+
+# 将安装目录中的keepalived脚本链接到/usr/sbin/目录下
+ln -s /usr/local/keepalived-2.2.2/sbin/keepalived /usr/sbin/</code></pre> 
+<p> 设置开机自启动：</p> 
+<pre><code class="language-bash">chmod +x /etc/init.d/keepalived
+chkconfig --add keepalived
+systemctl enable keepalived.service</code></pre> 
+<h3> <strong>3.7 启动服务</strong></h3> 
+<p>分别在 rabbit-1 和 rabbit-2 上启动 KeepAlived 服务，命令如下： </p> 
+<pre><code class="language-bash">systemctl start keepalived</code></pre> 
+<p> 启动后此时 rabbit-1 为主节点，可以在 rabbit-1 上使用 <code>ip a</code> 命令查看到虚拟 IP 的情况：</p> 
+<p><img alt="" height="229" src="https://images2.imgbox.com/d8/4c/A0w9321E_o.png" width="644"></p> 
+<p>此时只有 rabbit-1 上是存在虚拟 IP 的，而 rabbit-2 上是没有的。</p> 
+<p><img alt="" height="226" src="https://images2.imgbox.com/c7/61/hq61zsUH_o.png" width="640"></p> 
+<h3><strong>3.8 验证故障转移</strong> </h3> 
+<p>这里我们验证一下故障转移，因为按照我们上面的检测脚本，如果 HAProxy 已经停止且无法重启时 KeepAlived 服务就会停止，这里我们直接使用以下命令停止 Keepalived 服务： </p> 
+<pre><code class="language-bash">systemctl stop keepalived</code></pre> 
+<p> 此时再次使用 <code>ip a</code> 分别查看，可以发现 rabbit-1 上的 VIP 已经漂移到 rabbit-2 上，情况如下：</p> 
+<p><img alt="" height="258" src="https://images2.imgbox.com/0a/05/yNW5FRQU_o.png" width="637"></p> 
+<p>此时对外服务的 VIP 依然可用，代表已经成功地进行了故障转移。</p> 
+<p>至此集群已经搭建成功，任何需要发送或者接受消息的客户端服务只需要连接到该 VIP 即可，示例如下： </p> 
+<pre><code class="language-cs">ConnectionFactory factory = new ConnectionFactory();
+factory.setHost("192.168.0.200");</code></pre> 
+<p>使用VIP嘗試登入rabbitmq：</p> 
+<p>在浏览器上输入<a href="http://VIP:15673/#/%E6%9F%A5%E7%9C%8B%E6%98%AF%E5%90%A6%E6%88%90%E5%8A%9F%E8%AE%BF%E9%97%AERabbitMQ%E7%AE%A1%E7%90%86%E9%A1%B5%E9%9D%A2" rel="nofollow" title="http://VIP:15673/#/ 查看是否成功访问RabbitMQ管理页面">http://VIP:15673/#/ 查看是否成功访问RabbitMQ管理页面</a>：</p> 
+<p><img alt="" height="251" src="https://images2.imgbox.com/49/9d/FKDibKlm_o.png" width="574"></p> 
+<p>如登入成功表示Keepalived設定成功。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e037395ddaec01c259911c5666c4e780/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">mongodb数据库集合（表）的创建和数据修改</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/449333f729826b2395b3675e83c09ddb/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">超级实用！Android Studio的10大神器插件，让你的开发效率翻倍！</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

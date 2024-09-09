@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>浅议Flink中算子间的八种数据传输策略 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/c3679791e95d431c0acf04e3bf6faec6/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="浅议Flink中算子间的八种数据传输策略">
+  <meta property="og:description" content="一、知识铺垫
+a. Flink数据传输分类
+Flink数据传输分为 组件之间的通信消息传输 和 算子之间的流数据传输。
+(1)组件之间
+组件（即Client、JobManager、TaskManager）之间的通信消息传输采用Akka框架。常见的通信包括心跳检测、状态上报、指标统计、作业提交和部署等。
+(2)算子之间
+(2.1)本地线程内(同一个SubTask内的两个Operator)：数据传输通过方法调用进行，即上游算子处理完数据后，直接调用下游算子的processElement方法。
+(2.2)本地线程间(同一个TaskManager的不同SubTask中)：数据传输通过本地内存进行，需要进行数据的序列化和反序列化。
+(2.3)跨网络(不同TaskManager的SubTask中)：采用Netty框架，通过Socket进行数据传输，也需要进行数据的序列化和反序列化。
+Flink中为上下游subtask之间数据传输(即上述2.2&amp;2.3)提供了九种传输策略。
+其中BinaryHashPartitioner位于Blink的Table API的org.apache.flink.table.runtime.partitioner包中，是一种针对BinaryRowData的哈希分区器。
+本文讨论上图中绿色框圈中的八种策略。
+在Flink WebUI中，可看到算子之间的传输策略会在箭头上标注出来。
+b. Flink中分发模式(Distribution Pattern) Flink 中的执行图可以分成四层：StreamGraph -&gt; JobGraph -&gt; ExecutionGraph -&gt; 物理执行图。
+在StreamGraph -&gt; JobGraph的过程中,上下游subtask之间的数据传输涉及分发模式。
+分发模式描述了上游节点与下游节点连接的方式，Flink 中有两种分发模式：点对点 (Pointwise) 和全连接 (All-to-all)。
+All-to-all模式: 简单的全连接。
+Pointwise模式：上下游节点的并行度会影响连接方式。当上下游并行度相同时会一对一连接；当上游并行度小于下游时,下游subTask只会连接一个上游分区;当上游并行度大于下游时,下游subTask会连接多个上游分区。
+RescalePartitioner和ForwardPartitioner 采用了 Pointwise模式。
+在RescalePartitioner&amp;RebalancePartitioner，ForwardPartitioner&amp;GlobalPartitioner 这两组策略中,由于分发模式的不同，每组的两种分区策略会产生不同的效果。 二、八种传输策略
+StreamPartitioner继承自ChannelSelector接口。这里的Channel可以认为它就是下游算子的并发实例(即物理分区)。所有StreamPartitioner的子类都要实现selectChannel()方法，用来选择分区号。
+1. ForwardPartitioner
+ForwardPartitioner是Flink默认的传输策略。
+这种策略的前提是上下游并行度相同。
+ForwardPartitioner会将数据发到下游的对应分区（在pointwise模式下下游的0号分区也对应着上游相关分区）。
+2. RebalancePartitioner
+当上下游算子不符合ForwardPartitioner使用条件时，Flink会默认选择RebalancePartitioner。
+（ForwardPartitioner &amp; RebalancePartitioner 是Flink根据上下游并行度设置等因素设置的默认策略，其他几类传输策略则需要用户代码指定 ）。
+RebalancePartitioner会先随机选一个下游分区，之后轮询(round-robin)遍历下游所有分区进行数据传输。
+3. RescalePartitioner
+RescalePartitioner在pointwise模式下会先根据上下游并行度进行匹配，再从匹配后的下游中从0号分区轮询传输数据。
+4. ShufflePartitioner
+ShufflePartitioner会随机选取下游分区进行数据传输。由于Random生成的随机数符合均匀分布，因此能够大致保证下发的平均效果，类似于RebalancePartitioner。
+5. KeyGroupStreamPartitioner">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-09T14:42:50+08:00">
+    <meta property="article:modified_time" content="2024-06-09T14:42:50+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">浅议Flink中算子间的八种数据传输策略</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><strong>一、知识铺垫</strong></p> 
+<p><strong>a. Flink数据传输分类</strong></p> 
+<p>Flink数据传输分为 组件之间的通信消息传输 和 算子之间的流数据传输。</p> 
+<p><strong>(1)组件之间</strong></p> 
+<p>组件（即Client、JobManager、TaskManager）之间的通信消息传输采用Akka框架。常见的通信包括心跳检测、状态上报、指标统计、作业提交和部署等。</p> 
+<p><strong>(2)算子之间</strong></p> 
+<p>(2.1)本地线程内(同一个SubTask内的两个Operator)：数据传输通过方法调用进行，即上游算子处理完数据后，直接调用下游算子的processElement方法。</p> 
+<p>(2.2)本地线程间(同一个TaskManager的不同SubTask中)：数据传输通过本地内存进行，需要进行数据的序列化和反序列化。</p> 
+<p>(2.3)跨网络(不同TaskManager的SubTask中)：采用Netty框架，通过Socket进行数据传输，也需要进行数据的序列化和反序列化。</p> 
+<p>Flink中为上下游subtask之间数据传输(即上述2.2&amp;2.3)提供了九种传输策略。</p> 
+<p><img alt="" src="https://images2.imgbox.com/71/5a/EgKpXqps_o.png"></p> 
+<p>其中BinaryHashPartitioner位于Blink的Table API的org.apache.flink.table.runtime.partitioner包中，是一种针对BinaryRowData的哈希分区器。</p> 
+<p>本文讨论上图中绿色框圈中的八种策略。</p> 
+<p>在Flink WebUI中，可看到算子之间的传输策略会在箭头上标注出来。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/e1/c6/rFGurgZr_o.png"></p> 
+<p><strong>b. Flink中分发模式(Distribution Pattern) </strong></p> 
+<p>Flink 中的执行图可以分成四层：StreamGraph -&gt; JobGraph -&gt; ExecutionGraph -&gt; 物理执行图。</p> 
+<p>在StreamGraph -&gt; JobGraph的过程中,上下游subtask之间的数据传输涉及分发模式。</p> 
+<p>分发模式描述了上游节点与下游节点连接的方式，Flink 中有两种分发模式：点对点 (Pointwise) 和全连接 (All-to-all)。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/df/c9/8ORdKFuE_o.png"></p> 
+<p><strong>All-to-all模式</strong>: 简单的全连接。</p> 
+<p><strong>Pointwise模式</strong>：上下游节点的并行度会影响连接方式。当上下游并行度相同时会一对一连接；当上游并行度小于下游时,下游subTask只会连接一个上游分区;当上游并行度大于下游时,下游subTask会连接多个上游分区。</p> 
+<p>RescalePartitioner和ForwardPartitioner 采用了 Pointwise模式。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/0c/52/LOL1jtrF_o.png"></p> 
+<p>在RescalePartitioner&amp;RebalancePartitioner，ForwardPartitioner&amp;GlobalPartitioner 这两组策略中,由于分发模式的不同，每组的两种分区策略会产生不同的效果。 </p> 
+<p> </p> 
+<p><strong>二、八种传输策略</strong></p> 
+<p>StreamPartitioner继承自ChannelSelector接口。这里的Channel可以认为它就是下游算子的并发实例(即物理分区)。所有StreamPartitioner的子类都要实现selectChannel()方法，用来选择分区号。</p> 
+<p><strong>1. ForwardPartitioner</strong></p> 
+<p>ForwardPartitioner是Flink默认的传输策略。</p> 
+<p>这种策略的前提是上下游并行度相同。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/7f/62/n2eH0QAM_o.png"></p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/0f/4d/eLbqLFQc_o.png"> </p> 
+<p>ForwardPartitioner会将数据发到下游的对应分区（在pointwise模式下下游的0号分区也对应着上游相关分区）。</p> 
+<p><strong>2. RebalancePartitioner</strong></p> 
+<p>当上下游算子不符合ForwardPartitioner使用条件时，Flink会默认选择RebalancePartitioner。</p> 
+<p>（ForwardPartitioner &amp; RebalancePartitioner 是Flink根据上下游并行度设置等因素设置的默认策略，其他几类传输策略则需要用户代码指定 ）。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/a0/f2/fQsZcYbe_o.png"></p> 
+<p style="text-align:center;"> <img alt="" src="https://images2.imgbox.com/7f/6a/cm8m5koP_o.png"></p> 
+<p>RebalancePartitioner会先随机选一个下游分区，之后轮询(round-robin)遍历下游所有分区进行数据传输。</p> 
+<p> <strong>3. RescalePartitioner</strong></p> 
+<p><strong><img alt="" src="https://images2.imgbox.com/83/fe/CLnhTTgr_o.png"><img alt="" src="https://images2.imgbox.com/83/cd/fNQnTrJK_o.png"></strong></p> 
+<p>RescalePartitioner在pointwise模式下会先根据上下游并行度进行匹配，再从匹配后的下游中从0号分区轮询传输数据。</p> 
+<p><strong>4. ShufflePartitioner</strong></p> 
+<p><strong><img alt="" src="https://images2.imgbox.com/a2/1e/ny6zDcbl_o.png"><img alt="" src="https://images2.imgbox.com/5b/72/kWQlM12J_o.png"></strong> </p> 
+<p>ShufflePartitioner会随机选取下游分区进行数据传输。由于Random生成的随机数符合均匀分布，因此能够大致保证下发的平均效果，类似于RebalancePartitioner。</p> 
+<p><strong>5. KeyGroupStreamPartitioner</strong></p> 
+<p><strong><img alt="" src="https://images2.imgbox.com/e7/10/NPYrAlC5_o.png"><img alt="" src="https://images2.imgbox.com/8a/4a/TE8zbExB_o.png"><img alt="" src="https://images2.imgbox.com/06/51/T3QGYZRT_o.png"><img alt="" src="https://images2.imgbox.com/9f/1d/ug3pBDqS_o.png"></strong></p> 
+<p> </p> 
+<p>KeyGroupStreamPartitioner的分区是根据消息的key值经过两层hash处理后获得的，具体值如下</p> 
+<pre><code class="language-java">MathUtils.murmurHash(key.hashCode()) % maxParallelism  * numberOfChannels / maxParallelism</code></pre> 
+<p><strong>6. GlobalPartitioner</strong></p> 
+<p style="text-align:center;"><strong><img alt="" src="https://images2.imgbox.com/0e/59/fJzLsCAx_o.png"></strong></p> 
+<p style="text-align:center;"> <img alt="" src="https://images2.imgbox.com/f4/63/OacYUrVR_o.png"></p> 
+<p>GlobalPartitioner和ForwardPartitioner的代码类似。但是GlobalPartitioner基于All-to-all的分发模式，能获得下游算子的全局分区号。所以保证了只下发给下游算子的第一个分区。</p> 
+<p><strong>7. BroadcastPartitioner</strong></p> 
+<p><strong><img alt="" src="https://images2.imgbox.com/49/57/yBG5GErp_o.png"><img alt="" src="https://images2.imgbox.com/6f/e2/gSjOEBlm_o.png"></strong></p> 
+<p>BroadcastPartitioner会下发给下游的每个分区，不需要选择。</p> 
+<p><strong>8.CustomPartitionerWrapper</strong></p> 
+<p style="text-align:center;"><strong><img alt="" src="https://images2.imgbox.com/de/71/prKyHhGV_o.png"></strong></p> 
+<p> CustomPartitionerWrapper需要用户指定为消息的每个key设置下游分区的选择规则。</p> 
+<p></p> 
+<p><strong>三、参考资料</strong></p> 
+<p> <a class="link-info" href="https://nightlies.apache.org/flink/flink-docs-release-1.12/zh/dev/stream/operators/" rel="nofollow" title="物理分区">物理分区</a></p> 
+<p> <a class="link-info" href="https://cloud.tencent.com/developer/article/1559885" rel="nofollow" title="说说Flink DataStream的八种物理分区逻辑">说说Flink DataStream的八种物理分区逻辑</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/fa5fca71d568486fd27b0e1f1e081d3c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Java 编译报错：找不到符号？ 手把手教你排查解决！</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/69e6137542a32ec15e220c0b5ce26f1f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Java----抽象类和接口</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

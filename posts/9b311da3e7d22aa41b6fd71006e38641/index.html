@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>江科大/江协科技 STM32学习笔记P13 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/9b311da3e7d22aa41b6fd71006e38641/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="江科大/江协科技 STM32学习笔记P13">
+  <meta property="og:description" content="文章目录 TIM定时中断1、TIM简介计数器PSC预分频器（Prescaler）ARR自动重装寄存器（Auto Reload Register） 2、定时器类型基本定时器主模式触发DAC 通用定时器高级定时器 3、定时器原理定时中断基本结构预分频器时序计数器时序RCC时钟树 TIM定时中断 1、TIM简介 定时器的基准时钟一般都是主频72MHz，如果对72MHz计72个数，就是1us的时间，如果计72000个数就是1ms的时间。
+计数器 就是执行计数定时的一个寄存器，每来一个时钟计数器加一
+PSC预分频器（Prescaler） 对计数器的时钟进行分频，让计数更灵活
+ARR自动重装寄存器（Auto Reload Register） 计数的目标值，就是想要计多少个时钟申请中断
+2、定时器类型 基本定时器 基本定时器只能选内部时钟，通向时基单元的计数基准频率一般是与系统的主频72MHz有关的72M，到预分配器这里，如果寄存器写0就是不分频，写1就是2分频，输出频率=输入频率/2=36MHz，以此类推，即实际分频系数=预分频器的值&#43;1。然后到了计数器，计数器可以对预分频后的计数时钟进行计数，计数器的值会在计时过程中不断的自增运行，当到目标值时，产生中断，完成了定时的任务。ARR自动重装寄存器存的就是计数目标，当计数值等于自动重装值时，计时时间到了，产生一个中断信号并且清零计数器，计数器自动开始下一次的计数计时，这种计数值等于自动重装值产生的中断，一般叫“更新中断”，这个更新中断结束后会通往NVIC，再配置好NVIC的定时器通道，定时器的更新中断就能得到CPU响应。向上的折线箭头代表产生中断，向下的箭头代表产生一个事件，这里对应的事件叫做“更新事件”，更新事件不会触发中断，但可以触发内部其他电路的工作。
+主模式触发DAC 在使用DAC时，可能会用DAC输出一段波形，那就需要每隔一段时间触发一次DAC，让他输出下一个电压点。如果用正常思路来实现，先设置一个定时器产生中断，每隔一段时间在中断程序中调用代码手动触发一次DAC转换，然后DAC输出，这样会使主程序处于频繁被中断的状态，影响主程序的运行和其他中断的响应，所以定时器设计了一个主模式，使用主模式可以把定时器的更新事件映射到触发输出TRGO的位置，然后TRGO直接接到DAC的触发转换引脚上，这样定时器的更新就不需要通过中断来触发DAC转换了
+通用定时器 通用定时器和高级定时器除了向上计数模式外，还支持向下计数模式和中央对齐模式。向下计数模式就是从重装值开始向下自减，减到0之后回到重装值同时申请中断，然后下一轮。中央对齐模式就是先向上自增到重装值，申请中断，然后再向下自减减到0，申请中断，然后下一轮。
+图上面是内外时钟源选择和主从触发模式的结构。先看内外时钟源选择，第一个外部时钟是来自TIMx_ETR引脚上的外部时钟，ETR引脚的位置如下图复用到了PA0。
+即在PA0上接一个外部方波时钟，然后配置内部的极性选择、边沿检测和预分频器电路，再配置一下输入滤波电路，这些电路对外部时钟进行一定的整形，因为是外部引脚的时钟，这些电路对输入的波形进行滤波，滤波后的信号上面一路ETRF进入触发控制器，紧跟着可选择作为时基单元的时钟了，如果想在ETR外部引脚提供时钟，或者想对ETR时钟进行计数，把这个定时器当计数器来用的话，那就可以配置这一路的电路，在STM32中这一路也叫外部时钟模式2。
+下面一路TRGI，主要用作触发输入来使用，可以触发定时器的从模式。本节讲触发输入作为外部时钟来使用的情况，暂且把TRGI当做外部时钟的输入来看，这种情况这一路叫“外部时钟模式1”，通过这一路的外部时钟，第一个是ETR引脚的信号，ETR引脚既可以通过上面一路当时钟，又可以通过下面一路当时钟，下面一路输入会占用触发输入的通道。第二种就是ITR信号，这一部分的时钟信号来自其他定时器，从右边可以看出这个主模式的输出TRGO可以通向其他定时器，接到其他定时器的ITR引脚，这里ITR0到ITR3分别来自其他四个定时器的TRGO输出，实现定时器级联的功能，比如可以先初始化TIM3，然后使用主模式把它的更新事件映射到TRGO上，接着再初始化TIM2，选ITR2，对应TIM3的TRGO，后面选择时钟为外部模式1，这样TIM3的更新事件就可以驱动TIM2的时基单元，实现定时器的级联。第三种是CH1引脚的边沿，也就是从CH1引脚获得时钟，带ED就是边沿的意思，上升沿和下降沿均有效。第四种，CH1引脚和CH2引脚，通过TI1FP1和TI2FP2获得，TI1FP1连接到CH1引脚的时钟。
+下面部分主要包含两块电路，右边是输出比较电路，四个通道对应CH1-4，可以用于输出PWM波形，驱动电机，左边这一块是输入捕获电路，四个通道，可以用于测量输入方波的频率等。中间的寄存器是捕获/比较寄存器，是输入捕获和输出比较电路共用的，因为输入捕获和输出比较不能同时使用，所以共用。
+高级定时器 在申请中断的地方增加了一个重复次数计数器，右上，有了这个计数器之后，就可以实现每隔几个计数周期才发生一次更新事件和更新中断，相当于对输出的更新信号又做了一次分频。
+DTG是死区生成电路，右边的输出引脚由原来的一个变为了两个互补的输出，可以输出一对互补的PWM波，这些电路是为了驱动三相无刷电机，因为三相无刷电机的驱动需要三个桥臂，每个桥臂2个大功率开关管来控制，总共需要6个大功率开关管来控制，所以输出的PWM引脚的前三路就变为互补的输出，另外为了防止互补输出的PWM驱动桥臂时，在开关切换的瞬间由于器件不理想造成短暂的直通现象，所以前面加上死区生成电路，在开关切换的瞬间产生一定时长的死区，让桥臂的上下管全都关断，防止直通现象。
+最后是刹车输入的功能，在左下，是为了给电机驱动提供安全保障，如果外部引脚BKIN产生了刹车信号或者内部时钟失效，产生了故障，那么控制电路就会自动切断电机的输出，防止意外发生。
+3、定时器原理 定时中断基本结构 中断输出控制就是一个中断输出的允许位，如果需要某个中断，就允许一下。
+预分频器时序 CK_PSC是预分频器的输入时钟，选内部时钟时一般是72MHz，CNT_EN是计数器使能，高电平计数器正常运行，低电平计数器停止，CK_CNT是计数器时钟，即是预分频器时钟输出也是计数器的时钟输入，开始时计数器未使能，计数器时钟不运行，使能后，前半段预分频器系数从0变1，计数器的时钟等于预分频器前的时钟，后半段，预分频器系数从1变2，计数器的时钟也变为预分频器前时钟的一半，在计数器时钟的驱动下，下面的计数器寄存器也跟随时钟的上升沿不断自增，在中间FC之后计数值变为0，可推断重装值就是FC。
+下三行描述的是预分频器的一种缓冲机制，在某时刻把预分配控制寄存器由0改1，如果在此时此刻改变时钟的分频系数，就会导致一个计数周期内前后频率不一样，所以设计预分配缓冲器，变化不会立刻生效，而是等本次计数周期结束后，产生了更新事件，预分频器的值才会被传递到缓冲寄存器里生效。最后一行描述预分配器内部实际上也是依靠计数来分频，当预分频值为0时，计数器就一直为0，直接输出原频率，当预分频值为1时，计数器0、1、0、1计数，在回到0时输出一个脉冲，这样输出频率就是输入频率的2分频，预分频的值和实际的分频系数之间有一个数的偏移。
+计数器时序 计数器在每个上升沿自增，当计到0036后，再来一个上升沿计数器清零，产生一个更新事件脉冲，另外更新中断标志位UIF只要置1就会申请中断，中断响应后需要在中断程序中手动清零。
+计数器也有缓存寄存器，可以自己设置用还是不用，如下两图
+ARPE为0，不使用影子寄存器，自动加载寄存器FF改到36立刻生效，所以计到36后直接更新开始下一轮计数
+有预装时，F5变36，影子寄存器控制还是F5，计到F5产生更新事件，同时要更改的36才被传到影子寄存器，在下一个计数周期生效，所以引入影子寄存器是为了同步，让值的变化和更新事件同步发生，防止运行途中更改造成错误
+RCC时钟树 左边的时钟产生电路有四个震荡源，分别是内部的8MHz高速RC振荡器，外部的4到16MHz高速石英晶体振荡器，一般为8MHz，外部的32.768KHz低速晶振，一般给RTC提供时钟，最后是内部的40KHz低速RC振荡器，可以给看门狗提供时钟，上面两个高速晶振给系统提供时钟，AHB、APB1、APB2时钟都来源于这俩个高速晶振，外部的石英振荡器比内部RC振荡器更稳定。
+在SystemInit函数里，ST首先启动内部时钟，以内部8MHz为系统时钟，然后再启动外部时钟，配置外部时钟进入PLL锁相环进行倍频，8MHz倍频9倍，得到72MHz，等锁相环输出稳定后选择锁相环输出为系统时钟。CSS是时钟安全系统，一旦外部时钟失效，自动把外部时钟切回内部时钟，保证系统时钟的运行，防止程序卡死，在高级定时器的刹车输入这里一旦CSS检测到外部时钟失效，通过或门立刻让输出控制的电机停止防止意外。
+右图这些时钟输出都有一个与门进行输出控制，控制位写的是外部时钟使能，我们在程序中写RCC_APB2/1 PeriphClockCmd就是作用在这。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-08-01T10:52:44+08:00">
+    <meta property="article:modified_time" content="2024-08-01T10:52:44+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">江科大/江协科技 STM32学习笔记P13</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#TIM_2" rel="nofollow">TIM定时中断</a></li><li><ul><li><a href="#1TIM_3" rel="nofollow">1、TIM简介</a></li><li><ul><li><a href="#_6" rel="nofollow">计数器</a></li><li><a href="#PSCPrescaler_8" rel="nofollow">PSC预分频器（Prescaler）</a></li><li><a href="#ARRAuto_Reload_Register_10" rel="nofollow">ARR自动重装寄存器（Auto Reload Register）</a></li></ul> 
+   </li><li><a href="#2_12" rel="nofollow">2、定时器类型</a></li><li><ul><li><a href="#_14" rel="nofollow">基本定时器</a></li><li><ul><li><a href="#DAC_17" rel="nofollow">主模式触发DAC</a></li></ul> 
+    </li><li><a href="#_20" rel="nofollow">通用定时器</a></li><li><a href="#_30" rel="nofollow">高级定时器</a></li></ul> 
+   </li><li><a href="#3_36" rel="nofollow">3、定时器原理</a></li><li><ul><li><a href="#_37" rel="nofollow">定时中断基本结构</a></li><li><a href="#_40" rel="nofollow">预分频器时序</a></li><li><a href="#_45" rel="nofollow">计数器时序</a></li><li><a href="#RCC_53" rel="nofollow">RCC时钟树</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<hr> 
+<h2><a id="TIM_2"></a>TIM定时中断</h2> 
+<h3><a id="1TIM_3"></a>1、TIM简介</h3> 
+<p><img src="https://images2.imgbox.com/49/23/tsTJoHFr_o.png" alt="在这里插入图片描述"><br> 定时器的基准时钟一般都是主频72MHz，如果对72MHz计72个数，就是1us的时间，如果计72000个数就是1ms的时间。</p> 
+<h4><a id="_6"></a>计数器</h4> 
+<p>就是执行计数定时的一个寄存器，每来一个时钟计数器加一</p> 
+<h4><a id="PSCPrescaler_8"></a>PSC预分频器（Prescaler）</h4> 
+<p>对计数器的时钟进行分频，让计数更灵活</p> 
+<h4><a id="ARRAuto_Reload_Register_10"></a>ARR自动重装寄存器（Auto Reload Register）</h4> 
+<p>计数的目标值，就是想要计多少个时钟申请中断</p> 
+<h3><a id="2_12"></a>2、定时器类型</h3> 
+<p><img src="https://images2.imgbox.com/0e/54/y9QRsb9u_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_14"></a>基本定时器</h4> 
+<p><img src="https://images2.imgbox.com/53/a3/vMJbou4o_o.png" alt="在这里插入图片描述"><br> 基本定时器只能选内部时钟，通向时基单元的计数基准频率一般是与系统的主频72MHz有关的72M，到预分配器这里，如果寄存器写0就是不分频，写1就是2分频，输出频率=输入频率/2=36MHz，以此类推，即实际分频系数=预分频器的值+1。然后到了计数器，计数器可以对预分频后的计数时钟进行计数，计数器的值会在计时过程中不断的自增运行，当到目标值时，产生中断，完成了定时的任务。ARR自动重装寄存器存的就是计数目标，当计数值等于自动重装值时，计时时间到了，产生一个中断信号并且清零计数器，计数器自动开始下一次的计数计时，这种计数值等于自动重装值产生的中断，一般叫“更新中断”，这个更新中断结束后会通往NVIC，再配置好NVIC的定时器通道，定时器的更新中断就能得到CPU响应。向上的折线箭头代表产生中断，向下的箭头代表产生一个事件，这里对应的事件叫做“更新事件”，更新事件不会触发中断，但可以触发内部其他电路的工作。</p> 
+<h5><a id="DAC_17"></a>主模式触发DAC</h5> 
+<p>在使用DAC时，可能会用DAC输出一段波形，那就需要每隔一段时间触发一次DAC，让他输出下一个电压点。如果用正常思路来实现，先设置一个定时器产生中断，每隔一段时间在中断程序中调用代码手动触发一次DAC转换，然后DAC输出，这样会使主程序处于频繁被中断的状态，影响主程序的运行和其他中断的响应，所以定时器设计了一个主模式，使用主模式可以把定时器的更新事件映射到触发输出TRGO的位置，然后TRGO直接接到DAC的触发转换引脚上，这样定时器的更新就不需要通过中断来触发DAC转换了</p> 
+<h4><a id="_20"></a>通用定时器</h4> 
+<p><img src="https://images2.imgbox.com/ff/9c/xDhCQcVE_o.png" alt="在这里插入图片描述"><br> 通用定时器和高级定时器除了向上计数模式外，还支持向下计数模式和中央对齐模式。向下计数模式就是从重装值开始向下自减，减到0之后回到重装值同时申请中断，然后下一轮。中央对齐模式就是先向上自增到重装值，申请中断，然后再向下自减减到0，申请中断，然后下一轮。<br> 图上面是内外时钟源选择和主从触发模式的结构。先看内外时钟源选择，第一个外部时钟是来自TIMx_ETR引脚上的外部时钟，ETR引脚的位置如下图复用到了PA0。<br> <img src="https://images2.imgbox.com/c4/cc/O4UrGPWf_o.png" alt="在这里插入图片描述"><br> 即在PA0上接一个外部方波时钟，然后配置内部的极性选择、边沿检测和预分频器电路，再配置一下输入滤波电路，这些电路对外部时钟进行一定的整形，因为是外部引脚的时钟，这些电路对输入的波形进行滤波，滤波后的信号上面一路ETRF进入触发控制器，紧跟着可选择作为时基单元的时钟了，如果想在ETR外部引脚提供时钟，或者想对ETR时钟进行计数，把这个定时器当计数器来用的话，那就可以配置这一路的电路，在STM32中这一路也叫外部时钟模式2。<br> <img src="https://images2.imgbox.com/d5/47/96EwGCrF_o.png" alt="在这里插入图片描述"><br> 下面一路TRGI，主要用作触发输入来使用，可以触发定时器的从模式。本节讲触发输入作为外部时钟来使用的情况，暂且把TRGI当做外部时钟的输入来看，这种情况这一路叫“外部时钟模式1”，通过这一路的外部时钟，第一个是ETR引脚的信号，ETR引脚既可以通过上面一路当时钟，又可以通过下面一路当时钟，下面一路输入会占用触发输入的通道。第二种就是ITR信号，这一部分的时钟信号来自其他定时器，从右边可以看出这个主模式的输出TRGO可以通向其他定时器，接到其他定时器的ITR引脚，这里ITR0到ITR3分别来自其他四个定时器的TRGO输出，实现定时器级联的功能，比如可以先初始化TIM3，然后使用主模式把它的更新事件映射到TRGO上，接着再初始化TIM2，选ITR2，对应TIM3的TRGO，后面选择时钟为外部模式1，这样TIM3的更新事件就可以驱动TIM2的时基单元，实现定时器的级联。第三种是CH1引脚的边沿，也就是从CH1引脚获得时钟，带ED就是边沿的意思，上升沿和下降沿均有效。第四种，CH1引脚和CH2引脚，通过TI1FP1和TI2FP2获得，TI1FP1连接到CH1引脚的时钟。<br> <img src="https://images2.imgbox.com/d1/92/dkEFxIVw_o.png" alt="在这里插入图片描述"><br> 下面部分主要包含两块电路，右边是输出比较电路，四个通道对应CH1-4，可以用于输出PWM波形，驱动电机，左边这一块是输入捕获电路，四个通道，可以用于测量输入方波的频率等。中间的寄存器是捕获/比较寄存器，是输入捕获和输出比较电路共用的，因为输入捕获和输出比较不能同时使用，所以共用。</p> 
+<h4><a id="_30"></a>高级定时器</h4> 
+<p><img src="https://images2.imgbox.com/0d/a6/13ezbrkp_o.png" alt="在这里插入图片描述"><br> 在申请中断的地方增加了一个重复次数计数器，右上，有了这个计数器之后，就可以实现每隔几个计数周期才发生一次更新事件和更新中断，相当于对输出的更新信号又做了一次分频。<br> DTG是死区生成电路，右边的输出引脚由原来的一个变为了两个互补的输出，可以输出一对互补的PWM波，这些电路是为了驱动三相无刷电机，因为三相无刷电机的驱动需要三个桥臂，每个桥臂2个大功率开关管来控制，总共需要6个大功率开关管来控制，所以输出的PWM引脚的前三路就变为互补的输出，另外为了防止互补输出的PWM驱动桥臂时，在开关切换的瞬间由于器件不理想造成短暂的直通现象，所以前面加上死区生成电路，在开关切换的瞬间产生一定时长的死区，让桥臂的上下管全都关断，防止直通现象。<br> 最后是刹车输入的功能，在左下，是为了给电机驱动提供安全保障，如果外部引脚BKIN产生了刹车信号或者内部时钟失效，产生了故障，那么控制电路就会自动切断电机的输出，防止意外发生。</p> 
+<h3><a id="3_36"></a>3、定时器原理</h3> 
+<h4><a id="_37"></a>定时中断基本结构</h4> 
+<p><img src="https://images2.imgbox.com/6f/fe/Hy5oBDe8_o.png" alt="在这里插入图片描述"><br> 中断输出控制就是一个中断输出的允许位，如果需要某个中断，就允许一下。</p> 
+<h4><a id="_40"></a>预分频器时序</h4> 
+<p><img src="https://images2.imgbox.com/95/d5/Dm7E1jF6_o.png" alt="在这里插入图片描述"><br> CK_PSC是预分频器的输入时钟，选内部时钟时一般是72MHz，CNT_EN是计数器使能，高电平计数器正常运行，低电平计数器停止，CK_CNT是计数器时钟，即是预分频器时钟输出也是计数器的时钟输入，开始时计数器未使能，计数器时钟不运行，使能后，前半段预分频器系数从0变1，计数器的时钟等于预分频器前的时钟，后半段，预分频器系数从1变2，计数器的时钟也变为预分频器前时钟的一半，在计数器时钟的驱动下，下面的计数器寄存器也跟随时钟的上升沿不断自增，在中间FC之后计数值变为0，可推断重装值就是FC。<br> 下三行描述的是预分频器的一种缓冲机制，在某时刻把预分配控制寄存器由0改1，如果在此时此刻改变时钟的分频系数，就会导致一个计数周期内前后频率不一样，所以设计预分配缓冲器，变化不会立刻生效，而是等本次计数周期结束后，产生了更新事件，预分频器的值才会被传递到缓冲寄存器里生效。最后一行描述预分配器内部实际上也是依靠计数来分频，当预分频值为0时，计数器就一直为0，直接输出原频率，当预分频值为1时，计数器0、1、0、1计数，在回到0时输出一个脉冲，这样输出频率就是输入频率的2分频，预分频的值和实际的分频系数之间有一个数的偏移。</p> 
+<h4><a id="_45"></a>计数器时序</h4> 
+<p><img src="https://images2.imgbox.com/df/d3/NJcoh8iq_o.png" alt="在这里插入图片描述"><br> 计数器在每个上升沿自增，当计到0036后，再来一个上升沿计数器清零，产生一个更新事件脉冲，另外更新中断标志位UIF只要置1就会申请中断，中断响应后需要在中断程序中手动清零。<br> 计数器也有缓存寄存器，可以自己设置用还是不用，如下两图<br> <img src="https://images2.imgbox.com/8b/ad/Lxt2nIsH_o.png" alt="在这里插入图片描述"><br> ARPE为0，不使用影子寄存器，自动加载寄存器FF改到36立刻生效，所以计到36后直接更新开始下一轮计数<br> <img src="https://images2.imgbox.com/ef/0f/wtM0B62z_o.png" alt="在这里插入图片描述"><br> 有预装时，F5变36，影子寄存器控制还是F5，计到F5产生更新事件，同时要更改的36才被传到影子寄存器，在下一个计数周期生效，所以引入影子寄存器是为了同步，让值的变化和更新事件同步发生，防止运行途中更改造成错误</p> 
+<h4><a id="RCC_53"></a>RCC时钟树</h4> 
+<p><img src="https://images2.imgbox.com/ba/7c/UhUP8zwl_o.png" alt="在这里插入图片描述"><br> 左边的时钟产生电路有四个震荡源，分别是内部的8MHz高速RC振荡器，外部的4到16MHz高速石英晶体振荡器，一般为8MHz，外部的32.768KHz低速晶振，一般给RTC提供时钟，最后是内部的40KHz低速RC振荡器，可以给看门狗提供时钟，上面两个高速晶振给系统提供时钟，AHB、APB1、APB2时钟都来源于这俩个高速晶振，外部的石英振荡器比内部RC振荡器更稳定。<br> 在SystemInit函数里，ST首先启动内部时钟，以内部8MHz为系统时钟，然后再启动外部时钟，配置外部时钟进入PLL锁相环进行倍频，8MHz倍频9倍，得到72MHz，等锁相环输出稳定后选择锁相环输出为系统时钟。CSS是时钟安全系统，一旦外部时钟失效，自动把外部时钟切回内部时钟，保证系统时钟的运行，防止程序卡死，在高级定时器的刹车输入这里一旦CSS检测到外部时钟失效，通过或门立刻让输出控制的电机停止防止意外。<br> 右图这些时钟输出都有一个与门进行输出控制，控制位写的是外部时钟使能，我们在程序中写RCC_APB2/1 PeriphClockCmd就是作用在这。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0df5bb968cae091a5e3474a8103d9309/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">PDF解析，还能做得更好</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c3c0f6151212446d47f881f46402341c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【TS】TypeScript类型断言：掌握类型转换的艺术</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

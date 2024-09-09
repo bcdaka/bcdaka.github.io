@@ -1,0 +1,257 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【Linux内核】伙伴系统算法和slab分配器（1） - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/66b5769d8b7403017a79a5e9b975c43f/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【Linux内核】伙伴系统算法和slab分配器（1）">
+  <meta property="og:description" content="【Linux内核】伙伴系统算法和slab分配器（1） 目录 【Linux内核】伙伴系统算法和slab分配器（1）伙伴系统（buddy）算法伙伴系统算法基本原理内存申请内存回收 接口函数源码分析内存分配接口物理内存释放接口规范物理内存分配行为的掩码 gfp_mask(了解即可) 作者：爱写代码的刚子
+时间：2024.5.24
+前言：本篇博客将会介绍Linux系统中伙伴系统算法
+伙伴系统（buddy）算法 系统需要一种能够高效分配内存，同时又能减少产生碎片的算法——伙伴系统算法
+大致结构：
+node划分：
+现代服务器上，内存和CPU都是所谓的NUMA架构（有多个CPU）
+dmidecode命令可以查看主板上插着的CPU的详细信息 在NUMA架构中node：
+numactl --hardware指令查看每个node情况 zone划分
+每个zone又会划分成若干个的zone(区域)，zone表示内存中的一块范围。
+ZONE_DMA：地址段最低的一块内存区域，供I/O设备DMA访问。ZONE_DMA32：用于支持32位地址总线的DMA设备，只在64位系统里才有效。ZONE_NORMAL：在X86-64架构下，DMA和DMA32之外的内存全部都在NORMAL的zone管理 其实还有一个ZONE_HIGHMEM,但是这是32位机时代的产物，现在用的不多
+cat /proc/zoneinfo查看zone的划分 伙伴系统算法基本原理 伙伴系统算法把所有的空闲页框分为11个块链表，每块链表中分布包含特定的连续页框地址空间，例：第0个块链表包含大小为2^0个连续的页框（4kb）， 第1个块链表包含大小为2^1个连续的页框（8kb）
+伙伴算法每次只能分配2的幂次页的空间，比如一次分配1页，2页，4页，8页，…，1024页(2^10)等等，每页大小一般为4K，因此，伙伴算法最多一次能够分配4M的内存空间。
+伙伴算法在内核中通常用free_area结构体表示，free_list链表数组，nr_free就是当前链表中空闲页框块数量。例：free_area[2]中nr_free值为3，就是3个大小为4的页框块（16kb），总的空闲页就是3*4=12个（48kb）
+#define MAX_ORDER 11 struct free_area {//链表 struct list_head free_list[MIGRATE_TYPES];//页属性 unsigned long nr_free;//空闲页框块数目 }; #define MAX_ORDER 11 struct zone{ struct free_area freearea[MAX_ORDER]; }; 内存申请 举例：需要分配16k的内存空间，算法会先从free_area[2]中查看nr_free是否为空，如果有空闲块，则从中分配，如果没有空闲块，就从它的上一级free_area[3]（每块32K）中分配出16K，并将多余的内存（16K）加入到free_area[2]中去。如果free_area[3]也没有空闲，则从更上一级申请空间，依次递推，直到free_area[max_order]，如果顶级都没有空间，那么就报告分配失败。
+“伙伴关系”定义：
+所谓“伙伴”，就是指在空闲块被分裂时，由同一个大块内存分裂出来的两个小块内存就互称“伙伴”。“伙伴”应当满足以下三个条件：
+两个块大小相同两个块地址连续两个块必须是同一个大块中分离出来的 如何判断是同一块大块内存分配出来的？
+具体的操作步骤如下：
+确定块大小：假设块大小为 2^k。
+检查地址对齐：分别计算内存块 A 和 B 的起始地址对 2^k的对齐情况。
+计算父节点地址：
+设两个内存块地址分别为 A 和 B，计算父节点地址。 父节点地址为 min(A,B)向下取整到2^(k&#43;1) 的倍数。 验证共同父节点：">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-15T22:10:53+08:00">
+    <meta property="article:modified_time" content="2024-06-15T22:10:53+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【Linux内核】伙伴系统算法和slab分配器（1）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-github-gist">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="Linuxslab1_0"></a>【Linux内核】伙伴系统算法和slab分配器（1）</h2> 
+<p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><a href="#Linuxslab1_0" rel="nofollow">【Linux内核】伙伴系统算法和slab分配器（1）</a></li><li><ul><li><a href="#buddy_12" rel="nofollow">伙伴系统（buddy）算法</a></li><li><ul><li><a href="#_89" rel="nofollow">伙伴系统算法基本原理</a></li><li><a href="#_121" rel="nofollow">内存申请</a></li><li><a href="#_153" rel="nofollow">内存回收</a></li></ul> 
+   </li><li><a href="#_158" rel="nofollow">接口函数源码分析</a></li><li><ul><li><a href="#_162" rel="nofollow">内存分配接口</a></li><li><a href="#_262" rel="nofollow">物理内存释放接口</a></li><li><a href="#_gfp_mask_295" rel="nofollow">规范物理内存分配行为的掩码 gfp_mask(了解即可)</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<blockquote> 
+ <p>作者：爱写代码的刚子</p> 
+ <p>时间：2024.5.24</p> 
+ <p>前言：本篇博客将会介绍Linux系统中伙伴系统算法</p> 
+</blockquote> 
+<h3><a id="buddy_12"></a>伙伴系统（buddy）算法</h3> 
+<p>系统需要一种能够高效分配内存，同时又能减少产生碎片的算法——伙伴系统算法</p> 
+<p>大致结构：</p> 
+<p><img src="https://images2.imgbox.com/c1/a4/7tcl4e7M_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>node划分：</strong></p> 
+<p>现代服务器上，内存和CPU都是所谓的NUMA架构（有多个CPU）</p> 
+<ul><li><strong>dmidecode</strong>命令可以查看主板上插着的CPU的详细信息</li></ul> 
+<p><img src="https://images2.imgbox.com/74/b0/vZ3KwfaH_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>在NUMA架构中node</strong>：</p> 
+<p><img src="https://images2.imgbox.com/0b/56/7mYC53B1_o.png" alt="在这里插入图片描述"></p> 
+<ul><li><strong>numactl --hardware</strong>指令查看每个node情况</li></ul> 
+<p><img src="https://images2.imgbox.com/2f/80/XK0RsPbO_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>zone划分</strong></p> 
+<p>每个zone又会划分成若干个的zone(区域)，zone表示内存中的一块范围。</p> 
+<p><img src="https://images2.imgbox.com/d8/91/z51Ru2bl_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>ZONE_DMA：地址段最低的一块内存区域，供I/O设备DMA访问。</li><li>ZONE_DMA32：用于支持32位地址总线的DMA设备，只在64位系统里才有效。</li><li>ZONE_NORMAL：在X86-64架构下，DMA和DMA32之外的内存全部都在NORMAL的zone管理</li></ul> 
+<p>其实还有一个ZONE_HIGHMEM,但是这是32位机时代的产物，现在用的不多</p> 
+<ul><li><strong>cat /proc/zoneinfo</strong>查看zone的划分</li></ul> 
+<p><img src="https://images2.imgbox.com/b5/51/2VDwXE1V_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/35/c3/QIsKEUKS_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/32/fd/ZtHg9CdY_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_89"></a>伙伴系统算法基本原理</h4> 
+<p>伙伴系统算法把所有的空闲页框分为11个块链表，每块链表中分布包含特定的连续页框地址空间，例：第0个块链表包含大小为2^0个连续的页框（4kb）， 第1个块链表包含大小为2^1个连续的页框（8kb）</p> 
+<p>伙伴算法每次只能分配2的幂次页的空间，比如一次分配1页，2页，4页，8页，…，1024页(2^10)等等，每页大小一般为4K，因此，伙伴算法最多一次能够分配4M的内存空间。</p> 
+<p><img src="https://images2.imgbox.com/ba/d7/nLNtWvuR_o.png" alt="在这里插入图片描述"></p> 
+<p>伙伴算法在内核中通常用free_area结构体表示，free_list链表数组，nr_free就是当前链表中空闲页框块数量。例：free_area[2]中nr_free值为3，就是3个大小为4的页框块（16kb），总的空闲页就是3*4=12个（48kb）</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MAX_ORDER</span> <span class="token expression"><span class="token number">11</span></span></span>
+<span class="token keyword">struct</span> <span class="token class-name">free_area</span> <span class="token punctuation">{<!-- --></span><span class="token comment">//链表</span>
+    <span class="token keyword">struct</span> <span class="token class-name">list_head</span>    free_list<span class="token punctuation">[</span>MIGRATE_TYPES<span class="token punctuation">]</span><span class="token punctuation">;</span><span class="token comment">//页属性</span>
+    <span class="token keyword">unsigned</span> <span class="token keyword">long</span>        nr_free<span class="token punctuation">;</span><span class="token comment">//空闲页框块数目</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">MAX_ORDER</span> <span class="token expression"><span class="token number">11</span></span></span>
+<span class="token keyword">struct</span> <span class="token class-name">zone</span><span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">struct</span>  <span class="token class-name">free_area</span> freearea<span class="token punctuation">[</span>MAX_ORDER<span class="token punctuation">]</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h4><a id="_121"></a>内存申请</h4> 
+<p>举例：需要分配16k的内存空间，算法会先从free_area[2]中查看nr_free是否为空，如果有空闲块，则从中分配，如果没有空闲块，就从它的上一级free_area[3]（每块32K）中分配出16K，并将多余的内存（16K）加入到free_area[2]中去。如果free_area[3]也没有空闲，则从更上一级申请空间，依次递推，直到free_area[max_order]，如果顶级都没有空间，那么就报告分配失败。</p> 
+<p><strong>“伙伴关系”定义：</strong></p> 
+<p>所谓“伙伴”，就是指在空闲块被分裂时，由同一个大块内存分裂出来的两个小块内存就互称“伙伴”。“伙伴”应当满足以下三个条件：</p> 
+<ul><li>两个块<strong>大小相同</strong></li><li>两个块<strong>地址连续</strong></li><li>两个块<strong>必须是同一个大块中分离出来的</strong></li></ul> 
+<p>如何判断是同一块大块内存分配出来的？</p> 
+<p>具体的操作步骤如下：</p> 
+<ol><li> <p><strong>确定块大小</strong>：假设块大小为 2^k。</p> </li><li> <p><strong>检查地址对齐</strong>：分别计算内存块 A 和 B 的起始地址对 2^k的对齐情况。</p> </li><li> <p><strong>计算父节点地址</strong>：</p> 
+  <ul><li>设两个内存块地址分别为 A 和 B，计算父节点地址。</li></ul> 
+  <ul><li>父节点地址为 min(A,B)向下取整到2^(k+1) 的倍数。</li></ul> </li><li> <p><strong>验证共同父节点</strong>：</p> 
+  <ul><li>如果计算出的父节点地址相同，则 A 和 B 是“伙伴”。</li></ul> </li></ol> 
+<h4><a id="_153"></a>内存回收</h4> 
+<p>回收是申请的逆过程，当释放一个内存块时，先在其对于的free_area链表中查找是否有伙伴存在，如果没有伙伴块，直接将释放的块插入链表头。如果有或板块的存在，则将其从链表摘下，合并成一个大块，然后继续查找合并后的块在更大一级链表中是否有伙伴的存在，直至不能合并或者已经合并至最大块2^10为止。</p> 
+<h3><a id="_158"></a>接口函数源码分析</h3> 
+<h4><a id="_162"></a>内存分配接口</h4> 
+<p><strong>伙伴系统特点：分配的物理内存全部都是在物理内存上连续，分配的是2的整数幂的页，这个幂在内核中称为分配阶（如果指定分配阶为order，那么就会向伙伴系统申请2的order次幂个物理内存页）</strong></p> 
+<ul><li><strong>alloc_pages</strong></li></ul> 
+<pre><code class="prism language-cpp"><span class="token keyword">struct</span> <span class="token class-name">page</span> <span class="token operator">*</span><span class="token function">alloc_pages</span><span class="token punctuation">(</span>gfp_t gfp<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">int</span> order<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<ul><li> <p>输入参数：alloc_pages 函数用于分配 2 的 order 次幂个物理内存页，参数 gfp_t gfp 是内核中定义的一个用于规范物理内存分配行为的修饰符，这里我们先不展开。</p> </li><li> <p>返回值： struct page 类型的指针用于指向申请的内存块中第一个物理内存页。当系统中空闲的物理内存无法满足内存分配时，就会导致内存分配失败，alloc_pages，alloc_page 就会返回空指针 NULL 。</p> </li></ul> 
+<p>alloc_pages 函数用于分配多个连续的物理内存页，在内核的某些内存分配场景中有时候并不需要分配这么多的连续内存页，而是只需要分配一个物理内存页即可，于是<strong>内核又提供了 alloc_page 宏，用于这种单内存页分配的场景</strong>，我们可以看到其底层还是依赖了 alloc_pages 函数，只不过 order 指定为 0。</p> 
+<p>该宏alloc_page的定义：</p> 
+<pre><code class="prism language-cpp"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">alloc_page</span><span class="token expression"><span class="token punctuation">(</span>gfp_mask<span class="token punctuation">)</span> <span class="token function">alloc_pages</span><span class="token punctuation">(</span>gfp_mask<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span></span></span>
+</code></pre> 
+<ul><li><strong>__get_free_pages</strong></li></ul> 
+<p>该函数返回的是物理内存页的虚拟内存地址</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">unsigned</span> <span class="token keyword">long</span> <span class="token function">__get_free_pages</span><span class="token punctuation">(</span>gfp_t gfp_mask<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">int</span> order<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>__get_free_pages 函数在使用方式上和 alloc_pages 是一样的，函数参数的含义也是一样，只不过一个是返回物理内存页的虚拟内存地址，一个是直接返回物理内存页。</p> 
+<p>其实 __get_free_pages 函数的底层也是基于 alloc_pages 实现的，只不过多了一层虚拟地址转换的工作。</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">unsigned</span> <span class="token keyword">long</span> <span class="token function">__get_free_pages</span><span class="token punctuation">(</span>gfp_t gfp_mask<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">int</span> order<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+ <span class="token keyword">struct</span> <span class="token class-name">page</span> <span class="token operator">*</span>page<span class="token punctuation">;</span>
+    <span class="token comment">// 不能在高端内存中分配物理页，因为无法直接映射获取虚拟内存地址</span>
+ page <span class="token operator">=</span> <span class="token function">alloc_pages</span><span class="token punctuation">(</span>gfp_mask <span class="token operator">&amp;</span> <span class="token operator">~</span>__GFP_HIGHMEM<span class="token punctuation">,</span> order<span class="token punctuation">)</span><span class="token punctuation">;</span>
+ <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>page<span class="token punctuation">)</span>
+  <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token comment">// 将直接映射区中的物理内存页转换为虚拟内存地址</span>
+ <span class="token keyword">return</span> <span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">long</span><span class="token punctuation">)</span> <span class="token function">page_address</span><span class="token punctuation">(</span>page<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<blockquote> 
+ <p>page_address 函数用于将给定的物理内存页 page 转换为它的虚拟内存地址，不过这里<strong>只适用于内核虚拟内存空间中的直接映射区，因为在直接映射区中虚拟内存地址到物理内存地址是直接映射的，虚拟内存地址减去一个固定的偏移就可以直接得到物理内存地址</strong>。</p> 
+ <p>如果物理内存页处于高端内存中，则不能这样直接进行转换，在通过 alloc_pages 函数获取物理内存页 page 之后，需要调用 <strong>kmap</strong> 映射将 page 映射到内核虚拟地址空间中。</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/dc/30/XzHc96z4_o.png" alt="在这里插入图片描述"></p> 
+<ul><li><strong>get_zeroed_page</strong></li></ul> 
+<p>无论是 alloc_pages 也好还是 __get_free_pages 也好，它们申请到的内存页中包含的数据在一开始都不是空白的，而是内核随机产生的一些垃圾信息，但其实这些信息可能并不都是完全随机的，很有可能随机的包含一些敏感的信息。</p> 
+<p>这些敏感的信息可能会被一些黑客所利用，并对计算机系统产生一些危害行为，所以从使用安全的角度考虑，内核又提供了一个函数 get_zeroed_page，顾名思义，这个函数会将从伙伴系统中申请到内存页全部初始化填充为 0 ，这在分配物理内存页给用户空间使用的时候非常有用。</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">unsigned</span> <span class="token keyword">long</span> <span class="token function">get_zeroed_page</span><span class="token punctuation">(</span>gfp_t gfp_mask<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+ <span class="token keyword">return</span> <span class="token function">__get_free_pages</span><span class="token punctuation">(</span>gfp_mask <span class="token operator">|</span> __GFP_ZERO<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p>get_zeroed_page 函数底层也依赖于 __get_free_pages，指定的分配阶 order 也是 0，表示从伙伴系统中只申请一个物理内存页并初始化填充 0 。</p> 
+<ul><li><strong>__get_dma_pages</strong></li></ul> 
+<p>专门用于从 DMA 内存区域分配适用于 DMA 的物理内存页。其底层也是依赖于 __get_free_pages 函数。</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">unsigned</span> <span class="token keyword">long</span> <span class="token function">__get_dma_pages</span><span class="token punctuation">(</span>gfp_t gfp_mask<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">int</span> order<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h4><a id="_262"></a>物理内存释放接口</h4> 
+<pre><code class="prism language-cpp"><span class="token keyword">void</span> <span class="token function">__free_pages</span><span class="token punctuation">(</span><span class="token keyword">struct</span> <span class="token class-name">page</span> <span class="token operator">*</span>page<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">int</span> order<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">void</span> <span class="token function">free_pages</span><span class="token punctuation">(</span><span class="token keyword">unsigned</span> <span class="token keyword">long</span> addr<span class="token punctuation">,</span> <span class="token keyword">unsigned</span> <span class="token keyword">int</span> order<span class="token punctuation">)</span><span class="token punctuation">;</span>
+ 
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">__free_page</span><span class="token expression"><span class="token punctuation">(</span>page<span class="token punctuation">)</span> <span class="token function">__free_pages</span><span class="token punctuation">(</span><span class="token punctuation">(</span>page<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span></span></span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name function">free_page</span><span class="token expression"><span class="token punctuation">(</span>addr<span class="token punctuation">)</span> <span class="token function">free_pages</span><span class="token punctuation">(</span><span class="token punctuation">(</span>addr<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span></span></span>
+</code></pre> 
+<ul><li><strong>__free_pages</strong></li></ul> 
+<p>同 alloc_pages 函数对应，用于释放一个或者 2 的 order 次幂个内存页，释放的物理内存区域起始地址由该区域中的第一个 page 实例指针表示，也就是参数里的 struct page *page 指针。</p> 
+<ul><li><strong>free_pages</strong></li></ul> 
+<p>同<code>__get_free_pages </code>函数对应，与 __free_pages 函数的区别是在释放物理内存时，使用了虚拟内存地址而不是 page 指针。</p> 
+<p><img src="https://images2.imgbox.com/2a/4c/bIKWDNz6_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_gfp_mask_295"></a>规范物理内存分配行为的掩码 gfp_mask(了解即可)</h4> 
+<p>gfp是get free page的缩写，这个参数由3种flag组成，分别为action modifier， zone modifier，type。</p> 
+<p><a href="https://blog.csdn.net/wwwlyj123321/article/details/134361123">参考的文章</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/faf89116afb3e532831e51953e498191/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【MySQL】聊聊数据库是如何保证数据不丢的</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0eead1974e33d4005a4ca16dc963cd60/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">面向对象设计模式准则</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

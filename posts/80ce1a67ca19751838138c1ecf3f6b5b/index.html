@@ -1,0 +1,313 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>使用Nginx正向代理让内网主机通过外网主机访问互联网 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/80ce1a67ca19751838138c1ecf3f6b5b/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="使用Nginx正向代理让内网主机通过外网主机访问互联网">
+  <meta property="og:description" content="目录
+环境概述
+流程说明
+在外网服务器上安装部署nginx 安装前准备
+下载nginx
+编译安装nginx
+开始配置正向代理
+创建systemd服务单元文件，用于管理Nginx服务的启动、停止和重新加载
+启动nginx
+代理服务器本地验证
+内网服务器验证
+将代理地址添加到环境变量中直接使用
+环境概述 在企业网络环境中，通常会存在内网与外网的隔离，内网机器无法直接访问外部Internet。而外网机器具有访问互联网的能力。为了让内网机器能够通过外网机器访问互联网，我们可以配置Nginx正向代理来实现。
+（代理服务器为linux系统，Windows系统中nginx中默认不包含proxy_connect模块，Windows编译proxy_connect模块比较麻烦，可以使用CCProxy代理软件实现，参考外网主机使用CCProxy代理使内网主机上网）
+内网主机：172.211.216.242 (无法直接访问外部Internet)外网主机：192.168.0.97 (可以访问Internet，并充当代理服务器)前置条件：内网主机和外网主机虽然不是在同一网段，但是可以互相访问，正向代理的端口需要互通，这里用的8080 流程说明 内网服务器发送请求：内网服务器通过HTTP或HTTPS发送请求到外网代理服务器的8080端口。
+代理服务器接收请求：外网代理服务器接收到请求后，根据请求的协议（HTTP或HTTPS）使用proxy_pass将请求转发到目标互联网服务器。
+互联网服务器处理请求：目标互联网服务器接收到请求后处理并生成响应。
+代理服务器返回响应：互联网服务器将响应发送回外网代理服务器，然后代理服务器将响应转发回内网服务器。
+代理流程： A[内网主机 172.211.216.242] -- 请求 --&gt; B[Nginx代理 192.168.0.97:8080] B -- 转发请求 --&gt; C[目标服务器] C -- 返回响应 --&gt; B B -- 返回响应 --&gt; A &#43;----------------------&#43; &#43;------------------------&#43; &#43;---------------------&#43; | 内网服务器 | | 外网代理服务器 | | 互联网服务器 | | 172.211.216.242 | --------&gt; | 192.168.0.97:8080 | --------&gt; | www.example.com | | | | | | | | 发送HTTP/HTTPS请求 | | 接收并转发请求 | | 处理请求并返回响应 | &#43;----------------------&#43; &#43;------------------------&#43; &#43;---------------------&#43; ^ | | | v | &#43;----------------------&lt;----------------&#43;-----------------------&lt;--------------&#43; 在外网服务器上安装部署nginx 安装前准备 由于Nginx默认不支持HTTPS代理，我们需要额外添加模块。使用的模块是ngx_http_proxy_connect_module。使用模块前需请确保模块和Nginx版本匹配。如图：">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-05T15:01:37+08:00">
+    <meta property="article:modified_time" content="2024-06-05T15:01:37+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">使用Nginx正向代理让内网主机通过外网主机访问互联网</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="-toc" style="margin-left:80px;"></p> 
+<p id="%E7%8E%AF%E5%A2%83%E6%A6%82%E8%BF%B0-toc" style="margin-left:80px;"><a href="#%E7%8E%AF%E5%A2%83%E6%A6%82%E8%BF%B0" rel="nofollow">环境概述</a></p> 
+<p id="%E6%B5%81%E7%A8%8B%E8%AF%B4%E6%98%8E-toc" style="margin-left:80px;"><a href="#%E6%B5%81%E7%A8%8B%E8%AF%B4%E6%98%8E" rel="nofollow">流程说明</a></p> 
+<p id="安装部署nginx-toc" style="margin-left:80px;"><a href="#%E5%AE%89%E8%A3%85%E9%83%A8%E7%BD%B2nginx" rel="nofollow">在外网服务器上安装部署nginx </a></p> 
+<p id="%E5%AE%89%E8%A3%85%E5%89%8D%E5%87%86%E5%A4%87-toc" style="margin-left:120px;"><a href="#%E5%AE%89%E8%A3%85%E5%89%8D%E5%87%86%E5%A4%87" rel="nofollow">安装前准备</a></p> 
+<p id="%E4%B8%8B%E8%BD%BDnginx-toc" style="margin-left:120px;"><a href="#%E4%B8%8B%E8%BD%BDnginx" rel="nofollow">下载nginx</a></p> 
+<p id="%C2%A0%E7%BC%96%E8%AF%91%E5%AE%89%E8%A3%85nginx-toc" style="margin-left:120px;"><a href="#%C2%A0%E7%BC%96%E8%AF%91%E5%AE%89%E8%A3%85nginx" rel="nofollow"> 编译安装nginx</a></p> 
+<p id="%E5%BC%80%E5%A7%8B%E9%85%8D%E7%BD%AE%E6%AD%A3%E5%90%91%E4%BB%A3%E7%90%86-toc" style="margin-left:120px;"><a href="#%E5%BC%80%E5%A7%8B%E9%85%8D%E7%BD%AE%E6%AD%A3%E5%90%91%E4%BB%A3%E7%90%86" rel="nofollow">开始配置正向代理</a></p> 
+<p id="%E5%88%9B%E5%BB%BAsystemd%E6%9C%8D%E5%8A%A1%E5%8D%95%E5%85%83%E6%96%87%E4%BB%B6%EF%BC%8C%E7%94%A8%E4%BA%8E%E7%AE%A1%E7%90%86Nginx%E6%9C%8D%E5%8A%A1%E7%9A%84%E5%90%AF%E5%8A%A8%E3%80%81%E5%81%9C%E6%AD%A2%E5%92%8C%E9%87%8D%E6%96%B0%E5%8A%A0%E8%BD%BD-toc" style="margin-left:120px;"><a href="#%E5%88%9B%E5%BB%BAsystemd%E6%9C%8D%E5%8A%A1%E5%8D%95%E5%85%83%E6%96%87%E4%BB%B6%EF%BC%8C%E7%94%A8%E4%BA%8E%E7%AE%A1%E7%90%86Nginx%E6%9C%8D%E5%8A%A1%E7%9A%84%E5%90%AF%E5%8A%A8%E3%80%81%E5%81%9C%E6%AD%A2%E5%92%8C%E9%87%8D%E6%96%B0%E5%8A%A0%E8%BD%BD" rel="nofollow">创建systemd服务单元文件，用于管理Nginx服务的启动、停止和重新加载</a></p> 
+<p id="%E5%90%AF%E5%8A%A8nginx-toc" style="margin-left:120px;"><a href="#%E5%90%AF%E5%8A%A8nginx" rel="nofollow">启动nginx</a></p> 
+<p id="%C2%A0%E4%BB%A3%E7%90%86%E6%9C%8D%E5%8A%A1%E5%99%A8%E6%9C%AC%E5%9C%B0%E9%AA%8C%E8%AF%81-toc" style="margin-left:80px;"><a href="#%C2%A0%E4%BB%A3%E7%90%86%E6%9C%8D%E5%8A%A1%E5%99%A8%E6%9C%AC%E5%9C%B0%E9%AA%8C%E8%AF%81" rel="nofollow"> 代理服务器本地验证</a></p> 
+<p id="%C2%A0%20%E5%86%85%E7%BD%91%E6%9C%8D%E5%8A%A1%E5%99%A8%E9%AA%8C%E8%AF%81-toc" style="margin-left:80px;"><a href="#%C2%A0%20%E5%86%85%E7%BD%91%E6%9C%8D%E5%8A%A1%E5%99%A8%E9%AA%8C%E8%AF%81" rel="nofollow"> 内网服务器验证</a></p> 
+<p id="%C2%A0%E5%B0%86%E4%BB%A3%E7%90%86%E5%9C%B0%E5%9D%80%E6%B7%BB%E5%8A%A0%E5%88%B0%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F%E4%B8%AD%E7%9B%B4%E6%8E%A5%E4%BD%BF%E7%94%A8-toc" style="margin-left:80px;"><a href="#%C2%A0%E5%B0%86%E4%BB%A3%E7%90%86%E5%9C%B0%E5%9D%80%E6%B7%BB%E5%8A%A0%E5%88%B0%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F%E4%B8%AD%E7%9B%B4%E6%8E%A5%E4%BD%BF%E7%94%A8" rel="nofollow"> 将代理地址添加到环境变量中直接使用</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h4 id="%E7%8E%AF%E5%A2%83%E6%A6%82%E8%BF%B0">环境概述</h4> 
+<p>        在企业网络环境中，通常会存在内网与外网的隔离，内网机器无法直接访问外部Internet。而外网机器具有访问互联网的能力。为了让内网机器能够通过外网机器访问互联网，我们可以配置<span style="color:#4da8ee;">Nginx正向代理</span>来实现。</p> 
+<p>（代理服务器为linux系统，Windows系统中nginx中默认不包含proxy_connect模块，Windows编译proxy_connect模块比较麻烦，可以使用CCProxy代理软件实现，参考<a class="link-info" href="http://t.csdnimg.cn/RCJLB" rel="nofollow" title="外网主机使用CCProxy代理使内网主机上网">外网主机使用CCProxy代理使内网主机上网</a>）</p> 
+<ul><li><strong>内网主机</strong>：172.211.216.242  (无法直接访问外部Internet)</li><li><strong>外网主机</strong>：192.168.0.97 (可以访问Internet，并充当代理服务器)</li><li>前置条件：内网主机和外网主机虽然不是在同一网段，但是可以互相访问，正向代理的端口需要互通，这里用的8080</li></ul> 
+<h4 id="%E6%B5%81%E7%A8%8B%E8%AF%B4%E6%98%8E"><strong>流程说明</strong></h4> 
+<ol><li> <p> 内网服务器发送请求：内网服务器通过HTTP或HTTPS发送请求到外网代理服务器的8080端口。</p> </li><li> <p>  代理服务器接收请求：外网代理服务器接收到请求后，根据请求的协议（HTTP或HTTPS）使用proxy_pass将请求转发到目标互联网服务器。</p> </li><li> <p>  互联网服务器处理请求：目标互联网服务器接收到请求后处理并生成响应。</p> </li><li> <p>  代理服务器返回响应：互联网服务器将响应发送回外网代理服务器，然后代理服务器将响应转发回内网服务器。</p> </li></ol> 
+<pre><code class="language-objectivec"> 代理流程：
+
+ A[内网主机 172.211.216.242] -- 请求 --&gt; B[Nginx代理 192.168.0.97:8080]
+ B -- 转发请求 --&gt; C[目标服务器]
+ C -- 返回响应 --&gt; B
+ B -- 返回响应 --&gt; A
+
+
+
++----------------------+             +------------------------+             +---------------------+
+|     内网服务器      |             |    外网代理服务器       |             |   互联网服务器     |
+| 172.211.216.242     | --------&gt;  |  192.168.0.97:8080     | --------&gt;   |  www.example.com    |
+|                      |           |                        |             |                     |
+| 发送HTTP/HTTPS请求   |            | 接收并转发请求          |             | 处理请求并返回响应  |
++----------------------+             +------------------------+             +---------------------+
+       ^                                      |                                       |
+       |                                      v                                       |
+       +----------------------&lt;----------------+-----------------------&lt;--------------+
+
+
+
+</code></pre> 
+<h4 id="安装部署nginx">在外网服务器上安装部署nginx </h4> 
+<h5 id="%E5%AE%89%E8%A3%85%E5%89%8D%E5%87%86%E5%A4%87">安装前准备</h5> 
+<p>由于Nginx默认不支持HTTPS代理，我们需要额外添加模块。使用的模块是<a href="https://github.com/chobits/ngx_http_proxy_connect_module/" title="ngx_http_proxy_connect_module">ngx_http_proxy_connect_module</a>。使用模块前需请确保模块和Nginx版本匹配。如图：</p> 
+<p>我这里有用的是1.20.2版本所以使用proxy_connect_rewrite_1018.patch</p> 
+<p><img alt="" height="774" src="https://images2.imgbox.com/2c/e3/nFKfaxEm_o.png" width="1200"><br> 可以直接通过下载压缩包，解压之后通过<code>patch</code>命令打入补丁。</p> 
+<pre><code class="language-bash">#安装patch：
+yum install patch -y</code></pre> 
+<pre><code class="language-bash">cd /root
+wget https://github.com/chobits/ngx_http_proxy_connect_module/archive/refs/tags/v0.0.2.zip</code></pre> 
+<pre><code class="language-bash">unzip v0.0.2.zip</code></pre> 
+<h5 id="%E4%B8%8B%E8%BD%BDnginx">下载nginx</h5> 
+<pre><code class="language-bash">cd /root
+wget http://nginx.org/download/nginx-1.20.2.tar.gz
+</code></pre> 
+<pre><code class="language-bash">#解压
+tar xf nginx-1.20.2.tar.gz 
+
+#进入nginx目录
+cd nginx-1.20.2/
+
+#使用patch命令导入补丁 注意路径是否一致 我是直接在根目录操作的
+patch -p1 &lt; /root/ngx_http_proxy_connect_module-0.0.2/patch/proxy_connect_rewrite_1018.patch
+
+</code></pre> 
+<h5 id="%C2%A0%E7%BC%96%E8%AF%91%E5%AE%89%E8%A3%85nginx"> 编译安装<code>nginx</code></h5> 
+<pre><code class="language-bash">#安装编译工具和库 
+yum install gcc cmake make cmake unzip ncurses-devel gcc gcc-c++ -y
+
+#配置Nginx编译选项,使其在编译Nginx时包含ngx_http_proxy_connect_module-0.0.2模块
+./configure --prefix=/usr/local/nginx --add-module=/root/ngx_http_proxy_connect_module-0.0.2
+
+#编译和安装Nginx
+make &amp;&amp; make install</code></pre> 
+<h5 id="%E5%BC%80%E5%A7%8B%E9%85%8D%E7%BD%AE%E6%AD%A3%E5%90%91%E4%BB%A3%E7%90%86">开始配置正向代理</h5> 
+<pre><code class="language-bash">cd /usr/local/nginx/conf/
+
+#习惯性备份
+cp nginx.conf nginx.conf.bak
+
+#编辑
+vi  nginx.conf</code></pre> 
+<p>可以直接参考这个 （可以直接拷贝使用）</p> 
+<pre><code class="language-bash"># 设置Nginx主进程数量为1，通常在单核服务器上只需要一个主进程
+worker_processes  1;
+
+# 每个工作进程能够同时处理的最大连接数
+events {
+    worker_connections  1024;
+}
+
+
+http {
+    # 引入mime.types文件，定义文件扩展名和对应的MIME类型
+    include       mime.types;
+
+    # 设置默认的MIME类型为application/octet-stream
+    default_type  application/octet-stream;
+
+    # 使用sendfile系统调用来发送文件，提高性能
+    sendfile        on;
+
+    # HTTP连接的超时时间，这里是65秒
+    keepalive_timeout  65;
+
+    server {
+    # 服务器监听的端口号为8080
+    listen                           8080;
+
+    # 服务器名称为localhost
+    server_name                      localhost;
+
+    # 指定DNS服务器地址为114.114.114.114，禁用IPv6解析
+    resolver                         114.114.114.114 ipv6=off;
+
+    # 开启HTTP CONNECT方法支持，用于建立与后端服务器的TCP连接
+    proxy_connect;
+
+    # 允许通过代理的端口，这里允许443和80端口
+    proxy_connect_allow              443 80;
+
+    # 建立连接的超时时间为10秒
+    proxy_connect_connect_timeout    10s;
+
+    # 读取数据的超时时间为10秒
+    proxy_connect_read_timeout       10s;
+
+    location / {
+        # 将请求转发到代理目标
+        proxy_pass $scheme://$http_host$request_uri;
+    }
+}
+
+}
+</code></pre> 
+<h5 id="%E5%88%9B%E5%BB%BAsystemd%E6%9C%8D%E5%8A%A1%E5%8D%95%E5%85%83%E6%96%87%E4%BB%B6%EF%BC%8C%E7%94%A8%E4%BA%8E%E7%AE%A1%E7%90%86Nginx%E6%9C%8D%E5%8A%A1%E7%9A%84%E5%90%AF%E5%8A%A8%E3%80%81%E5%81%9C%E6%AD%A2%E5%92%8C%E9%87%8D%E6%96%B0%E5%8A%A0%E8%BD%BD">创建systemd服务单元文件，用于管理Nginx服务的启动、停止和重新加载</h5> 
+<pre><code class="language-bash">echo "[Unit]
+Description=The NGINX HTTP and reverse proxy server
+After=network.target
+Wants=network.target
+
+[Service]
+Type=forking
+PIDFile=/usr/local/nginx/logs/nginx.pid
+ExecStartPre=/usr/local/nginx/sbin/nginx -t
+ExecStart=/usr/local/nginx/sbin/nginx
+ExecReload=/usr/local/nginx/sbin/nginx -s reload
+ExecStop=/usr/local/nginx/sbin/nginx -s stop
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target" | sudo tee /etc/systemd/system/nginx.service
+</code></pre> 
+<h5 id="%E5%90%AF%E5%8A%A8nginx">启动nginx</h5> 
+<pre><code class="language-bash">systemctl daemon-reload
+
+systemctl start nginx
+
+systemctl enable nginx
+
+</code></pre> 
+<h4 id="%C2%A0%E4%BB%A3%E7%90%86%E6%9C%8D%E5%8A%A1%E5%99%A8%E6%9C%AC%E5%9C%B0%E9%AA%8C%E8%AF%81"> 代理服务器本地验证</h4> 
+<pre><code class="language-bash"> curl -I https://blog.csdn.net/ -v -x 127.0.0.1:8080
+</code></pre> 
+<p>如图 出现"HTTP/1.1 200 Connection Established" 表示代理服务器已经成功建立了连接</p> 
+<h4 id="%E2%80%8B%E7%BC%96%E8%BE%91"><img alt="" height="529" src="https://images2.imgbox.com/e2/eb/fSawlqqP_o.png" width="1200"></h4> 
+<h4 id="%C2%A0%20%E5%86%85%E7%BD%91%E6%9C%8D%E5%8A%A1%E5%99%A8%E9%AA%8C%E8%AF%81">  内网服务器验证</h4> 
+<pre><code class="language-bash">curl -I https://blog.csdn.net/ -v -x 192.168.0.97:8080
+</code></pre> 
+<p>如图 直接curl不通，加上代理地址端口是通的</p> 
+<p>（这一步要确保内网主机和外网服务器之间端口互通） 可以使用telnet测试</p> 
+<p><img alt="" height="268" src="https://images2.imgbox.com/31/0e/gmFxXNYN_o.png" width="1198"></p> 
+<p><img alt="" height="873" src="https://images2.imgbox.com/f9/d8/mXCooxIk_o.png" width="1200"></p> 
+<h4 id="%C2%A0%E5%B0%86%E4%BB%A3%E7%90%86%E5%9C%B0%E5%9D%80%E6%B7%BB%E5%8A%A0%E5%88%B0%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F%E4%B8%AD%E7%9B%B4%E6%8E%A5%E4%BD%BF%E7%94%A8"> 将代理地址添加到环境变量中直接使用</h4> 
+<pre><code class="language-bash">vi /etc/profile
+
+#编辑/etc/profile文件 在最后一行加入
+
+export http_proxy=192.168.0.97:8080
+export https_proxy=192.168.0.97:8080
+ 
+#192.168.0.97:8080 为你的代理服务器ip和端口
+</code></pre> 
+<p>注意 使用source命令使其生效</p> 
+<pre><code class="language-bash"> source /etc/profile</code></pre> 
+<p>直接curl https://blog.csdn.net/  成功访问到  代理成功</p> 
+<p><img alt="" height="666" src="https://images2.imgbox.com/8a/80/JJGkKKcY_o.png" width="1200"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c792d28abe24d7855514851a24b3c38a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">巨详细Java JDK环境配置（Mac 版）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f9e9b6afd76cbdfe80585a896d99e83b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">关于网页自动化工具DrissionPage进行爬虫的使用方法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

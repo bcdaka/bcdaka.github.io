@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Java开发 - 深入理解Redis Cluster的工作原理 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/d8292b378b9456dfb5a223195c2b440b/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Java开发 - 深入理解Redis Cluster的工作原理">
+  <meta property="og:description" content="前言 前面我们讲过Redis Cluster的搭建方式，也是本着应用优先的原则，所以对其基础概念和原理几乎没有涉及，但当学会了Redis集群的搭建方式之后，对于其原来我们还是要知道一些的，所以这篇博客，我们将一起来学习Redis Cluster的一些相关知识。
+导读 在开始Redis Cluster的讲解之前，还不熟悉Redis Cluster，还不知道怎么搭建Redis Cluster的小伙伴，可以先去看看以下这篇博客：
+Java开发 - 让你少走弯路的Redis集群搭建
+看完这篇博客，对于里面一些基础知识，我们就开始给大家科普了。 Redis Cluster Redis Cluster是什么 我们首先要知道，Redis Cluster是在Redis3.0之后才出现的去中心化分片集群。传统的Redis集群是基于主从复制加哨兵来实现的，这在前面的文章中博主也有详细的搭建流程和原理剖析：
+Java开发 - 让你少走弯路的Redis的主从复制
+Java开发 - 让你少走弯路的Redis主从实现单节点哨兵模式
+Java开发 - 深入理解Redis哨兵机制原理
+有需要的小伙伴自行前往查看。在这种传统的Redis集群中，最多也只能有一个节点来提供写服务，这一点谁都无法改变。
+不同于传统的Redis集群模式，在Redis3.0后，Redis Cluster支持多主多从的方式，也就是可以同时开启多个主节点，主节点之下再挂其他的从节点的方式。在这个过程中，Cluster会将数据分散到多个主节点上，这些主节点也都可以对外提供读写服务。这种方式突破了Redis单机存储的内存大小限制，扩展了集群的存储容量。不仅如此，Redis Cluster的每个主节点都有至少一个从节点，当某个主节点挂掉后，Redis Cluster就通过故障转移将其从节点切换为新的主节点。
+总结：Redis Cluster是一个去中心化的Redis集群，每个节点都会与其他节点保持互通，通过gossip协议来进行信息的交换、探测新加入的节点、监听缩容的节点。最大的好处是，Redis Cluster⽆需任何代理，客户端会直接与集群中的节点连接。
+注意：每个redis要放开两个端口号，一个是6379，另外一个就是在这基础上&#43;10000，也就是16379，用来做节点间的通信！！！
+分片方式 在创建Redis Cluster集群时，需要保证至少6个Redis服务，不要怀疑，就是6个，这6个Redis里的主节点会按照一定的规则来瓜分redis的16384个Slot槽，这个过程我们称之为分片，也将是我们接下来要讲解的内容。
+Slot槽是Redis Cluster的一个重要概念，它将哈希表拆分成多个小的哈希表，并将这些小的哈希表分布在不同的节点上。每个节点管理一个或多个Slot槽，每个Slot槽包含一定的数据，这种分片的方式可以提高Redis的可扩展性和可靠性，避免单点故障时所有数据都丢失的问题。
+哈希取模 哈希取模类似于我们使用HashMap选址的方式，我们对要存入的值的key进行hash计算，实际上是一个crc16效验，根据这个最终的值来决定它应该被分配在哪个Slot上，而这个Slot也决定了它在哪个节点上。
+这里有个问题，在扩容或者缩容的时候，Slot槽可能需要重新进行分配，会导致key重新计算存储位置，从⽽导致缓存失效，但我们也应该知道，这种情况并不是总是经常出现。
+一致性哈希 一致性哈希将哈希值组成了一个闭合的虚拟圆环，其大小在0 ~ 2^32-1之间，这个值非常熟悉有没有？我们来看下图：
+这是一个扩容前的状态图，我们计算key的哈希值，确定它在环上的位置，然后顺时针开始找，找到的第一个节点就是它这个key所在的节点，是不是很简单？
+但在我们需要向这个环中插入或者删除节点时，就不需要重新对整个环/集群中的key进行重新运算，⼀致性哈希算法会将增减节点的影响限制在相邻的节点上，而不对其他的节点造成影响。如下图：
+当我们node2和node4之间新增一个node5，此时只会把node4的一部分数据迁移到node5上‘如果对node4的服务进行下线，那么node4的数据将只迁移到相邻的node3上，是不是很神奇？
+一致性哈希算法在节点很多的时候还是不错的，但在节点较少时，会因为删除节点导致Slot槽或者说数据出现分布不均的情况，以上图最开始4个节点的情况来说，如果删除一个节点，势必会有一个节点的数据由原来的四分之一（1/4）变成二分之一（1/2）。
+以上是一个最差的结果，但在进行扩容和缩容的时候，Slot槽在重新分配时，怎么分配，这个规则掌握在我们的手中。比如说，人工分配容易导致食物，Slot就有一个自动平衡算法，具体做法就是通过redis-trib做rehash操作。但我还是要提醒大家，生产环境慎用！！！
+虚拟节点&#43;⼀致性哈希 这有时候吧，节点在环上分配严重不均，也就是slot槽分配不均，节点又少，就有导致雪崩和数据倾斜，这时候就在一致性哈希的基础上提出了一种新的虚拟节点的方式，如下图：
+注意：真实节点不放置到哈希环上，只有虚拟节点才会放上去 ！！！
+这种方式将通过实际节点抢占哈希环的方式变成了由实际节点下的虚拟节点来抢占的方式，简单来说就是通过虚拟节点来映射实际的节点，好处是， 扩容或缩容时，其他节点只需要将自身虚拟节点下的一部分slot分配出去，从而达到slot槽的均匀分配，这个看起来就像是一种负载均衡的分配方式，而这正是我们所希望的。
+选举策略 在说之前，我想给大家推荐几篇博客：
+Redis 集群模式（Cluster）原理详解
+redis（六）Redis Cluster集群原理
+Redis学习(二)之 Redis Cluster集群">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2023-07-26T08:00:00+08:00">
+    <meta property="article:modified_time" content="2023-07-26T08:00:00+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Java开发 - 深入理解Redis Cluster的工作原理</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>前言</h2> 
+<p>前面我们讲过Redis Cluster的搭建方式，也是本着应用优先的原则，所以对其基础概念和原理几乎没有涉及，但当学会了Redis集群的搭建方式之后，对于其原来我们还是要知道一些的，所以这篇博客，我们将一起来学习Redis Cluster的一些相关知识。</p> 
+<h2>导读</h2> 
+<p>在开始Redis Cluster的讲解之前，还不熟悉Redis Cluster，还不知道怎么搭建Redis Cluster的小伙伴，可以先去看看以下这篇博客：</p> 
+<p><a href="https://blog.csdn.net/CodingFire/article/details/131109255?spm=1001.2014.3001.5501" title="Java开发 - 让你少走弯路的Redis集群搭建">Java开发 - 让你少走弯路的Redis集群搭建</a></p> 
+<p>看完这篇博客，对于里面一些基础知识，我们就开始给大家科普了。 </p> 
+<h2>Redis Cluster</h2> 
+<h3>Redis Cluster是什么</h3> 
+<p>我们首先要知道，Redis Cluster是在Redis3.0之后才出现的去中心化分片集群。传统的Redis集群是基于主从复制加哨兵来实现的，这在前面的文章中博主也有详细的搭建流程和原理剖析：</p> 
+<p><a href="https://blog.csdn.net/CodingFire/article/details/130942851?spm=1001.2014.3001.5501" title="Java开发 - 让你少走弯路的Redis的主从复制">Java开发 - 让你少走弯路的Redis的主从复制</a></p> 
+<p><a href="https://blog.csdn.net/CodingFire/article/details/130984964?spm=1001.2014.3001.5501" title="Java开发 - 让你少走弯路的Redis主从实现单节点哨兵模式">Java开发 - 让你少走弯路的Redis主从实现单节点哨兵模式</a></p> 
+<p><a href="https://codingfire.blog.csdn.net/article/details/131609743" rel="nofollow" title="Java开发 - 深入理解Redis哨兵机制原理">Java开发 - 深入理解Redis哨兵机制原理</a></p> 
+<p>有需要的小伙伴自行前往查看。在这种传统的Redis集群中，最多也只能有一个节点来提供写服务，这一点谁都无法改变。</p> 
+<p>不同于传统的Redis集群模式，在Redis3.0后，Redis Cluster支持多主多从的方式，也就是可以同时开启多个主节点，主节点之下再挂其他的从节点的方式。在这个过程中，Cluster会将数据分散到多个主节点上，这些主节点也都可以对外提供读写服务。这种方式突破了Redis单机存储的内存大小限制，扩展了集群的存储容量。不仅如此，Redis Cluster的每个主节点都有至少一个从节点，当某个主节点挂掉后，Redis Cluster就通过故障转移将其从节点切换为新的主节点。</p> 
+<p>总结：Redis Cluster是一个去中心化的Redis集群，每个节点都会与其他节点保持互通，通过gossip协议来进行信息的交换、探测新加入的节点、监听缩容的节点。最大的好处是，Redis Cluster⽆需任何代理，客户端会直接与集群中的节点连接。</p> 
+<p><strong>注意：每个redis要放开两个端口号，一个是6379，另外一个就是在这基础上+10000，也就是16379，用来做节点间的通信！！！</strong></p> 
+<h3>分片方式</h3> 
+<p>在创建Redis Cluster集群时，需要保证至少6个Redis服务，不要怀疑，就是6个，这6个Redis里的主节点会按照一定的规则来瓜分redis的16384个Slot槽，这个过程我们称之为分片，也将是我们接下来要讲解的内容。</p> 
+<p>Slot槽是Redis Cluster的一个重要概念，它将哈希表拆分成多个小的哈希表，并将这些小的哈希表分布在不同的节点上。每个节点管理一个或多个Slot槽，每个Slot槽包含一定的数据，这种分片的方式可以提高Redis的可扩展性和可靠性，避免单点故障时所有数据都丢失的问题。</p> 
+<h4>哈希取模</h4> 
+<p>哈希取模类似于我们使用HashMap选址的方式，我们对要存入的值的key进行hash计算，实际上是一个crc16效验，根据这个最终的值来决定它应该被分配在哪个Slot上，而这个Slot也决定了它在哪个节点上。</p> 
+<p>这里有个问题，在扩容或者缩容的时候，Slot槽可能需要重新进行分配，会导致key重新计算存储位置，从⽽导致缓存失效，但我们也应该知道，这种情况并不是总是经常出现。</p> 
+<h4>一致性哈希</h4> 
+<p>一致性哈希将哈希值组成了一个闭合的虚拟圆环，其大小在0 ~ 2^32-1之间，这个值非常熟悉有没有？我们来看下图：</p> 
+<p><img alt="" height="818" src="https://images2.imgbox.com/d9/fd/ooZyO7Yy_o.png" width="1126"></p> 
+<p>这是一个扩容前的状态图，我们计算key的哈希值，确定它在环上的位置，然后顺时针开始找，找到的第一个节点就是它这个key所在的节点，是不是很简单？</p> 
+<p>但在我们需要向这个环中插入或者删除节点时，就不需要重新对整个环/集群中的key进行重新运算，⼀致性哈希算法会将增减节点的影响限制在相邻的节点上，而不对其他的节点造成影响。如下图：</p> 
+<p><img alt="" height="1138" src="https://images2.imgbox.com/8b/ac/Db8OSJVR_o.png" width="1200"></p> 
+<p>当我们node2和node4之间新增一个node5，此时只会把node4的一部分数据迁移到node5上‘如果对node4的服务进行下线，那么node4的数据将只迁移到相邻的node3上，是不是很神奇？</p> 
+<p>一致性哈希算法在节点很多的时候还是不错的，但在节点较少时，会因为删除节点导致Slot槽或者说数据出现分布不均的情况，以上图最开始4个节点的情况来说，如果删除一个节点，势必会有一个节点的数据由原来的四分之一（1/4）变成二分之一（1/2）。</p> 
+<p>以上是一个最差的结果，但在进行扩容和缩容的时候，Slot槽在重新分配时，怎么分配，这个规则掌握在我们的手中。比如说，人工分配容易导致食物，Slot就有一个自动平衡算法，具体做法就是通过redis-trib做rehash操作。但我还是要提醒大家，生产环境慎用！！！</p> 
+<h4>虚拟节点+⼀致性哈希</h4> 
+<p>这有时候吧，节点在环上分配严重不均，也就是slot槽分配不均，节点又少，就有导致雪崩和数据倾斜，这时候就在一致性哈希的基础上提出了一种新的虚拟节点的方式，如下图：</p> 
+<p><img alt="" height="764" src="https://images2.imgbox.com/d5/fe/AgeQ3mnB_o.png" width="1200"></p> 
+<p><strong>注意：真实节点不放置到哈希环上，只有虚拟节点才会放上去 ！！！</strong></p> 
+<p>这种方式将通过实际节点抢占哈希环的方式变成了由实际节点下的虚拟节点来抢占的方式，简单来说就是通过虚拟节点来映射实际的节点，好处是， 扩容或缩容时，其他节点只需要将自身虚拟节点下的一部分slot分配出去，从而达到slot槽的均匀分配，这个看起来就像是一种负载均衡的分配方式，而这正是我们所希望的。</p> 
+<h3>选举策略</h3> 
+<p>在说之前，我想给大家推荐几篇博客：</p> 
+<p><a href="https://blog.csdn.net/weixin_56018532/article/details/126295231" title="Redis 集群模式（Cluster）原理详解">Redis 集群模式（Cluster）原理详解</a></p> 
+<p><a href="https://blog.csdn.net/qq_35599414/article/details/119143650" title="redis（六）Redis Cluster集群原理">redis（六）Redis Cluster集群原理</a></p> 
+<p><a href="https://blog.csdn.net/royal1235/article/details/127955405" title="Redis学习(二)之 Redis Cluster集群">Redis学习(二)之 Redis Cluster集群</a></p> 
+<p>大家的博客写的各有千秋，也各有不足，所以需要综合对照查看。下面，博主把自己对Redis Cluster的选举的一些想法写一下，希望对大家有帮助。</p> 
+<p>我们在上一篇Redis sentinel集群模式中说过，Redis之间通信采用的是gossip协议，该协议包含多种消息，包括ping、pong、meet、fail等等，他们都是干嘛的呢？我们先来一一了解下。</p> 
+<ul><li>ping：每个节点每秒都会给其他节点发送ping指令，包括自己的状态和自己维护的集群的元数据信息；</li><li>pong：pong是对对ping和meet消息的回复，包含自己的状态和其他信息，也用于信息广播和更新；</li><li>meet：一个节点发送meet指令给新加入的节点，俩节点一碰头，新节点就加入集群，接着开始和其他节点通过ping指令进行通信；</li><li>fail：从节点判断自己的主节点fail之后，就广播fail给其他节点，通知其他节点某个节点宕机，接着就开始进行选举；</li></ul> 
+<p>在通过fail广播之后，其实并不会立刻开始选举，这里存在一个网络抖动的兼容策略。在配置文件中有这么一个参数：cluster-node-timeout，超过这个时间后还是无法收到这个节点的ping信息，才会开始选举策略。</p> 
+<p>在说明之前，我们要申明一点，只有主节点具备选举的权利，从节点只负责主从复制，如果你配置了读权限，那么从节点也将具备读的权利，除此之外，从节点也只是可以广播而已，不具备其他的权利了。（如果我说的不对，请大家纠正）我觉得这个东西可以通过我们前面集群搭建过程中测试的终端输出得到结论，特地回去看了下，发现没有截图集群选举的过程，但在sentinel集群中，我们是能看到sentinel选举的过程的，只是在这里没有参考的价值，回头再搭集群的时候再截图给大家看。</p> 
+<ul><li>当master宕机后，最先发现其下线的一般是自己的slave，master状态变为FAIL；</li><li>slave先给自己的epoch（即currentEpoch）增一，请求其它master给自己投票。这个消息通过slave广播FAILOVER_AUTH_REQUEST包给集群中的每一个master；</li><li>这之后，slave会等待至少两倍NODE_TIMEOUT时长接收投票结果，不管NODE_TIMEOUT何值，也至少会等待2秒，这是广播去和对方收到之后回的市场，广播每秒一次，所以是2s；</li><li>master接收投票后给slave响应FAILOVER_AUTH_ACK，并且在（NODE_TIMEOUT*2）时间内不会给同一master的其它slave投票，因为master的slave可能不止一个，但同一时间，只能有一个slave发起选举；</li><li>如果slave收到FAILOVER_AUTH_ACK响应的epoch值小于自己的epoch，则会直接丢弃，否则，一旦slave收到多数master的FAILOVER_AUTH_ACK，则声明自己赢得了选举；</li><li>如果slave在两倍的NODE_TIMEOUT时间内（至少2秒）未赢得选举，则放弃本次选举，然后在四倍NODE_TIMEOUT时间（至少4秒）后重新发起选举；</li></ul> 
+<p>currentEpoch是集群状态相关的一个参数，可当作记录集群状态变更的递增版本号。每个集群节点，都会通过 server.cluster-&gt;currentEpoch 记录当前的 currentEpoch。集群节点创建时，不管是 master 还是 slave，currentEpoch 都是0，如果节点接收到来自其他节点的包时，发送者的 currentEpoch（消息头部会包含发送者的 currentEpoch）大于当前节点的currentEpoch，那么当前节点会更新 currentEpoch 为发送者的 currentEpoch。由此，集群中所有节点的 currentEpoch 最终会达成一致，相当于对集群状态的认知达成了一致，这也是集群存在的意义，即达到最终一致性。</p> 
+<h2>结语</h2> 
+<p>到这里，关于Redis Cluster的知识点就给大家介绍完毕了，关于Redis Cluster，你还知道哪些不为人知的秘密呢？欢迎评论区补充，大家一起来讨论。不过话说回来，能用得起Redis Cluster的公司恐怕不多吧？光是这六个节点每年都要花不少钱呢，更何况还有其他的一些服务节点，只能说，用得起的公司是真的壕无人性啊！</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e89c9d37fe5bff37f6f4464351022e84/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Tomcat 的使用（图文教学）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/76c1628d1dbb260cb58250692c1d6e81/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Python web实战 | 使用 Django 搭建 Web 应用程序 【干货】</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

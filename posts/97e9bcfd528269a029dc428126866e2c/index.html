@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>基于 Docker 搭建 RabbitMQ 集群 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/97e9bcfd528269a029dc428126866e2c/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="基于 Docker 搭建 RabbitMQ 集群">
+  <meta property="og:description" content="​
+一、集群分类 在RabbitMQ中，有不同的集群模式，包括普通模式、镜像模式和仲裁队列。每种模式具有不同的特点和应用场景。
+1.1 普通模式 普通集群，也称为标准集群（classic cluster），具备以下特征：
+在集群的各个节点之间共享部分数据，包括交换机和队列的元信息，但不包括队列中的消息。当访问集群中的某个节点时，如果队列不在该节点上，请求会从数据所在节点传递到当前节点并返回响应。如果队列所在节点宕机，队列中的消息将会丢失。 这种模式适用于一些不需要消息高可用性的场景，或者对于消息丢失不是很敏感的应用。
+1.2 镜像模式 镜像集群，本质上是一种主从模式，具备以下特征：
+交换机、队列以及队列中的消息会在集群的各个节点之间进行同步备份。创建队列的节点被称为该队列的主节点，而备份节点被称为该队列的镜像节点。一个队列的主节点也可能是另一个队列的镜像节点，这样可以实现主节点的复用。所有的操作都是由主节点执行，然后同步给镜像节点，确保数据的一致性。如果主节点宕机，镜像节点将会接替成为新的主节点，确保高可用性。 这种模式适用于需要消息高可用性的应用场景，因为数据会在主节点和镜像节点之间进行同步备份，即使主节点宕机，数据仍然可用。
+1.3 仲裁队列 仲裁队列是 RabbitMQ 3.8 版本以后引入的新功能，用来替代镜像队列，具备以下特征：
+仲裁队列同样采用主从模式，支持主从数据同步。仲裁队列的配置非常简单，没有复杂的设置和配置项。主从数据同步基于Raft协议，实现强一致性，确保数据的可靠性和一致性。 仲裁队列是一种更现代化和可靠的集群模式，适用于要求高可用性和数据强一致性的应用场景。
+二、普通集群 2.1 目标集群 下面，我将详细描述如何设置普通模式集群。在本示例中，计划在 Docker 容器上部署一个由3个节点组成的RabbitMQ集群。每个节点都具有特定的主机名和端口设置，如下所示：
+主机名控制台端口（HTTP）AMQP 通信端口mq18081 —&gt; 156728071 —&gt; 5672mq28082 —&gt; 156728072 —&gt; 5672mq38083 —&gt; 156728073 —&gt; 5672 每个节点的标识默认为：rabbit@[主机名]，因此，上述三个节点的名称分别为：
+rabbit@mq1rabbit@mq2rabbit@mq3 在接下来的步骤中，我将介绍如何在 Docker 容器中配置和启动这三个节点，从而创建一个 RabbitMQ 集群。这将使它们能够协同工作，共享队列和数据。
+2.2 获取 Erlang Cookie RabbitMQ 底层依赖于 Erlang，Erlang 虚拟机是一种面向分布式系统的编程语言，它默认支持集群模式。在集群模式中，每个 RabbitMQ 节点使用一个称为Erlang cookie的共享秘钥来确定它们是否允许相互通信。
+为了使两个节点能够互相通信，它们必须具有相同的共享秘密，即Erlang cookie。Cookie只是一个包含最多255个字母数字字符的字符串。每个集群节点必须具有相同的cookie，以确保它们可以相互通信。RabbitMQ实例之间也需要共享相同的cookie以实现相互通信。
+首先，在之前启动的MQ容器中获取一个cookie值，然后将其用作集群的cookie。执行以下命令来获取cookie值：
+docker exec -it mq cat /var/lib/rabbitmq/.erlang.cookie 执行此命令后，将获得一个类似下面的Erlang cookie值：">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-04-04T11:25:43+08:00">
+    <meta property="article:modified_time" content="2024-04-04T11:25:43+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">基于 Docker 搭建 RabbitMQ 集群</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>​</p> 
+<h3><a id="_2"></a>一、集群分类</h3> 
+<p>在<a href="https://so.csdn.net/so/search?q=RabbitMQ&amp;spm=1001.2101.3001.7020">RabbitMQ</a>中，有不同的集群模式，包括普通模式、镜像模式和仲裁队列。每种模式具有不同的特点和应用场景。</p> 
+<h4><a id="11__6"></a>1.1 普通模式</h4> 
+<p>普通集群，也称为标准集群（classic cluster），具备以下特征：</p> 
+<ul><li>在集群的各个节点之间共享部分数据，包括交换机和队列的元信息，但不包括队列中的消息。</li><li>当访问集群中的某个节点时，如果队列不在该节点上，请求会从数据所在节点传递到当前节点并返回响应。</li><li>如果队列所在节点宕机，队列中的消息将会丢失。</li></ul> 
+<p>这种模式适用于一些不需要消息<a href="https://so.csdn.net/so/search?q=%E9%AB%98%E5%8F%AF%E7%94%A8%E6%80%A7&amp;spm=1001.2101.3001.7020">高可用性</a>的场景，或者对于消息丢失不是很敏感的应用。</p> 
+<p><img src="https://images2.imgbox.com/fd/b4/P6BOWzBv_o.png" alt="普通模式"></p> 
+<h4><a id="12__18"></a>1.2 镜像模式</h4> 
+<p>镜像集群，本质上是一种主从模式，具备以下特征：</p> 
+<ul><li>交换机、队列以及队列中的消息会在集群的各个节点之间进行同步备份。</li><li>创建队列的节点被称为该队列的主节点，而备份节点被称为该队列的镜像节点。</li><li>一个队列的主节点也可能是另一个队列的镜像节点，这样可以实现主节点的复用。</li><li>所有的操作都是由主节点执行，然后同步给镜像节点，确保数据的一致性。</li><li>如果主节点宕机，镜像节点将会接替成为新的主节点，确保高可用性。</li></ul> 
+<p>这种模式适用于需要消息高可用性的应用场景，因为数据会在主节点和镜像节点之间进行同步备份，即使主节点宕机，数据仍然可用。</p> 
+<p><img src="https://images2.imgbox.com/17/c7/Hyc7Zjlg_o.png" alt="镜像模式"></p> 
+<h4><a id="13__32"></a>1.3 仲裁队列</h4> 
+<p>仲裁队列是 RabbitMQ 3.8 版本以后引入的新功能，用来替代镜像队列，具备以下特征：</p> 
+<ul><li>仲裁队列同样采用主从模式，支持主从数据同步。</li><li>仲裁队列的配置非常简单，没有复杂的设置和配置项。</li><li>主从数据同步基于Raft协议，实现强一致性，确保数据的可靠性和一致性。</li></ul> 
+<p>仲裁队列是一种更现代化和可靠的集群模式，适用于要求高可用性和数据强一致性的应用场景。</p> 
+<h3><a id="_42"></a>二、普通集群</h3> 
+<h4><a id="21__44"></a>2.1 目标集群</h4> 
+<p>下面，我将详细描述如何设置普通模式集群。在本示例中，计划在 Docker 容器上部署一个由3个节点组成的RabbitMQ集群。每个节点都具有特定的主机名和端口设置，如下所示：</p> 
+<table><thead><tr><th>主机名</th><th>控制台端口（HTTP）</th><th>AMQP 通信端口</th></tr></thead><tbody><tr><td>mq1</td><td>8081 —&gt; 15672</td><td>8071 —&gt; 5672</td></tr><tr><td>mq2</td><td>8082 —&gt; 15672</td><td>8072 —&gt; 5672</td></tr><tr><td>mq3</td><td>8083 —&gt; 15672</td><td>8073 —&gt; 5672</td></tr></tbody></table> 
+<p>每个节点的标识默认为：<code>rabbit@[主机名]</code>，因此，上述三个节点的名称分别为：</p> 
+<ul><li><code>rabbit@mq1</code></li><li><code>rabbit@mq2</code></li><li><code>rabbit@mq3</code></li></ul> 
+<p>在接下来的步骤中，我将介绍如何在 Docker 容器中配置和启动这三个节点，从而创建一个 RabbitMQ 集群。这将使它们能够协同工作，共享队列和数据。</p> 
+<h4><a id="22__Erlang_Cookie_62"></a>2.2 获取 Erlang Cookie</h4> 
+<p>RabbitMQ 底层依赖于 Erlang，Erlang 虚拟机是一种面向分布式系统的编程语言，它默认支持集群模式。在集群模式中，每个 RabbitMQ 节点使用一个称为<strong>Erlang cookie</strong>的共享秘钥来确定它们是否允许相互通信。</p> 
+<p>为了使两个节点能够互相通信，它们必须具有相同的共享秘密，即<strong>Erlang cookie</strong>。Cookie只是一个包含最多255个字母数字字符的字符串。每个集群节点必须具有<strong>相同的cookie</strong>，以确保它们可以相互通信。RabbitMQ实例之间也需要共享相同的cookie以实现相互通信。</p> 
+<p>首先，在之前启动的MQ容器中获取一个cookie值，然后将其用作集群的cookie。执行以下命令来获取cookie值：</p> 
+<pre><code class="prism language-sh"><span class="token function">docker</span> <span class="token builtin class-name">exec</span> <span class="token parameter variable">-it</span> mq <span class="token function">cat</span> /var/lib/rabbitmq/.erlang.cookie
+</code></pre> 
+<p>执行此命令后，将获得一个类似下面的Erlang cookie值：</p> 
+<p><img src="https://images2.imgbox.com/8e/b1/77Rdm5YX_o.png" alt="img"></p> 
+<p>获取了cookie值后，可以停止并删除当前的MQ容器，然后重新构建集群：</p> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> <span class="token function">rm</span> <span class="token parameter variable">-f</span> mq
+</code></pre> 
+<p>请注意，可能还需要删除相关的数据卷：</p> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> volume prune
+</code></pre> 
+<p>这将确保RabbitMQ集群在配置中使用相同的cookie值，以确保节点之间的通信。<br> <img src="https://images2.imgbox.com/c2/f7/i26KdRVa_o.png" alt="img"></p> 
+<h4><a id="23__93"></a>2.3 集群配置</h4> 
+<p>在<code>/rabbitmq-cluster</code>目录中，需要创建一个名为 <code>rabbitmq.conf</code> 的配置文件，可以按照以下步骤操作：</p> 
+<ol><li> <p>切换到<code>/rabbitmq-cluster</code>目录：</p> <pre><code class="prism language-bash"><span class="token builtin class-name">cd</span> /rabbitmq-cluster
+</code></pre> </li><li> <p>创建配置文件 <code>rabbitmq.conf</code>：</p> <pre><code class="prism language-bash"><span class="token function">touch</span> rabbitmq.conf
+</code></pre> <p>这个配置文件用于设置RabbitMQ集群的各种参数，包括节点信息和端口设置。</p> </li><li> <p>编辑 <code>rabbitmq.conf</code> 文件并将以下内容添加到文件中：</p> <pre><code class="prism language-bash">loopback_users.guest <span class="token operator">=</span> <span class="token boolean">false</span>
+listeners.tcp.default <span class="token operator">=</span> <span class="token number">5672</span>
+cluster_formation.peer_discovery_backend <span class="token operator">=</span> rabbit_peer_discovery_classic_config
+cluster_formation.classic_config.nodes.1 <span class="token operator">=</span> rabbit@mq1
+cluster_formation.classic_config.nodes.2 <span class="token operator">=</span> rabbit@mq2
+cluster_formation.classic_config.nodes.3 <span class="token operator">=</span> rabbit@mq3
+</code></pre> <p>这些配置项用于设置RabbitMQ集群的行为，包括禁用默认的<code>guest</code>用户，指定AMQP通信端口（5672），以及配置集群的节点信息。</p> </li><li> <p>创建一个文件用于存储Erlang Cookie，并设置正确的权限：</p> <pre><code class="prism language-bash"><span class="token function">touch</span> .erlang.cookie
+<span class="token builtin class-name">echo</span> <span class="token string">"ZGASVWADQOLVSIUXHZAI"</span> <span class="token operator">&gt;</span> .erlang.cookie
+<span class="token function">chmod</span> <span class="token number">600</span> .erlang.cookie
+</code></pre> <p>Erlang Cookie是用于节点之间认证的共享秘密。确保Cookie在所有节点上具有相同的值。</p> </li><li> <p>创建三个<a href="https://so.csdn.net/so/search?q=%E4%B8%8D%E5%90%8C%E7%9A%84&amp;spm=1001.2101.3001.7020">不同的</a>目录，分别命名为 <code>mq1</code>、<code>mq2</code> 和 <code>mq3</code>：</p> <pre><code class="prism language-bash"><span class="token function">mkdir</span> mq1 mq2 mq3
+</code></pre> <p>这些目录将用于存储每个RabbitMQ节点的配置文件和Cookie。</p> </li><li> <p>将 <code>rabbitmq.conf</code> 和 <code>.erlang.cookie</code> 文件复制到三个节点的目录中，以确保它们共享相同的配置和Cookie信息：</p> <pre><code class="prism language-bash"><span class="token function">cp</span> rabbitmq.conf mq1
+<span class="token function">cp</span> .erlang.cookie mq1
+<span class="token function">cp</span> rabbitmq.conf mq2
+<span class="token function">cp</span> .erlang.cookie mq2
+<span class="token function">cp</span> rabbitmq.conf mq3
+<span class="token function">cp</span> .erlang.cookie mq3
+</code></pre> </li></ol> 
+<p>这些步骤确保了RabbitMQ集群的每个节点都有相同的配置和认证信息，以便节点之间可以顺利通信，并实现集群功能。</p> 
+<h4><a id="24__155"></a>2.4 启动集群</h4> 
+<p>要启动 RabbitMQ 集群，首先需要创建一个网络以确保集群中的不同节点能够相互通信。然后，需要逐个启动每个 MQ 节点，确保它们使用相同的配置和 Erlang Cookie 来实现集群协同工作。以下是详细的步骤：</p> 
+<p><strong>步骤1：创建网络</strong></p> 
+<p>首先，创建一个Docker网络，以便集群中的不同节点可以进行网络通信。使用以下命令创建名为 <code>mq-net</code> 的网络：</p> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> network create mq-net
+</code></pre> 
+<p><strong>步骤2：启动第一个MQ节点（mq1）</strong></p> 
+<p>现在，我们将启动第一个MQ节点 <code>mq1</code>。请运行以下命令：</p> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> run <span class="token parameter variable">-d</span> <span class="token parameter variable">--net</span> mq-net <span class="token punctuation">\</span>
+<span class="token parameter variable">-v</span> <span class="token variable">${<!-- --><span class="token environment constant">PWD</span>}</span>/mq1/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf <span class="token punctuation">\</span>
+<span class="token parameter variable">-v</span> <span class="token variable">${<!-- --><span class="token environment constant">PWD</span>}</span>/.erlang.cookie:/var/lib/rabbitmq/.erlang.cookie <span class="token punctuation">\</span>
+<span class="token parameter variable">-e</span> <span class="token assign-left variable">RABBITMQ_DEFAULT_USER</span><span class="token operator">=</span>lisi <span class="token punctuation">\</span>
+<span class="token parameter variable">-e</span> <span class="token assign-left variable">RABBITMQ_DEFAULT_PASS</span><span class="token operator">=</span><span class="token number">123456</span> <span class="token punctuation">\</span>
+<span class="token parameter variable">--name</span> mq1 <span class="token punctuation">\</span>
+<span class="token parameter variable">--hostname</span> mq1 <span class="token punctuation">\</span>
+<span class="token parameter variable">-p</span> <span class="token number">8071</span>:5672 <span class="token punctuation">\</span>
+<span class="token parameter variable">-p</span> <span class="token number">8081</span>:15672 <span class="token punctuation">\</span>
+rabbitmq:3.8-management
+</code></pre> 
+<p>这个命令的解释如下：</p> 
+<ul><li><code>docker run -d</code>: 启动一个后台容器。</li><li><code>--net mq-net</code>: 将容器连接到名为 <code>mq-net</code> 的网络，以便容器之间可以相互通信。</li><li><code>-v ${PWD}/mq1/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf</code>: 挂载 <code>mq1</code> 目录中的 <code>rabbitmq.conf</code> 配置文件到容器中。</li><li><code>-v ${PWD}/.erlang.cookie:/var/lib/rabbitmq/.erlang.cookie</code>: 挂载Erlang Cookie文件到容器中。</li><li><code>-e RABBITMQ_DEFAULT_USER=lisi -e RABBITMQ_DEFAULT_PASS=123456</code>: 设置RabbitMQ的默认用户和密码。</li><li><code>--name mq1</code>: 为容器指定一个名称。</li><li><code>--hostname mq1</code>: 设置容器的主机名。</li><li><code>-p 8071:5672 -p 8081:15672</code>: 映射容器的5672端口（AMQP通信端口）和15672端口（RabbitMQ控制台）到主机上。</li></ul> 
+<p><strong>步骤3：启动第二个MQ节点（mq2）</strong></p> 
+<p>接下来，我们将启动第二个MQ节点 <code>mq2</code>。请运行以下命令：</p> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> run <span class="token parameter variable">-d</span> <span class="token parameter variable">--net</span> mq-net <span class="token punctuation">\</span>
+<span class="token parameter variable">-v</span> <span class="token variable">${<!-- --><span class="token environment constant">PWD</span>}</span>/mq2/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf <span class="token punctuation">\</span>
+<span class="token parameter variable">-v</span> <span class="token variable">${<!-- --><span class="token environment constant">PWD</span>}</span>/.erlang.cookie:/var/lib/rabbitmq/.erlang.cookie <span class="token punctuation">\</span>
+<span class="token parameter variable">-e</span> <span class="token assign-left variable">RABBITMQ_DEFAULT_USER</span><span class="token operator">=</span>lisi <span class="token punctuation">\</span>
+<span class="token parameter variable">-e</span> <span class="token assign-left variable">RABBITMQ_DEFAULT_PASS</span><span class="token operator">=</span><span class="token number">123456</span> <span class="token punctuation">\</span>
+<span class="token parameter variable">--name</span> mq2 <span class="token punctuation">\</span>
+<span class="token parameter variable">--hostname</span> mq2 <span class="token punctuation">\</span>
+<span class="token parameter variable">-p</span> <span class="token number">8072</span>:5672 <span class="token punctuation">\</span>
+<span class="token parameter variable">-p</span> <span class="token number">8082</span>:15672 <span class="token punctuation">\</span>
+rabbitmq:3.8-management
+</code></pre> 
+<p>这个命令与启动 <code>mq1</code> 的命令类似，只是容器名称、主机名和端口映射不同。</p> 
+<p><strong>步骤4：启动第三个MQ节点（mq3）</strong></p> 
+<p>最后，我们将启动第三个MQ节点 <code>mq3</code>。请运行以下命令：</p> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> run <span class="token parameter variable">-d</span> <span class="token parameter variable">--net</span> mq-net <span class="token punctuation">\</span>
+<span class="token parameter variable">-v</span> <span class="token variable">${<!-- --><span class="token environment constant">PWD</span>}</span>/mq3/rabbitmq.conf:/etc/rabbitmq/rabbitmq.conf <span class="token punctuation">\</span>
+<span class="token parameter variable">-v</span> <span class="token variable">${<!-- --><span class="token environment constant">PWD</span>}</span>/.erlang.cookie:/var/lib/rabbitmq/.erlang.cookie <span class="token punctuation">\</span>
+<span class="token parameter variable">-e</span> <span class="token assign-left variable">RABBITMQ_DEFAULT_USER</span><span class="token operator">=</span>lisi <span class="token punctuation">\</span>
+<span class="token parameter variable">-e</span> <span class="token assign-left variable">RABBITMQ_DEFAULT_PASS</span><span class="token operator">=</span><span class="token number">123456</span> <span class="token punctuation">\</span>
+<span class="token parameter variable">--name</span> mq3 <span class="token punctuation">\</span>
+<span class="token parameter variable">--hostname</span> mq3 <span class="token punctuation">\</span>
+<span class="token parameter variable">-p</span> <span class="token number">8073</span>:5672 <span class="token punctuation">\</span>
+<span class="token parameter variable">-p</span> <span class="token number">8083</span>:15672 <span class="token punctuation">\</span>
+rabbitmq:3.8-management
+</code></pre> 
+<p>这个命令与启动 <code>mq1</code> 和 <code>mq2</code> 的命令类似，只是容器名称、主机名和端口映射不同。</p> 
+<p><strong>步骤5：验证容器运行</strong></p> 
+<p>当这些命令成功执行后，可以使用以下命令来验证容器是否在运行：</p> 
+<pre><code class="prism language-bash"><span class="token function">docker</span> <span class="token function">ps</span>
+</code></pre> 
+<p>运行这个命令看到三个运行中的容器，它们代表了三个RabbitMQ节点。</p> 
+<p><img src="https://images2.imgbox.com/0e/4e/jQxazrHF_o.png" alt="img">这样，RabbitMQ 集群的节点已经成功启动，它们将能够相互通信和协同工作。</p> 
+<h4><a id="25__245"></a>2.5 测试集群</h4> 
+<p>成功启动了MQ集群之后，我们可以通过浏览器访问MQ的控制台，例如，访问 <code>mq1</code>：</p> 
+<p><img src="https://images2.imgbox.com/31/2f/C1VEQ11r_o.png" alt="img">此时就可以看到集群中的三个节点的信息。</p> 
+<p>然后，在<code>mq1</code>这个节点上添加一个 <code>simple.queue</code> 的队列：</p> 
+<p><img src="https://images2.imgbox.com/52/10/4MU4d0zZ_o.png" alt="img"><br> 此时，访问 <code>mq2</code> 和 <code>mq3</code> 的控制台，也能看到这个队列，并且能够看到这个队列是属于节点 <code>mq1</code> 的：</p> 
+<p><img src="https://images2.imgbox.com/b9/00/yCLtbZ4m_o.png" alt="img"><br> <img src="https://images2.imgbox.com/76/55/E4NskCCK_o.png" alt="img"></p> 
+<p>另外，我们可以尝试在 <code>simple.queue</code> 中新增一条消息：<br> <img src="https://images2.imgbox.com/e2/06/QIdfvPdT_o.png" alt="img"><br> 同样的，其他两个节点也可以看到这个消息：<br> <img src="https://images2.imgbox.com/3b/3c/6D0Smuq8_o.png" alt="img">如果此时，将 <code>mq1</code> 节点停止了：</p> 
+<p><img src="https://images2.imgbox.com/f4/9b/ZXNIWTF0_o.png" alt="img"></p> 
+<p>其中两个节点看到 <code>simple.queue</code> 的状态就变成了 <code>Down</code> ：<br> <img src="https://images2.imgbox.com/f7/f8/iNGBiiud_o.png" alt="img"></p> 
+<h3><a id="_269"></a>三、镜像模式</h3> 
+<p>在上面介绍的普通集群中，存在一个问题，即一旦创建队列的主机宕机，队列就会不可用，无法实现高可用性。为了解决这个问题，RabbitMQ提供了镜像集群方案。</p> 
+<h4><a id="31__273"></a>3.1 镜像模式的特征</h4> 
+<p><strong>镜像模式具有以下特征：</strong></p> 
+<ul><li>默认情况下，队列只保存在创建该队列的节点上。在镜像模式下，创建队列的节点被称为该队列的<strong>主节点</strong>，并且队列会被拷贝到集群中的其他节点，这些节点被称为该队列的<strong>镜像节点</strong>。</li><li>不同队列可以在集群中的任意节点上创建，因此不同队列的主节点可以不同。甚至，<strong>一个队列的主节点可能是另一个队列的镜像节点</strong>。</li><li>用户发送给队列的所有请求，例如发送消息或消息回执，默认都会在主节点上完成。如果请求在镜像节点上接收到，它也会路由到主节点以执行操作。镜像节点主要起到备份数据的作用。</li><li>当主节点接收到消费者的ACK（确认）时，所有镜像节点都会删除节点中的数据，以保持数据的一致性。</li></ul> 
+<p><strong>总结一下镜像模式的特点：</strong></p> 
+<ul><li>镜像队列结构是一主多从，即一个主节点和多个镜像节点。</li><li>所有操作都由主节点完成，然后同步到镜像节点。</li><li>如果主节点宕机，镜像节点可以接替成为新的主节点，确保高可用性。但在主从同步完成之前，宕机可能导致数据丢失。</li><li>镜像模式不具备负载均衡功能，因为所有操作都由主节点完成。然而，不同队列可以有不同的主节点，这可以提高系统的吞吐量。</li></ul> 
+<p>镜像模式通过数据同步和主节点切换提供了更高的可用性和数据冗余，适用于对数据可用性要求较高的应用场景。</p> 
+<h4><a id="32__291"></a>3.2 镜像模式的配置</h4> 
+<p>镜像模式的配置有三种模式，使用不同的参数来定义镜像策略：</p> 
+<ol><li> <p><strong>exactly 模式</strong>：使用 <code>ha-mode</code> 设置为 “exactly”，并使用 <code>ha-params</code> 设置队列的副本数量（count）。</p> 
+  <ul><li><code>ha-mode</code>: 设置为 “exactly”。</li><li><code>ha-params</code>: 队列的副本数量（count）。</li></ul> <p>这种模式下，可以精确地控制队列在集群中的副本数量（主节点和镜像节点的总数，count = 镜像数量 + 1）。例如，如果将 <code>ha-params</code> 设置为 2，表示每个队列将有两个副本，其中一个是主节点，另一个是镜像节点。如果集群中的节点数不足以维护所需的副本数量，队列将被镜像到所有节点。如果有足够多的节点，但其中的某些节点出现故障，将在其他节点上创建新的镜像。</p> </li><li> <p><strong>all 模式</strong>：使用 <code>ha-mode</code> 设置为 “all”。</p> 
+  <ul><li><code>ha-mode</code>: 设置为 “all”。</li><li><code>ha-params</code>: (none)</li></ul> <p>这种模式下，队列将在集群中的所有节点之间进行镜像。队列将镜像到任何新加入集群的节点。然而，要注意的是，将队列镜像到所有节点会增加额外的压力，包括网络I/O、磁盘I/O和磁盘空间的使用。因此，建议在使用此模式时谨慎设置，通常可以考虑使用 “exactly” 模式并根据需要设置适当的副本数量。</p> </li><li> <p><strong>nodes 模式</strong>：使用 <code>ha-mode</code> 设置为 “nodes”，并使用 <code>ha-params</code> 指定节点名称。</p> 
+  <ul><li><code>ha-mode</code>: 设置为 “nodes”。</li><li><code>ha-params</code>: <em>节点名称</em>，指定队列创建在哪些节点上。</li></ul> <p>在这种模式下，你可以明确指定队列应该创建在哪些节点上。如果指定的节点全部存在，队列将在这些节点上创建。如果指定的节点在集群中存在，但某些节点暂时不可用，队列将在当前客户端连接到的节点上创建。如果指定的节点在集群中不存在，可能会引发异常。</p> </li></ol> 
+<p>下面是设置这三种模式的命令：</p> 
+<h5><a id="321_exactly__318"></a>3.2.1 exactly 模式</h5> 
+<p>配置命令如下：</p> 
+<pre><code class="prism language-bash">rabbitmqctl set_policy ha-two <span class="token string">"^two\."</span> <span class="token string">'{"ha-mode":"exactly","ha-params":2,"ha-sync-mode":"automatic"}'</span>
+</code></pre> 
+<ul><li> <p><code>rabbitmqctl set_policy</code>：用于设置策略的RabbitMQ命令。</p> </li><li> <p><code>ha-two</code>：策略的名称，可以自定义。</p> </li><li> <p><code>"^two\."</code>：用正则表达式匹配队列的名称，这个策略将应用于所有以 “two.” 开头的队列。</p> </li><li> <pre><code>'{"ha-mode":"exactly","ha-params":2,"ha-sync-mode":"automatic"}'
+</code></pre> <p>：策略的具体配置，包括：</p> 
+  <ul><li><code>"ha-mode":"exactly"</code>：指定策略的模式，这里是 “exactly”，表示要设置队列的副本数量。</li><li><code>"ha-params":2</code>：指定副本的数量，这里设置为2，表示一个主副本和一个镜像副本。</li><li><code>"ha-sync-mode":"automatic"</code>：同步策略，这里设置为 “automatic”，表示新加入的镜像节点会同步主节点中的所有消息，以确保消息的一致性。</li></ul> </li></ul> 
+<h5><a id="322_all__342"></a>3.2.2 all 模式</h5> 
+<p>配置命令如下：</p> 
+<pre><code class="prism language-bash">rabbitmqctl set_policy ha-all <span class="token string">"^all\."</span> <span class="token string">'{"ha-mode":"all"}'</span>
+</code></pre> 
+<ul><li> <p><code>ha-all</code>：策略的名称，可以自定义。</p> </li><li> <p><code>"^all\."</code>：用正则表达式匹配队列的名称，这个策略将应用于所有以 “all.” 开头的队列。</p> </li><li> <pre><code>'{"ha-mode":"all"}'
+</code></pre> <p>：策略的具体配置，包括：</p> 
+  <ul><li><code>"ha-mode":"all"</code>：指定策略的模式，这里是 “all”，表示要将队列镜像到集群中的所有节点。</li></ul> </li></ul> 
+<h5><a id="323_nodes__362"></a>3.2.3 nodes 模式</h5> 
+<p>配置命令如下：</p> 
+<pre><code class="prism language-bash">rabbitmqctl set_policy ha-nodes <span class="token string">"^nodes\."</span> <span class="token string">'{"ha-mode":"nodes","ha-params":["rabbit@nodeA", "rabbit@nodeB"]}'</span>
+</code></pre> 
+<ul><li> <p><code>rabbitmqctl set_policy</code>：用于设置策略的RabbitMQ命令。</p> </li><li> <p><code>ha-nodes</code>：策略的名称，可以自定义。</p> </li><li> <p><code>"^nodes\."</code>：用正则表达式匹配队列的名称，这个策略将应用于所有以 “nodes.” 开头的队列。</p> </li><li> <pre><code>'{"ha-mode":"nodes","ha-params":["rabbit@nodeA", "rabbit@nodeB"]}'
+</code></pre> <p>：策略的具体配置，包括：</p> 
+  <ul><li><code>"ha-mode":"nodes"</code>：指定策略的模式，这里是 “nodes”，表示要指定队列创建在哪些节点上。</li><li><code>"ha-params":["rabbit@nodeA", "rabbit@nodeB"]</code>：指定了队列应该创建在哪些节点上，这里设置了节点名称列表，例如 “rabbit@nodeA” 和 “rabbit@nodeB”。如果指定的节点都存在，队列将在这些节点上创建。如果某些节点暂时不可用，队列将在当前客户端连接的可用节点上创建。如果指定的节点在集群中不存在，可能会引发异常。</li></ul> </li></ul> 
+<p>这些命令用于设置不同的镜像模式的策略，具体根据你的需求和集群拓扑来选择合适的策略配置。</p> 
+<h4><a id="33__387"></a>3.3 测试镜像模式</h4> 
+<p>下面是我将演示使用 exactly 模式的镜像。因为此时集群的节点数量为 3，因此这里的镜像数量就设置为 2，运行下面的命令：</p> 
+<pre><code class="prism language-sh"><span class="token comment"># 进入 mq1 容器内部</span>
+<span class="token function">docker</span> <span class="token builtin class-name">exec</span> <span class="token parameter variable">-it</span> mq1 <span class="token function">bash</span>
+rabbitmqctl set_policy ha-two <span class="token string">"^two\."</span> <span class="token string">'{"ha-mode":"exactly","ha-params":2,"ha-sync-mode":"automatic"}'</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/ec/ff/zK9FQHKD_o.png" alt="img"><br> 然后查看任意一个 MQ 节点的控制台，通过 <code>Admin</code> 选项中的 <code>Policies</code>，就可以看到刚才使用命令创建的策略了：</p> 
+<p><img src="https://images2.imgbox.com/f3/49/qPFzoS0k_o.png" alt="img"><br> 以后创建的所有以<code>two.</code>开头的队列都会采用这个策略。我们可以创建一个新的队列 <code>two.queue</code>：</p> 
+<p><img src="https://images2.imgbox.com/8f/e8/gaqe8U9i_o.png" alt="img"></p> 
+<p>可以发现这个队列的 <code>Node</code> 信息表明是属于 <code>mq1</code> 节点的，并且后面有一个 <code>+1</code>，将鼠标放在上面可以看到这个队列的镜像是 <code>mq3</code>：</p> 
+<p><img src="https://images2.imgbox.com/84/37/YJ8IbubV_o.png" alt="img">如果此时在这个队列中新增一条消息，在<code>mq2</code> 和 <code>mq3</code> 中都能看到，当然，这里的<code>mq2</code> 能看到的原因是引用了<code>mq1</code>。</p> 
+<p><img src="https://images2.imgbox.com/48/ce/TdKBkVN2_o.png" alt="img"><br> <img src="https://images2.imgbox.com/8d/3e/EZb6xwc9_o.png" alt="img"><br> 最后，我们模拟<code>mq1</code>宕机，停止 <code>mq1</code> 节点：</p> 
+<p><img src="https://images2.imgbox.com/aa/05/70q2Ytke_o.png" alt="img">此时发现，原来<code>tow.queue</code>的镜像节点<code>mq3</code> 成为了主节点，而剩下的一个 <code>mq2</code> 节点成为了镜像节点。<br> <img src="https://images2.imgbox.com/32/3a/1KCEDQMT_o.png" alt="img"></p> 
+<h3><a id="_416"></a>四、仲裁队列</h3> 
+<p>尽管镜像模式能够做主从复制，但是并不是强一致的，因此可能还是会导致数据的丢失。为了解决这个问题， RabbitMQ 3.8 版本以后引入了仲裁队列是，用来替代镜像队列，它同样是主从模式的，并且使用非常简单，底层的主从同步是基于 Raft 协议，具有强一致的特点。</p> 
+<h4><a id="41__420"></a>4.1 添加仲裁队列</h4> 
+<p>添加仲裁队列的方式非常简单，只需要在创建队列的使用指定队列的类型为 <code>Quorum</code> 即可，例如下面通过任意一个 MQ 节点的控制台创建仲裁队列：</p> 
+<p><img src="https://images2.imgbox.com/5d/22/76eCrG1k_o.png" alt="img"></p> 
+<p>然后发现，其他两个节点都成为了 <code>quorum</code> 的镜像节点了：<br> <img src="https://images2.imgbox.com/41/9a/CkFAyIYR_o.png" alt="img">并且可以查看这个队列的详细信息：<br> <img src="https://images2.imgbox.com/9a/1a/BlySu9HA_o.png" alt="img"></p> 
+<h4><a id="42__430"></a>4.2 测试仲裁队列</h4> 
+<p>此时，我们可以向 <code>quorum.queue</code> 队列中发送一条消息：</p> 
+<p><img src="https://images2.imgbox.com/52/8f/SsMp78BK_o.png" alt="img"><br> 另外两个节点也都可以看到这条消息：<br> <img src="https://images2.imgbox.com/57/02/hZGRHzc0_o.png" alt="img"></p> 
+<h4><a id="43__Spring_AMQP__438"></a>4.3 使用 Spring AMQP 声明仲裁队列</h4> 
+<ol><li> <p>使用 <code>@Bean</code> 注解声明仲裁队列</p> <pre><code class="prism language-java"><span class="token annotation punctuation">@Bean</span>
+<span class="token keyword">public</span> <span class="token class-name">Queue</span> <span class="token function">quorumQueue</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token class-name">QueueBuilder</span>
+            <span class="token punctuation">.</span><span class="token function">durable</span><span class="token punctuation">(</span><span class="token string">"quorum.queue"</span><span class="token punctuation">)</span> <span class="token comment">// 持久化</span>
+            <span class="token punctuation">.</span><span class="token function">quorum</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment">// 仲裁队列</span>
+            <span class="token punctuation">.</span><span class="token function">build</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token number">1234567</span>
+</code></pre> </li></ol> 
+<p>可以发现使用 Java 代码声明仲裁队列的方式也非常简单，只需要执行 <code>quorum</code> 方法即可。</p> 
+<ol><li>Spring AMQP 连接集群，只需要在<code>yal</code> 配置文件中修改为以下配置：</li></ol> 
+<pre><code class="prism language-yml"><span class="token key atrule">spring</span><span class="token punctuation">:</span>
+  <span class="token key atrule">rabbitmq</span><span class="token punctuation">:</span>
+    <span class="token key atrule">addresses</span><span class="token punctuation">:</span> 192.168.96.128<span class="token punctuation">:</span><span class="token number">8071</span><span class="token punctuation">,</span> 192.168.96.128<span class="token punctuation">:</span><span class="token number">8072</span><span class="token punctuation">,</span> 192.168.96.128<span class="token punctuation">:</span><span class="token number">8073</span> <span class="token comment"># MQ 集群</span>
+    <span class="token key atrule">username</span><span class="token punctuation">:</span> lisi
+    <span class="token key atrule">password</span><span class="token punctuation">:</span> <span class="token number">123456</span>
+    <span class="token key atrule">virtual-host</span><span class="token punctuation">:</span> /
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/94b55d70c3e4ef91f09ca4e935cf75f5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">基于Spark的淘宝数据分析学习案例</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/784eb98b6609acde0053973f87097305/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【Java集合进阶】list常见的方法和五种遍历方式&amp;数据结构</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

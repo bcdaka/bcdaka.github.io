@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>从源码分析 vllm &#43; Ray 的分布式推理流程 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/4fb5036a837719826e608699d8319beb/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="从源码分析 vllm &#43; Ray 的分布式推理流程">
+  <meta property="og:description" content="一、前言 随着 LLM 模型越来越大，单 GPU 已经无法加载一个模型。以 Qwen-14B-Chat 模型为例，模型权重大概 28GB，但是单个 NVIDIA A10 仅有 24GB 显存。如果想要在 A10 上部署 Qwen-14B-Chat 模型，我们需要将模型切分后部署到 2 个 A10 机器上，每个 A10 卡加载一半的模型，这种方式称之为分布式推理。
+社区涌现了很多支持分布式推理的框架如 vllm、deepspeed-mii，rtp-llm 等。本文选取了 vllm 框架，从源码角度分析 vllm &#43; Ray 如何实现 LLM 模型的分布式推理。
+二、在 K8s 中部署 vllm 分布式推理应用 2.1 模型准备 下载 Qwen-14B-Chat 到 OSS 中，并在集群中创建对应的 pv，pvc。pvc 名称为 llm-model。
+kubectl apply -f- &lt;&lt; EOFapiVersion: v1kind: Secretmetadata: name: oss-secretstringData: akId: ${your-accesskey-id} # 用于访问oss的AK akSecret: ${your-accesskey-secert} # 用于访问oss的SK---apiVersion: v1kind: PersistentVolumemetadata: name: llm-model labels: alicloud-pvname: llm-modelspec: capacity: storage: 30Gi accessModes: - ReadOnlyMany persistentVolumeReclaimPolicy: Retain csi: driver: ossplugin.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-12T10:34:02+08:00">
+    <meta property="article:modified_time" content="2024-06-12T10:34:02+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">从源码分析 vllm &#43; Ray 的分布式推理流程</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p></p> 
+<p></p> 
+<div class="img-center"> 
+ <img alt="从源码分析 vllm + Ray 的分布式推理流程" height="383" src="https://images2.imgbox.com/f6/53/tBbz7vLF_o.png" width="900"> 
+</div> 
+<h2>一、前言</h2> 
+<p>随着 LLM 模型越来越大，单 GPU 已经无法加载一个模型。以 Qwen-14B-Chat 模型为例，模型权重大概 28GB，但是单个 NVIDIA A10 仅有 24GB 显存。如果想要在 A10 上部署 Qwen-14B-Chat 模型，我们需要将模型切分后部署到 2 个 A10 机器上，每个 A10 卡加载一半的模型，这种方式称之为分布式推理。</p> 
+<p>社区涌现了很多支持分布式推理的框架如 vllm、deepspeed-mii，rtp-llm 等。本文选取了 vllm 框架，从源码角度分析 vllm + Ray 如何实现 LLM 模型的分布式推理。</p> 
+<p></p> 
+<h2>二、在 K8s 中部署 vllm 分布式推理应用</h2> 
+<h3>2.1 模型准备</h3> 
+<p>下载 Qwen-14B-Chat 到 OSS 中，并在集群中创建对应的 pv，pvc。pvc 名称为 <strong>llm-model</strong>。</p> 
+<pre><code>kubectl apply -f- &lt;&lt; EOF</code><code>apiVersion: v1</code><code>kind: Secret</code><code>metadata:</code><code>  name: oss-secret</code><code>stringData:</code><code>  akId: ${your-accesskey-id} # 用于访问oss的AK</code><code>  akSecret: ${your-accesskey-secert} # 用于访问oss的SK</code><code>---</code><code>apiVersion: v1</code><code>kind: PersistentVolume</code><code>metadata:</code><code>  name: llm-model</code><code>  labels:</code><code>    alicloud-pvname: llm-model</code><code>spec:</code><code>  capacity:</code><code>    storage: 30Gi </code><code>  accessModes:</code><code>    - ReadOnlyMany</code><code>  persistentVolumeReclaimPolicy: Retain</code><code>  csi:</code><code>    driver: ossplugin.csi.alibabacloud.com</code><code>    volumeHandle: model-oss</code><code>    nodePublishSecretRef:</code><code>      name: oss-secret</code><code>      namespace: default</code><code>    volumeAttributes:</code><code>      bucket: ${your-bucket-name}</code><code>      url: ${your-bucket-endpoint} # e.g. oss-cn-hangzhou.aliyuncs.com</code><code>      otherOpts: "-o umask=022 -o max_stat_cache_size=0 -o allow_other"</code><code>      path: "/"</code><code>---</code><code>apiVersion: v1</code><code>kind: PersistentVolumeClaim</code><code>metadata:</code><code>  name: llm-model</code><code>spec:</code><code>  accessModes:</code><code>    - ReadOnlyMany</code><code>  resources:</code><code>    requests:</code><code>      storage: 30Gi</code><code>  selector:</code><code>    matchLabels:</code><code>      alicloud-pvname: llm-model</code><code>EOF</code>
+</pre> 
+<h3>2.2 部署分布式 vllm 应用</h3> 
+<p></p> 
+<p></p> 
+<div class="img-center"> 
+ <img alt="" height="271" src="https://images2.imgbox.com/ee/18/pMlWr50z_o.png" width="542"> 
+</div> 
+<p>  </p> 
+<p><strong>1. 执行以下命令，部署 vllm 应用</strong></p> 
+<pre><code>kubectl apply -f- &lt;&lt;EOF</code><code>apiVersion: apps/v1 </code><code>kind: Deployment</code><code>metadata:</code><code>  name: vllm</code><code>  labels:</code><code>    app: vllm</code><code>spec:</code><code>  replicas: 2</code><code>  selector:</code><code>    matchLabels:</code><code>      app: vllm</code><code>  template:</code><code>    metadata:</code><code>      labels:</code><code>        app: vllm</code><code>    spec:</code><code>      affinity:</code><code>        podAntiAffinity:</code><code>          requiredDuringSchedulingIgnoredDuringExecution:</code><code>          - labelSelector:</code><code>              matchExpressions:</code><code>              - key: app</code><code>                operator: In</code><code>                values:</code><code>                - vllm</code><code>            topologyKey: kubernetes.io/hostname</code><code>      volumes:</code><code>      - name: model</code><code>        persistentVolumeClaim:</code><code>          claimName: llm-model</code><code>      containers:</code><code>      - name: vllm</code><code>        image: kube-ai-registry.cn-shanghai.cr.aliyuncs.com/kube-ai/vllm:0.4.1</code><code>        command:</code><code>        - "sh"</code><code>        - "-c"</code><code>        - "sleep 7d"</code><code>        ports:</code><code>        - containerPort: 8080</code><code>        readinessProbe:</code><code>          tcpSocket:</code><code>            port: 8080</code><code>          initialDelaySeconds: 30</code><code>          periodSeconds: 30</code><code>        resources:</code><code>          limits:</code><code>            nvidia.com/gpu: "1"</code><code>          requests:</code><code>            cpu: 4</code><code>            memory: 8Gi</code><code>            nvidia.com/gpu: "1"</code><code>        volumeMounts:</code><code>        - mountPath: /mnt/models</code><code>          name: model</code><code>EOF</code>
+</pre> 
+<p><strong>2. 执行以下命令，启动 vllm 应用</strong></p> 
+<p></p> 
+<ul><li> <p>启动 ray</p> 在 Pod1 上运行</li></ul> 
+<pre><code>ray start --head</code><code># 启动后，日志中会显示ray-head-address地址</code>
+</pre> 
+<p>        在 Pod2 上运行</p> 
+<pre><code># ray-head-address 设置为pod1日志中显示的ray-head-address地址</code><code>ray start --address=&lt;ray-head-address&gt; </code>
+</pre> 
+<ul><li> <p>运行如下命令，初始化 Pod2 上的本地模型</p> </li></ul> 
+<pre><code>python3 model_init.py</code>
+<code>from transformers import AutoModelForCausalLM, AutoTokenizer, AutoConfig</code>
+<code>config = AutoConfig.from_pretrained(</code><code>    "/mnt/models/Qwen-14B-Chat",</code><code>    trust_remote_code=True)</code><code>tokenizer = AutoTokenizer.from_pretrained("/mnt/models/Qwen-14B-Chat", trust_remote_code=True)</code>
+</pre> 
+<ul><li> <p>在 Pod1 上运行如下命令启动 qwen 模型</p> </li></ul> 
+<pre><code>python3 -m vllm.entrypoints.openai.api_server \</code><code>--port 8080 \</code><code>--trust-remote-code \</code><code>--served-model-name qwen \</code><code>--model /mnt/models/Qwen-14B-Chat \</code><code>--gpu-memory-utilization 0.95 \</code><code>--tensor-parallel-size 2</code></pre> 
+<p></p> 
+<ul><li> <p>登陆 pod1，访问应用</p> </li></ul> 
+<pre><code>kubectl -n &lt;your-namespace&gt; exec -it &lt;pod1-name&gt; bash</code>
+<code>curl -H "Content-Type: application/json" \</code><code>     http://localhost:8080/v1/chat/completions -X POST \</code><code>     -d '{"model": "qwen", "messages": [{"role": "user", "content": "你好"}], "max_tokens": 512, "temperature": 0.7, "top_p": 0.9, "seed": 10, "stop":["&lt;|endoftext|&gt;", "&lt;|im_end|&gt;", "&lt;|im_start|&gt;"]}'</code>
+</pre> 
+<h2>三、分布式推理总体流程分析</h2> 
+<p><strong>1.入口函数：vllm/entrypoints/openai/api_server.py main</strong></p> 
+<pre><code>if __name__ == "__main__":</code><code>    # 构建engine args</code><code>    engine_args = AsyncEngineArgs.from_cli_args(args)</code><code>    # 构建engine</code><code>    engine = AsyncLLMEngine.from_engine_args(</code><code>        engine_args, usage_context=UsageContext.OPENAI_API_SERVER)</code>
+<code>    openai_serving_chat = OpenAIServingChat(engine, served_model_names,</code><code>                                            args.response_role,</code><code>                                            args.lora_modules,</code><code>                                            args.chat_template)</code>
+<code>    openai_serving_completion = OpenAIServingCompletion(</code><code>        engine, served_model_names, args.lora_modules)</code>
+<code>    app.root_path = args.root_path</code><code>    uvicorn.run(app）</code>
+</pre> 
+<p><strong>2.构建 LLM engine</strong></p> 
+<pre><code>engine = AsyncLLMEngine.from_engine_args(</code><code>    engine_args, usage_context=UsageContext.OPENAI_API_SERVER)</code>
+<code>def from_engine_args():</code><code>    """Creates an async LLM engine from the engine arguments."""</code><code>    # Create the engine configs.</code><code>    engine_config = engine_args.create_engine_config()</code>
+<code>    # ray 集群初始化</code><code>    initialize_ray_cluster(engine_config.parallel_config)</code><code>    from vllm.executor.ray_gpu_executor import RayGPUExecutorAsync</code><code>    executor_class = RayGPUExecutorAsync</code>
+<code>    # Create the engine configs.</code><code>    engine_config = engine_args.create_engine_config()</code>
+<code>    # ray 集群初始化</code><code>    # 1. ray.init()</code><code>    # 2. 根据集群内gpu数量 &amp; tp并发度设置ray placement策略</code><code>    initialize_ray_cluster(engine_config.parallel_config)</code><code>    from vllm.executor.ray_gpu_executor import RayGPUExecutorAsync</code><code>    executor_class = RayGPUExecutorAsync</code>
+<code>    #  Create the async LLM engine.</code><code>    engine = cls(...) #创建一个AsyncLLMEngine实例</code><code>    # AsyncLLMEngine.__init__ -&gt; self._init_engine -&gt; _AsyncLLMEngine.__init__ -&gt; LLMEngine.__init__ -&gt; executor_class() 即调用RayGPUExecutorAsync.__init__</code></pre> 
+<p></p> 
+<p><strong>3.初始化 Ray 集群</strong></p> 
+<p>Ray Worker 初始化包括 Ray 集群初始化，Ray Worker 初始化。在 Ray worker 初始化时会分布式加载模型。</p> 
+<pre><code># RayGPUExecutorAsync 继承了RayGPUExecutor及ExecutorAsyncBase 类，初始化时会调用RayGPUExecutor的self._init_executor 方法</code><code>def _init_executor(self) -&gt; None:</code><code>    # Create the parallel GPU workers. 初始化workers 核心代码</code><code>    self._init_workers_ray(placement_group)</code>
+<code>def _init_workers_ray():</code><code>    # 定义worker, 是vllm.worker.worker模块里的Worker类</code><code>    # actor为RayWorkerWrapper类</code><code>    worker = ray.remote(</code><code>        num_cpus=0,</code><code>        num_gpus=num_gpus,</code><code>        scheduling_strategy=scheduling_strategy,</code><code>        **ray_remote_kwargs,</code><code>    )(RayWorkerWrapper).remote(</code><code>        worker_module_name="vllm.worker.worker",</code><code>        worker_class_name="Worker",</code><code>        trust_remote_code=self.model_config.trust_remote_code,</code><code>    )</code>
+<code>    # 在Ray Worker上依次执行如下方法</code><code>    self._run_workers("get_node_and_gpu_ids",</code><code>                                                use_dummy_driver=True)</code><code>    self._run_workers("update_environment_variables",</code><code>                      all_args=all_args_to_update_environment_variables)</code><code>    self._run_workers("init_worker", all_kwargs=init_worker_all_kwargs)</code><code>    self._run_workers("init_device")</code><code>    self._run_workers(</code><code>        "load_model",</code><code>        max_concurrent_workers=self.parallel_config.</code><code>        max_parallel_loading_workers,</code><code>    )</code>
+<code>def _run_workers():</code><code>    # Start the ray workers first.</code><code>    ray_worker_outputs = [</code><code>        # worker是前面定义的RayWorkerWrapper类, 继承RayWorkerWrapper类</code><code>        # 实际调用了RayWorkerWrapper.execute_method 并在远程实例上执行method方法</code><code>        worker.execute_method.remote(method, *worker_args,</code><code>                                     **worker_kwargs)</code><code>        for (worker, worker_args, worker_kwargs</code><code>             ) in zip(self.workers, all_worker_args, all_worker_kwargs)</code><code>    ]</code>
+<code>def init_worker():</code><code>    # worker_module_name 是 vllm.worker.worker 就是_init_workers_ray方法中传入的</code><code>    mod = importlib.import_module(self.worker_module_name)</code><code>    # Worker</code><code>    worker_class = getattr(mod, self.worker_class_name)</code><code>    self.worker = worker_class(*args, **kwargs)</code><code>    # Worker.__init__ -&gt; ModelRunner.__init__</code>
+<code>def init_device():</code><code>    # 初始化分布式推理的机器信息</code><code>    """Initialize the distributed environment."""</code><code>    init_distributed_environment(parallel_config.world_size, rank,</code><code>                                 distributed_init_method, local_rank)</code>
+<code>def load_model():</code><code>    self.model_runner.load_model() # ModelRunner.load_model() -&gt; vllm.model_executor.model_loader.loader.load_model</code>
+</pre> 
+<p>执行完 load_model()的预期日志输出如下，可以看到两个 pod，每个加载了 13.2845 GB，即一半的模型。</p> 
+<pre><code>INFO 04-26 09:39:46 model_runner.py:173] Loading model weights took 13.2845 GB</code><code>(RayWorkerWrapper pid=3327, ip=192.168.12.132) INFO 04-26 09:39:51 model_runner.py:173] Loading model weights took 13.2845 GB</code>
+</pre> 
+<p><strong>4.对外提供服务</strong></p> 
+<p>创建 OpenAIServingChat 以及 OpenAIServingCompletion 实例，启动 uvicorn 对外提供服务。</p> 
+<pre><code>@app.post("/v1/chat/completions")</code><code>openai_serving_chat = OpenAIServingChat(engine, served_model_names,</code><code>                                        args.response_role,</code><code>                                        args.lora_modules,</code><code>                                        args.chat_template)</code><code>@app.post("/v1/completions")</code><code>openai_serving_completion = OpenAIServingCompletion(</code><code>    engine, served_model_names, args.lora_modules)</code>
+<code>app.root_path = args.root_path</code><code>uvicorn.run(app）</code>
+</pre> 
+<h3>3.1 分布式推理过程</h3> 
+<p>当启动参数--tensor-parallel-size &gt; 1 时，会自动触发 ray 分布式部署。</p> 
+<p><strong>1. 构建 LLM engine 时会对 Ray 集群进行初始化</strong></p> 
+<pre><code># ray 集群初始化</code><code>initialize_ray_cluster(engine_config.parallel_config)</code>
+</pre> 
+<p>parallel_config 的配置如下，pp=1，tp=2，world_size=2</p> 
+<pre><code>{'pipeline_parallel_size': 1, 'tensor_parallel_size': 2, 'worker_use_ray': True, 'max_parallel_loading_workers': None, 'disable_custom_all_reduce': False, 'tokenizer_pool_config': None, 'ray_workers_use_nsight': False, 'placement_group': None, 'world_size': 2}</code></pre> 
+<p>初始化时会为 worker 进程创建 placement_group。</p> 
+<p>1）获取 ray cluster 中所有 gpu 的数量。</p> 
+<p>2）根据 world size 申请 gpu placement_group_specs = ([{"GPU": 1}] * parallel_config.world_size)。</p> 
+<p>3）创建 placement_group，ray 会根据 placement_group 在对应 node 上启动 actor。</p> 
+<p></p> 
+<p><strong>2. 在每个 worker 上执行 get_node_and_gpu_ids 方法</strong></p> 
+<pre><code># 获取node及node上分配的gpu卡信息</code><code>def get_node_and_gpu_ids(self) -&gt; Tuple[str, List[int]]:</code><code>    node_id = ray.get_runtime_context().get_node_id()</code><code>    gpu_ids = ray.get_gpu_ids()</code><code>    return node_id, gpu_ids</code>
+</pre> 
+<p><strong>3. 在每个 worker 上执行 update_environment_variables</strong></p> 
+<pre><code># 第二步获取的worker_node以及gpu信息</code><code>worker_node_and_gpu_ids = self._run_workers("get_node_and_gpu_ids",</code><code>                                                    use_dummy_driver=True)</code>
+<code># Set environment variables for the driver and workers.</code><code>all_args_to_update_environment_variables = [({<!-- --></code><code>            "CUDA_VISIBLE_DEVICES":</code><code>            ",".join(map(str, node_gpus[node_id])),</code><code>            "VLLM_INSTANCE_ID":</code><code>            VLLM_INSTANCE_ID,</code><code>            "VLLM_TRACE_FUNCTION":</code><code>            os.getenv("VLLM_TRACE_FUNCTION", "0"),</code><code>        }, ) for (node_id, _) in worker_node_and_gpu_ids]</code></pre> 
+<p></p> 
+<p><strong>4. 在每个 worker 上执行 init_device 方法</strong></p> 
+<pre><code># worker的启动参数</code><code>init_worker_all_kwargs = []</code><code># worker_node_and_gpu_ids 是第二步获取的worker上的gpu信息</code><code>for rank, (node_id, _) in enumerate(worker_node_and_gpu_ids):</code><code>    local_rank = node_workers[node_id].index(rank)</code><code>    init_worker_all_kwargs.append(</code><code>        collect_arg_helper_func(</code><code>            model_config=self.model_config,</code><code>            parallel_config=self.parallel_config,</code><code>            scheduler_config=self.scheduler_config,</code><code>            device_config=self.device_config,</code><code>            cache_config=self.cache_config,</code><code>            load_config=self.load_config,</code><code>            local_rank=local_rank,</code><code>            rank=rank,</code><code>            distributed_init_method=distributed_init_method,</code><code>            lora_config=self.lora_config,</code><code>            vision_language_config=self.vision_language_config,</code><code>            is_driver_worker=rank == 0,</code><code>        ))</code>
+<code>def init_device(self) -&gt; None:</code><code>    if self.device_config.device.type == "cuda":</code><code>        # torch.distributed.all_reduce does not free the input tensor until</code><code>        # the synchronization point. This causes the memory usage to grow</code><code>        # as the number of all_reduce calls increases. This env var disables</code><code>        # this behavior.</code><code>        # Related issue:</code><code>        # https://discuss.pytorch.org/t/cuda-allocation-lifetime-for-inputs-to-distributed-all-reduce/191573</code><code>        os.environ["TORCH_NCCL_AVOID_RECORD_STREAMS"] = "1"</code>
+<code>        # This env var set by Ray causes exceptions with graph building.</code><code>        os.environ.pop("NCCL_ASYNC_ERROR_HANDLING", None)</code><code>        self.device = torch.device(f"cuda:{self.local_rank}")</code><code>        torch.cuda.set_device(self.device)</code>
+<code>        _check_if_gpu_supports_dtype(self.model_config.dtype)</code><code>        torch.cuda.empty_cache()</code><code>        self.init_gpu_memory = torch.cuda.mem_get_info()[0]</code><code>    else:</code><code>        raise RuntimeError(</code><code>            f"Not support device type: {self.device_config.device}")</code><code>    # Initialize the distributed environment.</code><code>    init_worker_distributed_environment(self.parallel_config, self.rank,</code><code>                                        self.distributed_init_method,</code><code>                                        self.local_rank)</code><code>    # Set random seed.</code><code>    set_random_seed(self.model_config.seed)</code></pre> 
+<p></p> 
+<p>核心方法 init_worker_distributed_environment 用于<strong>构建分布式集群的 world 信息，类似 horovod 及 deepspeed 框架中的 world info。</strong></p> 
+<p></p> 
+<p>该方法参数如下：</p> 
+<p>work1: self.rank=0, self.local_rank=0, self.distributed_init_method="tcp://192.168.12.120:42167" (ray master)</p> 
+<pre><code>{'pipeline_parallel_size': 1, 'tensor_parallel_size': 2, 'worker_use_ray': True, 'max_parallel_loading_workers': None, 'disable_custom_all_reduce': False, 'tokenizer_pool_config': None, 'ray_workers_use_nsight': False, 'placement_group': &lt;ray.util.placement_group.PlacementGroup object at 0x7fdeaa896ce0&gt;, 'world_size': 2}, {'id': PlacementGroupID(51489eb26a9335f31ed1bdb4eace04000000), 'bundle_cache': [{'GPU': 1.0}, {'GPU': 1.0}]}, self.rank=0, tcp://192.168.12.120:42167, self.local_rank=0</code></pre> 
+<p></p> 
+<p>work2: self.rank=1,</p> 
+<p>self.local_rank=0,self.distributed_init_method="tcp://192.168.12.120:42167"</p> 
+<pre><code>{'pipeline_parallel_size': 1, 'tensor_parallel_size': 2, 'worker_use_ray': True, 'max_parallel_loading_workers': None, 'disable_custom_all_reduce': False, 'tokenizer_pool_config': None, 'ray_workers_use_nsight': False, 'world_size': 2}, self.rank=1, tcp://192.168.12.120:42167, self.local_rank=0</code></pre> 
+<p></p> 
+<p>self.rank 全局递增，self.local_rank 是指在一个 pod 内第几个 gpu。</p> 
+<p></p> 
+<p><strong>5. 在每个 worker 执行 load_model 方法</strong></p> 
+<p>load_model 用于加载分布式模型，比较复杂，在下面的章节中单独介绍。</p> 
+<p></p> 
+<h3>3.2 分布式模型加载流程</h3> 
+<p><strong>在每个 worker 执行 load_model 方法</strong></p> 
+<pre><code>def load_model():</code><code>    self.model_runner.load_model() </code>
+<code># ModelRunner.load_model() -&gt; vllm.model_executor.model_loader.loader.load_model</code><code>def load_model(self) -&gt; None:</code><code>    with CudaMemoryProfiler() as m:</code><code>         # get_model 获取模型</code><code>        self.model = get_model(</code><code>            model_config=self.model_config,</code><code>            device_config=self.device_config,</code><code>            load_config=self.load_config,</code><code>            lora_config=self.lora_config,</code><code>            vision_language_config=self.vision_language_config,</code><code>            parallel_config=self.parallel_config,</code><code>            scheduler_config=self.scheduler_config,</code><code>        )</code>
+<code>    self.model_memory_usage = m.consumed_memory</code><code>    logger.info(f"Loading model weights took "</code><code>                f"{self.model_memory_usage / float(2**30):.4f} GB")</code>
+<code># get_model -&gt; loader.load_model -&gt; DefaultModelLoader.load_model</code><code>def load_model(self, *, model_config: ModelConfig,</code><code>               device_config: DeviceConfig,</code><code>               lora_config: Optional[LoRAConfig],</code><code>               vision_language_config: Optional[VisionLanguageConfig],</code><code>               parallel_config: ParallelConfig,</code><code>               scheduler_config: SchedulerConfig) -&gt; nn.Module:</code><code>    with set_default_torch_dtype(model_config.dtype):</code><code>        with torch.device(device_config.device):</code><code>            """Initialize a model with the given configurations."""</code><code>            # 初始化模型</code><code>            model = _initialize_model(model_config, self.load_config,</code><code>                                      lora_config, vision_language_config)</code>
+<code>        # 调用对应model的load_weights方法</code><code>        model.load_weights(</code><code>            self._get_weights_iterator(model_config.model,</code><code>                                       model_config.revision,</code><code>                                       fall_back_to_pt=getattr(</code><code>                                           model,</code><code>                                           "fall_back_to_pt_during_load",</code><code>                                           True)), )</code><code>        for _, module in model.named_modules():</code><code>            linear_method = getattr(module, "linear_method", None)</code><code>            if linear_method is not None:</code><code>                linear_method.process_weights_after_loading(module)</code><code>            if hasattr(module, "process_weights_after_loading"):</code><code>                module.process_weights_after_loading()</code><code>    return model.eval()</code>
+<code># 根据model config找到具体是什么模型</code><code>def _initialize_model(</code><code>        model_config: ModelConfig, load_config: LoadConfig,</code><code>        lora_config: Optional[LoRAConfig],</code><code>        vision_language_config: Optional[VisionLanguageConfig]) -&gt; nn.Module:</code><code>    """Initialize a model with the given configurations."""</code><code>    # Qwen-7B-Chat/config.json中architecture字段</code><code>    model_class = get_model_architecture(model_config)[0]</code><code>    linear_method = _get_linear_method(model_config, load_config)</code>
+<code>    return model_class(config=model_config.hf_config,</code><code>                       linear_method=linear_method,</code><code>                       **_get_model_initialization_kwargs(</code><code>                           model_class, lora_config, vision_language_config))</code>
+<code># model_class 是 &lt;class 'vllm.model_executor.models.qwen.QWenLMHeadModel'&gt;</code>
+</pre> 
+<p><strong>model.load_weights 即调用 QwenLMHeadModel 的 load_weights 方法</strong></p> 
+<pre><code># QWenLMHeadModel.load_weights</code><code>def load_weights(self, weights: Iterable[Tuple[str, torch.Tensor]]):</code><code>    stacked_params_mapping = [</code><code>        # (param_name, shard_name, shard_id)</code><code>        ("gate_up_proj", "w2", 0),</code><code>        ("gate_up_proj", "w1", 1),</code><code>    ]</code>
+<code>    # 模型每层权重及其名称</code><code>    # self.named_parameters即model.named_parameters()</code><code>    params_dict = dict(self.named_parameters())</code>
+<code>    for name, loaded_weight in weights:</code><code>        # name: transformer.h.27.mlp.c_proj.weight </code><code>        # loaded_weight: tensor(xxx)</code><code>        if "rotary_emb.inv_freq" in name:</code><code>            continue</code><code>        for (param_name, weight_name, shard_id) in stacked_params_mapping:</code><code>            if weight_name not in name:</code><code>                continue</code><code>            # 如果在stacked_params_mapping里，就需要把shard_name改为param_name</code><code>            # 如 name为 transformer.h.0.mlp.w1.weight，则name需要改为 transformer.h.0.mlp.gate_up_proj.weight</code><code>            name = name.replace(weight_name, param_name)</code><code>            # Skip loading extra bias for GPTQ models.</code><code>            if name.endswith(".bias") and name not in params_dict:</code><code>                continue</code><code>            param = params_dict[name]</code><code>            weight_loader = param.weight_loader</code><code>            weight_loader(param, loaded_weight, shard_id)</code><code>            break</code><code>        else:</code><code>            # python的for-else语法，到达这里意味着没有执行循环中的 break 语句</code><code>            # Skip loading extra bias for GPTQ models.</code><code>            if name.endswith(".bias") and name not in params_dict:</code><code>                continue</code><code>            param = params_dict[name]</code><code>            # 根据name找到对应的weight_loader方法</code><code>            weight_loader = getattr(param, "weight_loader",</code><code>                                    default_weight_loader)</code><code>            weight_loader(param, loaded_weight)</code>
+</pre> 
+<p><strong>模型层权重及其 weight_loader 方法</strong></p> 
+<pre><code># param，weight_loader</code>
+<code>lm_head.weight, weight_loader &lt;bound method VocabParallelEmbedding.weight_loader of ParallelLMHead()&gt;</code><code> transformer.h.0.attn.c_attn.weight, weight_loader &lt;bound method QKVParallelLinear.weight_loader of QKVParallelLinear()&gt;</code><code> transformer.h.0.attn.c_proj.weight, weight_loader &lt;bound method RowParallelLinear.weight_loader of RowParallelLinear()&gt;</code><code> transformer.h.0.ln_1.weight, weight_loader &lt;function default_weight_loader at 0x7f66201ee0e0&gt;</code><code> transformer.h.0.ln_2.weight, weight_loader &lt;function default_weight_loader at 0x7f66201ee0e0&gt;</code><code> transformer.h.0.mlp.c_proj.weight, weight_loader &lt;bound method RowParallelLinear.weight_loader of RowParallelLinear()&gt;</code><code> transformer.h.0.mlp.gate_up_proj.weight, weight_loader &lt;bound method MergedColumnParallelLinear.weight_loader of MergedColumnParallelLinear()&gt;</code><code> transformer.ln_f.weight, weight_loader &lt;function default_weight_loader at 0x7f66201ee0e0&gt;</code><code> transformer.wte.weight, weight_loader &lt;bound method VocabParallelEmbedding.weight_loader of VocabParallelEmbedding()&gt;</code></pre> 
+<p></p> 
+<p>模型的每一层都有自己的分布式加载方法，如 transformer.h.0.attn.c_proj.weight 这个权重使用了 RowParallelLinear.weight_loader 方法。</p> 
+<pre><code>class RowParallelLinear(torch.nn.Module):</code><code>    def weight_loader(self, param: Parameter, loaded_weight: torch.Tensor):</code><code>      # 获取worker的tp_rank，根据tp_rank计算需要加载的权重范围</code><code>      tp_rank = get_tensor_model_parallel_rank()</code><code>      input_dim = getattr(param, "input_dim", None)</code><code>      param_data = param.data</code><code>      if input_dim is not None:</code><code>          shard_size = param_data.shape[input_dim]</code><code>          start_idx = tp_rank * shard_size</code><code>          loaded_weight = loaded_weight.narrow(input_dim, start_idx,</code><code>                                               shard_size)</code><code>      assert param_data.shape == loaded_weight.shape</code><code>      param_data.copy_(loaded_weight)</code>
+</pre> 
+<p>模型切分采用了 Megatron-LM 算法，详情可参考论文<strong>【文末查看】</strong></p> 
+<p></p> 
+<h2>四、分布式模型切分算法 Megatron-LM</h2> 
+<h3>4.1 分布式节点通信：AllReduce</h3> 
+<blockquote> 
+ <p>https://docs.nvidia.com/deeplearning/nccl/user-guide/docs/usage/collectives.html#</p> 
+</blockquote> 
+<p></p> 
+<p>1）Reduce：将每个 GPU 的计算结果汇总到某个特定的 GPU 上</p> 
+<p></p> 
+<p></p> 
+<div class="img-center"> 
+ <img alt="" height="159" src="https://images2.imgbox.com/93/43/jWXKrwJy_o.png" width="519"> 
+</div> 
+<p></p> 
+<p>2）Broadcast：将某个 GPU 的数据同步到所有 GPU 上</p> 
+<p></p> 
+<p></p> 
+<div class="img-center"> 
+ <img alt="" height="168" src="https://images2.imgbox.com/c3/56/Mf30J0YC_o.png" width="522"> 
+</div> 
+<p></p> 
+<p>3）AllReduce = Reduce + Broadcast</p> 
+<p></p> 
+<p></p> 
+<div class="img-center"> 
+ <img alt="" height="161" src="https://images2.imgbox.com/13/55/V4OoTLzj_o.png" width="511"> 
+</div> 
+<p></p> 
+<h3>4.2 Transformer 切分</h3> 
+<p>Transformer 层由一个自注意力模块（self-attention block）后跟一个两层的多层感知机（MLP）实现的。</p> 
+<p></p> 
+<div class="img-center"> 
+ <img alt="" height="457" src="https://images2.imgbox.com/cf/26/c3DLAqR0_o.png" width="214"> 
+</div> 
+<p><strong>MLP</strong></p> 
+<p></p> 
+<div class="img-center"> 
+ <img alt="" height="253" src="https://images2.imgbox.com/54/7e/934v3S3y_o.png" width="511"> 
+</div> 
+<p>如图所示，MLP 由两个部分组成，GeLU 是非线形函数，</p> 
+<p></p> 
+<div class="img-center"> 
+ <img alt="" height="30" src="https://images2.imgbox.com/b6/4c/87F7tjBa_o.png" width="611"> 
+</div> 
+<p>即所以不能采用行并行，需要采用列并行。</p> 
+<p></p> 
+<div class="img-center"> 
+ <img alt="" height="30" src="https://images2.imgbox.com/76/9a/5ZWKsUzG_o.png" width="717"> 
+</div> 
+<p>此时，B 需要采用行并行。如果 B 采用列并行的话，则需要进行一次 all-reduce 同步。</p> 
+<p></p> 
+<div class="img-center"> 
+ <img alt="" height="65" src="https://images2.imgbox.com/2b/b3/QPmOtuAX_o.png" width="653"> 
+</div> 
+<p>Dropout 是按照一定比例随机丢弃一些参数，因此 Dropout 前必须进行一次 all-reduce 同步。</p> 
+<p><strong>Self-Attention</strong></p> 
+<p></p> 
+<div class="img-center"> 
+ <img alt="" height="254" src="https://images2.imgbox.com/88/f7/h11P3D97_o.png" width="436"> 
+</div> 
+<p>multi-head attention 机制中每个 attention 都是独立的 QKV 矩阵，每个 GPU 上计算部分 attention 就行。因此要求 attention head 可以被 tp_size 整除。否则会报错如下（Qwen-14b 设置 tp=3）:</p> 
+<pre><code>ValueError: Total number of attention heads (40) must be divisible by tensor parallel size (3).</code></pre> 
+<p></p> 
+<p>同样，Dropout 前需要进行一次 all-reduce 操作。</p> 
+<p></p> 
+<p></p> 
+<div class="img-center"> 
+ <img alt="" height="298" src="https://images2.imgbox.com/94/a0/MH2X9RxO_o.png" width="467"> 
+</div> 
+<p></p> 
+<p>因此，一次 Transformer 推理需要进行 2 次 all-reduce 操作，qwen-14b 中 transformer 有 40 个，一次推理需要执行 81 一个 all-reduce 操作。跨节点部署推理服务时，网络通信将会是比较大的开销。</p> 
+<p></p> 
+<blockquote> 
+ <p>本文重点分析 vllm 如何实现分布式推理，具体 vllm 的推理过程可参考下方【01 推理过程解析】</p> 
+</blockquote> 
+<p></p> 
+<h2 style="background-color:transparent;">参考链接</h2> 
+<p>[01] 推理过程解析</p> 
+<p><a href="https://xie.infoq.cn/link?target=https%3A%2F%2Fzhuanlan.zhihu.com%2Fp%2F649974825" rel="nofollow" title="https://zhuanlan.zhihu.com/p/649974825">https://zhuanlan.zhihu.com/p/649974825</a></p> 
+<p>[02] 【深度学习】【分布式训练】一文捋顺千亿模型训练技术：流水线并行、张量并行和 3D 并行</p> 
+<p><a href="https://xie.infoq.cn/link?target=https%3A%2F%2Fzhuanlan.zhihu.com%2Fp%2F617087561" rel="nofollow" title="https://zhuanlan.zhihu.com/p/617087561">https://zhuanlan.zhihu.com/p/617087561</a></p> 
+<p>[03] Hugging Face 高效训练技术四：多 GPU 分布式训练（DP、PP、TP 、ZeRO）_zero-dp</p> 
+<p><a href="https://xie.infoq.cn/link?target=https%3A%2F%2Fblog.csdn.net%2Fqq_56591814%2Farticle%2Fdetails%2F134099476" title="https://blog.csdn.net/qq_56591814/article/details/134099476">https://blog.csdn.net/qq_56591814/article/details/134099476</a></p> 
+<p>[04] Megatron-LM: Training Multi-Billion Parameter Language Models Using Model Parallelism</p> 
+<p><a href="https://xie.infoq.cn/link?target=https%3A%2F%2Farxiv.org%2Fpdf%2F1909.08053" rel="nofollow" title="https://arxiv.org/pdf/1909.08053">https://arxiv.org/pdf/1909.08053</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/89440e4eea094ec132007fd61776e07b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C&#43;&#43;中的备忘录模式</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/63de9f712c67f471742615258d729433/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">SpringBoot试题集合</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

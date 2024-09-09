@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【开发环境】PX4无人机实物使用视觉或运动捕捉系统进行位置估计 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/7dcc552c02d161252fc494aedadc66aa/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【开发环境】PX4无人机实物使用视觉或运动捕捉系统进行位置估计">
+  <meta property="og:description" content="PX4无人机实物使用视觉或运动捕捉系统进行位置估计 PX4中关于外部位置信息的MAVLink话题参考坐标系EKF2调整配置参数调整EKF2_EV_DELAY参数 与ROS共同使用将OptiTrack MoCap系统提供的姿态数据导入ROSMotive MoCap软件的步骤将姿态数据导入ROS重新映射姿态数据 将姿态数据转发到PX4PX4和ROS的参考坐标系 飞行测试 视觉惯性里程计（VIO）和运动捕捉系统（MoCap）允许无人机在全局位置信息不可用或不可靠时导航（例如在室内或在桥下飞行等）。
+VIO和MoCap都根据视觉信息确定车辆的位置和姿态，它们之间的主要区别在于坐标系视角：
+VIO使用机载传感器从无人机的视角获取姿态数据。
+MoCap使用机外摄像机系统来获取3D空间中的无人机姿态数据。
+来自VIO和MoCap的姿态数据都可用于更新基于PX4的自动驾驶仪的局部位置估计（相对于局部原点），并且还可选择性地融合到无人机姿态估计中。此外，如果外部姿态系统也提供线速度测量数据，则该数据可以用于改进状态估计（线速度测量数据的融合仅由EKF2算法支持）。
+这篇文章介绍了如何配置基于PX4飞控的无人机系统，通过ROS或其他MAVLink系统从MoCap/VIO系统获取数据。主要介绍如何设置像VICON和Optitrack这样的MoCap系统，以及像ROVIO、SVO和PTAM这样的VIO系统。
+PX4中关于外部位置信息的MAVLink话题 PX4使用以下MAVLink话题获取外部位置信息，并将其映射到uORB话题。
+MAVLink话题名称uORB话题VISION_POSITION_ESTIMATEvehicle_visual_odometryODOMETRY (frame_id = MAV_FRAME_LOCAL_FRD)vehicle_visual_odometryATT_POS_MOCAPvehicle_mocap_odometryODOMETRY (frame_id = MAV_FRAME_MOCAP_NED)vehicle_mocap_odometry EKF2状态估计器只能订阅vehicle_visual_odometry话题获取外部位置信息，因此只能处理前两条话题，如果使用MoCap系统则必须生成这些话题才能够使用EKF2。vehicle_visual_odometry话题是唯一一个可以向PX4发送线速度测量数据的话题。
+话题的传输频率应在30Hz和50Hz之间。如果信息速率过低，EKF2将不会熔断外部视觉信息。
+PX4当前不支持以下MAVLink视觉话题：GLOBAL_vision_POSITION_ESTIMATE、vision_SPEED_ESTIMATE、VICON_POSTION_ESTIMATE。
+参考坐标系 PX4将FRD（X向前、Y向右和Z向下）用于局部机体坐标系以及参考坐标系。
+当使用磁力计的航向时，PX4参考系的X轴将与北方对齐，因此它被称为NED（X North，Y East，Z Down）。
+PX4估计器的参考帧的航向和外部姿态估计的航向在大多数情况下将不匹配。因此，外部姿态估计的参考帧以不同的方式命名，称为MAV_frame_LOCAL_FRD。
+根据参考系的来源，在发送MAVLink Vision/MoCap话题之前，您需要对姿态估计应用自定义变换。这对于更改姿态估计的父帧和子帧的方向是必要的，以使其符合PX4约定。可以根据MAVROS odom插件了解必要的转换。
+例如，如果使用Optitrack坐标系，则局部坐标系位于水平面上（x前和z右），而y轴垂直并指向上。一个简单的技巧是交换轴以获得NED坐标系。
+如果x_{mav}、y_{mav}和z_{mav}是通过MAVLink作为位置反馈发送的坐标，则我们获得：
+x_{mav} = x_{mocap} y_{mav} = z_{mocap} z_{mav} = - y_{mocap} 对于无人机姿态方向的坐标系变换，保持四元数的标量部分w相同，并以相同的方式交换矢量部分x、y和z。你可以在每个系统中应用这个技巧-如果你需要获得NED坐标系，请查看你的MoCap输出并相应地交换轴。
+EKF2调整配置参数 必须设置以下参数才能将外部位置信息与EKF2一起使用。
+参数名称外部位置估计设置EKF2_AID_MASK根据融合模型需求设置视觉位置融合、视觉速度融合、视觉偏航角融合和外部视觉欧拉角融合。EKF2_HGT_MODE设置为使用视觉作为海拔估计的主要来源。EKF2_EV_DELAY设置为测量的时间戳与实际捕获时间之间的差值。EKF2_EV_POS_X, EKF2_EV_POS_Y, EKF2_EV_POS_Z设置视觉传感器（或MoCap标记）相对于无人机机体坐标系的位置。 调整EKF2_EV_DELAY参数 EKF2_EV_DELAY参数是相对于IMU测量的视觉位置估计器延迟。
+或者换句话说，这是视觉系统时间戳和IMU时钟（EKF2的基本时钟）记录的实际捕获时间之间的差异。
+从技术上讲，如果MoCap和ROS计算机之间有正确的时间戳（而不仅仅是到达时间）和时间同步（例如NTP），则可以将其设置为0。事实上，这需要一些经验调整，因为整个MoCap到PX4的通信链路中的延迟是需要特殊设置的。使用完全同步的通信链路来设置系统是罕见的！
+通过检查IMU速率和EV速率之间的偏移，可以从日志中获得延迟的粗略估计。要启用EV速率的日志记录，请在参数设置中勾选SDLOG_PROFILE参数的第7选项（计算机视觉和禁用）。
+可以通过调整参数来进一步降低该值，以找到在动态机动过程中产生最低EKF的值。
+与ROS共同使用 ROS不需要用于提供外部姿态信息，但强烈建议使用，因为它已经与VIO和MoCap系统进行了良好的集成。
+将OptiTrack MoCap系统提供的姿态数据导入ROS VIO和MoCap系统有不同的获取姿态数据的方式，并且有自己的设置和话题。
+下面介绍了OptiTrack MoCap系统的设置。对于其他系统，请参阅供应商设置文档。
+OptiTrack官网
+以下步骤说明如何将OptiTrack系统的位置估计值输入PX4。假设MoCap系统已校准。
+校准过程的教程">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-13T16:03:25+08:00">
+    <meta property="article:modified_time" content="2024-06-13T16:03:25+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【开发环境】PX4无人机实物使用视觉或运动捕捉系统进行位置估计</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>PX4无人机实物使用视觉或运动捕捉系统进行位置估计</h4> 
+ <ul><li><ul><li><a href="#PX4MAVLink_14" rel="nofollow">PX4中关于外部位置信息的MAVLink话题</a></li><li><a href="#_47" rel="nofollow">参考坐标系</a></li><li><a href="#EKF2_69" rel="nofollow">EKF2调整配置参数</a></li><li><ul><li><a href="#EKF2_EV_DELAY_84" rel="nofollow">调整EKF2_EV_DELAY参数</a></li></ul> 
+   </li><li><a href="#ROS_102" rel="nofollow">与ROS共同使用</a></li><li><ul><li><a href="#OptiTrack_MoCapROS_106" rel="nofollow">将OptiTrack MoCap系统提供的姿态数据导入ROS</a></li><li><ul><li><a href="#Motive_MoCap_118" rel="nofollow">Motive MoCap软件的步骤</a></li><li><a href="#ROS_130" rel="nofollow">将姿态数据导入ROS</a></li><li><a href="#_144" rel="nofollow">重新映射姿态数据</a></li></ul> 
+    </li><li><a href="#PX4_150" rel="nofollow">将姿态数据转发到PX4</a></li><li><a href="#PX4ROS_172" rel="nofollow">PX4和ROS的参考坐标系</a></li></ul> 
+   </li><li><a href="#_210" rel="nofollow">飞行测试</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<p>视觉惯性里程计（VIO）和运动捕捉系统（MoCap）允许无人机在全局位置信息不可用或不可靠时导航（例如在室内或在桥下飞行等）。</p> 
+<p>VIO和MoCap都根据视觉信息确定车辆的位置和姿态，它们之间的主要区别在于坐标系视角：</p> 
+<ul><li> <p>VIO使用机载传感器从无人机的视角获取姿态数据。</p> </li><li> <p>MoCap使用机外摄像机系统来获取3D空间中的无人机姿态数据。</p> </li></ul> 
+<p>来自VIO和MoCap的姿态数据都可用于更新基于PX4的自动驾驶仪的局部位置估计（相对于局部原点），并且还可选择性地融合到无人机姿态估计中。此外，如果外部姿态系统也提供线速度测量数据，则该数据可以用于改进状态估计（线速度测量数据的融合仅由EKF2算法支持）。</p> 
+<p>这篇文章介绍了如何配置基于PX4飞控的无人机系统，通过ROS或其他MAVLink系统从MoCap/VIO系统获取数据。主要介绍如何设置像VICON和Optitrack这样的MoCap系统，以及像ROVIO、SVO和PTAM这样的VIO系统。</p> 
+<h3><a id="PX4MAVLink_14"></a>PX4中关于外部位置信息的MAVLink话题</h3> 
+<p>PX4使用以下MAVLink话题获取外部位置信息，并将其映射到uORB话题。</p> 
+<div class="center"> 
+</div> 
+<table><thead><tr><th align="center">MAVLink话题名称</th><th align="center">uORB话题</th></tr></thead><tbody><tr><td align="center">VISION_POSITION_ESTIMATE</td><td align="center">vehicle_visual_odometry</td></tr><tr><td align="center">ODOMETRY (frame_id = MAV_FRAME_LOCAL_FRD)</td><td align="center">vehicle_visual_odometry</td></tr><tr><td align="center">ATT_POS_MOCAP</td><td align="center">vehicle_mocap_odometry</td></tr><tr><td align="center">ODOMETRY (frame_id = MAV_FRAME_MOCAP_NED)</td><td align="center">vehicle_mocap_odometry</td></tr></tbody></table> 
+<p>EKF2状态估计器只能订阅<code>vehicle_visual_odometry</code>话题获取外部位置信息，因此只能处理前两条话题，如果使用MoCap系统则必须生成这些话题才能够使用EKF2。<code>vehicle_visual_odometry</code>话题是唯一一个可以向PX4发送线速度测量数据的话题。</p> 
+<p>话题的传输频率应在30Hz和50Hz之间。如果信息速率过低，EKF2将不会熔断外部视觉信息。</p> 
+<p>PX4当前不支持以下MAVLink视觉话题：<code>GLOBAL_vision_POSITION_ESTIMATE</code>、<code>vision_SPEED_ESTIMATE</code>、<code>VICON_POSTION_ESTIMATE</code>。</p> 
+<h3><a id="_47"></a>参考坐标系</h3> 
+<p>PX4将FRD（X向前、Y向右和Z向下）用于局部机体坐标系以及参考坐标系。</p> 
+<p>当使用磁力计的航向时，PX4参考系的X轴将与北方对齐，因此它被称为NED（X North，Y East，Z Down）。</p> 
+<p>PX4估计器的参考帧的航向和外部姿态估计的航向在大多数情况下将不匹配。因此，外部姿态估计的参考帧以不同的方式命名，称为<code>MAV_frame_LOCAL_FRD</code>。</p> 
+<p>根据参考系的来源，在发送MAVLink Vision/MoCap话题之前，您需要对姿态估计应用自定义变换。这对于更改姿态估计的父帧和子帧的方向是必要的，以使其符合PX4约定。可以根据MAVROS odom插件了解必要的转换。</p> 
+<p>例如，如果使用Optitrack坐标系，则局部坐标系位于水平面上（x前和z右），而y轴垂直并指向上。一个简单的技巧是交换轴以获得NED坐标系。</p> 
+<p>如果<code>x_{mav}</code>、<code>y_{mav}</code>和<code>z_{mav}</code>是通过MAVLink作为位置反馈发送的坐标，则我们获得：</p> 
+<pre><code>x_{mav} = x_{mocap}
+y_{mav} = z_{mocap}
+z_{mav} = - y_{mocap}
+</code></pre> 
+<p>对于无人机姿态方向的坐标系变换，保持四元数的标量部分w相同，并以相同的方式交换矢量部分x、y和z。你可以在每个系统中应用这个技巧-如果你需要获得NED坐标系，请查看你的MoCap输出并相应地交换轴。</p> 
+<h3><a id="EKF2_69"></a>EKF2调整配置参数</h3> 
+<p>必须设置以下参数才能将外部位置信息与EKF2一起使用。</p> 
+<div class="center"> 
+</div> 
+<table><thead><tr><th align="center">参数名称</th><th align="center">外部位置估计设置</th></tr></thead><tbody><tr><td align="center">EKF2_AID_MASK</td><td align="center">根据融合模型需求设置视觉位置融合、视觉速度融合、视觉偏航角融合和外部视觉欧拉角融合。</td></tr><tr><td align="center">EKF2_HGT_MODE</td><td align="center">设置为使用视觉作为海拔估计的主要来源。</td></tr><tr><td align="center">EKF2_EV_DELAY</td><td align="center">设置为测量的时间戳与实际捕获时间之间的差值。</td></tr><tr><td align="center">EKF2_EV_POS_X, EKF2_EV_POS_Y, EKF2_EV_POS_Z</td><td align="center">设置视觉传感器（或MoCap标记）相对于无人机机体坐标系的位置。</td></tr></tbody></table> 
+<h4><a id="EKF2_EV_DELAY_84"></a>调整EKF2_EV_DELAY参数</h4> 
+<p><code>EKF2_EV_DELAY</code>参数是相对于IMU测量的视觉位置估计器延迟。</p> 
+<p>或者换句话说，这是视觉系统时间戳和IMU时钟（EKF2的基本时钟）记录的实际捕获时间之间的差异。</p> 
+<p>从技术上讲，如果MoCap和ROS计算机之间有正确的时间戳（而不仅仅是到达时间）和时间同步（例如NTP），则可以将其设置为0。事实上，这需要一些经验调整，因为整个MoCap到PX4的通信链路中的延迟是需要特殊设置的。使用完全同步的通信链路来设置系统是罕见的！</p> 
+<p>通过检查IMU速率和EV速率之间的偏移，可以从日志中获得延迟的粗略估计。要启用EV速率的日志记录，请在参数设置中勾选<code>SDLOG_PROFILE</code>参数的第7选项（计算机视觉和禁用）。</p> 
+<p><img src="https://images2.imgbox.com/f8/a8/dkUybLXT_o.png" alt="在这里插入图片描述"></p> 
+<p><img src="https://images2.imgbox.com/89/05/zuY1jWhu_o.png" alt="在这里插入图片描述"></p> 
+<p>可以通过调整参数来进一步降低该值，以找到在动态机动过程中产生最低EKF的值。</p> 
+<h3><a id="ROS_102"></a>与ROS共同使用</h3> 
+<p>ROS不需要用于提供外部姿态信息，但强烈建议使用，因为它已经与VIO和MoCap系统进行了良好的集成。</p> 
+<h4><a id="OptiTrack_MoCapROS_106"></a>将OptiTrack MoCap系统提供的姿态数据导入ROS</h4> 
+<p>VIO和MoCap系统有不同的获取姿态数据的方式，并且有自己的设置和话题。</p> 
+<p>下面介绍了OptiTrack MoCap系统的设置。对于其他系统，请参阅供应商设置文档。</p> 
+<p><a href="https://optitrack.com/applications/robotics/" rel="nofollow">OptiTrack官网</a></p> 
+<p>以下步骤说明如何将OptiTrack系统的位置估计值输入PX4。假设MoCap系统已校准。</p> 
+<p><a href="https://www.youtube.com/watch?v=cNZaFEghTBU" rel="nofollow">校准过程的教程</a></p> 
+<h5><a id="Motive_MoCap_118"></a>Motive MoCap软件的步骤</h5> 
+<p>在无人机上粘贴3个以上的标记点。</p> 
+<p>将无人机的前进方向与系统X轴正方向对齐。</p> 
+<p>在Motive软件中定义刚体。给无人机一个不包含空格的名称。</p> 
+<p>启用姿态数据广播和VRPN数据流。</p> 
+<p>将向上轴设置为Z轴（默认值为Y轴向上）。</p> 
+<h5><a id="ROS_130"></a>将姿态数据导入ROS</h5> 
+<p>安装vrpn_client_ros软件包。</p> 
+<p><a href="https://github.com/ros-drivers/vrpn_client_ros">vrpn_client_ros github地址</a></p> 
+<p>可以通过运行以下命令获得每个刚体姿态的话题。</p> 
+<pre><code>roslaunch vrpn_client_ros sample.launch server:=&lt;mocap machine ip&gt;
+</code></pre> 
+<p>如果你的刚体命名为robot1，则会得到类似<code>/vrpn_client_node/robot1/pose</code>的话题。</p> 
+<h5><a id="_144"></a>重新映射姿态数据</h5> 
+<p>MAVROS提供了一个插件，用于将在<code>/mavros/vision_pose/pose</code>上发布的姿态数据转换到PX4。假设MAVROS正在运行，您只需要将从MoCap的<code>/vrpn_client_node/&lt;rigid_body_name&gt;/pose</code>获得的姿态话题直接重新映射到<code>/mavros/vision_pose/pose</code>即可。</p> 
+<p>如果您已经如上所述配置了EKF2参数，现在设置PX4并融合MoCap数据。</p> 
+<h4><a id="PX4_150"></a>将姿态数据转发到PX4</h4> 
+<p>MAVROS提供了一个插件，可使用以下话题中继来自VIO或MoCap系统的视觉估计数据。</p> 
+<div class="center"> 
+</div> 
+<table><thead><tr><th align="center">ROS话题名称</th><th align="center">MAVLink话题名称</th><th align="center">uORB话题名称</th></tr></thead><tbody><tr><td align="center">/mavros/vision_pose/pose</td><td align="center">VISION_POSITION_ESTIMATE</td><td align="center">vehicle_visual_odometry</td></tr><tr><td align="center">/mavros/odometry/out (frame_id = odom, child_frame_id = base_link)</td><td align="center">ODOMETRY (frame_id = MAV_FRAME_LOCAL_FRD)</td><td align="center">vehicle_visual_odometry</td></tr><tr><td align="center">/mavros/mocap/pose</td><td align="center">ATT_POS_MOCAP</td><td align="center">vehicle_mocap_odometry</td></tr><tr><td align="center">/mavros/odometry/out (frame_id = odom, child_frame_id = base_link)</td><td align="center">ODOMETRY (frame_id = MAV_FRAME_LOCAL_FRD)</td><td align="center">vehicle_mocap_odometry</td></tr></tbody></table> 
+<p>如果使用EKF2，则仅支持vision话题。要将MoCap数据与EKF2一起使用，您必须重新映射从MoCap获得的姿态话题：</p> 
+<ul><li><code>geometry_msgs/PoseStamped</code>或<code>geometry_msgs/PoseWithCovarianceStamped</code>类型的MoCap ROS话题必须重新映射到<code>/mavros/vision_pose/pose</code>话题。<code>geometry_msgs/PoseStamped</code>话题最常见，因为MoCap通常与数据没有相关的协变量。</li><li>如果您通过<code>nav_msgs/Odometry</code>ROS话题获取数据，则需要将其重新映射到<code>/mavros/odometry/out</code>，确保相应地更新<code>frame_id</code>和<code>child_frame_id</code>。</li><li>里程计框架<code>frame_id=odom</code>，<code>child_frame_id=base_link</code>可以通过更新<code>mavros/slaunch/px4_config.yaml</code>文件来更改。然而，当前版本的mavros（1.3.0）需要能够使用tf树来找到从<code>frame_id</code>到硬编码框架<code>odom_ned</code>的转换。这同样适用于<code>child_frame_id</code>，它需要在tf树中连接到硬编码框架<code>base_link_frd</code>。如果您使用的是mavros 1.2.0，并且没有更新文件<code>mavros/slaunch/px4_config.yaml</code>，那么您可以安全地使用里程计框架<code>frame_id=odom</code>，<code>child_frame_id=base_link</code>而不用担心。</li><li>请注意，如果您使用<code>child_frame_id=base_link</code>将里程计数据发送到PX4，则需要确保<code>nav_msgs/odometry</code>话题的<code>twist</code>部分以机体坐标系表示，而不是以惯性坐标系表示！</li></ul> 
+<h4><a id="PX4ROS_172"></a>PX4和ROS的参考坐标系</h4> 
+<p>ROS和PX4使用的机体坐标系和世界坐标系是不同的。</p> 
+<div class="center"> 
+</div> 
+<table><thead><tr><th align="center">坐标系</th><th align="center">PX4</th><th align="center">ROS</th></tr></thead><tbody><tr><td align="center">机体</td><td align="center">FRD（X轴向前，Y轴向右，Z轴向下）</td><td align="center">FRD（X轴向前，Y轴向右，Z轴向下），通常命名为base_link</td></tr><tr><td align="center">世界</td><td align="center">FRD或NED（X轴向北、Y轴向东、Z轴向下）</td><td align="center">FRD或NED（X轴向北、Y轴向东、Z轴向下），命名为odom或map</td></tr></tbody></table> 
+<p>两个坐标系如下图所示（左侧为FRD，右侧为FLU）。</p> 
+<p><img src="https://images2.imgbox.com/29/41/vWTbobYt_o.png" alt="在这里插入图片描述"></p> 
+<p>使用EKF2，当使用外部航向估计时，磁北可以被忽略，或者可以计算和补偿到磁北的航向偏移。根据您的选择，偏航角是相对于磁北或局部X轴给出的。</p> 
+<p>使用MAVROS时此操作非常简单。ROS使用ENU坐标系，因此必须在ENU中提供位置反馈。如果你有Optitrack系统，你可以使用mocap_optitrack节点，该节点可以在ENU中的ROS话题上流式传输对象姿态。通过重新映射，您可以直接在<code>mocap_pose_estimate</code>上发布它，而无需任何转换，MAVROS将负责NED转换。</p> 
+<p>MAVROS里程计插件使处理坐标系变得简单。它使用ROS的tf包。您的外部姿态系统可能使用与PX4完全不同的坐标系。外部姿态估计的机体坐标系可能取决于如何在MOCAP软件中设置机体坐标系，或者如何在无人机上安装VIO传感器。MAVROS里程计插件需要知道外部姿态的子坐标系相对于MAVROS已知的FRD或FLU机体坐标系的方向。因此，您必须将外部姿态的机体坐标系添加到tf树中。这可以通过在ROS启动文件中包含以下行的代码来完成。</p> 
+<pre><code>  &lt;node pkg="tf" type="static_transform_publisher" name="tf_baseLink_externalPoseChildFrame"
+        args="0 0 0 &lt;yaw&gt; &lt;pitch&gt; &lt;roll&gt; base_link &lt;external_pose_child_frame&gt; 1000"/&gt;
+</code></pre> 
+<p>确保更改偏航、俯仰和滚转的值，使其将外部姿态的机体坐标系正确地附加到<code>base_link</code>或<code>base_link_frd</code>。请查看tf包以获得有关如何指定坐标系之间转换的进一步帮助。您可以使用rviz检查是否正确连接了坐标系。<code>external_pose_child_frame</code>的名称必须与<code>nav_msgs/odometry</code>话题的<code>child_frame_id</code>匹配。这同样适用于外部姿态的参考系。您必须将外部姿态的参考坐标系作为子坐标系附加到<code>odom</code>或<code>odom_frd</code>坐标系。因此，相应地调整以下代码行。</p> 
+<pre><code>  &lt;node pkg="tf" type="static_transform_publisher" name="tf_odom_externalPoseParentFrame"
+        args="0 0 0 &lt;yaw&gt; &lt;pitch&gt; &lt;roll&gt; odom &lt;external_pose_parent_frame&gt; 1000"/&gt;
+</code></pre> 
+<p>如果参考系的Z轴指向上方，则可以将其附加到<code>odom</code>坐标系，而无需任何旋转（偏航=0、俯仰=0、滚转=0）。<code>external_pose_rent_frame</code>的名称必须与里程计话题的<code>frame_id</code>匹配。</p> 
+<h3><a id="_210"></a>飞行测试</h3> 
+<p>下面介绍了如何为MoCap和VIO系统进行设置。</p> 
+<p>请务必在首次飞行前进行以下检查：</p> 
+<ul><li>将PX4参数<code>MAV_ODOM_LP</code>设置为1。PX4随后将接收到的外部姿态作为MAVLink话题流式传输回地面站。</li><li>您可以使用QGroundControl地面站的MAVLink Inspector功能检查这些MAVLink话题。转动无人机，直到<code>ODOMETRY</code>话题的四元数非常接近单位四元数（w=1，x=y=z=0）。</li><li>这时机体坐标系与外部姿态系统的参考坐标系对齐。如果在不滚转或俯仰车辆的情况下无法使四元数接近单位四元数，则坐标系可能仍有俯仰或滚转偏移。如果是这种情况，请不要继续，并再次检查坐标系。</li><li>一旦对齐，您可以从地面上拾起无人机，您应该会看到位置的Z坐标减小。向前移动车辆，应增加位置的X坐标。将车辆向右移动时，应增加Y坐标。如果还从外部姿态系统发送线速度数据，则还应检查线速度是否在FRD机体参考系中表示。</li><li>将PX4参数<code>MAV_ODOM_LP</code>设置回0。PX4将停止MAVLink话题流传输。</li></ul> 
+<p>如果这些步骤都执行完毕，你可以进行你的飞行测试。</p> 
+<p>将无人机放在地面上，开始MoCap的数据流传输。油门给到最低，切换到位置模式。如果一切正常，地面站的位置模式处应该为绿色，绿色表示位置反馈可用，位置控制已激活。</p> 
+<p>将油门放在中间死区处。在该处无人机将保持其高度，升高操纵杆会增加高度，而降低操纵杆会降低高度。在X轴和Y轴上，右操纵杆也是如此。</p> 
+<p>增加油门的值，无人机就会起飞，然后把它油门放在中间死区处，检查它是否能够保持其位置。</p> 
+<p>如果无人机能保持其位置，则可以通过offboard模式进行飞行测试。</p> 
+<hr> 
+<p>参考资料：</p> 
+<p><a href="https://docs.px4.io/v1.13/en/ros/external_position_estimation.html" rel="nofollow">Using Vision or Motion Capture Systems for Position Estimation</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4575127a09ab6b805f670be79fe8f516/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Python基础教程（十六）：正则表达式</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7c0b36923c578df445bed8619896ff7c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">美国科技新闻三则 | 科技股成为美股第二大股息分派行业 &amp; 马斯克高调宣布：560亿美元薪酬方案已获通过 &amp; 争夺AI以太网：英伟达 VS Arista Networks</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

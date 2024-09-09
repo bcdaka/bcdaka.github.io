@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>IC-Light-在stable diffusion中实现图像的光影控制新方法 - 技术原理篇 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/78a6ddf93d9b7d4b3ad0b862eee1e3cb/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="IC-Light-在stable diffusion中实现图像的光影控制新方法 - 技术原理篇">
+  <meta property="og:description" content="👨背景与来源 最近在stable diffusion的粉丝群看到光影控制又有了新的玩法，是controlnet的作者lllyasviel，发了一款名为IC-Light的模型，并且已经被另外一位名为huchenlei的朋友实现了comfyui和webUI（forge ）版的插件，并且在github上提到automatic1111 webui的插件也在进行过程中了。 ✨ComfyUI and Forge versions are available:
+GitHub - huchenlei/ComfyUI-IC-Light-Native: ComfyUI native implementation of IC-LightGitHub - huchenlei/sd-forge-ic-light: SD Forge extension for IC-Light 这篇文章我们就先简单了解下原作者制作模型的基础思路，下一篇我们一起看下comfyui里边实现的方法，看看有没有哪些潜在的坑帮大家先踩一踩。
+🎠模型原作者链接：https://github.com/lllyasviel/IC-Light
+🥽模型简介与效果 IC-Light 是一个用于控制图像光源效果的项目。
+名称 &#34;IC-Light&#34; 代表 &#34;Imposing Consistent Light&#34;（直白翻译是，保持图像的光源一致性）。
+目前，我们（原作者哈，不是我）发布了两种类型的模型：文本条件重照明模型和背景条件模型。两种类型的模型都接受前景图像作为输入。
+先看下原作者给出的测试效果：
+首先是给出前景图，然后结合提示词和光源方向的标签选择，自动生成场景和大致的光源：
+（其他更多案例略）
+其次是给出原图和光源图，然后结合简单的提示词，让模型自行混合前景和光源；
+然后作者贴了一张更全面的对比图，左侧第一列是原图，右侧是在输入不同的景色图像作为光源控制的情况下，实现的图像效果：
+整体来说，在保持了图像本身结构不变的情况下，很大程度上实现了前景和背景更好的融合，看起来是可以很好的用在摄影写真类工作流中去的，可以一定程度上把人从繁重的后期ps中解放出来。
+🍳技术实现部分 在 HDR 空间中，照明具有所有光传输都是独立的属性。
+在HDR的世界里，光的传播就像是小朋友们玩传球游戏。每个小朋友（光线）都可以独立地把球（光）传给其他小朋友，而不需要担心球会消失或者变得看不清。这样，不管球传到哪里，大家都能看得清清楚楚，就像真实世界里光是怎样传播的一样。 所以，HDR让电脑游戏里的光和影看起来更真实，更接近我们用眼睛看到的世界。
+结合下图来示意，不同光源的外观混合相当于混合光源的外观：
+将每一束光源先照射到物体上，然后将物体的图像进行合并，和将光源先组合再统一照射到物体上，效果是一样的。
+在训练重新照明模型时，作者强加了这种一致性（在潜在空间中使用 MLP）。
+因此，该模型能够产生高度一致的重新光照 -如此一致，甚至可以将不同的重新光照合并为法线贴图！尽管事实上这些模型是潜在扩散的。
+从左到右依次是原图像输入、模型输出重新照明效果、分割的阴影图像和合并的法线贴图。请注意，该模型未使用任何法线贴图数据进行训练。最后的这张法线贴图的估算结果，来自于重新一致性照明的图像。
+大家也可以到作者提供的在线试验平台去玩玩，反正是完全免费的：
+https://huggingface.co/spaces/lllyasviel/IC-Light
+🍡模型说明 模型下载地址：https://huggingface.co/lllyasviel/ic-light/tree/main
+iclight_sd15_fc.safetensors - 默认的重新打光模型，通过文字和前景来控制生成结果，你可以控制潜空间的初始化来影响生成效果；
+iclight_sd15_fcon.safetensors -这个模型和&#34;iclight_sd15_fc.safetensors&#34;很像，但是在训练的时候加入了一些偏移噪声（offset noise）。不过，在一个用户研究中，没有加入偏移噪声的&#34;iclight_sd15_fc.safetensors&#34;模型表现得稍微好一些。这就是为什么默认的模型是那个没有偏移噪声的版本。
+iclight_sd15_fbc.safetensors - 支持文字&#43;前景&#43;背景一起控制生成的结果的重新打光模型；">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-12T21:10:20+08:00">
+    <meta property="article:modified_time" content="2024-05-12T21:10:20+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">IC-Light-在stable diffusion中实现图像的光影控制新方法 - 技术原理篇</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>👨背景与来源</h2> 
+<p>最近在stable diffusion的粉丝群看到光影控制又有了新的玩法，是controlnet的作者lllyasviel，发了一款名为IC-Light的模型，并且已经被另外一位名为huchenlei的朋友实现了comfyui和webUI（forge ）版的插件，并且在github上提到automatic1111 webui的插件也在进行过程中了。 </p> 
+<blockquote> 
+ <p>✨ComfyUI and Forge versions are available:</p> 
+ <ul><li><a href="https://github.com/huchenlei/ComfyUI-IC-Light-Native" title="GitHub - huchenlei/ComfyUI-IC-Light-Native: ComfyUI native implementation of IC-Light">GitHub - huchenlei/ComfyUI-IC-Light-Native: ComfyUI native implementation of IC-Light</a></li><li><a href="https://github.com/huchenlei/sd-forge-ic-light" title="GitHub - huchenlei/sd-forge-ic-light: SD Forge extension for IC-Light">GitHub - huchenlei/sd-forge-ic-light: SD Forge extension for IC-Light</a></li></ul> 
+</blockquote> 
+<h2><img alt="" height="385" src="https://images2.imgbox.com/e4/42/yoLbCrRx_o.png" width="1200"></h2> 
+<p>这篇文章我们就先简单了解下原作者制作模型的基础思路，下一篇我们一起看下comfyui里边实现的方法，看看有没有哪些潜在的坑帮大家先踩一踩。</p> 
+<p>🎠模型原作者链接：<a href="https://github.com/lllyasviel/IC-Light" title="https://github.com/lllyasviel/IC-Light">https://github.com/lllyasviel/IC-Light</a></p> 
+<h2>🥽模型简介与效果</h2> 
+<p>IC-Light 是一个用于控制图像光源效果的项目。</p> 
+<p>名称 "IC-Light" 代表 "Imposing Consistent Light"（直白翻译是，保持图像的光源一致性）。</p> 
+<p>目前，我们（原作者哈，不是我）发布了两种类型的模型：文本条件重照明模型和背景条件模型。两种类型的模型都接受前景图像作为输入。</p> 
+<p>先看下原作者给出的测试效果：</p> 
+<p>首先是给出前景图，然后结合提示词和光源方向的标签选择，自动生成场景和大致的光源：</p> 
+<p><img alt="" height="991" src="https://images2.imgbox.com/a5/af/kBESoEnf_o.png" width="1200"></p> 
+<p><img alt="" height="991" src="https://images2.imgbox.com/95/7b/70ywrr5o_o.png" width="1200"></p> 
+<p><img alt="" height="943" src="https://images2.imgbox.com/29/5f/n2Fg9gsb_o.png" width="1200"></p> 
+<p><img alt="" height="975" src="https://images2.imgbox.com/bc/90/fbfvMWou_o.png" width="1200"></p> 
+<p><img alt="" height="969" src="https://images2.imgbox.com/32/ae/TEMyJutz_o.png" width="1200"></p> 
+<p><img alt="" height="979" src="https://images2.imgbox.com/f4/c4/KbzTgQYZ_o.png" width="1200"></p> 
+<p><img alt="" height="960" src="https://images2.imgbox.com/f7/b5/MR1CsY8H_o.png" width="1200"></p> 
+<p><img alt="" height="967" src="https://images2.imgbox.com/29/4b/4Dx4Bybk_o.png" width="1200"></p> 
+<p><img alt="" height="967" src="https://images2.imgbox.com/1f/f0/7OFTOZOz_o.png" width="1200"></p> 
+<p>（其他更多案例略）</p> 
+<p>其次是给出原图和光源图，然后结合简单的提示词，让模型自行混合前景和光源；</p> 
+<p><img alt="" height="972" src="https://images2.imgbox.com/d2/08/4xfxnUH2_o.png" width="1200"></p> 
+<p><img alt="" height="766" src="https://images2.imgbox.com/2d/0b/ylmK4YjC_o.png" width="1200"></p> 
+<p><img alt="" height="786" src="https://images2.imgbox.com/5d/3a/4H4QCp2h_o.png" width="1200"></p> 
+<p>然后作者贴了一张更全面的对比图，左侧第一列是原图，右侧是在输入不同的景色图像作为光源控制的情况下，实现的图像效果：</p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/5c/3e/6njHU9dP_o.png" width="1200"></p> 
+<p>整体来说，在保持了图像本身结构不变的情况下，很大程度上实现了前景和背景更好的融合，看起来是可以很好的用在摄影写真类工作流中去的，可以一定程度上把人从繁重的后期ps中解放出来。</p> 
+<h2>🍳技术实现部分</h2> 
+<p><span style="color:#1f2328;"><span style="background-color:#ffffff;">在 HDR 空间中，照明具有所有光传输都是独立的属性。</span></span></p> 
+<p>在HDR的世界里，光的传播就像是小朋友们玩传球游戏。每个小朋友（光线）都可以独立地把球（光）传给其他小朋友，而不需要担心球会消失或者变得看不清。这样，不管球传到哪里，大家都能看得清清楚楚，就像真实世界里光是怎样传播的一样。 所以，HDR让电脑游戏里的光和影看起来更真实，更接近我们用眼睛看到的世界。</p> 
+<p><span style="color:#1f2328;"><span style="background-color:#ffffff;">结合下图来示意，不同光源的外观混合相当于混合光源的外观：</span></span></p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/90/d4/PGGfYfVq_o.png" width="1200"></p> 
+<p>将每一束光源先照射到物体上，然后将物体的图像进行合并，和将光源先组合再统一照射到物体上，效果是一样的。</p> 
+<p><span style="color:#1f2328;"><span style="background-color:#ffffff;">在训练重新照明模型时，作者强加了这种一致性（在潜在空间中使用 MLP）。</span></span></p> 
+<p><span style="color:#1f2328;"><span style="background-color:#ffffff;">因此，该模型能够产生高度一致的重新光照 -<strong>如此</strong>一致，甚至可以将不同的重新光照合并为法线贴图！尽管事实上这些模型是潜在扩散的。</span></span></p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/1d/51/z65Ji4JA_o.png" width="1200"></p> 
+<p>从左到右依次是原图像输入、模型输出重新照明效果、分割的阴影图像和合并的法线贴图。请注意，该模型未使用任何法线贴图数据进行训练。最后的这张法线贴图的估算结果，来自于重新一致性照明的图像。</p> 
+<p>大家也可以到作者提供的在线试验平台去玩玩，反正是完全免费的：</p> 
+<p><a href="https://huggingface.co/spaces/lllyasviel/IC-Light" rel="nofollow" title="https://huggingface.co/spaces/lllyasviel/IC-Light">https://huggingface.co/spaces/lllyasviel/IC-Light</a></p> 
+<p><img alt="" height="1200" src="https://images2.imgbox.com/f7/1b/JsWKRFXc_o.png" width="1200"></p> 
+<h2>🍡模型说明</h2> 
+<p>模型下载地址：<a class="link-info" href="" rel="nofollow" title="https://huggingface.co/lllyasviel/ic-light/tree/main">https://huggingface.co/lllyasviel/ic-light/tree/main</a></p> 
+<p><img alt="" height="697" src="https://images2.imgbox.com/37/39/8Jq2wdt5_o.png" width="1200"></p> 
+<ul><li> <p><strong>iclight_sd15_fc.safetensors</strong> - 默认的重新打光模型，通过文字和前景来控制生成结果，你可以控制潜空间的初始化来影响生成效果；</p> </li><li> <p><strong>iclight_sd15_fcon.safetensors</strong> -这个模型和"iclight_sd15_fc.safetensors"很像，但是在训练的时候加入了一些偏移噪声（offset noise）。不过，在一个用户研究中，没有加入偏移噪声的"iclight_sd15_fc.safetensors"模型表现得稍微好一些。这就是为什么默认的模型是那个没有偏移噪声的版本。</p> </li><li> <p><strong>iclight_sd15_fbc.safetensors</strong> - 支持文字+前景+背景一起控制生成的结果的重新打光模型；</p> </li></ul> 
+<p>好了，到这里这篇文章的主要内容就结束了，如果觉得有用，记得帮忙点个赞哦~ </p> 
+<p>下期我们一起看下comfyui里边如何使用这个模型，安装的过程中有没有一些坑，以及实际测试的效果如何，如果你也感兴趣，记得关注我哦~</p> 
+<h2>🎉写在最后~</h2> 
+<p>去年的时候写了两门比较基础的Stable Diffuison WebUI的基础文字课程，大家如果喜欢的话，可以按需购买，在这里首先感谢各位老板的支持和厚爱~</p> 
+<h6>✨StableDiffusion系统基础课（适合啥也不会的朋友，但是得有块Nvidia显卡）：</h6> 
+<p><a href="https://blog.csdn.net/jumengxiaoketang/category_12477471.html" title="https://blog.csdn.net/jumengxiaoketang/category_12477471.html">https://blog.csdn.net/jumengxiaoketang/category_12477471.html</a></p> 
+<h6><img alt="" height="276" src="https://images2.imgbox.com/a4/90/FIxSxetb_o.png" width="1200">​​​​​🎆综合案例课程（适合有一点基础的朋友）：</h6> 
+<p><a href="https://blog.csdn.net/jumengxiaoketang/category_12526584.html" title="https://blog.csdn.net/jumengxiaoketang/category_12526584.html">https://blog.csdn.net/jumengxiaoketang/category_12526584.html</a></p> 
+<p><img alt="" height="301" src="https://images2.imgbox.com/5f/40/pZEOXJJr_o.png" width="1200">​​​​​</p> 
+<p>这里是聚梦小课堂，就算不买课也没关系，点个关注，交个朋友😄</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3cf9c054e42e29c8a6f8d2f71c6ebff1/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">机器学习 - 决策树</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d7397496f8f605d1a10b976ef9d087e9/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">论文AI率：检测原理是什么？该如何降低论文AI率？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

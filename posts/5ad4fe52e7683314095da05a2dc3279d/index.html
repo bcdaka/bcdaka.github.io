@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>llama-factory训练RLHF-PPO模型 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/5ad4fe52e7683314095da05a2dc3279d/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="llama-factory训练RLHF-PPO模型">
+  <meta property="og:description" content="理论上RLHF（强化学习）效果比sft好，也更难训练。ppo有采样阶段,步骤比较多,训练速度很慢.
+记录下工作中使用llama-factory调试rlhf-ppo算法流程及参数配置,希望对大家有所帮助.
+llama-factory版本: 0.8.2
+一 rlhf流程 ppo训练流程图如下, 会用到多个模型, 但初始化阶段, 只需提供sft和reward模型就行.
+四个子模型用途：
+Actor Model：演员模型，这就是我们想要训练的目标语言模型Reference Model：参考模型，它的作用是在RLHF阶段给语言模型增加一些“约束”，防止语言模型训歪。我们希望训练出来的Actor模型既能达到符合人类喜好的目的，又尽量让它和SFT模型不要差异太大。即希望两个模型的输出分布尽量相似，通过与Actor Model之间的KL散度控制。Critic Model：评论家模型，它的作用是预估总收益V-&gt;(t)，在RLHF中，我们不仅要训练模型生成符合人类喜好的内容的能力（Actor），也要提升模型对人类喜好量化判断的能力（Critic）。这就是Critic模型存在的意义。Reward Model：奖励模型，它的作用是计算即时收益R-&gt;(t) Actor/Critic Model. 在RLHF阶段是需要训练的；而Reward/Reference Model是参数冻结的。 整体算法流程如下：
+训练sft模型
+训练reward奖励模型
+以sft模型初始化Reference和Actor模型，以奖励模型初始化Critic模型。其中，Actor与Critic模型权重可训练，Reference与Reward冻结权重，全程不更新。
+rlhf-ppo执行过程分析(对应上图的step 3)：
+第一步，我们准备一个batch的prompts
+第二步，我们将这个batch的prompts喂给Actor模型，让它生成对应的responses
+第三步，我们把prompt&#43;responses喂给我们的Critic/Reward/Reference模型，让它生成用于计算actor/critic loss的数据，按照强化学习的术语，我们称这些数据为经验（experiences）。
+第四步，我们根据这些经验，实际计算出actor/critic loss，然后更新Actor和Critic模型。
+涉及的损失函数：
+至此, 我们对RLHF-PPO工作原理已经有了清晰的认知. 若觉得上述文字不过瘾, 可以看我列出的几篇参考文献, 对ppo复杂的原理有深刻解读.
+二 代码实践 2.1 数据准备: 需要准备sft指令微调和reward奖励模型的数据.
+sft数据格式 [ { &#34;instruction&#34;: &#34;&lt;question&gt;:查看备案有效期在今天之后的委托信息\nCREATE TABLE 委托备案信息 (序号 FLOAT,\n委托企业名称 VARCHAR(255),\n公司地址 VARCHAR(255),\n被委托企业名称 VARCHAR(255),\n委托产品名称 VARCHAR(255),\n备案日期 VARCHAR(255),\n备案有效期 VARCHAR(255));&#34;, &#34;input&#34;: &#34;&#34;, &#34;output&#34;: &#34;\nSELECT * FROM 委托备案信息 WHERE TO_DATE(备案有效期, &#39;YYYY-MM-DD&#39;) &gt; NOW();\n&#34;">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-21T11:01:20+08:00">
+    <meta property="article:modified_time" content="2024-07-21T11:01:20+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">llama-factory训练RLHF-PPO模型</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>理论上RLHF（强化学习）效果比sft好，也更难训练。ppo有采样阶段,步骤比较多,训练速度很慢.<br> 记录下工作中使用llama-factory调试rlhf-ppo算法流程及参数配置,希望对大家有所帮助.</p> 
+<p>llama-factory版本: 0.8.2</p> 
+<h2><a id="_rlhf_4"></a>一 rlhf流程</h2> 
+<p>ppo训练流程图如下, 会用到多个模型, 但初始化阶段, 只需提供sft和reward模型就行.<br> <img src="https://images2.imgbox.com/20/ff/tIdndU9D_o.png" alt="在这里插入图片描述"></p> 
+<p>四个子模型用途：</p> 
+<ul><li><strong>Actor Model</strong>：演员模型，这就是我们想要训练的目标语言模型</li><li><strong>Reference Model</strong>：参考模型，它的作用是在RLHF阶段给语言模型增加一些“约束”，防止语言模型训歪。我们希望训练出来的Actor模型既能达到符合人类喜好的目的，又尽量让它和SFT模型不要差异太大。即希望两个模型的输出分布尽量相似，通过与Actor Model之间的<strong>KL散度</strong>控制。</li><li><strong>Critic Model</strong>：评论家模型，它的作用是预估总收益V-&gt;(t)，在RLHF中，我们不仅要训练模型生成符合人类喜好的内容的能力（Actor），也要提升模型对人类喜好量化判断的能力（Critic）。这就是Critic模型存在的意义。</li><li><strong>Reward Model</strong>：奖励模型，它的作用是计算即时收益R-&gt;(t) Actor/Critic Model. 在RLHF阶段是需要训练的；<strong>而Reward/Reference Model是参数冻结的。</strong></li></ul> 
+<p><strong>整体算法流程如下：</strong></p> 
+<ol><li> <p>训练sft模型</p> </li><li> <p>训练reward奖励模型</p> </li><li> <p>以sft模型初始化Reference和Actor模型，以奖励模型初始化Critic模型。其中，Actor与Critic模型权重可训练，Reference与Reward冻结权重，<strong>全程不更新</strong>。</p> </li><li> <p>rlhf-ppo执行过程分析(对应上图的step 3)：<br> <img src="https://images2.imgbox.com/21/89/mdCD2om3_o.png" alt="在这里插入图片描述"></p> </li></ol> 
+<ul><li> <p>第一步，我们准备一个batch的prompts</p> </li><li> <p>第二步，我们将这个batch的prompts喂给Actor模型，让它生成对应的responses</p> </li><li> <p>第三步，我们把prompt+responses喂给我们的Critic/Reward/Reference模型，让它生成用于计算actor/critic loss的数据，按照强化学习的术语，我们称这些数据为经验（experiences）。</p> </li><li> <p>第四步，我们根据这些经验，实际计算出actor/critic loss，然后更新Actor和Critic模型。</p> <p>涉及的损失函数：<br> <img src="https://images2.imgbox.com/1b/a7/6Z9Z5uvS_o.png" alt="在这里插入图片描述"></p> </li></ul> 
+<p>至此, 我们对RLHF-PPO工作原理已经有了清晰的认知. 若觉得上述文字不过瘾, 可以看我列出的几篇参考文献, 对ppo复杂的原理有深刻解读.</p> 
+<h2><a id="__33"></a>二 代码实践</h2> 
+<p><strong>2.1 数据准备</strong>: 需要准备sft指令微调和reward奖励模型的数据.</p> 
+<ul><li>sft数据格式</li></ul> 
+<pre><code class="prism language-python"><span class="token punctuation">[</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token string">"instruction"</span><span class="token punctuation">:</span> <span class="token string">"&lt;question&gt;:查看备案有效期在今天之后的委托信息\nCREATE TABLE 委托备案信息 (序号 FLOAT,\n委托企业名称 VARCHAR(255),\n公司地址 VARCHAR(255),\n被委托企业名称 VARCHAR(255),\n委托产品名称 VARCHAR(255),\n备案日期 VARCHAR(255),\n备案有效期 VARCHAR(255));"</span><span class="token punctuation">,</span>
+        <span class="token string">"input"</span><span class="token punctuation">:</span> <span class="token string">""</span><span class="token punctuation">,</span>
+        <span class="token string">"output"</span><span class="token punctuation">:</span> <span class="token string">"\nSELECT * FROM 委托备案信息 WHERE TO_DATE(备案有效期, 'YYYY-MM-DD') &gt; NOW();\n"</span>
+    <span class="token punctuation">}</span><span class="token punctuation">,</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token string">"instruction"</span><span class="token punctuation">:</span> <span class="token string">"&lt;question&gt;:哪些镇名拥有重点旅游村？\nCREATE TABLE 镇名休闲农业园区休闲农庄重点旅游村 (镇名 VARCHAR(255),\n休闲农业园区 VARCHAR(255),\n休闲农庄 VARCHAR(255),\n重点旅游村 VARCHAR(255));"</span><span class="token punctuation">,</span>
+        <span class="token string">"input"</span><span class="token punctuation">:</span> <span class="token string">""</span><span class="token punctuation">,</span>
+        <span class="token string">"output"</span><span class="token punctuation">:</span> <span class="token string">"\nSELECT DISTINCT 镇名 FROM 镇名休闲农业园区休闲农庄重点旅游村 WHERE 重点旅游村 IS NOT NULL;\n"</span>
+    <span class="token punctuation">}</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+<ul><li>reward数据格式固定,不能随意更改, 经过断点调试发现, 所有模型的reward数据都遵循以下格式, 其中chosen期望偏好, rejected是负向偏好.</li></ul> 
+<pre><code class="prism language-python"><span class="token punctuation">[</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token string">"conversations"</span><span class="token punctuation">:</span> <span class="token punctuation">[</span>
+            <span class="token punctuation">{<!-- --></span>
+                <span class="token string">"from"</span><span class="token punctuation">:</span> <span class="token string">"human"</span><span class="token punctuation">,</span>
+                <span class="token string">"value"</span><span class="token punctuation">:</span> <span class="token string">"&lt;question&gt;:查看备案有效期在今天之后的委托信息\nCREATE TABLE 委托备案信息 (序号 FLOAT,\n委托企业名称 VARCHAR(255),\n公司地址 VARCHAR(255),\n被委托企业名称 VARCHAR(255),\n委托产品名称 VARCHAR(255),\n备案日期 VARCHAR(255),\n备案有效期 VARCHAR(255));"</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">]</span><span class="token punctuation">,</span>
+        <span class="token string">"chosen"</span><span class="token punctuation">:</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token string">"from"</span><span class="token punctuation">:</span> <span class="token string">"gpt"</span><span class="token punctuation">,</span>
+            <span class="token string">"value"</span><span class="token punctuation">:</span> <span class="token string">"\nSELECT * FROM 委托备案信息 WHERE TO_DATE(备案有效期, 'YYYY-MM-DD') &gt; NOW();\n"</span>
+        <span class="token punctuation">}</span><span class="token punctuation">,</span>
+        <span class="token string">"rejected"</span><span class="token punctuation">:</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token string">"from"</span><span class="token punctuation">:</span> <span class="token string">"gpt"</span><span class="token punctuation">,</span>
+            <span class="token string">"value"</span><span class="token punctuation">:</span> <span class="token string">"SELECT * FROM 委托备案信息 WHERE 备案有效期 &gt; NOW()"</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span><span class="token punctuation">,</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token string">"conversations"</span><span class="token punctuation">:</span> <span class="token punctuation">[</span>
+            <span class="token punctuation">{<!-- --></span>
+                <span class="token string">"from"</span><span class="token punctuation">:</span> <span class="token string">"human"</span><span class="token punctuation">,</span>
+                <span class="token string">"value"</span><span class="token punctuation">:</span> <span class="token string">"&lt;question&gt;:哪些镇名拥有重点旅游村？\nCREATE TABLE 镇名休闲农业园区休闲农庄重点旅游村 (镇名 VARCHAR(255),\n休闲农业园区 VARCHAR(255),\n休闲农庄 VARCHAR(255),\n重点旅游村 VARCHAR(255));"</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">]</span><span class="token punctuation">,</span>
+        <span class="token string">"chosen"</span><span class="token punctuation">:</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token string">"from"</span><span class="token punctuation">:</span> <span class="token string">"gpt"</span><span class="token punctuation">,</span>
+            <span class="token string">"value"</span><span class="token punctuation">:</span> <span class="token string">"\nSELECT DISTINCT 镇名 FROM 镇名休闲农业园区休闲农庄重点旅游村 WHERE 重点旅游村 IS NOT NULL;\n"</span>
+        <span class="token punctuation">}</span><span class="token punctuation">,</span>
+        <span class="token string">"rejected"</span><span class="token punctuation">:</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token string">"from"</span><span class="token punctuation">:</span> <span class="token string">"gpt"</span><span class="token punctuation">,</span>
+            <span class="token string">"value"</span><span class="token punctuation">:</span> <span class="token string">"SELECT DISTINCT 镇名 FROM PG库 WHERE 重点旅游村 IS NOT NULL;"</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span><span class="token punctuation">,</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">]</span>
+</code></pre> 
+<p><strong>2.2 训练代码</strong></p> 
+<p>新版llama-factory不再使用shell脚本传参, 而是通过yaml文件完成, 之后通过以下代码, 根据传入yaml文件不同执行对应的训练任务.</p> 
+<pre><code class="prism language-python"><span class="token keyword">import</span> os
+<span class="token keyword">import</span> sys
+sys<span class="token punctuation">.</span>path<span class="token punctuation">.</span>append<span class="token punctuation">(</span>os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>dirname<span class="token punctuation">(</span>os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>dirname<span class="token punctuation">(</span>os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>abspath<span class="token punctuation">(</span>__file__<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+<span class="token keyword">from</span> src<span class="token punctuation">.</span>llamafactory<span class="token punctuation">.</span>train<span class="token punctuation">.</span>tuner <span class="token keyword">import</span> run_exp
+<span class="token keyword">import</span> yaml
+
+
+<span class="token keyword">def</span> <span class="token function">main</span><span class="token punctuation">(</span>yaml_path_<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">with</span> <span class="token builtin">open</span><span class="token punctuation">(</span>yaml_path_<span class="token punctuation">,</span> <span class="token string">'r'</span><span class="token punctuation">,</span> encoding<span class="token operator">=</span><span class="token string">'utf-8'</span><span class="token punctuation">)</span> <span class="token keyword">as</span> f<span class="token punctuation">:</span>
+        param <span class="token operator">=</span> yaml<span class="token punctuation">.</span>safe_load<span class="token punctuation">(</span>f<span class="token punctuation">)</span>
+    run_exp<span class="token punctuation">(</span>param<span class="token punctuation">)</span>
+
+
+<span class="token keyword">if</span> __name__ <span class="token operator">==</span> <span class="token string">"__main__"</span><span class="token punctuation">:</span>
+    <span class="token comment">#1.sft指令微调</span>
+    <span class="token comment"># yaml_path = '../examples/yblir_configs/qwen2_lora_sft.yaml'</span>
+    <span class="token comment"># 2.奖励模型训练</span>
+    <span class="token comment"># yaml_path = '../examples/yblir_configs/qwen2_lora_reward.yaml'</span>
+    <span class="token comment"># 3.rlhf-ppo训练</span>
+    yaml_path <span class="token operator">=</span> <span class="token string">'../examples/yblir_configs/qwen2_lora_ppo.yaml'</span>
+	
+    main<span class="token punctuation">(</span>yaml_path<span class="token punctuation">)</span>
+
+</code></pre> 
+<p><strong>sft 超参:</strong> qwen2_lora_sft.yaml</p> 
+<pre><code class="prism language-yaml"><span class="token comment"># model</span>
+<span class="token key atrule">model_name_or_path</span><span class="token punctuation">:</span> E<span class="token punctuation">:</span>\PyCharm\PreTrainModel\qwen2_7b
+<span class="token comment">#model_name_or_path: /media/xk/D6B8A862B8A8433B/data/qwen2_05b</span>
+<span class="token comment"># method</span>
+<span class="token key atrule">stage</span><span class="token punctuation">:</span> sft
+<span class="token key atrule">do_train</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+<span class="token key atrule">finetuning_type</span><span class="token punctuation">:</span> lora
+<span class="token key atrule">lora_target</span><span class="token punctuation">:</span> all
+
+<span class="token comment"># dataset</span>
+<span class="token key atrule">dataset</span><span class="token punctuation">:</span> train_clean
+<span class="token key atrule">dataset_dir</span><span class="token punctuation">:</span> ../data
+<span class="token key atrule">template</span><span class="token punctuation">:</span> qwen
+<span class="token key atrule">cutoff_len</span><span class="token punctuation">:</span> <span class="token number">1024</span>
+<span class="token comment">#max_samples: 1000</span>
+<span class="token key atrule">overwrite_cache</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+<span class="token key atrule">preprocessing_num_workers</span><span class="token punctuation">:</span> <span class="token number">2</span>
+
+<span class="token comment"># output</span>
+<span class="token key atrule">output_dir</span><span class="token punctuation">:</span> E<span class="token punctuation">:</span>\PyCharm\PreTrainModel\qwen2_7b_sft
+<span class="token key atrule">logging_steps</span><span class="token punctuation">:</span> <span class="token number">10</span>
+<span class="token key atrule">save_steps</span><span class="token punctuation">:</span> <span class="token number">100</span>
+<span class="token key atrule">plot_loss</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+<span class="token key atrule">overwrite_output_dir</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+
+<span class="token comment"># train</span>
+<span class="token key atrule">per_device_train_batch_size</span><span class="token punctuation">:</span> <span class="token number">4</span>
+<span class="token key atrule">gradient_accumulation_steps</span><span class="token punctuation">:</span> <span class="token number">2</span>
+<span class="token key atrule">learning_rate</span><span class="token punctuation">:</span> <span class="token number">1.0e-5</span>
+<span class="token key atrule">num_train_epochs</span><span class="token punctuation">:</span> <span class="token number">3.0</span>
+<span class="token key atrule">lr_scheduler_type</span><span class="token punctuation">:</span> cosine
+<span class="token key atrule">warmup_steps</span><span class="token punctuation">:</span> <span class="token number">0.1</span>
+<span class="token key atrule">fp16</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+
+<span class="token comment"># eval</span>
+<span class="token key atrule">val_size</span><span class="token punctuation">:</span> <span class="token number">0.1</span>
+<span class="token key atrule">per_device_eval_batch_size</span><span class="token punctuation">:</span> <span class="token number">4</span>
+<span class="token key atrule">evaluation_strategy</span><span class="token punctuation">:</span> steps
+<span class="token key atrule">eval_steps</span><span class="token punctuation">:</span> <span class="token number">100</span>
+
+</code></pre> 
+<p>sft训练效果:<br> <img src="https://images2.imgbox.com/f2/a1/MLd2dZoI_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>rm模型训练参数</strong>: qwen2_lora_reward.yaml</p> 
+<pre><code class="prism language-yaml"><span class="token comment"># 训练奖励模型</span>
+<span class="token comment">### model</span>
+<span class="token key atrule">model_name_or_path</span><span class="token punctuation">:</span> /mnt/e/PyCharm/PreTrainModel/qwen2_7b
+
+<span class="token comment">### method</span>
+<span class="token key atrule">stage</span><span class="token punctuation">:</span> rm
+<span class="token key atrule">do_train</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+<span class="token key atrule">finetuning_type</span><span class="token punctuation">:</span> lora
+<span class="token key atrule">lora_target</span><span class="token punctuation">:</span> all
+
+<span class="token comment">### dataset</span>
+<span class="token key atrule">dataset</span><span class="token punctuation">:</span> rw_data
+<span class="token key atrule">dataset_dir</span><span class="token punctuation">:</span> ../data
+<span class="token key atrule">template</span><span class="token punctuation">:</span> qwen
+<span class="token key atrule">cutoff_len</span><span class="token punctuation">:</span> <span class="token number">1024</span>
+<span class="token key atrule">max_samples</span><span class="token punctuation">:</span> <span class="token number">3000</span>
+<span class="token key atrule">overwrite_cache</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+<span class="token key atrule">preprocessing_num_workers</span><span class="token punctuation">:</span> <span class="token number">1</span>
+
+<span class="token comment">### output</span>
+<span class="token key atrule">output_dir</span><span class="token punctuation">:</span> /mnt/e/PyCharm/PreTrainModel/qwen2_7b_rm
+<span class="token key atrule">logging_steps</span><span class="token punctuation">:</span> <span class="token number">10</span>
+<span class="token key atrule">save_steps</span><span class="token punctuation">:</span> <span class="token number">100</span>
+<span class="token key atrule">plot_loss</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+<span class="token key atrule">overwrite_output_dir</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+
+<span class="token comment">### train</span>
+<span class="token key atrule">per_device_train_batch_size</span><span class="token punctuation">:</span> <span class="token number">2</span>
+<span class="token key atrule">gradient_accumulation_steps</span><span class="token punctuation">:</span> <span class="token number">2</span>
+<span class="token key atrule">learning_rate</span><span class="token punctuation">:</span> <span class="token number">1.0e-5</span>
+<span class="token key atrule">num_train_epochs</span><span class="token punctuation">:</span> <span class="token number">3.0</span>
+<span class="token key atrule">lr_scheduler_type</span><span class="token punctuation">:</span> cosine
+<span class="token key atrule">warmup_ratio</span><span class="token punctuation">:</span> <span class="token number">0.1</span>
+<span class="token key atrule">fp16</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+<span class="token key atrule">ddp_timeout</span><span class="token punctuation">:</span> <span class="token number">180000000</span>
+
+<span class="token comment">### eval</span>
+<span class="token key atrule">val_size</span><span class="token punctuation">:</span> <span class="token number">0.1</span>
+<span class="token key atrule">per_device_eval_batch_size</span><span class="token punctuation">:</span> <span class="token number">2</span>
+<span class="token key atrule">eval_strategy</span><span class="token punctuation">:</span> steps
+<span class="token key atrule">eval_steps</span><span class="token punctuation">:</span> <span class="token number">500</span>
+
+</code></pre> 
+<p>rm训练效果:</p> 
+<pre><code class="prism language-python"><span class="token operator">**</span><span class="token operator">**</span><span class="token operator">*</span> <span class="token builtin">eval</span> metrics <span class="token operator">**</span><span class="token operator">**</span><span class="token operator">*</span>
+  epoch                   <span class="token operator">=</span>        <span class="token number">3.0</span>
+  eval_accuracy           <span class="token operator">=</span>        <span class="token number">1.0</span>
+  eval_loss               <span class="token operator">=</span>        <span class="token number">0.0</span>
+  eval_runtime            <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">:</span><span class="token number">00</span><span class="token punctuation">:</span><span class="token number">16.73</span>
+  eval_samples_per_second <span class="token operator">=</span>     <span class="token number">17.923</span>
+  eval_steps_per_second   <span class="token operator">=</span>      <span class="token number">8.961</span>
+<span class="token punctuation">[</span>INFO<span class="token operator">|</span>modelcard<span class="token punctuation">.</span>py<span class="token punctuation">:</span><span class="token number">450</span><span class="token punctuation">]</span> <span class="token number">2024</span><span class="token operator">-</span><span class="token number">06</span><span class="token operator">-</span><span class="token number">26</span> <span class="token number">23</span><span class="token punctuation">:</span><span class="token number">02</span><span class="token punctuation">:</span><span class="token number">36</span><span class="token punctuation">,</span><span class="token number">246</span> <span class="token operator">&gt;&gt;</span> Dropping the following result <span class="token keyword">as</span> it does <span class="token keyword">not</span> have <span class="token builtin">all</span> the necessary fields<span class="token punctuation">:</span>
+<span class="token punctuation">{<!-- --></span><span class="token string">'task'</span><span class="token punctuation">:</span> <span class="token punctuation">{<!-- --></span><span class="token string">'name'</span><span class="token punctuation">:</span> <span class="token string">'Causal Language Modeling'</span><span class="token punctuation">,</span> <span class="token string">'type'</span><span class="token punctuation">:</span> <span class="token string">'text-generation'</span><span class="token punctuation">}</span><span class="token punctuation">,</span> <span class="token string">'metrics'</span><span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token punctuation">{<!-- --></span><span class="token string">'name'</span><span class="token punctuation">:</span> <span class="token string">'Accuracy'</span><span class="token punctuation">,</span> <span class="token string">'type'</span><span class="token punctuation">:</span> <span class="token string">'accuracy'</span><span class="token punctuation">,</span> <span class="token string">'value'</span><span class="token punctuation">:</span> <span class="token number">1.0</span><span class="token punctuation">}</span><span class="token punctuation">]</span><span class="token punctuation">}</span>
+
+</code></pre> 
+<p><img src="https://images2.imgbox.com/c4/d5/Gl280FYh_o.png" alt="在这里插入图片描述"></p> 
+<p>sft训练完成后,要先<strong>merge</strong>才能进行下一步ppo训练.<br> merge代码及配置文件:</p> 
+<pre><code class="prism language-python"><span class="token comment"># -*- coding: utf-8 -*-</span>
+<span class="token comment"># @Time    : 2024/5/17 23:21</span>
+<span class="token comment"># @Author  : yblir</span>
+<span class="token comment"># @File    : lyb_merge_model.py</span>
+<span class="token comment"># explain  :</span>
+<span class="token comment"># =======================================================</span>
+<span class="token keyword">import</span> os
+<span class="token keyword">import</span> sys
+sys<span class="token punctuation">.</span>path<span class="token punctuation">.</span>append<span class="token punctuation">(</span>os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>dirname<span class="token punctuation">(</span>os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>dirname<span class="token punctuation">(</span>os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>abspath<span class="token punctuation">(</span>__file__<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+<span class="token keyword">import</span> yaml
+
+<span class="token keyword">from</span> src<span class="token punctuation">.</span>llamafactory<span class="token punctuation">.</span>train<span class="token punctuation">.</span>tuner <span class="token keyword">import</span> export_model
+
+<span class="token keyword">if</span> __name__ <span class="token operator">==</span> <span class="token string">"__main__"</span><span class="token punctuation">:</span>
+    <span class="token keyword">with</span> <span class="token builtin">open</span><span class="token punctuation">(</span><span class="token string">'../examples/yblir_configs/qwen2_lora_sft_merge.yaml'</span><span class="token punctuation">,</span> <span class="token string">'r'</span><span class="token punctuation">,</span> encoding<span class="token operator">=</span><span class="token string">'utf-8'</span><span class="token punctuation">)</span> <span class="token keyword">as</span> f<span class="token punctuation">:</span>
+        param <span class="token operator">=</span> yaml<span class="token punctuation">.</span>safe_load<span class="token punctuation">(</span>f<span class="token punctuation">)</span>
+
+    export_model<span class="token punctuation">(</span>param<span class="token punctuation">)</span>
+
+</code></pre> 
+<p>qwen2_lora_sft_merge.yaml</p> 
+<pre><code class="prism language-yaml"><span class="token comment"># Note: DO NOT use quantized model or quantization_bit when merging lora adapters</span>
+
+<span class="token comment"># model</span>
+<span class="token key atrule">model_name_or_path</span><span class="token punctuation">:</span> E<span class="token punctuation">:</span>\PyCharm\PreTrainModel\qwen2_7b
+<span class="token key atrule">adapter_name_or_path</span><span class="token punctuation">:</span> E<span class="token punctuation">:</span>\PyCharm\PreTrainModel\qwen2_7b_sft
+<span class="token comment">#model_name_or_path: /media/xk/D6B8A862B8A8433B/data/qwen2_05b</span>
+<span class="token comment">#adapter_name_or_path: /media/xk/D6B8A862B8A8433B/data/qwen2_15b_rw</span>
+<span class="token key atrule">template</span><span class="token punctuation">:</span> qwen
+<span class="token key atrule">finetuning_type</span><span class="token punctuation">:</span> lora
+
+<span class="token comment"># export</span>
+<span class="token key atrule">export_dir</span><span class="token punctuation">:</span> /mnt/e/PyCharm/PreTrainModel/qwen2_7b_sft_merge
+<span class="token key atrule">export_size</span><span class="token punctuation">:</span> <span class="token number">2</span>
+<span class="token key atrule">export_device</span><span class="token punctuation">:</span> cpu
+<span class="token comment"># 为true,保存为safetensors格式</span>
+<span class="token key atrule">export_legacy_format</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+</code></pre> 
+<p><strong>ppo训练</strong>: 使用merge后的sft模型. reward_model参数是rm训练的lora参数, 这样做的好处是节约显存, 不然24G显存根本没法训练7B大小的模型. 而弊端就是, 四个子模型的基座是同一个模型. 只有全量的full训练才能选择不同的模型. 目前看, 都用同一个模型也没发现什么问题.</p> 
+<p>ppo涉及数据采样, 训练很慢, 4090显卡, 对于以下参数, <strong>显存占用约18G, 耗时约4.5小时才训练完</strong>.</p> 
+<pre><code class="prism language-yaml"><span class="token comment">### model</span>
+<span class="token key atrule">model_name_or_path</span><span class="token punctuation">:</span> /mnt/e/PyCharm/PreTrainModel/qwen2_7b_sft_merge
+<span class="token key atrule">reward_model</span><span class="token punctuation">:</span> /mnt/e/PyCharm/PreTrainModel/qwen2_7b_rm
+
+<span class="token comment">### method</span>
+<span class="token key atrule">stage</span><span class="token punctuation">:</span> ppo
+<span class="token key atrule">do_train</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+<span class="token key atrule">finetuning_type</span><span class="token punctuation">:</span> lora
+<span class="token key atrule">lora_target</span><span class="token punctuation">:</span> all
+
+<span class="token comment">### dataset</span>
+<span class="token comment"># dataset: identity,alpaca_en_demo</span>
+<span class="token key atrule">dataset</span><span class="token punctuation">:</span> train_clean
+<span class="token key atrule">dataset_dir</span><span class="token punctuation">:</span> ../data
+<span class="token key atrule">template</span><span class="token punctuation">:</span> qwen
+<span class="token key atrule">cutoff_len</span><span class="token punctuation">:</span> <span class="token number">1024</span>
+<span class="token key atrule">max_samples</span><span class="token punctuation">:</span> <span class="token number">2000</span>
+<span class="token key atrule">overwrite_cache</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+<span class="token key atrule">preprocessing_num_workers</span><span class="token punctuation">:</span> <span class="token number">1</span>
+
+<span class="token comment">### output</span>
+<span class="token key atrule">output_dir</span><span class="token punctuation">:</span> /mnt/e/PyCharm/PreTrainModel/qwen2_7b_sql_ppo_1_batch
+<span class="token key atrule">logging_steps</span><span class="token punctuation">:</span> <span class="token number">10</span>
+<span class="token key atrule">save_steps</span><span class="token punctuation">:</span> <span class="token number">100</span>
+<span class="token key atrule">plot_loss</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+<span class="token key atrule">overwrite_output_dir</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+
+<span class="token comment">### train</span>
+<span class="token key atrule">per_device_train_batch_size</span><span class="token punctuation">:</span> <span class="token number">1</span>
+<span class="token key atrule">gradient_accumulation_steps</span><span class="token punctuation">:</span> <span class="token number">8</span>
+<span class="token key atrule">learning_rate</span><span class="token punctuation">:</span> <span class="token number">1.0e-5</span>
+<span class="token key atrule">num_train_epochs</span><span class="token punctuation">:</span> <span class="token number">2.0</span>
+<span class="token key atrule">lr_scheduler_type</span><span class="token punctuation">:</span> cosine
+<span class="token key atrule">warmup_ratio</span><span class="token punctuation">:</span> <span class="token number">0.1</span>
+<span class="token key atrule">fp16</span><span class="token punctuation">:</span> <span class="token boolean important">true</span>
+<span class="token key atrule">ddp_timeout</span><span class="token punctuation">:</span> <span class="token number">180000000</span>
+
+<span class="token comment">### generate</span>
+<span class="token key atrule">max_new_tokens</span><span class="token punctuation">:</span> <span class="token number">512</span>
+<span class="token key atrule">top_k</span><span class="token punctuation">:</span> <span class="token number">0</span>
+<span class="token key atrule">top_p</span><span class="token punctuation">:</span> <span class="token number">0.9</span>
+</code></pre> 
+<p>ppo训练效果<br> <img src="https://images2.imgbox.com/58/72/IMbmUqqa_o.png" alt="在这里插入图片描述"></p> 
+<p>ppo训练后进行<strong>推理</strong>, 使用merge后的sft模型进行的ppo的推理的基座模型, ppo训练的finetuning_type是lora, 因此最终保存的也是lora参数,</p> 
+<p>lyb_qwen_sft_predict.yaml</p> 
+<pre><code class="prism language-python"><span class="token comment"># model</span>
+model_name_or_path<span class="token punctuation">:</span> E<span class="token punctuation">:</span>\PyCharm\PreTrainModel\qwen2_7b_sft_merge
+adapter_name_or_path<span class="token punctuation">:</span> E<span class="token punctuation">:</span>\PyCharm\PreTrainModel\qwen2_7b_sql_ppo_1_batch
+
+stage<span class="token punctuation">:</span> sft
+finetuning_type<span class="token punctuation">:</span> lora
+<span class="token comment">#lora_target: all</span>
+<span class="token comment">#quantization_bit: 8</span>
+
+<span class="token comment">#infer_backend: vllm</span>
+
+<span class="token comment"># dataset</span>
+template<span class="token punctuation">:</span> qwen
+<span class="token comment">#cutoff_len: 1024</span>
+</code></pre> 
+<p>一个简单的推理代码, 注意模型的输入数据, 与ppo训练时入参格式一样, 本文ppo训练使用的数据与sft是同一份.</p> 
+<pre><code class="prism language-python"><span class="token comment"># -*- coding: utf-8 -*-</span>
+<span class="token comment"># @Time    : 2024/6/16 20:50</span>
+<span class="token comment"># @Author  : yblir</span>
+<span class="token comment"># @File    : lyb_lora_inference.py</span>
+<span class="token comment"># explain  : </span>
+<span class="token comment"># =======================================================</span>
+<span class="token keyword">import</span> yaml
+<span class="token keyword">import</span> json
+<span class="token keyword">from</span> loguru <span class="token keyword">import</span> logger
+<span class="token keyword">import</span> time
+<span class="token keyword">import</span> sys
+<span class="token keyword">from</span> src<span class="token punctuation">.</span>llamafactory<span class="token punctuation">.</span>chat <span class="token keyword">import</span> ChatModel
+
+<span class="token keyword">if</span> __name__ <span class="token operator">==</span> <span class="token string">'__main__'</span><span class="token punctuation">:</span>
+    <span class="token keyword">with</span> <span class="token builtin">open</span><span class="token punctuation">(</span><span class="token string">'../examples/yblir_configs/lyb_qwen_sft_predict.yaml'</span><span class="token punctuation">,</span> <span class="token string">'r'</span><span class="token punctuation">,</span> encoding<span class="token operator">=</span><span class="token string">'utf-8'</span><span class="token punctuation">)</span> <span class="token keyword">as</span> f<span class="token punctuation">:</span>
+        param <span class="token operator">=</span> yaml<span class="token punctuation">.</span>safe_load<span class="token punctuation">(</span>f<span class="token punctuation">)</span>
+
+    chat_model <span class="token operator">=</span> ChatModel<span class="token punctuation">(</span>param<span class="token punctuation">)</span>
+
+    <span class="token keyword">with</span> <span class="token builtin">open</span><span class="token punctuation">(</span><span class="token string">'../data/tuning_sample.json'</span><span class="token punctuation">,</span> <span class="token string">'r'</span><span class="token punctuation">,</span> encoding<span class="token operator">=</span><span class="token string">'utf-8'</span><span class="token punctuation">)</span> <span class="token keyword">as</span> f<span class="token punctuation">:</span>
+        data <span class="token operator">=</span> json<span class="token punctuation">.</span>load<span class="token punctuation">(</span>f<span class="token punctuation">)</span>
+
+    <span class="token comment"># 预热</span>
+    messages <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">{<!-- --></span><span class="token string">"role"</span><span class="token punctuation">:</span> <span class="token string">"user"</span><span class="token punctuation">,</span> <span class="token string">"content"</span><span class="token punctuation">:</span> data<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">[</span><span class="token string">'instruction'</span><span class="token punctuation">]</span><span class="token punctuation">}</span><span class="token punctuation">]</span>
+    _ <span class="token operator">=</span> chat_model<span class="token punctuation">.</span>chat<span class="token punctuation">(</span>messages<span class="token punctuation">)</span>
+
+    predict_1000 <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+    total_time <span class="token operator">=</span> <span class="token number">0</span>
+    <span class="token keyword">for</span> i<span class="token punctuation">,</span> item <span class="token keyword">in</span> <span class="token builtin">enumerate</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        messages <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">{<!-- --></span><span class="token string">"role"</span><span class="token punctuation">:</span> <span class="token string">"user"</span><span class="token punctuation">,</span> <span class="token string">"content"</span><span class="token punctuation">:</span> item<span class="token punctuation">[</span><span class="token string">'instruction'</span><span class="token punctuation">]</span><span class="token punctuation">}</span><span class="token punctuation">]</span>
+        t1 <span class="token operator">=</span> time<span class="token punctuation">.</span>time<span class="token punctuation">(</span><span class="token punctuation">)</span>
+        res <span class="token operator">=</span> chat_model<span class="token punctuation">.</span>chat<span class="token punctuation">(</span>messages<span class="token punctuation">)</span>
+        total_time <span class="token operator">+=</span> time<span class="token punctuation">.</span>time<span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> t1
+        predict_1000<span class="token punctuation">.</span>append<span class="token punctuation">(</span>res<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">.</span>response_text<span class="token punctuation">)</span>
+        <span class="token comment">#print('-------------------------------------------------')</span>
+        <span class="token keyword">print</span><span class="token punctuation">(</span>i<span class="token punctuation">,</span><span class="token string">'-&gt;'</span><span class="token punctuation">,</span>res<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">.</span>response_text<span class="token punctuation">)</span>
+        <span class="token comment"># sys.exit()</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>i <span class="token operator">+</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">%</span> <span class="token number">10</span> <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">:</span>
+            <span class="token comment"># logger.info(f'当前完成: {i + 1}')</span>
+            sys<span class="token punctuation">.</span>exit<span class="token punctuation">(</span><span class="token punctuation">)</span>
+        <span class="token keyword">if</span> i <span class="token operator">+</span> <span class="token number">1</span> <span class="token operator">==</span> <span class="token number">300</span><span class="token punctuation">:</span>
+            <span class="token keyword">break</span>
+
+    <span class="token comment"># json_data = json.dumps(predict_1000, indent=4, ensure_ascii=False)</span>
+    <span class="token comment"># with open('saves2/qwen_7b_chat_lora_merge_vllm.json', 'w', encoding='utf-8') as f:</span>
+    <span class="token comment">#     f.write(json_data)</span>
+
+    logger<span class="token punctuation">.</span>success<span class="token punctuation">(</span><span class="token string-interpolation"><span class="token string">f'写入完成, 总耗时:</span><span class="token interpolation"><span class="token punctuation">{<!-- --></span>total_time<span class="token punctuation">}</span></span><span class="token string">,平均耗时: </span><span class="token interpolation"><span class="token punctuation">{<!-- --></span><span class="token builtin">round</span><span class="token punctuation">(</span><span class="token punctuation">(</span>total_time <span class="token operator">/</span> <span class="token number">300</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">}</span></span><span class="token string"> s'</span></span><span class="token punctuation">)</span>
+
+</code></pre> 
+<p>sft与PPO部分推理结果比较, 具体指标要把sql放到数据库去跑一遍才知道, 结果在公司内网, 不再此列出了.<br> <img src="https://images2.imgbox.com/04/57/ICeQUv1k_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="__405"></a>三 总结</h2> 
+<p>除了ppo, dpo(Direct Preference Optimization:直接偏好优化)也是一种常见的调优手段, 不过多篇paper研究证明性能不如PPO, 在计算资源不足的情况下DPO也是个不过的选择,因为不需要训练奖励模型, 而且训练速度快,效果也比较稳定, 不像PPO那样很容易训崩.<br> 其他LLM偏好对齐训练技术还有ORPO,IPO,CPO以及效果看起来很棒的KTO.<br> 还有最新发表的RLOO,看起来比PPO更好更易训练.<br> <img src="https://images2.imgbox.com/5b/a7/gv6YIpH0_o.png" alt="在这里插入图片描述"></p> 
+<p>这个领域发展太快, 脑子快不够用了.<br> <img src="https://images2.imgbox.com/1b/09/aVOTJCLG_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="__417"></a>四 参考文献</h2> 
+<p><a href="https://blog.csdn.net/sinat_37574187/article/details/138200789">https://blog.csdn.net/sinat_37574187/article/details/138200789</a><br> <a href="https://blog.csdn.net/2301_78285120/article/details/134888984?spm=1001.2101.3001.6650.14&amp;utm_medium=distribute.pc_relevant.none-task-blog-2~default~BlogCommendFromBaidu~Rate-14-134888984-blog-138200789.235%5Ev43%5Epc_blog_bottom_relevance_base4&amp;depth_1-utm_source=distribute.pc_relevant.none-task-blog-2~default~BlogCommendFromBaidu~Rate-14-134888984-blog-138200789.235%5Ev43%5Epc_blog_bottom_relevance_base4&amp;utm_relevant_index=20">https://blog.csdn.net/2301_78285120/article/details/134888984</a><br> <a href="https://blog.csdn.net/qq_27590277/article/details/132614226">https://blog.csdn.net/qq_27590277/article/details/132614226</a><br> <a href="https://blog.csdn.net/qq_35812205/article/details/133563158">https://blog.csdn.net/qq_35812205/article/details/133563158</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e2bec6b73b6239423e7165d1a4aadfa2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【网络】socket套接字基础知识</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/dc02cf1d78a285caa6ceed303fe0e2b9/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">macbook配置adb环境和用adb操作安卓手机</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

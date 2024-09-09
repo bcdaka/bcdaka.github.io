@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Whisper-AT：抗噪语音识别模型（Whisper）实现通用音频事件标记（Audio Tagger） - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/79d779cdf49d440b870c502e6978d238/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Whisper-AT：抗噪语音识别模型（Whisper）实现通用音频事件标记（Audio Tagger）">
+  <meta property="og:description" content="本文介绍一个统一音频标记（Audio Tagger）和语音识别（ASR）的模型：Whisper-AT，通过冻结Whisper的主干，并在其之上训练一个轻量级的音频标记模型。Whisper-AT在额外计算成本不到1%的情况下，可以在单次前向传递中识别音频事件以及口语文本。这个模型的提出是建立一个有趣的发现基础上：Whisper对真实世界背景声音非常鲁棒，其音频表示实际上并不是噪声不变的，而是与非语音声音高度相关，这表明Whisper是在噪声类型的基础上识别语音的。
+1.概述: Whisper-AT 是建立在 Whisper 自动语音识别（ASR）模型基础上的一个模型。Whisper 模型使用了一个包含 68 万小时标注语音的大规模语料库进行训练，这些语料是在各种不同条件下录制的。Whisper 模型以其在现实背景噪音（如音乐）下的鲁棒性著称。尽管如此，其音频表示并非噪音不变，而是与非语音声音高度相关。这意味着 Whisper 在识别语音时会依据背景噪音类型进行调整。
+在上述发现的基础上，有一个令人兴奋的应用方式：我们能够基于Whisper构建一个统一的模型，用于自动语音识别（ASR）和音频标记，以同时识别口语文本和背景声音（例如音乐、喇叭等），这在视频转录、语音助手和助听器系统等应用中非常理想。Whisper是这样一个统一模型的理想基础，因为1）它对背景声音具有鲁棒性，2）它的中间表示编码了丰富的一般音频事件信息，这为音频标记提供了坚实的基础。尽管如此，原始的Whisper模型不输出声音标签，所以我们需要在Whisper的中间表示之上训练一个模型，以使其能够预测声音类别。请注意，我们特意不修改原始Whisper模型的权重，而是在其上添加新的音频标记层，以便Whisper的自动语音识别能力不受影响，并且可以在单个前向传递中生成文本和音频标签。我们称这个统一的ASR和音频标记模型为Whisper-AT。
+主要发现: 噪音变化的表示:
+Whisper 的音频表示编码了丰富的非语音背景声音信息，这与通常追求噪音不变表示的 ASR 模型目标不同。这一特性使得 Whisper 能够在各种噪音条件下通过识别和适应噪音来保持其鲁棒性。 ASR 和音频标签的统一模型:
+通过冻结 Whisper 模型的骨干网络，并在其上训练一个轻量级的音频标签模型，Whisper-AT 可以在一次前向传递中同时识别音频事件和语音文本，额外的计算成本不足 1%。Whisper-AT 在音频事件检测方面表现出色，同时保持了 Whisper 的 ASR 功能。 技术细节: Whisper ASR 模型:
+Whisper 使用基于 Transformer 的编码器-解码器架构。其训练集包括从互联网上收集的 68 万小时音频-文本对，涵盖了广泛的环境、录音设置、说话人和语言。 抗噪机制:
+Whisper 的鲁棒性并非通过噪音不变性实现，而是通过在其表示中编码噪音类型。这一机制使得 Whisper 能够根据背景噪音类型来转录文本，从而在嘈杂条件下表现优越。 构建 Whisper-AT:
+Whisper-AT 是通过在 Whisper 模型上添加新的音频标签层而构建的，未修改其原始权重。 探索了不同的音频标签层集成方法，包括： Last-MLP：对 Whisper 的最后一层表示进行时间均值池化，然后应用线性层。WA-MLP：对所有层的表示进行加权平均，然后应用线性层。WA-Tr：用时间 Transformer 层替换线性层。TL-Tr：使用时间和层次 Transformer 处理所有层的表示。 效率考量:
+为保持计算效率，采用了各种策略，例如减少表示的序列长度，并在应用音频标签 Transformer 之前可选地降低维度。 性能: Whisper-AT 在 AudioSet 上达到了 41.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-02T16:52:32+08:00">
+    <meta property="article:modified_time" content="2024-06-02T16:52:32+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Whisper-AT：抗噪语音识别模型（Whisper）实现通用音频事件标记（Audio Tagger）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>       本文介绍一个统一音频标记（Audio Tagger）和语音识别（ASR）的模型：<strong>Whisper-AT</strong>，通过冻结Whisper的主干，并在其之上训练一个轻量级的音频标记模型。Whisper-AT在额外计算成本不到1%的情况下，可以在单次前向传递中识别音频事件以及口语文本。这个模型的提出是建立一个有趣的发现基础上：Whisper对真实世界背景声音非常鲁棒，其音频表示实际上并不是噪声不变的，而是与非语音声音高度相关，这表明Whisper是<strong>在噪声类型的基础上识别语音的</strong>。</p> 
+<h3>1.概述:</h3> 
+<p>       Whisper-AT 是建立在 Whisper 自动语音识别（ASR）模型基础上的一个模型。Whisper 模型使用了一个包含 68 万小时标注语音的大规模语料库进行训练，这些语料是在各种不同条件下录制的。Whisper 模型以其在现实背景噪音（如音乐）下的鲁棒性著称。尽管如此，其音频表示并非噪音不变，而是与非语音声音高度相关。<strong>这意味着 Whisper 在识别语音时会依据背景噪音类型进行调整</strong>。</p> 
+<p>       在上述发现的基础上，有一个令人兴奋的应用方式：我们能够基于Whisper构建一个统一的模型，用于自动语音识别（ASR）和音频标记，以同时识别口语文本和背景声音（例如音乐、喇叭等），这在视频转录、语音助手和助听器系统等应用中非常理想。Whisper是这样一个统一模型的理想基础，因为1）它对背景声音具有鲁棒性，2）它的中间表示编码了丰富的一般音频事件信息，这为音频标记提供了坚实的基础。尽管如此，原始的Whisper模型不输出声音标签，所以我们需要在Whisper的中间表示之上训练一个模型，以使其能够预测声音类别。请注意，我们特意不修改原始Whisper模型的权重，而是在其上添加新的音频标记层，以便Whisper的自动语音识别能力不受影响，并且可以在单个前向传递中生成文本和音频标签。我们称这个统一的ASR和音频标记模型为Whisper-AT。</p> 
+<h4>主要发现:</h4> 
+<ol><li> <p><strong>噪音变化的表示</strong>:</p> 
+  <ul><li>Whisper 的音频表示编码了丰富的非语音背景声音信息，这与通常追求噪音不变表示的 ASR 模型目标不同。</li><li>这一特性使得 Whisper 能够在各种噪音条件下通过识别和适应噪音来保持其鲁棒性。</li></ul></li><li> <p><strong>ASR 和音频标签的统一模型</strong>:</p> 
+  <ul><li>通过冻结 Whisper 模型的骨干网络，并在其上训练一个轻量级的音频标签模型，Whisper-AT 可以在一次前向传递中同时识别音频事件和语音文本，额外的计算成本不足 1%。</li><li>Whisper-AT 在音频事件检测方面表现出色，同时保持了 Whisper 的 ASR 功能。</li></ul></li></ol> 
+<h4>技术细节:</h4> 
+<ol><li> <p><strong>Whisper ASR 模型</strong>:</p> 
+  <ul><li>Whisper 使用基于 Transformer 的编码器-解码器架构。</li><li>其训练集包括从互联网上收集的 68 万小时音频-文本对，涵盖了广泛的环境、录音设置、说话人和语言。</li></ul></li><li> <p><strong>抗噪机制</strong>:</p> 
+  <ul><li>Whisper 的鲁棒性并非通过噪音不变性实现，而是通过在其表示中编码噪音类型。</li><li>这一机制使得 Whisper 能够根据背景噪音类型来转录文本，从而在嘈杂条件下表现优越。</li></ul></li><li> <p><strong>构建 Whisper-AT</strong>:</p> 
+  <ul><li>Whisper-AT 是通过在 Whisper 模型上添加新的音频标签层而构建的，未修改其原始权重。 <p class="img-center"><img alt="" height="651" src="https://images2.imgbox.com/0d/7d/rfzHvmD2_o.png" width="817"></p> </li><li>探索了不同的音频标签层集成方法，包括： 
+    <ul><li><strong>Last-MLP</strong>：对 Whisper 的最后一层表示进行时间均值池化，然后应用线性层。</li><li><strong>WA-MLP</strong>：对所有层的表示进行加权平均，然后应用线性层。</li><li><strong>WA-Tr</strong>：用时间 Transformer 层替换线性层。</li><li><strong>TL-Tr</strong>：使用时间和层次 Transformer 处理所有层的表示。</li></ul></li></ul></li><li> <p><strong>效率考量</strong>:</p> 
+  <ul><li>为保持计算效率，采用了各种策略，例如减少表示的序列长度，并在应用音频标签 Transformer 之前可选地降低维度。</li></ul></li></ol> 
+<h4>性能:</h4> 
+<ul><li>Whisper-AT 在 AudioSet 上达到了 41.5 的 mAP，略低于独立的音频标签模型，但处理速度显著更快，超过 40 倍。</li></ul> 
+<h4>意义:</h4> 
+<ul><li><strong>能够同时执行 ASR 和音频标签任务</strong>，使得 Whisper-AT 非常适合于视频转录、语音助手和助听器系统等应用场景，在这些场景中需要同时进行语音文本和声学场景分析。</li></ul> 
+<h3>2.代码：</h3> 
+<p>       欲了解详细的实现和实验结果，请访问 GitHub： <a href="https://github.com/yuangongnd/whisper-at" title="github.com/yuangongnd/whisper-at">github.com/yuangongnd/whisper-at</a>.</p> 
+<p>       下面是对 Whisper-AT 架构的简要解释，通过逐步解析其主要组件和功能，帮助理解其工作原理。</p> 
+<h4>安装和准备</h4> 
+<p>首先，确保你已经安装了 Whisper 和相关的依赖项：</p> 
+<pre><code>pip install git+https://github.com/openai/whisper.git
+pip install torch torchaudio
+pip install transformers datasets
+</code></pre> 
+<p></p> 
+<h4>代码结构</h4> 
+<p>简要 Whisper-AT 的代码结构如下所示：</p> 
+<pre><code>Whisper-AT/
+│
+├── whisper_at.py
+├── train.py
+├── dataset.py
+├── utils.py
+└── README.md
+</code></pre> 
+<h4><code>whisper_at.py</code> - Whisper-AT 模型</h4> 
+<pre><code>import torch
+import torch.nn as nn
+import whisper
+
+class WhisperAT(nn.Module):
+    def __init__(self, model_name="base"):
+        super(WhisperAT, self).__init__()
+        self.whisper = whisper.load_model(model_name)
+        self.audio_tagging_head = nn.Linear(self.whisper.dims, 527)  # 527 是 AudioSet 的标签数
+
+    def forward(self, audio):
+        # 获取 Whisper 的中间表示
+        with torch.no_grad():
+            features = self.whisper.encode(audio)
+
+        # 通过音频标签头
+        audio_tagging_output = self.audio_tagging_head(features.mean(dim=1))
+
+        return audio_tagging_output
+</code></pre> 
+<h4><code>train.py</code> - 训练脚本</h4> 
+<pre><code>import torch
+from torch.utils.data import DataLoader
+from dataset import AudioSetDataset
+from whisper_at import WhisperAT
+import torch.optim as optim
+import torch.nn.functional as F
+
+def train():
+    # 加载数据集
+    train_dataset = AudioSetDataset("path/to/training/data")
+    train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True)
+
+    # 初始化模型
+    model = WhisperAT()
+    model.train()
+
+    # 定义优化器
+    optimizer = optim.Adam(model.parameters(), lr=1e-4)
+
+    for epoch in range(10):  # 假设训练10个epoch
+        for audio, labels in train_loader:
+            optimizer.zero_grad()
+
+            # 前向传播
+            outputs = model(audio)
+
+            # 计算损失
+            loss = F.binary_cross_entropy_with_logits(outputs, labels)
+
+            # 反向传播和优化
+            loss.backward()
+            optimizer.step()
+
+            print(f"Epoch {epoch}, Loss: {loss.item()}")
+
+if __name__ == "__main__":
+    train()
+</code></pre> 
+<h4><code>dataset.py</code> - 数据集处理</h4> 
+<pre><code>import torch
+from torch.utils.data import Dataset
+import torchaudio
+
+class AudioSetDataset(Dataset):
+    def __init__(self, data_path):
+        self.data_path = data_path
+        self.audio_files = [...]  # 这里假设你有一个包含所有音频文件路径的列表
+        self.labels = [...]  # 这里假设你有一个包含所有对应标签的列表
+
+    def __len__(self):
+        return len(self.audio_files)
+
+    def __getitem__(self, idx):
+        # 加载音频
+        audio, sample_rate = torchaudio.load(self.audio_files[idx])
+
+        # 获取对应标签
+        labels = torch.tensor(self.labels[idx])
+
+        return audio, labels
+</code></pre> 
+<h4><code>utils.py</code> - 辅助功能</h4> 
+<pre><code>import torch
+
+def save_model(model, path):
+    torch.save(model.state_dict(), path)
+
+def load_model(model, path):
+    model.load_state_dict(torch.load(path))
+    model.eval()
+</code></pre> 
+<h4>详细解释</h4> 
+<ol><li> <p><strong>Whisper-AT 模型 (<code>whisper_at.py</code>)</strong>:</p> 
+  <ul><li><code>WhisperAT</code> 类继承自 <code>nn.Module</code>，初始化时加载 Whisper 模型，并在其上添加一个线性层用于音频标签任务。</li><li><code>forward</code> 方法首先调用 Whisper 模型的 <code>encode</code> 方法获取音频特征，然后将这些特征传递给音频标签头（线性层）以生成标签输出。</li></ul></li><li> <p><strong>训练脚本 (<code>train.py</code>)</strong>:</p> 
+  <ul><li><code>train</code> 函数中，数据集被加载并传递给 DataLoader。</li><li>模型实例化并设置为训练模式。</li><li>定义了 Adam 优化器和二进制交叉熵损失函数。</li><li>在训练循环中，音频输入通过模型生成输出，计算损失并执行反向传播和优化。</li></ul></li><li> <p><strong>数据集处理 (<code>dataset.py</code>)</strong>:</p> 
+  <ul><li><code>AudioSetDataset</code> 类继承自 <code>Dataset</code>，实现了音频数据和标签的加载。</li><li><code>__getitem__</code> 方法加载音频文件并返回音频张量和对应标签。</li></ul></li><li> <p><strong>辅助功能 (<code>utils.py</code>)</strong>:</p> 
+  <ul><li>包含保存和加载模型状态的函数，方便模型的持久化和恢复。</li></ul></li></ol> 
+<p>       通过以上代码结构和解释，可以帮助理解 Whisper-AT 的实现和训练流程。可以根据需要扩展这些代码来适应具体的应用场景和数据集。</p> 
+<h2>附录：</h2> 
+<h3>A. 通用音频事件标记（Audio Tagger）</h3> 
+<p>通用音频事件标记 (Audio Tagger) 是一种用于识别和分类音频信号中不同事件的技术。它在音频处理领域具有广泛的应用，包括环境声音识别、音乐信息检索、语音识别、和多媒体内容分析等。</p> 
+<h4>核心概念</h4> 
+<ol><li> <p><strong>音频事件（Audio Event）</strong>： 音频事件指的是音频信号中的特定声音，如鸟鸣、犬吠、警笛声、音乐片段或人声。这些事件可以是短暂的瞬时声音或持续一段时间的信号。</p> </li><li> <p><strong>标签（Tagging）</strong>： 标签是对音频信号中的事件进行分类或标注的过程。每个标签对应一个音频事件类别，目的是识别音频信号中包含哪些类型的声音。</p> </li></ol> 
+<h4>技术实现</h4> 
+<h5>1. 特征提取</h5> 
+<p>特征提取是音频事件标记的第一步，它将原始音频信号转换为适合分类的特征向量。常用的特征提取方法包括：</p> 
+<ul><li><strong>梅尔频率倒谱系数（MFCC）</strong>：捕捉音频信号的短时频谱特征。</li><li><strong>谱质心（Spectral Centroid）</strong>：描述音频信号的亮度。</li><li><strong>零交叉率（Zero-Crossing Rate）</strong>：音频信号通过零点的次数。</li><li><strong>色度特征（Chromagram）</strong>：表示音频信号的音调内容。</li></ul> 
+<h5>2. 特征表示和建模</h5> 
+<p>一旦提取了音频特征，需要将其输入到机器学习模型中进行训练和预测。常用的模型包括：</p> 
+<ul><li><strong>传统机器学习模型</strong>：如高斯混合模型 (GMM)、支持向量机 (SVM) 和隐马尔可夫模型 (HMM)。</li><li><strong>深度学习模型</strong>：卷积神经网络 (CNN) 和递归神经网络 (RNN) 在音频事件标记中表现出色，尤其是能够处理复杂的时间和频率模式。</li></ul> 
+<h5>3. 标签分配和分类</h5> 
+<p>在训练模型之后，对新的音频信号进行标签分配。模型根据输入的特征向量预测音频信号所属的事件类别。</p> 
+<h4>应用实例</h4> 
+<ul><li><strong>环境声音识别</strong>：识别并分类自然环境中的声音，如鸟叫、雨声、车流声等。</li><li><strong>音乐信息检索</strong>：分析和分类音乐片段，识别音乐类型、乐器声或特定的音乐模式。</li><li><strong>语音识别</strong>：识别和分类语音中的特定事件，如关键词检测、语音活动检测等。</li></ul> 
+<h4>前沿研究</h4> 
+<ol><li> <p><strong>多任务学习</strong>： 多任务学习方法通过在多个相关任务上共享表示来提高模型性能。例如，PSLA（Pretraining, Sampling, Labeling, and Aggregation）方法在音频标签任务中取得了显著进展 。</p> </li><li> <p><strong>自监督学习</strong>： 自监督学习方法通过利用大量未标记数据进行预训练，显著提高了模型在音频事件标记任务上的表现。</p> </li><li> <p><strong>基于Transformer的模型</strong>： 例如，Audio Spectrogram Transformer (AST) 利用Transformer架构的优势，在多个音频分类任务上表现优异，超越了传统的卷积神经网络（CNN）方法 。</p> </li></ol> 
+<h4>总结</h4> 
+<p>通用音频事件标记在现代音频处理领域发挥着重要作用。通过结合特征提取、先进的机器学习模型和深度学习技术，音频事件标记能够实现高效、准确的音频信号分类和识别。在未来，随着多任务学习、自监督学习和更先进的深度学习模型的引入，音频事件标记技术将继续发展和完善。</p> 
+<h3>B. Whisper模型</h3> 
+<p>Whisper 是由 OpenAI 开发的一个先进的自动语音识别（ASR）模型。它采用了Transformer架构，特别擅长捕捉音频信号中的全局特征和时间动态。这使得 Whisper 能够在多语言和多任务的语音识别任务中表现优异。</p> 
+<h4>Whisper 模型简介</h4> 
+<h5>1. 模型架构</h5> 
+<p>Whisper模型的核心是Transformer架构，包括编码器（Encoder）和解码器（Decoder）。该架构利用多头自注意力机制（Multi-Head Self-Attention）和位置编码（Positional Encoding）来处理音频信号，捕捉其时间动态和全局特征。</p> 
+<ul><li><strong>编码器（Encoder）</strong>：负责接收和处理输入音频信号，将其转换为高维度的中间表示。编码器由多层自注意力和前馈神经网络组成。</li><li><strong>解码器（Decoder）</strong>：利用编码器生成的中间表示，结合上下文信息，生成目标输出（如转录文本）。解码器结构类似于编码器，同样由多层自注意力和前馈神经网络组成。</li></ul> 
+<h5>2. 自注意力机制</h5> 
+<p>自注意力机制允许模型在处理音频信号时，动态地关注不同部分的信息，从而捕捉长程依赖关系。这种机制特别适用于音频信号处理，因为语音信息通常分布在整个序列中，需要全局视角进行建模。</p> 
+<h5>3. 位置编码</h5> 
+<p>由于音频信号是连续的时间序列数据，位置编码在Whisper模型中起着关键作用。位置编码通过为每个时间步添加唯一的位置信息，使得模型能够识别音频信号中的顺序和时间动态。</p> 
+<h4>Whisper 模型的特性和优势</h4> 
+<ol><li><strong>多语言支持</strong>：Whisper 支持多种语言的语音识别任务，能够处理不同语言的音频信号。</li><li><strong>高准确性</strong>：得益于Transformer架构和自注意力机制，Whisper在多任务语音识别任务中表现出色，准确率高。</li><li><strong>长程依赖建模</strong>：通过自注意力机制，Whisper能够捕捉音频信号中的长程依赖关系，处理长时间的语音数据更加有效。</li><li><strong>灵活性和扩展性</strong>：Whisper可以通过预训练和微调，适应不同的语音识别任务和数据集。</li></ol> 
+<h4>Whisper 模型的应用</h4> 
+<p>Whisper 可应用于多种语音识别和处理任务，包括：</p> 
+<ul><li><strong>实时语音转录</strong>：将实时语音输入转录为文本，用于字幕生成、会议记录等场景。</li><li><strong>多语言翻译</strong>：实时翻译不同语言的语音输入，促进跨语言交流。</li><li><strong>语音指令识别</strong>：用于智能设备和语音助手的语音指令识别，提高交互体验。</li></ul> 
+<h3></h3> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6b5e3c3edf847d8e18524f14749c9841/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Spring Boot配置MySQL数据库连接数</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4ef7eb6811e34561ca4dc9e2f30fc6c8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Java Spring Boot 从必应爬取图片</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

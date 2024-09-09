@@ -1,0 +1,168 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Llama 3-V: 比GPT4-V小100倍的SOTA - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/b70b4891350a3dd69b660ccac585399a/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Llama 3-V: 比GPT4-V小100倍的SOTA">
+  <meta property="og:description" content="大模型技术论文不断，每个月总会新增上千篇。本专栏精选论文重点解读，主题还是围绕着行业实践和工程量产。若在某个环节出现卡点，可以回到大模型必备腔调重新阅读。而最新科技（Mamba，xLSTM,KAN）则提供了大模型领域最新技术跟踪。若对于如果构建生成级别的AI架构则可以关注AI架构设计专栏。技术宅麻烦死磕LLM背后的基础模型。
+大模型领域风云变幻莫测。先是Llama3风靡全球，在几乎所有基准测试中都超越GPT-3.5，部分的基准测试超越了 GPT4。随后，GPT-4o横空出世，凭借其多模态重新夺回王位。而本文中的Llama3-v是研究人员带来新的惊喜，先看下图的统计。Llava是目前最先进的多模态理解模型，LLama3-V与Llava（多模态理解领域的SOTA）相比，提升了 10-20%。此外，除了MMMU之外，在其他指标的表现上和规模大于其 100 倍的闭源模型都毫不逊色。
+基于Llama3 8B的LLama3-v与其他模型对比的基准指标数据：
+模型架构 为了让Llama3理解视觉信息，因此研究人员将图像切块通过SigLIP模型获取图像的Embedding Vector，然后通过投影与输入文本Tokens对齐平面上。最后，投影块中的视觉Tokens添加到文本Tokens之前，并将联合表示传递到 Llama3。
+SigLIP 模型由 Xiaohua Zhai、Basil Mustafa、Alexander Kolesnikov 和 Lucas Beyer在“Sigmoid Loss for Language Image Pre-Training”中提出。SigLIP 是一种与 CLIP 类似的图像嵌入模型。主要区别在于训练损失，SigLIP采用成对Sigmoid 损失，这允许模型独立地对每个图像-文本对进行操作，而无需对批次中的所有对进行全局查看，同时对 logits应用sigmoid激活函数，而不是softmax。
+请看上图。换句大白话的说，sigLIP的损失函数是在文字Tokens和图像Tokens的两个序列的基础上计算出来。它指导着模型训练朝着这相同样本对（图，文）的点积值越大，而不同图文对的点积值越小的目标迈进。即矩阵对角线的越大，其余的各自越小。
+上图为SigLIP的预训练过程，它在三个设备进行训练。每设备持有4幅图和文字，在单设备上各自运算。紧接着不同的设备交换文本计算损失，如此循环直到全部计算完毕。
+SigLIP 的视觉编码器在高层次上将图像分割成一系列不重叠的图像块，并将它们投影到低维线性嵌入空间中，从而产生一系列块嵌入。然后，这些块嵌入经过视觉编码器，该编码器应用自注意力来捕获长距离依赖关系并提取更高级的视觉特征。
+虽然为了节省计算资源，在LLama3-v中直接使用由Google DeepMind训练的原始SigLIP模型。然而为了与文本嵌入对齐，还是在SigLIP输出之后使用了额外的投影模块。这与将单个线性层应用于原始图像嵌入的Llava不同，这个模块被改为训练两个自注意力块以便于更好地捕获输入模式，从而生成最终的图像嵌入向量（Embedding Vector）。
+对于文本输入，首先使用字节对编码 (BPE) 词汇表对文本进行Tokenizer，从而生成文本标记序列。这些标记（Token）会被包在特殊的 &lt;text&gt;和&lt;/text&gt;标签中来进行区分。对于来自投影层的图像输出将被视为单独的“视觉标记”，并使用&lt;image&gt;和&lt;/image&gt;标签划分它们。视觉标记序列前置到文本标记序列，形成新的序列成为Llama3的联合输入。
+SigLIP SigLIP模型比Llama3小得多，而且在整个过程中是被冻结参数的。因此对于预训练和 SFT，我们直接传入这些预先计算好的图像嵌入（Embedding），而不是重新运行SigLIP。这使得训练能够增加批处理大小并最大限度地利用GPU来运行SigLIP，还为节省了训练/推理时间。
+为了进一步的优化速度，由于SigLIP也适合运行在Macbook，因此采用MPS 优化过的SigLIP模型上进行运算，这样一来就能够实现每秒 32 张图像的吞吐量，让上个步骤得以实行。
+MPS（Metal Performance Shaders）是Apple提供的一套框架，专门用于在Apple设备上加速机器学习和图形计算。
+通过SigLIP预计算图像嵌入的步骤，目标是将图像传入SigLIP以获得图像的矢量表示或嵌入。
+由于分辨率较高，研究人员遵循LLaVA-UHD采用的方法并执行图像分割。图像分割的目的是将图像分成可变大小的块或片段，以实现更高效的编码和批量处理。
+细节分析 首先加载 SigLIP 模型和处理器/标记器，然后使用处理器预处理提供的输入图像。紧跟着将预处理后的图像传递给模型。之后获得模型的输出，将 S型激活函数应用于输出以获得概率。
+通过 SigLIP 计算图像嵌入之后，我们现在开始学习投影矩阵——你也可以将其视为投影层，它通常是线性或前馈层。如上文成分部分所述，投影层将视觉嵌入从其原始空间映射到联合多模态嵌入空间。具体而言，投影层将学习到的权重矩阵 Wv 应用于视觉嵌入 v 以获得投影的多模态视觉嵌入 Wv * v（矩阵运算）。通过投影之后，视觉和文本嵌入基本上被对齐到一个共同的多模态嵌入空间，这样一来视觉和文本就融合了，可以运用到各种的多模态任务，如视觉问答、图像字幕等。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-29T15:40:49+08:00">
+    <meta property="article:modified_time" content="2024-05-29T15:40:49+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Llama 3-V: 比GPT4-V小100倍的SOTA</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p class="img-center"><img alt="" height="550" src="https://images2.imgbox.com/f2/b3/0QPzriZh_o.jpg" width="959"></p> 
+<p>大模型技术论文不断，每个月总会新增上千篇。本专栏精选论文重点解读，主题还是围绕着行业实践和工程量产。若在某个环节出现卡点，可以回到<a href="https://mp.weixin.qq.com/mp/appmsgalbum?__biz=MzkzNDM4MDQyMg==&amp;action=getalbum&amp;album_id=3406419908098490373#wechat_redirect" rel="nofollow" title="大模型必备腔调">大模型必备腔调</a>重新阅读。而<a href="https://mp.weixin.qq.com/mp/appmsgalbum?__biz=MzkzNDM4MDQyMg==&amp;action=getalbum&amp;album_id=2502488678745964545#wechat_redirect" rel="nofollow" title="最新科技（Mamba，xLSTM,KAN）">最新科技（Mamba，xLSTM,KAN）</a>则提供了大模型领域最新技术跟踪。若对于如果构建生成级别的AI架构则可以关注<a href="https://mp.weixin.qq.com/mp/appmsgalbum?__biz=MzkzNDM4MDQyMg==&amp;action=getalbum&amp;album_id=3394830933287239680#wechat_redirect" rel="nofollow" title="AI架构设计专栏">AI架构设计专栏</a>。技术宅麻烦死磕<a href="https://mp.weixin.qq.com/mp/appmsgalbum?__biz=MzkzNDM4MDQyMg==&amp;action=getalbum&amp;album_id=3396531944564424706#wechat_redirect" rel="nofollow" title="LLM背后的基础模型">LLM背后的基础模型</a>。</p> 
+<p>大模型领域风云变幻莫测。先是Llama3风靡全球，在几乎所有基准测试中都超越GPT-3.5，部分的基准测试超越了 GPT4。随后，GPT-4o横空出世，凭借其多模态重新夺回王位。而本文中的Llama3-v是研究人员带来新的惊喜，先看下图的统计。Llava是目前最先进的多模态理解模型，LLama3-V与Llava（多模态理解领域的SOTA）相比，提升了 10-20%。此外，除了MMMU之外，在其他指标的表现上和规模大于其 100 倍的闭源模型都毫不逊色。</p> 
+<p>基于Llama3 8B的LLama3-v与其他模型对比的基准指标数据：</p> 
+<p class="img-center"><img alt="" height="591" src="https://images2.imgbox.com/15/97/EWIxfp2f_o.jpg" width="1080"></p> 
+<p></p> 
+<p class="img-center"><img alt="" height="141" src="https://images2.imgbox.com/bc/34/uKBjGnjh_o.png" width="1080"></p> 
+<h2 style="text-align:center;"><strong>模型架构</strong></h2> 
+<p class="img-center"><img alt="" height="355" src="https://images2.imgbox.com/d1/73/0C4C53V5_o.png" width="1080"></p> 
+<p>为了让Llama3理解视觉信息，因此研究人员将图像切块通过SigLIP模型获取图像的Embedding Vector，然后通过投影与输入文本Tokens对齐平面上。最后，投影块中的视觉Tokens添加到文本Tokens之前，并将联合表示传递到 Llama3。</p> 
+<p>SigLIP 模型由 Xiaohua Zhai、Basil Mustafa、Alexander Kolesnikov 和 Lucas Beyer在“Sigmoid Loss for Language Image Pre-Training”中提出。SigLIP 是一种与 CLIP 类似的图像嵌入模型。主要区别在于训练损失，SigLIP采用成对Sigmoid 损失，这允许模型独立地对每个图像-文本对进行操作，而无需对批次中的所有对进行全局查看，同时对 logits应用sigmoid激活函数，而不是softmax。</p> 
+<p class="img-center"><img alt="" height="567" src="https://images2.imgbox.com/80/d5/3EA1fKHA_o.jpg" width="1080"></p> 
+<blockquote> 
+ <p>请看上图。换句大白话的说，sigLIP的损失函数是在文字Tokens和图像Tokens的两个序列的基础上计算出来。它指导着模型训练朝着这相同样本对（图，文）的点积值越大，而不同图文对的点积值越小的目标迈进。即矩阵对角线的越大，其余的各自越小。</p> 
+</blockquote> 
+<p></p> 
+<p class="img-center"><img alt="" height="491" src="https://images2.imgbox.com/68/1d/aYJwdoUQ_o.png" width="1080"></p> 
+<p></p> 
+<blockquote> 
+ <p>上图为SigLIP的预训练过程，它在三个设备进行训练。每设备持有4幅图和文字，在单设备上各自运算。紧接着不同的设备交换文本计算损失，如此循环直到全部计算完毕。</p> 
+</blockquote> 
+<p>SigLIP 的视觉编码器在高层次上将图像分割成一系列不重叠的图像块，并将它们投影到低维线性嵌入空间中，从而产生一系列块嵌入。然后，这些块嵌入经过视觉编码器，该编码器应用自注意力来捕获长距离依赖关系并提取更高级的视觉特征。</p> 
+<p>虽然为了节省计算资源，在LLama3-v中直接使用由Google DeepMind训练的原始SigLIP模型。然而为了与文本嵌入对齐，还是在SigLIP输出之后使用了额外的投影模块。这与将单个线性层应用于原始图像嵌入的Llava不同，这个模块被改为训练两个自注意力块以便于更好地捕获输入模式，从而生成最终的图像嵌入向量（Embedding Vector）。</p> 
+<p>对于文本输入，首先使用字节对编码 (BPE) 词汇表对文本进行Tokenizer，从而生成文本标记序列。这些标记（Token）会被包在特殊的 &lt;text&gt;和&lt;/text&gt;标签中来进行区分。对于来自投影层的图像输出将被视为单独的“视觉标记”，并使用&lt;image&gt;和&lt;/image&gt;标签划分它们。视觉标记序列前置到文本标记序列，形成新的序列成为Llama3的联合输入。</p> 
+<p></p> 
+<p class="img-center"><img alt="" height="141" src="https://images2.imgbox.com/40/c8/q8UoOfwN_o.png" width="1080"></p> 
+<h2 style="background-color:transparent;text-align:center;"><strong>SigLIP</strong></h2> 
+<p>SigLIP模型比Llama3小得多，而且在整个过程中是被冻结参数的。因此对于预训练和 SFT，我们直接传入这些预先计算好的图像嵌入（Embedding），而不是重新运行SigLIP。这使得训练能够增加批处理大小并最大限度地利用GPU来运行SigLIP，还为节省了训练/推理时间。</p> 
+<p>为了进一步的优化速度，由于SigLIP也适合运行在Macbook，因此采用MPS 优化过的SigLIP模型上进行运算，这样一来就能够实现每秒 32 张图像的吞吐量，让上个步骤得以实行。</p> 
+<blockquote> 
+ <p>MPS（Metal Performance Shaders）是Apple提供的一套框架，专门用于在Apple设备上加速机器学习和图形计算。</p> 
+</blockquote> 
+<p>通过SigLIP预计算图像嵌入的步骤，目标是将图像传入SigLIP以获得图像的矢量表示或嵌入。</p> 
+<blockquote> 
+ <p>由于分辨率较高，研究人员遵循LLaVA-UHD采用的方法并执行图像分割。图像分割的目的是将图像分成可变大小的块或片段，以实现更高效的编码和批量处理。</p> 
+</blockquote> 
+<p class="img-center"><img alt="" height="141" src="https://images2.imgbox.com/03/74/UyngPuYt_o.png" width="1080"></p> 
+<h2 style="background-color:transparent;text-align:center;"><strong>细节分析</strong></h2> 
+<p>首先加载 SigLIP 模型和处理器/标记器，然后使用处理器预处理提供的输入图像。紧跟着将预处理后的图像传递给模型。之后获得模型的输出，将 S型激活函数应用于输出以获得概率。</p> 
+<p>通过 SigLIP 计算图像嵌入之后，我们现在开始学习投影矩阵——你也可以将其视为投影层，它通常是线性或前馈层。如上文成分部分所述，投影层将视觉嵌入从其原始空间映射到联合多模态嵌入空间。具体而言，投影层将学习到的权重矩阵 Wv 应用于视觉嵌入 v 以获得投影的多模态视觉嵌入 Wv * v（矩阵运算）。通过投影之后，视觉和文本嵌入基本上被对齐到一个共同的多模态嵌入空间，这样一来视觉和文本就融合了，可以运用到各种的多模态任务，如视觉问答、图像字幕等。</p> 
+<p>根据上述而言图像标记序列添加到文本标记序列之前。之所以添加在前面，是因为将图像放在文本之前，可以让模型在预训练期间更容易学习。</p> 
+<p class="img-center"><img alt="" height="1004" src="https://images2.imgbox.com/32/35/kKdJRmS4_o.jpg" width="1080"></p> 
+<p>这里借用了LLaVA-UHD的架构图，因为LLama3-v和LLaVA-UHD<strong>几乎相同，两者只不过在组件的选择不同而已</strong>。前者采用了SigLIP和LLama3，而后者选择CLIP-ViT和Vicuna-13B作为基座模型。</p> 
+<p class="img-center"><img alt="" height="141" src="https://images2.imgbox.com/c8/ba/RizyGxZ6_o.png" width="1080"></p> 
+<h2 style="text-align:center;"><strong>训练回放</strong></h2> 
+<p>训练分为两个阶段：<strong>在预训练中</strong>使用 600,000 个样本，该步骤保持 Llama-3架构的主要权重不变，主要训练投影矩阵。这里主要是为了训练图像Tokens与文本Tokens的联合对齐。</p> 
+<p>在第二个阶段微调更多的类似指令微调。这个步骤冻结SigLIP模型和投影层的权重，但是更新Llama3 8B模型的权重和其余的参数。这里用了大约1M张图像。除此之外还利用了从YI模型系列生成的多模态合成数据。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/57b3ef03d72095741d36c99dbadfd633/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Python | 基础语法总结（超详细）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/c89210a90801f97b332369ceac95fa35/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Eslint和Prettier</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

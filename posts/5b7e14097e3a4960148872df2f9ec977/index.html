@@ -1,0 +1,323 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>elasticsearch去重：collapse、cardinality、terms&#43;top_hits实现总结 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/5b7e14097e3a4960148872df2f9ec977/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="elasticsearch去重：collapse、cardinality、terms&#43;top_hits实现总结">
+  <meta property="og:description" content="码到三十五 ： 个人主页 目录 一 、collapse折叠去重原理用法注意事项 二、字段聚合(terms) &#43; top_hits聚合 去重原理用法 三、两种方法的比较字段聚合(`terms`)&#43; `top_hits`聚合使用`collapse`功能对比总结 四、cardinality 统计去重后的数量原理用法precision_threshold 参数说明 五、collapse &#43; cardinality 实现去重统计和查询 一 、collapse折叠去重 elasticsearch中的collapse功能允许用户对搜索结果进行分组，这在某些情况下可以看作是一种去重操作。它的主要目的是在搜索大量文档时，只显示每个分组的一个代表文档，而不是显示所有匹配的文档。
+原理 collapse功能基于一个或多个字段的值对搜索结果进行分组。当你指定了collapse参数后，Elasticsearch会在后台对匹配的文档进行分组，并且每个分组只会返回一个代表文档。这个代表文档通常是分组中的第一个文档，但也可以通过其他参数进行定制。
+用法 以下是如何在Elasticsearch查询中使用collapse的基本示例：
+{ &#34;query&#34;: { &#34;match&#34;: { &#34;field&#34;: &#34;value&#34; } }, &#34;collapse&#34;: { &#34;field&#34;: &#34;group_field&#34; } } 在这个示例中：
+query部分定义了搜索的基本条件。在这个例子中，我们搜索字段field值为value的文档。collapse部分指定了用于分组的字段，即group_field。所有在这个字段上具有相同值的文档将被分组在一起，并且只返回一个代表文档。 你还可以通过添加inner_hits参数来定制返回的分组代表文档。例如，如果你想在每个分组中返回评分最高的文档，你可以这样做：
+{ &#34;query&#34;: { &#34;match&#34;: { &#34;field&#34;: &#34;value&#34; } }, &#34;collapse&#34;: { &#34;field&#34;: &#34;group_field&#34;, &#34;inner_hits&#34;: { &#34;name&#34;: &#34;most_relevant&#34;, &#34;size&#34;: 1, &#34;sort&#34;: [ { &#34;_score&#34;: { &#34;order&#34;: &#34;">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-28T23:33:28+08:00">
+    <meta property="article:modified_time" content="2024-06-28T23:33:28+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">elasticsearch去重：collapse、cardinality、terms&#43;top_hits实现总结</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <center> 
+ <font color="#c09008" size="4"><strong> 码到三十五 ：</strong></font> 
+ <a href="https://blog.csdn.net/qq_26664043" size="6"><font color="#555fff" size="4"> 个人主页</font></a> 
+</center> 
+<hr> 
+<p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><ul><li><a href="#_collapse_8" rel="nofollow">一 、collapse折叠去重</a></li><li><ul><li><a href="#_12" rel="nofollow">原理</a></li><li><a href="#_16" rel="nofollow">用法</a></li><li><a href="#_68" rel="nofollow">注意事项</a></li></ul> 
+   </li><li><a href="#terms__top_hits__78" rel="nofollow">二、字段聚合(terms) + top_hits聚合 去重</a></li><li><ul><li><a href="#_81" rel="nofollow">原理</a></li><li><a href="#_89" rel="nofollow">用法</a></li></ul> 
+   </li><li><a href="#_134" rel="nofollow">三、两种方法的比较</a></li><li><ul><li><a href="#terms_top_hits_136" rel="nofollow">字段聚合(`terms`)+ `top_hits`聚合</a></li><li><a href="#collapse_144" rel="nofollow">使用`collapse`功能</a></li><li><a href="#_152" rel="nofollow">对比总结</a></li></ul> 
+   </li><li><a href="#cardinality__160" rel="nofollow">四、cardinality 统计去重后的数量</a></li><li><ul><li><a href="#_162" rel="nofollow">原理</a></li><li><a href="#_172" rel="nofollow">用法</a></li><li><a href="#precision_threshold__208" rel="nofollow">precision_threshold 参数说明</a></li></ul> 
+   </li><li><a href="#collapse__cardinality__227" rel="nofollow">五、collapse + cardinality 实现去重统计和查询</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h3><a id="_collapse_8"></a>一 、collapse折叠去重</h3> 
+<p>elasticsearch中的<code>collapse</code>功能允许用户对搜索结果进行分组，这在某些情况下可以看作是一种去重操作。它的主要目的是在搜索大量文档时，只显示每个分组的一个代表文档，而不是显示所有匹配的文档。</p> 
+<h4><a id="_12"></a>原理</h4> 
+<p><code>collapse</code>功能基于一个或多个字段的值对搜索结果进行分组。当你指定了<code>collapse</code>参数后，Elasticsearch会在后台对匹配的文档进行分组，并且每个分组只会返回一个代表文档。这个代表文档通常是分组中的第一个文档，但也可以通过其他参数进行定制。</p> 
+<h4><a id="_16"></a>用法</h4> 
+<p>以下是如何在Elasticsearch查询中使用<code>collapse</code>的基本示例：</p> 
+<pre><code class="prism language-json"><span class="token punctuation">{<!-- --></span>
+  <span class="token string-property property">"query"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token string-property property">"match"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token string-property property">"field"</span><span class="token operator">:</span> <span class="token string">"value"</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"collapse"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token string-property property">"field"</span><span class="token operator">:</span> <span class="token string">"group_field"</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>在这个示例中：</p> 
+<ul><li><code>query</code>部分定义了搜索的基本条件。在这个例子中，我们搜索字段<code>field</code>值为<code>value</code>的文档。</li><li><code>collapse</code>部分指定了用于分组的字段，即<code>group_field</code>。所有在这个字段上具有相同值的文档将被分组在一起，并且只返回一个代表文档。</li></ul> 
+<p>你还可以通过添加<code>inner_hits</code>参数来定制返回的分组代表文档。例如，如果你想在每个分组中返回评分最高的文档，你可以这样做：</p> 
+<pre><code class="prism language-json"><span class="token punctuation">{<!-- --></span>
+  <span class="token string-property property">"query"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token string-property property">"match"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token string-property property">"field"</span><span class="token operator">:</span> <span class="token string">"value"</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span><span class="token punctuation">,</span>
+  <span class="token string-property property">"collapse"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token string-property property">"field"</span><span class="token operator">:</span> <span class="token string">"group_field"</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"inner_hits"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token string-property property">"name"</span><span class="token operator">:</span> <span class="token string">"most_relevant"</span><span class="token punctuation">,</span>
+      <span class="token string-property property">"size"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+      <span class="token string-property property">"sort"</span><span class="token operator">:</span> <span class="token punctuation">[</span>
+        <span class="token punctuation">{<!-- --></span>
+          <span class="token string-property property">"_score"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token string-property property">"order"</span><span class="token operator">:</span> <span class="token string">"desc"</span>
+          <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+      <span class="token punctuation">]</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<ul><li><code>inner_hits</code>部分定义了如何为每个分组选择代表文档。这里，我们命名了<code>inner_hits</code>的结果为<code>most_relevant</code>。</li><li><code>size: 1</code>表示每个分组只返回一个文档。</li><li><code>sort</code>部分指定了如何对分组内的文档进行排序。在这里，我们根据文档的评分（<code>_score</code>）进行降序排序，因此每个分组的代表文档将是该分组中评分最高的文档。</li></ul> 
+<h4><a id="_68"></a>注意事项</h4> 
+<ol><li><strong>性能开销</strong>：在大数据集上应用collapse功能可能会带来额外的性能开销，因为需要对结果进行分组和排序操作。</li><li><strong>分页复杂性</strong>：当与分页功能结合使用时，需要注意Elasticsearch的分页是基于索引顺序，而不是折叠后的顺序，这可能导致深度分页时的性能问题或结果不一致。</li><li><strong>不能与<code>scroll</code>、<code>rescore</code>及<code>search_after</code>结合使用</strong>： 由于<code>collapse</code>需要对结果进行分组和排序以确定每个组的最佳匹配文档，这个过程可能会与<code>scroll</code>、<code>rescore</code>和<code>search_after</code>的某些功能冲突。</li><li><strong>性能表现</strong>：虽然<code>collapse</code>通常比完全的分组和聚合操作更高效，因为它只返回每个组的最佳文档，但处理大量数据时仍可能产生性能开销。</li><li><strong>字段类型</strong>：<code>collapse</code>参数所使用的字段必须是<code>keyword</code>或<code>number</code>类型，因为这些类型的字段值精确，适用于分组和排序。使用<code>text</code>类型字段可能导致不准确的结果。</li></ol> 
+<p>在使用<code>collapse</code>时，请务必考虑这些限制和注意事项，以确保查询的准确性和性能。通过合理规划和优化查询，可以充分利用<code>collapse</code>的分组功能，同时避免潜在的性能瓶颈。</p> 
+<h3><a id="terms__top_hits__78"></a>二、字段聚合(terms) + top_hits聚合 去重</h3> 
+<p>结合使用字段聚合(terms)和top_hits聚合可以实现去重功能。</p> 
+<h4><a id="_81"></a>原理</h4> 
+<ol><li> <p><strong>字段聚合(terms)</strong>：此聚合类型用于显示某个字段中的唯一值及其对应的文档数量。通过字段聚合，我们可以将数据按照指定字段的不同值进行分组。</p> </li><li> <p><strong>top_hits聚合</strong>：此聚合类型用于在每个分组（bucket）内部返回最匹配的文档。当与terms聚合结合使用时，它可以在每个分组中返回指定数量的文档，通常用于返回每个分组的代表性文档。</p> </li></ol> 
+<p>结合这两种聚合，我们可以先按照某个字段进行分组（实现初步的“去重”效果，即每个分组代表一个唯一的字段值），然后在每个分组中使用top_hits聚合返回代表性的文档，从而实现更精细的去重功能。</p> 
+<h4><a id="_89"></a>用法</h4> 
+<ol><li> <p><strong>构建基础查询</strong>：首先，你需要构建一个基础的Elasticsearch查询，用于筛选出需要进行去重处理的文档集合。</p> </li><li> <p><strong>添加terms聚合</strong>：在查询的聚合部分，添加一个terms聚合，并指定需要按其进行分组的字段。这样，Elasticsearch会将所有文档按照该字段的唯一值进行分组。</p> </li><li> <p><strong>嵌套top_hits聚合</strong>：在terms聚合的每个分组中，嵌套一个top_hits聚合。这样，在每个分组内部，你可以指定返回最匹配的文档数量（通常是1，以实现去重效果）。</p> </li><li> <p><strong>（可选）定制top_hits</strong>：你可以进一步定制top_hits聚合，例如通过指定排序方式来控制返回的代表性文档。</p> </li></ol> 
+<p>有一个包含商品信息的索引，并且你想按照“品牌”字段对商品进行去重，以便每个品牌只显示一个代表性商品。查询可能如下所示：</p> 
+<pre><code class="prism language-json"><span class="token constant">GET</span> <span class="token operator">/</span>products<span class="token operator">/</span>_search
+<span class="token punctuation">{<!-- --></span>
+  <span class="token string-property property">"size"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token comment">// 不返回具体的匹配文档，只返回聚合结果</span>
+  <span class="token string-property property">"aggs"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token string-property property">"brands"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// terms聚合，按品牌分组</span>
+      <span class="token string-property property">"terms"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"field"</span><span class="token operator">:</span> <span class="token string">"brand"</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"size"</span><span class="token operator">:</span> <span class="token number">10</span> <span class="token comment">// 假设我们想要获取前10个品牌的商品</span>
+      <span class="token punctuation">}</span><span class="token punctuation">,</span>
+      <span class="token string-property property">"aggs"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"top_product"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// 在每个品牌分组内，使用top_hits聚合返回代表性商品</span>
+          <span class="token string-property property">"top_hits"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token string-property property">"size"</span><span class="token operator">:</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token comment">// 每个品牌只返回一个代表性商品</span>
+            <span class="token string-property property">"sort"</span><span class="token operator">:</span> <span class="token punctuation">[</span> <span class="token comment">// 可以根据需要指定排序方式，例如按评分或价格排序</span>
+              <span class="token punctuation">{<!-- --></span>
+                <span class="token string-property property">"_score"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// 按评分排序</span>
+                  <span class="token string-property property">"order"</span><span class="token operator">:</span> <span class="token string">"desc"</span>
+                <span class="token punctuation">}</span>
+              <span class="token punctuation">}</span>
+            <span class="token punctuation">]</span>
+          <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+      <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>我们首先使用terms聚合按照“品牌”字段对商品进行分组，然后在每个分组中使用top_hits聚合返回一个代表性商品（评分最高的商品）。这样，我们就实现了按照品牌对商品进行去重的功能。</p> 
+<h3><a id="_134"></a>三、两种方法的比较</h3> 
+<h4><a id="terms_top_hits_136"></a>字段聚合(<code>terms</code>)+ <code>top_hits</code>聚合</h4> 
+<ul><li><strong>原理</strong>：这种方法首先使用<code>terms</code>聚合按某个字段的值进行分组，然后在每个分组内部使用<code>top_hits</code>聚合来获取每个分组的顶部文档。</li><li><strong>灵活性</strong>：非常高。你可以自定义<code>terms</code>聚合的字段，以及<code>top_hits</code>聚合返回的文档数量和排序方式。</li><li><strong>性能</strong>：依赖于聚合字段的基数（即不同值的数量）。如果基数很大，性能可能会受到影响，因为需要为每个不同的值进行聚合。</li><li><strong>结果</strong>：返回的是每个分组的一个或多个代表文档，以及每个分组的大小等信息。</li><li><strong>用途</strong>：适用于需要对数据进行多维分析和统计的场景。</li></ul> 
+<h4><a id="collapse_144"></a>使用<code>collapse</code>功能</h4> 
+<ul><li><strong>原理</strong>：<code>collapse</code>功能通过指定一个字段来对搜索结果进行分组，并且每组只返回一个最佳匹配的文档（通常是基于排序字段的最高或最低值）。</li><li><strong>灵活性</strong>：相对较低。你只能基于一个字段进行分组，并且每组只返回一个文档。</li><li><strong>性能</strong>：通常比字段聚合更高效，因为它不需要计算每个分组的统计信息，只需要找到每个分组的最佳匹配文档。</li><li><strong>结果</strong>：返回的是每个分组的最佳匹配文档。</li><li><strong>用途</strong>：适用于只需要获取每个分组的代表文档，而不需要详细统计信息的场景。</li></ul> 
+<h4><a id="_152"></a>对比总结</h4> 
+<ul><li><strong>灵活性</strong>：字段聚合+<code>top_hits</code>提供了更多的自定义选项，可以按多个字段进行分组，并控制返回的文档数量和排序。而<code>collapse</code>则更简单直接，只基于一个字段进行分组。</li><li><strong>性能</strong>：对于大数据集，<code>collapse</code>可能更高效，因为它避免了复杂的聚合计算。然而，实际性能还取决于具体的使用场景和数据分布。</li><li><strong>结果丰富性</strong>：字段聚合+<code>top_hits</code>可以返回更丰富的信息，包括分组大小和多个代表文档。而<code>collapse</code>只返回每个分组的最佳文档。</li></ul> 
+<p>在选择使用哪种方法时，应根据具体需求、数据量和性能要求来权衡。如果你需要详细的分组统计信息和多个代表文档，字段聚合+<code>top_hits</code>可能是更好的选择。如果你只需要快速获取每个分组的最佳文档，并且关注性能，那么<code>collapse</code>可能更适合你。</p> 
+<h3><a id="cardinality__160"></a>四、cardinality 统计去重后的数量</h3> 
+<p>cardinality聚合是一种用于统计某个字段中不同值的数量基数（即去重后的数量）的功能。</p> 
+<h4><a id="_162"></a>原理</h4> 
+<ol><li> <p><strong>基于HyperLogLog++算法</strong>：cardinality聚合是基于HyperLogLog++(HLL)算法的近似算法。HLL会先对输入作哈希运算，然后根据哈希运算的结果中的bits做概率估算，从而得到基数值，即不同值的数量。</p> </li><li> <p><strong>近似结果</strong>：需要注意的是，由于使用了HLL算法，cardinality聚合提供的是一个近似结果，而不是精确值。但在大多数情况下，这个近似值已经足够准确，可以满足业务需求。</p> </li><li> <p><strong>性能优化</strong>：为了提升性能，Elasticsearch在处理大数据集时会使用一定的优化策略，比如使用分桶和并行处理等技术来加速计算过程。</p> </li></ol> 
+<p><img src="https://images2.imgbox.com/0e/e9/yxfJMKgj_o.jpg" alt="在这里插入图片描述"></p> 
+<h4><a id="_172"></a>用法</h4> 
+<ol><li> <p><strong>基础用法</strong>：要使用cardinality聚合，你需要在Elasticsearch的查询请求中指定一个cardinality聚合，并设置要统计的字段。例如，如果你想统计一个索引中“color”字段的不同值的数量，你可以发送一个包含cardinality聚合的查询请求。</p> </li><li> <p><strong>嵌套在其他聚合中</strong>：cardinality聚合还可以嵌套在其他聚合中，比如date_histogram聚合。这样，你可以按时间间隔（如每月、每天等）来统计不同值的数量。这对于分析时间序列数据中的唯一值数量非常有用。</p> </li><li> <p><strong>调整精度</strong>：虽然cardinality聚合提供的是近似结果，但你可以通过调整相关参数来权衡精度和性能。Elasticsearch允许你设置精度阈值，以便在可接受的误差范围内获得更快的计算结果。</p> </li></ol> 
+<p>假设你有一个包含商品销售数据的Elasticsearch索引，你想统计“color”字段中有多少种不同的颜色。你可以使用以下查询来实现：</p> 
+<pre><code class="prism language-json"><span class="token constant">GET</span> <span class="token operator">/</span>sales<span class="token operator">/</span>_search  
+<span class="token punctuation">{<!-- --></span>  
+  <span class="token string-property property">"query"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>  
+    <span class="token string-property property">"range"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>  
+      <span class="token string-property property">"date"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>  
+        <span class="token string-property property">"gte"</span><span class="token operator">:</span> <span class="token string">"2024-01-01"</span><span class="token punctuation">,</span>  
+        <span class="token string-property property">"lte"</span><span class="token operator">:</span> <span class="token string">"2024-06-30"</span>  
+      <span class="token punctuation">}</span>  
+    <span class="token punctuation">}</span>  
+  <span class="token punctuation">}</span><span class="token punctuation">,</span>  
+  <span class="token string-property property">"size"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>  
+  <span class="token string-property property">"aggs"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>  
+    <span class="token string-property property">"distinct_colors_in_period"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>  
+      <span class="token string-property property">"cardinality"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>  
+        <span class="token string-property property">"field"</span><span class="token operator">:</span> <span class="token string">"color"</span>  <span class="token punctuation">,</span>
+         <span class="token string-property property">"precision_threshold"</span><span class="token operator">:</span> <span class="token number">1000</span>  
+
+      <span class="token punctuation">}</span>  
+    <span class="token punctuation">}</span>  
+  <span class="token punctuation">}</span>  
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>这个查询会返回一个聚合结果，其中包含“color”字段中不同颜色的数量。</p> 
+<h4><a id="precision_threshold__208"></a>precision_threshold 参数说明</h4> 
+<p>cardinality 度量是一个近似算法。 它是基于 HyperLogLog++ （HLL）算法的。 HLL 会先对我们的输入作哈希运算，然后根据哈希运算的结果中的 bits 做概率估算从而得到基数。</p> 
+<p>我们不需要理解技术细节， 但我们最好应该关注一下这个算法的 特性 ：</p> 
+<ul><li>可配置的精度，用来控制内存的使用（更精确 ＝ 更多内存）。</li><li>小的数据集精度是非常高的。</li><li>我们可以通过配置参数，来设置去重需要的固定内存使用量。无论数千还是数十亿的唯一值，内存使用量只与你配置的精确度相关。</li></ul> 
+<p>要配置精度，我们必须指定 precision_threshold 参数的值。 这个阈值定义了在何种基数水平下我们希望得到一个近乎精确的结果.</p> 
+<ul><li> <p>recision_threshold 接受 0–40,000 之间的数字，更大的值还是会被当作 40,000 来处理。</p> </li><li> <p>以上示例会确保当字段唯一值在 1000 以内时会得到非常准确的结果。尽管算法是无法保证这点的，但如果基数在阈值以下，几乎总是 100% 正确的。高于阈值的基数会开始节省内存而牺牲准确度，同时也会对度量结果带入误差。</p> </li><li> <p>对于指定的阈值，HLL 的数据结构会大概使用 precision_threshold * 8 字节的内存，所以就必须在牺牲内存和获得额外的准确度间做平衡。</p> </li><li> <p>在实际应用中， 100 的阈值可以在唯一值为百万的情况下仍然将误差维持 5% 以内。</p> </li></ul> 
+<h3><a id="collapse__cardinality__227"></a>五、collapse + cardinality 实现去重统计和查询</h3> 
+<pre><code class="prism language-json"><span class="token punctuation">{<!-- --></span>
+    <span class="token string-property property">"query"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"bool"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token string-property property">"filter"</span><span class="token operator">:</span> <span class="token punctuation">[</span>
+                <span class="token punctuation">{<!-- --></span>
+                    <span class="token string-property property">"range"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token string-property property">"personid"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token string-property property">"lt"</span><span class="token operator">:</span> <span class="token string">"1000000000"</span>
+                        <span class="token punctuation">}</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span><span class="token punctuation">,</span>
+                <span class="token punctuation">{<!-- --></span>
+                    <span class="token string-property property">"term"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token string-property property">"isDeleted"</span><span class="token operator">:</span> <span class="token string">"0"</span>
+                    <span class="token punctuation">}</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">]</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"collapse"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"field"</span><span class="token operator">:</span> <span class="token string">"course_id"</span>
+    <span class="token punctuation">}</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"from"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"size"</span><span class="token operator">:</span> <span class="token number">10</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"track_total_hits"</span><span class="token operator">:</span> <span class="token boolean">true</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"aggs"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"courseAgg"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token string-property property">"cardinality"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token string-property property">"field"</span><span class="token operator">:</span> <span class="token string">"course_id"</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>返回结果</strong>：</p> 
+<pre><code class="prism language-json"><span class="token punctuation">{<!-- --></span>
+    <span class="token string-property property">"took"</span><span class="token operator">:</span> <span class="token number">140</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"timed_out"</span><span class="token operator">:</span> <span class="token boolean">false</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"_shards"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"total"</span><span class="token operator">:</span> <span class="token number">6</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"successful"</span><span class="token operator">:</span> <span class="token number">6</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"skipped"</span><span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"failed"</span><span class="token operator">:</span> <span class="token number">0</span>
+    <span class="token punctuation">}</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"hits"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"total"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token string-property property">"value"</span><span class="token operator">:</span> <span class="token number">2111</span><span class="token punctuation">,</span>
+            <span class="token string-property property">"relation"</span><span class="token operator">:</span> <span class="token string">"eq"</span>
+        <span class="token punctuation">}</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"max_score"</span><span class="token operator">:</span> <span class="token number">0.0</span><span class="token punctuation">,</span>
+        <span class="token string-property property">"hits"</span><span class="token operator">:</span> <span class="token punctuation">[</span><span class="token operator">...</span><span class="token punctuation">]</span>
+    <span class="token punctuation">}</span><span class="token punctuation">,</span>
+    <span class="token string-property property">"aggregations"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token string-property property">"courseAgg"</span><span class="token operator">:</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token string-property property">"value"</span><span class="token operator">:</span> <span class="token number">1070</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>解释说明</strong>：</p> 
+<ol><li> <p><code>hits</code>中的<code>total</code>字段显示的总条数，实际上是查询结果在去重之前的总数量，也就是原始数据的条数。这个数值在分页功能中通常不会被直接使用。而<code>hits</code>数组的大小与<code>aggregations</code>中的<code>courseAgg</code>聚合值相等，表示数组中展示的是去重后的数据。</p> </li><li> <p>在<code>aggregations</code>中的<code>courseAgg</code>条数，代表去重后的实际数据条数，这也是进行分页时所使用的关键数值，它指示了去重后可用于展示的总条数。</p> </li><li> <p><code>from</code>参数表示查询的起始位置，即从哪里开始检索数据，它相当于查询的偏移量。</p> </li><li> <p><code>size</code>参数定义了每次查询返回的数据条数，即一次检索并展示多少条记录。</p> </li></ol> 
+<hr> 
+<center> 
+ <font color="#c65a6c" size="4"> 关注以下公众号获取更多深度内容，纯干货 ! </font> 
+</center> 
+<p><img src="https://images2.imgbox.com/57/c9/NPpSBFLa_o.gif" alt=""></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/9e76419a4d3c5cd8f42144a00ed0a132/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Cyuyanzhong的内存函数</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/cb6511b152fa4fc3401e20b8ba66f402/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【python】OpenCV—Aruco</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

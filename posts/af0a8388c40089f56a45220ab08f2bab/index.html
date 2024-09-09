@@ -1,0 +1,360 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>利用Geohash算法，快速检索周边兴趣点 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/af0a8388c40089f56a45220ab08f2bab/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="利用Geohash算法，快速检索周边兴趣点">
+  <meta property="og:description" content="文章目录 一、前言二、基本原理三、Geohash算法四、算法存在的问题五、代码实现六、问题解决处理 一、前言 需要一个需求，查找某小区附近的超市，如果该小区和超市距离在500米以内，则查找成功。
+实现该功能按照传统方式，需要获取小区中心点坐标，然后500米半径做缓冲，然后对所有的超市点位和生成的缓冲区做空间分析，在缓冲区内的就是符合条件的超市。但是超市数据量很大，有什么方式能快速过滤超市数据呐？geohash是不错的方式，下面这种介绍geohash算法的原因和实现方式。
+二、基本原理 GeoHash是一种地址编码方法。他能够把二维的空间经纬度数据编码成一个字符串。
+（1） 按照经度范围[-180°,180°]，纬度范围[-90°,90°]对目标经纬度进行计算；二分经度和纬度范围区间，分别判断经度和纬度，在右侧集合则为1，在左侧集合则为0；循环进行此计算。
+（2）将所得经纬度1和0结果，经度在偶数位（从0位计算），纬度在奇数位进行拼接，5位二进制结果为 一组，转换为十进制数后，再转换为对应Base32码表中数字，即得到对应GeoHash值。
+具体分法：
+经度范围是东经180到西经180，纬度范围是南纬90到北纬90，我们设定西经为负，南纬为负，所以地球上的经度范围就是[-180， 180]，纬度范围就是[-90，90]。如果以本初子午线、赤道为界，地球可以分成4个部分。
+如果纬度范围[-90°, 0°)用二进制0代表，（0°, 90°]用二进制1代表，经度范围[-180°, 0°)用二进制0代表，（0°, 180°]用二进制1代表，那么地球可以分成如下4个部分
+如果在小块范围内递归对半划分呢？
+可以看到，划分的区域更多了，也更精确了。geohash算法就是基于这种思想，划分的次数更多，区域更多，区域面积更小了。通过将经纬度编码，给地理位置分区
+三、Geohash算法 Geohash算法一共有三步。
+首先将经纬度变成二进制。
+第一步：
+比如这样一个点（39.923201, 116.390705）
+纬度的范围是（-90，90），其中间值为0。对于纬度39.923201，在区间（0，90）中，因此得到一个1；（0，90）区间的中间值为45度，纬度39.923201小于45，因此得到一个0，依次计算下去，即可得到纬度的二进制表示，如下表：
+最后得到纬度的二进制表示为：
+10111000110001111001 同理可以得到经度116.390705的二进制表示为：
+11010010110001000100 第2步将经纬度合并：
+经度占偶数位，纬度占奇数位，注意，0也是偶数位。
+11100 11101 00100 01111 00000 01101 01011 00001 第3步，按照Base32进行编码：
+Base32编码表的其中一种如下，是用0-9、b-z（去掉a, i, l, o）这32个字母进行编码。具体操作是先将上一步得到的合并后二进制转换为10进制数据，然后对应生成Base32码。需要注意的是，将5个二进制位转换成一个base32码。上例最终得到的值为
+wx4g0ec1 Geohash比直接用经纬度的高效很多，而且使用者可以发布地址编码，既能表明自己位于北海公园附近，又不至于暴露自己的精确坐标，有助于隐私保护。
+GeoHash用一个字符串表示经度和纬度两个坐标。在数据库中可以实现在一列上应用索引（某些情况下无法在两列上同时应用索引）
+GeoHash表示的并不是一个点，而是一个矩形区域
+GeoHash编码的前缀可以表示更大的区域。例如wx4g0ec1，它的前缀wx4g0e表示包含编码wx4g0ec1在内的更大范围。 这个特性可以用于附近地点搜索
+编码越长，表示的范围越小，位置也越精确。因此我们就可以通过比较GeoHash匹配的位数来判断两个点之间的大概距离。
+四、算法存在的问题 geohash算法有两个问题。首先是边缘问题。
+如图，如果小区中心点在红点位置，区域内还有一个黄点。相邻区域内的绿点明显离红点更近。但因为黄点的编码和红点一样，最终找到的将是黄点。这就有问题了。
+要解决这个问题，很简单，只要再查找周边8个区域内的点，看哪个离自己更近即可。
+另外就是曲线突变问题。
+本文第2张图片比较好地解释了这个问题。其中0111和1000两个编码非常相近，但它们的实际距离确很远。所以编码相近的两个单位，并不一定真实距离很近，这需要实际计算两个点的距离才行。
+五、代码实现 public class GeoHash { public static final double MINLAT = -90; public static final double MAXLAT = 90; public static final double MINLNG = -180; public static final double MAXLNG = 180; private static int numbits = 3 * 5; //经纬度单独编码长度 private static double minLat; private static double minLng; private final static char[] digits = { &#39;0&#39;, &#39;1&#39;, &#39;2&#39;, &#39;3&#39;, &#39;4&#39;, &#39;5&#39;, &#39;6&#39;, &#39;7&#39;, &#39;8&#39;, &#39;9&#39;, &#39;b&#39;, &#39;c&#39;, &#39;d&#39;, &#39;e&#39;, &#39;f&#39;, &#39;g&#39;, &#39;h&#39;, &#39;j&#39;, &#39;k&#39;, &#39;m&#39;, &#39;n&#39;, &#39;p&#39;, &#39;q&#39;, &#39;r&#39;, &#39;s&#39;, &#39;t&#39;, &#39;u&#39;, &#39;v&#39;, &#39;w&#39;, &#39;x&#39;, &#39;y&#39;, &#39;z&#39; }; //定义编码映射关系 final static HashMap&lt;Character, Integer&gt; lookup = new HashMap&lt;Character, Integer&gt;(); //初始化编码映射内容 static { int i = 0; for (char c : digits) lookup.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-08-20T17:23:57+08:00">
+    <meta property="article:modified_time" content="2024-08-20T17:23:57+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">利用Geohash算法，快速检索周边兴趣点</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_3" rel="nofollow">一、前言</a></li><li><a href="#_6" rel="nofollow">二、基本原理</a></li><li><a href="#Geohash_18" rel="nofollow">三、Geohash算法</a></li><li><a href="#_54" rel="nofollow">四、算法存在的问题</a></li><li><a href="#_61" rel="nofollow">五、代码实现</a></li><li><a href="#_249" rel="nofollow">六、问题解决处理</a></li></ul> 
+</div> 
+<p></p> 
+<hr> 
+<h2><a id="_3"></a>一、前言</h2> 
+<p>需要一个需求，查找某小区附近的超市，如果该小区和超市距离在500米以内，则查找成功。<br> 实现该功能按照传统方式，需要获取小区中心点坐标，然后500米半径做缓冲，然后对所有的超市点位和生成的缓冲区做空间分析，在缓冲区内的就是符合条件的超市。但是超市数据量很大，有什么方式能快速过滤超市数据呐？geohash是不错的方式，下面这种介绍geohash算法的原因和实现方式。</p> 
+<h2><a id="_6"></a>二、基本原理</h2> 
+<p>GeoHash是一种地址编码方法。他能够把二维的空间经纬度数据编码成一个字符串。<br> （1） 按照经度范围[-180°,180°]，纬度范围[-90°,90°]对目标经纬度进行计算；二分经度和纬度范围区间，分别判断经度和纬度，在右侧集合则为1，在左侧集合则为0；循环进行此计算。<br> （2）将所得经纬度1和0结果，经度在偶数位（从0位计算），纬度在奇数位进行拼接，5位二进制结果为 一组，转换为十进制数后，再转换为对应Base32码表中数字，即得到对应GeoHash值。<br> <strong>具体分法</strong>：<br> 经度范围是东经180到西经180，纬度范围是南纬90到北纬90，我们设定西经为负，南纬为负，所以地球上的经度范围就是[-180， 180]，纬度范围就是[-90，90]。如果以本初子午线、赤道为界，地球可以分成4个部分。<br> 如果纬度范围[-90°, 0°)用二进制0代表，（0°, 90°]用二进制1代表，经度范围[-180°, 0°)用二进制0代表，（0°, 180°]用二进制1代表，那么地球可以分成如下4个部分</p> 
+<p><img src="https://images2.imgbox.com/d4/b4/1KzG37xF_o.png" alt="在这里插入图片描述"><br> 如果在小块范围内递归对半划分呢？<br> <img src="https://images2.imgbox.com/c6/7b/2vWBQ8tk_o.png" alt="在这里插入图片描述"><br> 可以看到，划分的区域更多了，也更精确了。geohash算法就是基于这种思想，划分的次数更多，区域更多，区域面积更小了。通过将经纬度编码，给地理位置分区</p> 
+<h2><a id="Geohash_18"></a>三、Geohash算法</h2> 
+<p>Geohash算法一共有三步。<br> 首先将经纬度变成二进制。<br> <strong>第一步</strong>：<br> 比如这样一个点（39.923201, 116.390705）<br> 纬度的范围是（-90，90），其中间值为0。对于纬度39.923201，在区间（0，90）中，因此得到一个1；（0，90）区间的中间值为45度，纬度39.923201小于45，因此得到一个0，依次计算下去，即可得到纬度的二进制表示，如下表：<br> <img src="https://images2.imgbox.com/5f/6d/OK4dIGRK_o.png" alt="在这里插入图片描述"><br> 最后得到纬度的二进制表示为：</p> 
+<pre><code class="prism language-r">  <span class="token number">10111000110001111001</span>
+</code></pre> 
+<p>同理可以得到经度116.390705的二进制表示为：</p> 
+<pre><code class="prism language-r">  <span class="token number">11010010110001000100</span>
+</code></pre> 
+<p><strong>第2步将经纬度合并</strong>：<br> 经度占偶数位，纬度占奇数位，注意，0也是偶数位。</p> 
+<pre><code class="prism language-r">  <span class="token number">11100</span> <span class="token number">11101</span> <span class="token number">00100</span> <span class="token number">01111</span> <span class="token number">00000</span> <span class="token number">01101</span> <span class="token number">01011</span> <span class="token number">00001</span>
+</code></pre> 
+<p><strong>第3步，按照Base32进行编码</strong>：<br> Base32编码表的其中一种如下，是用0-9、b-z（去掉a, i, l, o）这32个字母进行编码。具体操作是先将上一步得到的合并后二进制转换为10进制数据，然后对应生成Base32码。需要注意的是，将5个二进制位转换成一个base32码。上例最终得到的值为</p> 
+<pre><code class="prism language-r">  wx4g0ec1
+</code></pre> 
+<p>Geohash比直接用经纬度的高效很多，而且使用者可以发布地址编码，既能表明自己位于北海公园附近，又不至于暴露自己的精确坐标，有助于隐私保护。</p> 
+<p>GeoHash用一个字符串表示经度和纬度两个坐标。在数据库中可以实现在一列上应用索引（某些情况下无法在两列上同时应用索引）<br> GeoHash表示的并不是一个点，而是一个矩形区域<br> GeoHash编码的前缀可以表示更大的区域。例如wx4g0ec1，它的前缀wx4g0e表示包含编码wx4g0ec1在内的更大范围。 这个特性可以用于附近地点搜索<br> 编码越长，表示的范围越小，位置也越精确。因此我们就可以通过比较GeoHash匹配的位数来判断两个点之间的大概距离。<br> <img src="https://images2.imgbox.com/71/58/Q4yJWJuf_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_54"></a>四、算法存在的问题</h2> 
+<p>geohash算法有两个问题。首先是边缘问题。<br> <img src="https://images2.imgbox.com/f1/98/HX8rKvyc_o.png" alt="在这里插入图片描述"><br> 如图，如果小区中心点在红点位置，区域内还有一个黄点。相邻区域内的绿点明显离红点更近。但因为黄点的编码和红点一样，最终找到的将是黄点。这就有问题了。<br> 要解决这个问题，很简单，只要再查找周边8个区域内的点，看哪个离自己更近即可。<br> 另外就是曲线突变问题。<br> 本文第2张图片比较好地解释了这个问题。其中0111和1000两个编码非常相近，但它们的实际距离确很远。所以编码相近的两个单位，并不一定真实距离很近，这需要实际计算两个点的距离才行。</p> 
+<h2><a id="_61"></a>五、代码实现</h2> 
+<pre><code class="prism language-javascript"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">GeoHash</span> <span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span> <span class="token keyword">static</span> final double <span class="token constant">MINLAT</span> <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">90</span><span class="token punctuation">;</span>
+<span class="token keyword">public</span> <span class="token keyword">static</span> final double <span class="token constant">MAXLAT</span> <span class="token operator">=</span> <span class="token number">90</span><span class="token punctuation">;</span>
+<span class="token keyword">public</span> <span class="token keyword">static</span> final double <span class="token constant">MINLNG</span> <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">180</span><span class="token punctuation">;</span>
+<span class="token keyword">public</span> <span class="token keyword">static</span> final double <span class="token constant">MAXLNG</span> <span class="token operator">=</span> <span class="token number">180</span><span class="token punctuation">;</span>
+
+<span class="token keyword">private</span> <span class="token keyword">static</span> int numbits <span class="token operator">=</span> <span class="token number">3</span> <span class="token operator">*</span> <span class="token number">5</span><span class="token punctuation">;</span> <span class="token comment">//经纬度单独编码长度</span>
+
+<span class="token keyword">private</span> <span class="token keyword">static</span> double minLat<span class="token punctuation">;</span>
+<span class="token keyword">private</span> <span class="token keyword">static</span> double minLng<span class="token punctuation">;</span>
+
+<span class="token keyword">private</span> final <span class="token keyword">static</span> char<span class="token punctuation">[</span><span class="token punctuation">]</span> digits <span class="token operator">=</span> <span class="token punctuation">{<!-- --></span> <span class="token string">'0'</span><span class="token punctuation">,</span> <span class="token string">'1'</span><span class="token punctuation">,</span> <span class="token string">'2'</span><span class="token punctuation">,</span> <span class="token string">'3'</span><span class="token punctuation">,</span> <span class="token string">'4'</span><span class="token punctuation">,</span> <span class="token string">'5'</span><span class="token punctuation">,</span> <span class="token string">'6'</span><span class="token punctuation">,</span> <span class="token string">'7'</span><span class="token punctuation">,</span> <span class="token string">'8'</span><span class="token punctuation">,</span>
+        <span class="token string">'9'</span><span class="token punctuation">,</span> <span class="token string">'b'</span><span class="token punctuation">,</span> <span class="token string">'c'</span><span class="token punctuation">,</span> <span class="token string">'d'</span><span class="token punctuation">,</span> <span class="token string">'e'</span><span class="token punctuation">,</span> <span class="token string">'f'</span><span class="token punctuation">,</span> <span class="token string">'g'</span><span class="token punctuation">,</span> <span class="token string">'h'</span><span class="token punctuation">,</span> <span class="token string">'j'</span><span class="token punctuation">,</span> <span class="token string">'k'</span><span class="token punctuation">,</span> <span class="token string">'m'</span><span class="token punctuation">,</span> <span class="token string">'n'</span><span class="token punctuation">,</span> <span class="token string">'p'</span><span class="token punctuation">,</span>
+        <span class="token string">'q'</span><span class="token punctuation">,</span> <span class="token string">'r'</span><span class="token punctuation">,</span> <span class="token string">'s'</span><span class="token punctuation">,</span> <span class="token string">'t'</span><span class="token punctuation">,</span> <span class="token string">'u'</span><span class="token punctuation">,</span> <span class="token string">'v'</span><span class="token punctuation">,</span> <span class="token string">'w'</span><span class="token punctuation">,</span> <span class="token string">'x'</span><span class="token punctuation">,</span> <span class="token string">'y'</span><span class="token punctuation">,</span> <span class="token string">'z'</span> <span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">//定义编码映射关系</span>
+final <span class="token keyword">static</span> HashMap<span class="token operator">&lt;</span>Character<span class="token punctuation">,</span> Integer<span class="token operator">&gt;</span> lookup <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">HashMap</span><span class="token operator">&lt;</span>Character<span class="token punctuation">,</span> Integer<span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//初始化编码映射内容</span>
+<span class="token keyword">static</span> <span class="token punctuation">{<!-- --></span>
+    int i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>char c <span class="token operator">:</span> digits<span class="token punctuation">)</span>
+        lookup<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>c<span class="token punctuation">,</span> i<span class="token operator">++</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">public</span> <span class="token function">GeoHash</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+    <span class="token function">setMinLatLng</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">public</span> String <span class="token function">encode</span><span class="token punctuation">(</span><span class="token parameter">double lat<span class="token punctuation">,</span> double lon</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    BitSet latbits <span class="token operator">=</span> <span class="token function">getBits</span><span class="token punctuation">(</span>lat<span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">90</span><span class="token punctuation">,</span> <span class="token number">90</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    BitSet lonbits <span class="token operator">=</span> <span class="token function">getBits</span><span class="token punctuation">(</span>lon<span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">180</span><span class="token punctuation">,</span> <span class="token number">180</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    StringBuilder buffer <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">StringBuilder</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>int i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> numbits<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        buffer<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span> <span class="token punctuation">(</span>lonbits<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token operator">?</span><span class="token string">'1'</span><span class="token operator">:</span><span class="token string">'0'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        buffer<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span> <span class="token punctuation">(</span>latbits<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token operator">?</span><span class="token string">'1'</span><span class="token operator">:</span><span class="token string">'0'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    String code <span class="token operator">=</span> <span class="token function">base32</span><span class="token punctuation">(</span>Long<span class="token punctuation">.</span><span class="token function">parseLong</span><span class="token punctuation">(</span>buffer<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">//Log.i("okunu", "encode  lat = " + lat + "  lng = " + lon + "  code = " + code);</span>
+    <span class="token keyword">return</span> code<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">public</span> ArrayList<span class="token operator">&lt;</span>String<span class="token operator">&gt;</span> <span class="token function">getArroundGeoHash</span><span class="token punctuation">(</span><span class="token parameter">double lat<span class="token punctuation">,</span> double lon</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+    <span class="token comment">//Log.i("okunu", "getArroundGeoHash  lat = " + lat + "  lng = " + lon);</span>
+    ArrayList<span class="token operator">&lt;</span>String<span class="token operator">&gt;</span> list <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ArrayList</span><span class="token operator">&lt;</span><span class="token operator">&gt;</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    double uplat <span class="token operator">=</span> lat <span class="token operator">+</span> minLat<span class="token punctuation">;</span>
+    double downLat <span class="token operator">=</span> lat <span class="token operator">-</span> minLat<span class="token punctuation">;</span>
+
+    double leftlng <span class="token operator">=</span> lon <span class="token operator">-</span> minLng<span class="token punctuation">;</span>
+    double rightLng <span class="token operator">=</span> lon <span class="token operator">+</span> minLng<span class="token punctuation">;</span>
+
+    String leftUp <span class="token operator">=</span> <span class="token function">encode</span><span class="token punctuation">(</span>uplat<span class="token punctuation">,</span> leftlng<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    list<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>leftUp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    String leftMid <span class="token operator">=</span> <span class="token function">encode</span><span class="token punctuation">(</span>lat<span class="token punctuation">,</span> leftlng<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    list<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>leftMid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    String leftDown <span class="token operator">=</span> <span class="token function">encode</span><span class="token punctuation">(</span>downLat<span class="token punctuation">,</span> leftlng<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    list<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>leftDown<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    String midUp <span class="token operator">=</span> <span class="token function">encode</span><span class="token punctuation">(</span>uplat<span class="token punctuation">,</span> lon<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    list<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>midUp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    String midMid <span class="token operator">=</span> <span class="token function">encode</span><span class="token punctuation">(</span>lat<span class="token punctuation">,</span> lon<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    list<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>midMid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    String midDown <span class="token operator">=</span> <span class="token function">encode</span><span class="token punctuation">(</span>downLat<span class="token punctuation">,</span> lon<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    list<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>midDown<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    String rightUp <span class="token operator">=</span> <span class="token function">encode</span><span class="token punctuation">(</span>uplat<span class="token punctuation">,</span> rightLng<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    list<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>rightUp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    String rightMid <span class="token operator">=</span> <span class="token function">encode</span><span class="token punctuation">(</span>lat<span class="token punctuation">,</span> rightLng<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    list<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>rightMid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    String rightDown <span class="token operator">=</span> <span class="token function">encode</span><span class="token punctuation">(</span>downLat<span class="token punctuation">,</span> rightLng<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    list<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>rightDown<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//Log.i("okunu", "getArroundGeoHash list = " + list.toString());</span>
+    <span class="token keyword">return</span> list<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//根据经纬度和范围，获取对应的二进制</span>
+<span class="token keyword">private</span> BitSet <span class="token function">getBits</span><span class="token punctuation">(</span><span class="token parameter">double lat<span class="token punctuation">,</span> double floor<span class="token punctuation">,</span> double ceiling</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    BitSet buffer <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">BitSet</span><span class="token punctuation">(</span>numbits<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>int i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> numbits<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        double mid <span class="token operator">=</span> <span class="token punctuation">(</span>floor <span class="token operator">+</span> ceiling<span class="token punctuation">)</span> <span class="token operator">/</span> <span class="token number">2</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>lat <span class="token operator">&gt;=</span> mid<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            buffer<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            floor <span class="token operator">=</span> mid<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            ceiling <span class="token operator">=</span> mid<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> buffer<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//将经纬度合并后的二进制进行指定的32位编码</span>
+<span class="token keyword">private</span> String <span class="token function">base32</span><span class="token punctuation">(</span><span class="token parameter">long i</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    char<span class="token punctuation">[</span><span class="token punctuation">]</span> buf <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">char</span><span class="token punctuation">[</span><span class="token number">65</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    int charPos <span class="token operator">=</span> <span class="token number">64</span><span class="token punctuation">;</span>
+    boolean negative <span class="token operator">=</span> <span class="token punctuation">(</span>i <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>negative<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        i <span class="token operator">=</span> <span class="token operator">-</span>i<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">while</span> <span class="token punctuation">(</span>i <span class="token operator">&lt;=</span> <span class="token operator">-</span><span class="token number">32</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        buf<span class="token punctuation">[</span>charPos<span class="token operator">--</span><span class="token punctuation">]</span> <span class="token operator">=</span> digits<span class="token punctuation">[</span><span class="token punctuation">(</span>int<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token operator">-</span><span class="token punctuation">(</span>i <span class="token operator">%</span> <span class="token number">32</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        i <span class="token operator">/=</span> <span class="token number">32</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    buf<span class="token punctuation">[</span>charPos<span class="token punctuation">]</span> <span class="token operator">=</span> digits<span class="token punctuation">[</span><span class="token punctuation">(</span>int<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token operator">-</span>i<span class="token punctuation">)</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>negative<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+        buf<span class="token punctuation">[</span><span class="token operator">--</span>charPos<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token string">'-'</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">String</span><span class="token punctuation">(</span>buf<span class="token punctuation">,</span> charPos<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token number">65</span> <span class="token operator">-</span> charPos<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">setMinLatLng</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    minLat <span class="token operator">=</span> <span class="token constant">MAXLAT</span> <span class="token operator">-</span> <span class="token constant">MINLAT</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>int i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> numbits<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        minLat <span class="token operator">/=</span> <span class="token number">2.0</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    minLng <span class="token operator">=</span> <span class="token constant">MAXLNG</span> <span class="token operator">-</span> <span class="token constant">MINLNG</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>int i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> numbits<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        minLng <span class="token operator">/=</span> <span class="token number">2.0</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//根据二进制和范围解码</span>
+<span class="token keyword">private</span> double <span class="token function">decode</span><span class="token punctuation">(</span><span class="token parameter">BitSet bs<span class="token punctuation">,</span> double floor<span class="token punctuation">,</span> double ceiling</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    double mid <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>int i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span>bs<span class="token punctuation">.</span><span class="token function">length</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        mid <span class="token operator">=</span> <span class="token punctuation">(</span>floor <span class="token operator">+</span> ceiling<span class="token punctuation">)</span> <span class="token operator">/</span> <span class="token number">2</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>bs<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">)</span>
+            floor <span class="token operator">=</span> mid<span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            ceiling <span class="token operator">=</span> mid<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> mid<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">//对编码后的字符串解码</span>
+<span class="token keyword">public</span> double<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token function">decode</span><span class="token punctuation">(</span><span class="token parameter">String geohash</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    StringBuilder buffer <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">StringBuilder</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>char c <span class="token operator">:</span> geohash<span class="token punctuation">.</span><span class="token function">toCharArray</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        int i <span class="token operator">=</span> lookup<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token number">32</span><span class="token punctuation">;</span>
+        buffer<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span> Integer<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span>i<span class="token punctuation">,</span> <span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">substring</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    BitSet lonset <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">BitSet</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    BitSet latset <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">BitSet</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//偶数位，经度</span>
+    int j <span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>int i<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span> numbits<span class="token operator">*</span><span class="token number">2</span><span class="token punctuation">;</span>i<span class="token operator">+=</span><span class="token number">2</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        boolean isSet <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span> i <span class="token operator">&lt;</span> buffer<span class="token punctuation">.</span><span class="token function">length</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">)</span>
+            isSet <span class="token operator">=</span> buffer<span class="token punctuation">.</span><span class="token function">charAt</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token string">'1'</span><span class="token punctuation">;</span>
+        lonset<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span>j<span class="token operator">++</span><span class="token punctuation">,</span> isSet<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">//奇数位，纬度</span>
+    j<span class="token operator">=</span><span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>int i<span class="token operator">=</span><span class="token number">1</span><span class="token punctuation">;</span> i<span class="token operator">&lt;</span> numbits<span class="token operator">*</span><span class="token number">2</span><span class="token punctuation">;</span>i<span class="token operator">+=</span><span class="token number">2</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        boolean isSet <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span> i <span class="token operator">&lt;</span> buffer<span class="token punctuation">.</span><span class="token function">length</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">)</span>
+            isSet <span class="token operator">=</span> buffer<span class="token punctuation">.</span><span class="token function">charAt</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token string">'1'</span><span class="token punctuation">;</span>
+        latset<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span>j<span class="token operator">++</span><span class="token punctuation">,</span> isSet<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    double lon <span class="token operator">=</span> <span class="token function">decode</span><span class="token punctuation">(</span>lonset<span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">180</span><span class="token punctuation">,</span> <span class="token number">180</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    double lat <span class="token operator">=</span> <span class="token function">decode</span><span class="token punctuation">(</span>latset<span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">90</span><span class="token punctuation">,</span> <span class="token number">90</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">double</span><span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token punctuation">{<!-- --></span>lat<span class="token punctuation">,</span> lon<span class="token punctuation">}</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span>String<span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span>  throws Exception<span class="token punctuation">{<!-- --></span>
+    GeoHash geohash <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">GeoHash</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//  String s = geohash.encode(40.222012, 116.248283);</span>
+<span class="token comment">//  System.out.println(s);</span>
+    geohash<span class="token punctuation">.</span><span class="token function">getArroundGeoHash</span><span class="token punctuation">(</span><span class="token number">40.222012</span><span class="token punctuation">,</span> <span class="token number">116.248283</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token comment">//  double[] geo = geohash.decode(s);</span>
+<span class="token comment">//  System.out.println(geo[0]+" "+geo[1]);</span>
+<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>可以到 http://geohash.co/ 进行geohash编码，以确定自己代码是否写错</p> 
+<h2><a id="_249"></a>六、问题解决处理</h2> 
+<p>针对查找小区500米范围超市，可以通过匹配geohash的前几位过滤超市，然后根据过滤后的超市再进行空间过滤，这样既有速度也有准确度</p> 
+<pre><code class="prism language-sql"><span class="token comment">// 例如</span>
+ <span class="token keyword">SELECT</span> <span class="token operator">*</span> <span class="token keyword">FROM</span> place <span class="token keyword">WHERE</span> geohash <span class="token operator">LIKE</span> <span class="token string">'wx4g0%'</span><span class="token punctuation">;</span> 
+</code></pre> 
+<p>参考：<br> <a href="https://www.jianshu.com/p/2fd0cf12e5ba" rel="nofollow">Geohash算法原理及实现</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e763f776e8036b2bad9873d02adcd59c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">MS SQL Server partition by 函数实战二 编排考场人员</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a2424bdc440abe7021e060a4083c423b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">为什么要使用TikTok云手机</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

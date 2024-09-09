@@ -1,0 +1,377 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>深入MySQL - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/ec2574e102b50737d9686b6d7aebca28/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="深入MySQL">
+  <meta property="og:description" content="MySQL逻辑架构
+MySQL逻辑架构整体分为三层，顶层客户端并非MySQL独有，如：连接处理、授权认证、安全等功能都在客户端层。
+核心服务层，MySQL大多数核心服务都在这一层，包括查询解析、分析、优化、缓存、内置函数等。所有跨存储引擎的功能也在这一层实现：如存储过程、触发器、视图。
+最下层为存储引擎，负责MySQL中的数据存储和提取。类似于Linux的文件系统，每种存储引擎都有优劣。中间的服务层通过API与存储引擎通信，这些API接口屏蔽了不同存储引擎间的差异。
+MySQL查询过程
+客户端/服务端通信协议
+客户端/服务端通信协议是“半双工”的:在任一时刻，要么是服务器端向客户端发送数据，要么是客户端向服务器发送数据， 两个动作不能同时发生。一旦一端开始发送消息，另一端要完整接受整个消息之后才能响应，所以我们无法也无须将一个消息切成小块独立发送，也没有办法进行流量控制。
+客户端用一个单独的数据包将查询请求发送给服务器，所以当查询语句很长的时候，需要设置max_allowed_packet参数。但是值得注意的是如果查询实在很大，服务端会拒绝接受更多数据并抛出异常。
+相反的是，服务器发送给客户端数据通常会很多，由多个数据包组成。但是当服务器响应客户端请求时，客户端必须完整的接收整个查询结果，不能简单的只接收前几条结果然后让服务器停止发送。因此在实际开发中，尽量保持查询简单且只返回必要的数据，减少通信间数据包的大小和数量是一个很好的习惯，这也是查询中尽量避免使用select*以及加上limit的原因之一。
+查询缓存
+在解析一个查询语句之前，如果查询缓存是打开的，那么MySQL会检查这个查询语句是否命中查询缓存中的数据。如果当前查询正好命中查询缓存，在检查一次用户权限之后直接返回缓存中的结果。这种情况下，查询不会被解析。也不会生成执行计划，更不会执行查询语句。
+MySQL将缓存放在一个引用表中(不要理解成table，可以认为是类似HashMap的数据结构)，通过一个哈希值索引，这个哈希值通过查询本身、当前要查询的数据库、客户端协议版本号等一些可能影响结果的信息计算得来。所以两个查询的任何字符上的不同(例如:空格，注释)，都会导致缓存不会命中。
+如果查询中包含任何用户自定义函数、存储函数、用户变量、临时变、mysql库中的系统表，其查询结果都不会被缓存。比如函数NOW()或者CURRENT__DATE()会因为不同的查询时间，返回不同的查询结果，再比如包含CURRENT_USER或者CONNECTION_ID()的查询语句会因为不同的用户而返回不同的结果，将这样的查询结果缓存起来没有任何意义。
+既然是缓存，就会失效，那查询缓存什么时候时效呢？MySQL的查询缓存系统会跟踪查询中涉及的每个表，如果这些表(结构或者数据)发生了变化，那么和这张表有关的所有缓存都会失效。正因为如此，在任何的写操作时，MySQL必须将对应表的所有缓存都设置为失效。如果查询缓存非常大或者碎片很多，这个操作就可能带来很大的系统开销，甚至导致系统卡住。而且查询缓存对系统的额外消耗也不仅仅在写操作中，读操作也不例外。
+1.任何查询语句在开始之前都必须经过检查，即使这条SQL语句永远不会命中缓存 2.如果查询结果可以被缓存，那么执行完成后，会将结果存入缓存，也会带来额外的系统开销。 基于此，我们知道并不是什么情况下查询缓存都会提高系统性能，缓存和失效都会额外带来消耗，只有当缓存带来的资源节约大于本身的消耗时，才会给系统带来性能上的提升。但是如何评估打开缓存是否能够带来性能提升是一件不容易的事情，本文也不讨论这个棘手的问题。如果系统确实存在一些性能问题，可以尝试打开查询缓存，并在数据库上做一些优化，比如：
+用多个小表代替一个大表，注意不要过度设计批量插入代替循环单条插入合理控制缓存空间大小，一般来说大小设置为几十兆较为合适可以通过SQL_CACHE和SQL_NO_CACHE来控制某个查询语句是否需要进行缓存。 最后忠告不要轻易打开查询缓存，特别是写密集型应用。如果实在忍不住，可以将query_cache_type设置为DEMAND，这时只有加入SQL_CACHE的查询才会走缓存，其他查询不会，这样可以自由的控制哪些查询需要被缓存。
+当然查询缓存系统本身也是很复杂的，这里讨论的只是很小的一部分，其他深入的话题：缓存是怎么使用内存的？怎么控制内存的碎片化？事务对查询缓存有什么影响？读者可以自行阅读相关资料
+语法解析和预处理
+MySQL通过关键字将SQL语句进行解析，并生成一颗对应的解析树。这个过程解析器主要通过语法规则来验证和解析。比如SQL中是否使用了错误的关键字或者关键字的顺序是否正确等等。预处理则会根据MySQL规则进一步检查解析树是否合法。比如检查要查询的数据表和数据列是否存在等。
+查询优化
+经过前面的步骤生成的语法树被认为是合法的，并且由优化器将其转化成查询计划。多数情况下一条查询可以有很多种执行方式，最后都返回相应的结果。优化器的作用就是找到这其中最好打的执行计划。
+mysql&gt; select * from t_message limit 10; ...省略结果集 mysql&gt; show status like &#39;last_query_cost&#39;; &#43;-----------------&#43;-------------&#43; | Variable_name | Value | &#43;-----------------&#43;-------------&#43; | Last_query_cost | 6391.799000 | &#43;-----------------&#43;-------------&#43; 示例中的结果表示优化器认为大概需要做6391个数据页的随机查询才能完成上面的查询。这个结果是根据一些列的统计信息计算得来的，这些统计信息包括：每张表或者索引的页面个数、索引的基数、索引和数据行的长度、索引的分布情况等等。
+有非常多的原因会导致MySQL选择错误的执行计划，比如统计信息不准确、不会考虑不受其控制的操作成本(用户自定义函数，存储过程)、MySQL认为的最优跟我们预想的不一致等等。
+MySQL的查询优化器是一个非常复杂的不见，他是用了非常多的优化策略来生成一个最优的执行计划。：
+重新定义表的关联顺序(多张表关联查询时，并不一定按照SQL指定的顺序执行，但有一些技巧可以指定关联顺序)优化MIN()和MAX()函数(找某列的最小值，如果该列有索引，只需要查找B&#43;树索引最左端，反之可以找最大值，原理见下文)提前终止查询(比如：使用limit时，查找到满足数量的结果集后会自动终止查询)优化排序(在老版MySQL中会使用两次传输排序，即先读取指针和需要排序的字段在内存中对其排序，然后根据排序结果读取数据行，而新版本采用单次传输排序，即一次读取所有数据行，然后根据给定的列排序。对于I/O密集型应用，效率会高很多) 查询执行引擎
+在完成解析和优化阶段以后，MySQL会生成对应的执行计划，查询执行引擎根据执行计划给出的指令逐步执行得出结果。整个执行过程的大部分操作均是通过调用存储引擎实现的接口来完成，这些接口被称为handler API。查询过程中的每一个表由一个handler实例表示。实际上，MySQL在查询优化阶段就为每一张表创建了一个handler实例，优化器可以根据这些实例的接口来获取表的相关信息，包括表的所有列名、索引统计信息等。存储引擎接口提供了非常丰富的功能，但底层仅有几十个接口，这些接口像搭积木一样完成了一次查询的大部分操作。
+返回结果给客户端
+查询执行的最后一个阶段就是将结果返回给客户端。即使查询不到数据，MySQL依然会返回这个查询的相关信息，比如查询影响到的行数以及执行时间等。
+如果查询缓存被打开并且这个查询可以被缓存，MySQL也会将结果存在缓存中。
+结果集返回给客户端是一个增量且逐步返回的过程。有可能MySQL在生成第一条结果时，就开始向客户端逐步返回结果集了。这样服务端就无须存储太多结果而消耗过多的内存，也可以让客户端第一时间获得返回结果。要注意的是，结果集中的每一行都会以一个满足①中所描述的通信协议的数据包发送，再通过TCP协议进行传输，在传输过程中，可能对MySQL的数据包进行缓存然后批量发送。
+总结一下MySQL整个查询执行过程，大体分为6个步骤：
+客户端向MySQL服务区发送一条查询请求服务器首先检查查询缓存，如果命中缓存，则立即返回存储在缓存中的结果，否则下一步服务器进行SQL解析、预处理、再由优化器生成对应的执行计划MySQL根据执行计划，调用存储引擎的API来执行查询将结果返回给客户端，同时缓存查询结果 性能优化建议
+看了这么多，你可能会期待给出一些优化手段，是的，下面会从3个不同方面给出一些优化建议。但是请稍等，还有一句忠告：不要听信你看到的关于优化的“绝对真理”，包括本文讨论的内容，而是应该在实际的业务场景下通过测试来验证你的关于执行计划以及响应时间的假设.
+Scheme设计与数据类型优化
+选择数据类型只要遵循小且简单的原则就好，越小的数据类型通常就会越快，占用更少的磁盘、内存，处理需要的CPU周期也更。越简单的数据类型在计算的时候需要的CPU周期也更少。比如：整型就比字符操作代价低，因而会适应整型来存储IP地址，使用DATETIME来存储时间而不是用字符型。
+这里总结几个容易理解错误的技巧：">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-08-26T09:37:43+08:00">
+    <meta property="article:modified_time" content="2024-08-26T09:37:43+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">深入MySQL</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <p>MySQL逻辑架构</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/d2/29/0sx6R2Jb_o.png" alt="在这里插入图片描述"><br> MySQL逻辑架构整体分为三层，顶层客户端并非MySQL独有，如：连接处理、授权认证、安全等功能都在客户端层。</p> 
+<p>核心服务层，MySQL大多数核心服务都在这一层，包括查询解析、分析、优化、缓存、内置函数等。所有跨存储引擎的功能也在这一层实现：如存储过程、触发器、视图。</p> 
+<p>最下层为存储引擎，负责MySQL中的数据存储和提取。类似于Linux的文件系统，每种存储引擎都有优劣。中间的服务层通过API与存储引擎通信，这些API接口屏蔽了不同存储引擎间的差异。</p> 
+<blockquote> 
+ <p>MySQL查询过程</p> 
+</blockquote> 
+<p><img src="https://images2.imgbox.com/4f/ca/G95R8ti9_o.jpg" alt="在这里插入图片描述"><br> <strong>客户端/服务端通信协议</strong><br> 客户端/服务端通信协议是“半双工”的:在任一时刻，要么是服务器端向客户端发送数据，要么是客户端向服务器发送数据， 两个动作不能同时发生。一旦一端开始发送消息，另一端要完整接受整个消息之后才能响应，所以我们无法也无须将一个消息切成小块独立发送，也没有办法进行流量控制。</p> 
+<p>客户端用一个单独的数据包将查询请求发送给服务器，所以当查询语句很长的时候，需要设置max_allowed_packet参数。但是值得注意的是如果查询实在很大，服务端会拒绝接受更多数据并抛出异常。</p> 
+<p>相反的是，服务器发送给客户端数据通常会很多，由多个数据包组成。但是当服务器响应客户端请求时，客户端必须完整的接收整个查询结果，不能简单的只接收前几条结果然后让服务器停止发送。因此在实际开发中，尽量保持查询简单且只返回必要的数据，减少通信间数据包的大小和数量是一个很好的习惯，这也是查询中尽量避免使用select*以及加上limit的原因之一。</p> 
+<p><strong>查询缓存</strong><br> 在解析一个查询语句之前，如果查询缓存是打开的，那么MySQL会检查这个查询语句是否命中查询缓存中的数据。如果当前查询正好命中查询缓存，在检查一次用户权限之后直接返回缓存中的结果。这种情况下，查询不会被解析。也不会生成执行计划，更不会执行查询语句。</p> 
+<p>MySQL将缓存放在一个引用表中(不要理解成table，可以认为是类似HashMap的数据结构)，通过一个哈希值索引，这个哈希值通过查询本身、当前要查询的数据库、客户端协议版本号等一些可能影响结果的信息计算得来。所以两个查询的任何字符上的不同(例如:空格，注释)，都会导致缓存不会命中。</p> 
+<p>如果查询中包含任何用户自定义函数、存储函数、用户变量、临时变、mysql库中的系统表，其查询结果都不会被缓存。比如函数NOW()或者CURRENT__DATE()会因为不同的查询时间，返回不同的查询结果，再比如包含CURRENT_USER或者CONNECTION_ID()的查询语句会因为不同的用户而返回不同的结果，将这样的查询结果缓存起来没有任何意义。</p> 
+<p>既然是缓存，就会失效，那查询缓存什么时候时效呢？MySQL的查询缓存系统会跟踪查询中涉及的每个表，如果这些表(结构或者数据)发生了变化，那么和这张表有关的所有缓存都会失效。正因为如此，在任何的写操作时，MySQL必须将对应表的所有缓存都设置为失效。如果查询缓存非常大或者碎片很多，这个操作就可能带来很大的系统开销，甚至导致系统卡住。而且查询缓存对系统的额外消耗也不仅仅在写操作中，读操作也不例外。</p> 
+<pre><code>1.任何查询语句在开始之前都必须经过检查，即使这条SQL语句永远不会命中缓存
+2.如果查询结果可以被缓存，那么执行完成后，会将结果存入缓存，也会带来额外的系统开销。
+</code></pre> 
+<p>基于此，我们知道并不是什么情况下查询缓存都会提高系统性能，缓存和失效都会额外带来消耗，只有当缓存带来的资源节约大于本身的消耗时，才会给系统带来性能上的提升。但是如何评估打开缓存是否能够带来性能提升是一件不容易的事情，本文也不讨论这个棘手的问题。如果系统确实存在一些性能问题，可以尝试打开查询缓存，并在数据库上做一些优化，比如：</p> 
+<ol><li>用多个小表代替一个大表，注意不要过度设计</li><li>批量插入代替循环单条插入</li><li>合理控制缓存空间大小，一般来说大小设置为几十兆较为合适</li><li>可以通过SQL_CACHE和SQL_NO_CACHE来控制某个查询语句是否需要进行缓存。</li></ol> 
+<p>最后忠告不要轻易打开查询缓存，特别是写密集型应用。如果实在忍不住，可以将query_cache_type设置为DEMAND，这时只有加入SQL_CACHE的查询才会走缓存，其他查询不会，这样可以自由的控制哪些查询需要被缓存。</p> 
+<p>当然查询缓存系统本身也是很复杂的，这里讨论的只是很小的一部分，其他深入的话题：缓存是怎么使用内存的？怎么控制内存的碎片化？事务对查询缓存有什么影响？读者可以自行阅读相关资料</p> 
+<p><strong>语法解析和预处理</strong><br> MySQL通过关键字将SQL语句进行解析，并生成一颗对应的解析树。这个过程解析器主要通过语法规则来验证和解析。比如SQL中是否使用了错误的关键字或者关键字的顺序是否正确等等。预处理则会根据MySQL规则进一步检查解析树是否合法。比如检查要查询的数据表和数据列是否存在等。</p> 
+<p><strong>查询优化</strong><br> 经过前面的步骤生成的语法树被认为是合法的，并且由优化器将其转化成查询计划。多数情况下一条查询可以有很多种执行方式，最后都返回相应的结果。优化器的作用就是找到这其中最好打的执行计划。</p> 
+<pre><code class="prism language-sql">
+mysql<span class="token operator">&gt;</span> <span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> t_message <span class="token keyword">limit</span> <span class="token number">10</span><span class="token punctuation">;</span>
+<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>省略结果集
+
+
+mysql<span class="token operator">&gt;</span> <span class="token keyword">show</span> <span class="token keyword">status</span> <span class="token operator">like</span> <span class="token string">'last_query_cost'</span><span class="token punctuation">;</span>
+<span class="token operator">+</span><span class="token comment">-----------------+-------------+</span>
+<span class="token operator">|</span> Variable_name   <span class="token operator">|</span> <span class="token keyword">Value</span>       <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">-----------------+-------------+</span>
+<span class="token operator">|</span> Last_query_cost <span class="token operator">|</span> <span class="token number">6391.799000</span> <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">-----------------+-------------+</span>
+</code></pre> 
+<p>示例中的结果表示优化器认为大概需要做6391个数据页的随机查询才能完成上面的查询。这个结果是根据一些列的统计信息计算得来的，这些统计信息包括：每张表或者索引的页面个数、索引的基数、索引和数据行的长度、索引的分布情况等等。</p> 
+<p>有非常多的原因会导致MySQL选择错误的执行计划，比如统计信息不准确、不会考虑不受其控制的操作成本(用户自定义函数，存储过程)、MySQL认为的最优跟我们预想的不一致等等。</p> 
+<p>MySQL的查询优化器是一个非常复杂的不见，他是用了非常多的优化策略来生成一个最优的执行计划。：</p> 
+<ul><li>重新定义表的关联顺序(多张表关联查询时，并不一定按照SQL指定的顺序执行，但有一些技巧可以指定关联顺序)</li><li>优化MIN()和MAX()函数(找某列的最小值，如果该列有索引，只需要查找B+树索引最左端，反之可以找最大值，原理见下文)</li><li>提前终止查询(比如：使用limit时，查找到满足数量的结果集后会自动终止查询)</li><li>优化排序(在老版MySQL中会使用两次传输排序，即先读取指针和需要排序的字段在内存中对其排序，然后根据排序结果读取数据行，而新版本采用单次传输排序，即一次读取所有数据行，然后根据给定的列排序。对于I/O密集型应用，效率会高很多)</li></ul> 
+<p><strong>查询执行引擎</strong><br> 在完成解析和优化阶段以后，MySQL会生成对应的执行计划，查询执行引擎根据执行计划给出的指令逐步执行得出结果。整个执行过程的大部分操作均是通过调用存储引擎实现的接口来完成，这些接口被称为handler API。查询过程中的每一个表由一个handler实例表示。实际上，MySQL在查询优化阶段就为每一张表创建了一个handler实例，优化器可以根据这些实例的接口来获取表的相关信息，包括表的所有列名、索引统计信息等。存储引擎接口提供了非常丰富的功能，但底层仅有几十个接口，这些接口像搭积木一样完成了一次查询的大部分操作。</p> 
+<p><strong>返回结果给客户端</strong><br> 查询执行的最后一个阶段就是将结果返回给客户端。即使查询不到数据，MySQL依然会返回这个查询的相关信息，比如查询影响到的行数以及执行时间等。</p> 
+<p>如果查询缓存被打开并且这个查询可以被缓存，MySQL也会将结果存在缓存中。</p> 
+<p>结果集返回给客户端是一个增量且逐步返回的过程。有可能MySQL在生成第一条结果时，就开始向客户端逐步返回结果集了。这样服务端就无须存储太多结果而消耗过多的内存，也可以让客户端第一时间获得返回结果。要注意的是，结果集中的每一行都会以一个满足①中所描述的通信协议的数据包发送，再通过TCP协议进行传输，在传输过程中，可能对MySQL的数据包进行缓存然后批量发送。</p> 
+<p>总结一下MySQL整个查询执行过程，大体分为6个步骤：</p> 
+<ol><li>客户端向MySQL服务区发送一条查询请求</li><li>服务器首先检查查询缓存，如果命中缓存，则立即返回存储在缓存中的结果，否则下一步</li><li>服务器进行SQL解析、预处理、再由优化器生成对应的执行计划</li><li>MySQL根据执行计划，调用存储引擎的API来执行查询</li><li>将结果返回给客户端，同时缓存查询结果</li></ol> 
+<p><strong>性能优化建议</strong></p> 
+<p>看了这么多，你可能会期待给出一些优化手段，是的，下面会从3个不同方面给出一些优化建议。但是请稍等，还有一句忠告：<strong>不要听信你看到的关于优化的“绝对真理”，包括本文讨论的内容，而是应该在实际的业务场景下通过测试来验证你的关于执行计划以及响应时间的假设.</strong></p> 
+<p><strong>Scheme设计与数据类型优化</strong></p> 
+<p>选择数据类型只要遵循小且简单的原则就好，越小的数据类型通常就会越快，占用更少的磁盘、内存，处理需要的CPU周期也更。越简单的数据类型在计算的时候需要的CPU周期也更少。比如：整型就比字符操作代价低，因而会适应整型来存储IP地址，使用DATETIME来存储时间而不是用字符型。</p> 
+<p>这里总结几个容易理解错误的技巧：</p> 
+<ol><li>通常来说把可为NULL的列改为NOT NULL不会对性能有多少提升，但是如果计划在列上创建索引，那么应该将列设置为NOT NULL。</li><li>对整型类型指定宽度，比如INT(11)，没有任何作用、INT使用32位(4字节)存储空间，它的范围是已经确定的了，所以INT(1)和INT(20)对于存储和计算来说是相同的。</li><li>UNSIGNED表示不允许负值，大致可以使正数的上限提高一倍。比如TINYINT的存储范围是-128 ~ 127，而UNSIGNED TINYINT存储的范围却是0 - 255。</li><li>通常来说，没有太大的必要使用DECIMAL数据类型。即使是在需要存储财务数据的时候，仍然可以使用BIGINT。比如精确到万分之一，那么可以将数据乘以一百万然后使用BIGINT存储。这样可以避免浮点数计算不准确和DECIMAL精确计算代价高的问题。</li><li>TIMESTAMP使用4个字节存储空间，DATETIME使用8个字节存储空间。因而，TIMESTAMP只能表示1970~2038年，比DATETIME表示的范围小很多，而且TIMESTAMP的值会因时区而有差异。</li><li>大多数情况下没有使用枚举类型的必要，其中一个缺点是枚举的字符串列表是固定的，添加和删除字符串必须使用ALTER TABLE(如果只是在表的末位追加元素则不需要重建表)</li><li>Schema的列不要太多。原因是存储引擎的API工作是需要在服务器层和存储引擎层之间通过缓冲格式拷贝数据，然后再服务器层将缓冲内容解码成各个列，这个转换过程的代价非常高。如果列太多而实际使用的列有很少的话，有可能会导致CPU占用过高。</li><li>大表ALTER非常耗时，MySQL执行大部分修改表结果操作的方法是用新的结构创建一张空表，然后从旧表中查出所有的数据插入到新表，再删除旧表。尤其当内存不足而表又很大，而且还有很大索引的情况下，耗时更久。当然有一些奇淫技巧可以解决，但是我不知道。</li></ol> 
+<p><strong>创建高性能索引</strong></p> 
+<p>索引是提高MySQL查询性能的一个非常重要的途径，但是过多的索引反而可能导致过高的磁盘使用率以及过高的内存占用，从而影响应用的整体性能。应当尽量避免事后才加索引，因为事后可能需要监控大量的SQL才能定位到问题所在，而且添加索引的时间肯定是远大于一开始就建索引的时间。</p> 
+<p>接下来展示一系列创建高性能索引的策略，以及每条策略背后的工作原理。但是在此之前，我们先了解索引相关的一些算法和数据结构。</p> 
+<p><strong>索引的算法和数据结构</strong></p> 
+<p>通常我们所说的索引是指B+树索引，他是目前关系型数据库中查找数据最为常用和有效的索引，大多数存储引擎都支持这种索引。使用B+树这个术语，是因为MySQL在create table或其他语句中使用了这个关键字，但实际上不同的存储引擎可能使用不同的数据结构，比如innoDB使用的就是B+树。</p> 
+<p>B+树中的B是指balance平衡。要注意的是，B+树索引并不能找到一个给定键值的具体行，他找到的只是被查找数据行所在的页，然后数据库会把页读入到内存中，再在内存中进行查找，最后得到要查找的数据。</p> 
+<p>在介绍B+树前先了解一下二叉查找树。它是一种经典的数据结构，其左子树的值总是小于根的值，右子树的值总是大于根的值，如下图①。如果要在这棵树中查找值为5的记录，其大致流程为：先找到根，值为6&gt;5，所以查找左子树，找到3&lt;5，所以找3的右子树，总共找了3次。同样的方法，如果查找值为8的记录，也需要找3次。所以二叉查找树的平均查找次数为（3+3+3+2+2+1）/6 = 2.3次。而顺序查找的话，查找值为2的记录仅需要1次，但是查找值为8的记录需要6次，所以顺序查找的平均查找次数为：(1+2+3+4+5+6)/6 = 3.3次，因为大多数情况下二叉查找树的平均查找速度比顺序查找要快。<br> <img src="https://images2.imgbox.com/53/b9/YfeezZM4_o.png" alt="在这里插入图片描述"><br> 由于二叉树可以任意构造，同样的值，可以构造出如图②的二叉查找树，显然这颗二叉树的查询效率和顺序查找也差不多。若想二叉查找树的查询性能最高，需要这颗二叉查找树是平衡的，也就是平衡二叉树(AVL)。</p> 
+<p>平衡二叉树首先需要符合二叉查找树的定义，其次必须满足任何节点的两个子树高度差不能大于1，显然图②不能满足平衡二叉树的定义，而图①是一颗平衡二叉树。平衡二叉树的查找性能是比较高的(性能最好的是最优二叉树)，查询性能越好，维护的成本就越大。比如图①的平衡二叉树，当用户需要插入一个新的值为9的节点时，就要做出如下变动。（值为7的节点左子树高度0，右子树高度2，不满足平衡条件，所以需要旋转操作）<br> <img src="https://images2.imgbox.com/84/5f/TNj46MMx_o.png" alt="在这里插入图片描述"><br> 通过一次左旋操作就将插入后的树重新变为平衡二叉树是最简单的情况，实际应用场景中可能需要旋转多次。因此我们可以考虑一个问题，平衡二叉树的查找效率还可以，实现也非常简单，维护成本也可以接受，为什么MySQL索引不直接使用平衡二叉树呢？</p> 
+<p>随着数据库中的数据增加，索引本身大小也随之增加，不可能全部存储在内存中，因此索引往往以索引文件的形式存储在磁盘上。这样的话，索引查找的过程中就要产生磁盘I/O消耗，相对于内存存取，I/O存取的消耗要高上几个量级。可以想象一下一颗几百万节点的二叉树的深度有多少？如果将这么高深度的一颗二叉树放在磁盘上，每读取一个节点，需要一次磁盘的I/O读取，整个查找的耗时显然是不能接受的。那么如何减少查找过程中的I/O存取次数？</p> 
+<p>一种有效的方法就是减少树的深度，将二叉树变为m叉树(多路搜索树)，而B+树就是一种多路索引树。理解B+树时，只需要理解最重要的两个特征就可以了：<strong>1</strong>.所有的关键字(可以理解为数据)都存储在叶子节点上，非叶子结点并不存储真正的数据，所有记录节点都是按键值大小顺序存放在同一层叶子节点上。<strong>2</strong>.所有的叶子结点都由指针连接。如下图为高度为2的简化了的B+树。</p> 
+<p><img src="https://images2.imgbox.com/6c/c0/jGZraWok_o.png" alt="在这里插入图片描述"><br> 怎么理解这两个特征？MySQL将每个节点的大小设置为一个页的整数倍(原因下文介绍)，也就是在节点空间大小一定的情况下，每个节点可以存储更多的内节点，这样每个节点能索引的范围更大更精确。所有叶子节点使用指针连接的好处是可以进行区间访问，比如上图中，如果查找大于20且小于30的记录，只需要找到节点20，就可以遍历指针依次找到25、30.如果没有链接指针的话，就无法进行区间查找。这也是MySQL使用B+树作为索引存储结构的重要原因。</p> 
+<p>MySQL为什么将节点大小设置为页的整数倍？这就需要理解磁盘的存储原理。磁盘本身存取就比主存慢很多，加上机械运动的损耗(特别是普通的机械硬盘)，磁盘的存取速度往往是主存的几百万分之一，为了尽量减少磁盘I/O，磁盘往往不是严格按需读取，而是每次都会预读，即使只需要一个字节，磁盘也会从这个位置开始，顺序向后读取一定长度的数据放入内存，预读的长度一般为页的整数倍。</p> 
+<blockquote> 
+ <p>页是计算机管理存储器的逻辑块，硬件及OS往往将主存和粗盘存储区分割为连续的大小相等的块，每个存储块成为一页(在许多OS中，页的大小通常为4K)。主存和磁盘以页为单位交换数据。当程序要读取的数据不再主存中时，会触发一个缺页异常，此时系统会向磁盘发出读盘信号，磁盘会找到数据的起始位置并向后连续读取一页或几页载入内存中，然后异常返回，程序继续。</p> 
+</blockquote> 
+<p>MySQL巧妙的利用了磁盘的预读原理，将一个节点的大小设置为一个页，这样每个节点只要一次I/O就可以完全载入。为了达到这个目的，每次新建节点时，直接申请一个页的空间，这样就保证一个节点物理上页存储在一个页里，加上计算机存储分配都是按页对齐的，就实现了读取一个节点只需要一次I/O。假设B+树的高度为h，一次检索最多需要h-1次I/O(根节点常驻内存)，复杂度<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         O 
+        
+       
+         ( 
+        
+       
+         h 
+        
+       
+         ) 
+        
+       
+         = 
+        
+       
+         O 
+        
+       
+         ( 
+        
+        
+         
+         
+           log 
+          
+         
+           ⁡ 
+          
+         
+        
+          M 
+         
+        
+       
+         N 
+        
+       
+         ) 
+        
+       
+      
+        O(h) = O(\log_{M}N) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0278em;">O</span><span class="mopen">(</span><span class="mord mathnormal">h</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0278em;">O</span><span class="mopen">(</span><span class="mop"><span class="mop">lo<span style="margin-right: 0.0139em;">g</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.2342em;"><span class="" style="top: -2.4559em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight" style="margin-right: 0.109em;">M</span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2441em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span><span class="mclose">)</span></span></span></span></span>。实际应用场景中，M通常较大，常常超过100，因此树的高度一般较小，通常不超过3。</p> 
+<p>最后简单了解下B+树节点的操作，在整体上对索引的维护有一个大概的了解，虽然索引可以提高查询效率，但是维护索引却需要花费很大的代价，因此合理的创建索引也就显得尤为重要。</p> 
+<p>仍以上面的树为例，我们假设每个节点只能存储4个内节点。首先要插入第一个节点28，如下图所示。<br> <img src="https://images2.imgbox.com/a2/ad/FznUJ8Hh_o.png" alt="在这里插入图片描述"><br> 接着插入下一个节点70，在Index Page中查询后得知应该插入到50-70之间的叶子结点，但是叶子结点已经满了，这时候就需要进行页分裂操作，当前叶子结点气垫为50，所以根据中间值拆分叶子结点，如下图所示。<br> <img src="https://images2.imgbox.com/cb/34/KOajFebT_o.png" alt="在这里插入图片描述"><br> 最后插入结点95，此时索引结点Index Page和叶子结点Leaf Page都满了，需要两次拆分，如下图。<br> <img src="https://images2.imgbox.com/89/77/LRRuKA13_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_150"></a>高性能策略</h2> 
+<p>我们对B+树的结构有了大致的了解，那么MySQL中索引是如何组织数据的存储呢？以一个简单的示例来说明，假如我们已经有了如下的数据表</p> 
+<pre><code class="prism language-sql"><span class="token keyword">CREATE</span> <span class="token keyword">TABLE</span> People<span class="token punctuation">(</span>
+    last_name <span class="token keyword">varchar</span><span class="token punctuation">(</span><span class="token number">50</span><span class="token punctuation">)</span> <span class="token operator">not</span> <span class="token boolean">null</span><span class="token punctuation">,</span>
+    first_name <span class="token keyword">varchar</span><span class="token punctuation">(</span><span class="token number">50</span><span class="token punctuation">)</span> <span class="token operator">not</span> <span class="token boolean">null</span><span class="token punctuation">,</span>
+    dob <span class="token keyword">date</span> <span class="token operator">not</span> <span class="token boolean">null</span><span class="token punctuation">,</span>
+    gender <span class="token keyword">enum</span><span class="token punctuation">(</span><span class="token identifier"><span class="token punctuation">`</span>m<span class="token punctuation">`</span></span><span class="token punctuation">,</span><span class="token identifier"><span class="token punctuation">`</span>f<span class="token punctuation">`</span></span><span class="token punctuation">)</span> <span class="token operator">not</span> <span class="token boolean">null</span><span class="token punctuation">,</span>
+    <span class="token keyword">key</span><span class="token punctuation">(</span>last_name<span class="token punctuation">,</span>first_name<span class="token punctuation">,</span>dob<span class="token punctuation">)</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>对于表中的每一行数据，索引中抱哈了lastname，firstname，dob列的值，下图展示了索引如何组织数据存储。<br> <img src="https://images2.imgbox.com/47/d7/0tkUyq0K_o.png" alt="在这里插入图片描述"><br> 可以看到，索引首先根据第一个字段来排序顺序，当名字相同时，则根据第三个字段，即出生日期来排序，正是因为这个原因，才有了索引的<strong>最左原则</strong></p> 
+<p><strong>1、MySQL不会使用索引的情况：非独立的列</strong><br> “独立的列”是指索引列不能是表达式的一部分，也不能是函数的参数。比如：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> <span class="token keyword">where</span> id <span class="token operator">+</span> <span class="token number">1</span> <span class="token operator">=</span> <span class="token number">5</span>
+</code></pre> 
+<p>我们很容易看出id = 4，但是MySQL不能自动解析这个表达式，使用函数也是同样的原理。</p> 
+<p><strong>2、前缀索引</strong></p> 
+<p>如果列很长，通常可以索引开始的部分字符，这样可以有效节约索引空间，从而提高索引效率。</p> 
+<p><strong>3、多列索引和索引顺序</strong></p> 
+<p>在多数情况下，在多个列上建立独立的索引并不能提高查询性能。理由很简单，MySQL不知道选择哪个索引的查询效果更好，所以在老版本，比如MySQL5.0之前会随便选择一个列的索引，而新的版本会采用合并索引的策略。举个简单的例子，在一张电影演员表中，在actorid和filmid两个列上都建立了独立的索引，然后有如下查询：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">select</span> film_id<span class="token punctuation">,</span>actor_id <span class="token keyword">from</span> film_actor <span class="token keyword">where</span> actor_id <span class="token operator">=</span> <span class="token number">1</span> <span class="token operator">or</span> film_id <span class="token operator">=</span> <span class="token number">1</span>
+</code></pre> 
+<p>老版本的MySQL会随机选择一个索引，但新版本做了如下的优化：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">select</span> film_id<span class="token punctuation">,</span>actor_id <span class="token keyword">from</span> film_actor <span class="token keyword">where</span> actor_id <span class="token operator">=</span> <span class="token number">1</span>  
+<span class="token keyword">union</span> <span class="token keyword">all</span>
+<span class="token keyword">select</span> film_id<span class="token punctuation">,</span>actor_id <span class="token keyword">from</span> film_actor <span class="token keyword">where</span> film_id <span class="token operator">=</span> <span class="token number">1</span> <span class="token operator">and</span> actor_id <span class="token operator">&lt;&gt;</span> <span class="token number">1</span>
+</code></pre> 
+<ul><li>当出现多个索引做相交操作时（如多个and条件），通常来说一个包含所有相关的列的索引要由于多个独立索引</li><li>当出现多个索引做联合操作时（如多个or条件），多结果集的合并、排序等操作需要耗费大量的CPU和内存资源，特别是当其中的某些索引的选择性不高，需要返回合并大量数据时，查询成本更高。所以这种情况下不如走全表扫描。</li></ul> 
+<p>因此explain时如果发现有索引合并（Extra字段出现Usingunion），应该好好检查一下查询和表结构是不是已经是最优的，如果查询和表结构没有问题，那只能说明索引建的很差，应当慎重考虑索引是否合适，有可能一个包含所有相关列的多列索引更合适。</p> 
+<p>前面我们提到索引如何组织数据存储的，从图中可以看到多列索引时，索引的顺序对于查询是至关重要的，很明显应该把选择性更高的字段放在索引的前面，这样通过第一个字段就可以过滤掉大多数不符合条件的数据。</p> 
+<blockquote> 
+ <p>索引选择性是指不重复的索引值和数据表的总记录数的比值，选择性越高查询效率越高，因为选择性越高的索引可以让MySQL在查询时过滤掉更多的行。唯一索引的选择性是1，这时最好的索引选择性，性能也是最好的。</p> 
+</blockquote> 
+<p>理解索引选择性的概念后，就不难确定哪个字段的选择性高了，查一下就知道了，比如：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> <span class="token operator">*</span> <span class="token keyword">FROM</span> payment <span class="token keyword">where</span> staff_id <span class="token operator">=</span> <span class="token number">2</span> <span class="token operator">and</span> customer_id <span class="token operator">=</span> <span class="token number">584</span>
+</code></pre> 
+<p>是应该创建（staff_id，customer_id）的索引还是应该颠倒一下顺序？执行下面的查询，哪个字段的选择性更接近1就把哪个字段索引放前面就好。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">select</span> <span class="token function">count</span><span class="token punctuation">(</span><span class="token keyword">distinct</span> staff_id<span class="token punctuation">)</span><span class="token operator">/</span><span class="token function">count</span><span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">)</span> <span class="token keyword">as</span> staff_id_selectivity<span class="token punctuation">,</span>
+       <span class="token function">count</span><span class="token punctuation">(</span><span class="token keyword">distinct</span> customer_id<span class="token punctuation">)</span><span class="token operator">/</span><span class="token function">count</span><span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">)</span> <span class="token keyword">as</span> customer_id_selectivity<span class="token punctuation">,</span>
+       <span class="token function">count</span><span class="token punctuation">(</span><span class="token operator">*</span><span class="token punctuation">)</span> <span class="token keyword">from</span> payment
+</code></pre> 
+<p>多数情况下使用这个原则没有任何问题，但是仍要注意你的数据中是否存在一些特殊情况。举个简单的例子，比如要查询某个用户组下有过交易的用户信息：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">select</span> user_id <span class="token keyword">from</span> trade <span class="token keyword">where</span> user_group_id <span class="token operator">=</span> <span class="token number">1</span> <span class="token operator">and</span> trade_amount <span class="token operator">&gt;</span> <span class="token number">0</span>
+</code></pre> 
+<p>MySQL为了这个查询选择了索引（user_group_id,trade_amount），如果不考虑特殊情况，这看起来没有问题，但是实际上这张表的大多数数据都是从老系统中迁移过来的，由于新老系统的不兼容，所以就给老系统迁移过来的数据赋予一个默认的用户组。这种情况下，通过索引扫描的行数跟全表扫描基本没什么区别，索引也起不了作用。</p> 
+<p>推广开来说，经验法则和推论在多数情况下是有用的，可以指导我们开发和设计，但实际情况往往更复杂，实际业务场景下的某些特殊情况可能会摧毁你的整个设计。</p> 
+<p><strong>4、避免多个范围条件</strong></p> 
+<p>实际开发中，我们经常会使用多个范围条件，比如想要查询某个时间段内登陆过的用户：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">select</span> <span class="token keyword">user</span><span class="token punctuation">.</span><span class="token operator">*</span> <span class="token keyword">from</span> <span class="token keyword">user</span> <span class="token keyword">where</span> login_time <span class="token operator">&gt;</span> <span class="token string">'2017-04-01'</span> <span class="token operator">and</span> age <span class="token operator">between</span> <span class="token number">18</span> <span class="token operator">and</span> <span class="token number">30</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>这里有一个问题：这个查询有两个范围条件login_time &gt; '2017-04-01’和age between 18 and 30。MySQL可以使用login_time列的索引或者age列的索引，但是没有办法同时使用这两个索引。</p> 
+<p><strong>5、覆盖索引</strong></p> 
+<p>如果一个索引包含或者说覆盖所有需要查询的字段的值，那么就没有必要再回表查询，这就成为覆盖索引。覆盖索引是非常有用的工具，可以极大提高性能，因为查询只需要扫描索引会带来许多好处：</p> 
+<ul><li>索引条目远小于数据行大小，如果只读取索引，极大减少数据访问量</li><li>索引是按照列值顺序存储的，对于I/O密集型的范围查询要比随机从磁盘中读取每一行数据的I/O要少得多</li></ul> 
+<p><strong>6、使用索引扫描来排序</strong><br> MySQL有两种方式可以生产有序的结果集，一是对结果集进行排序的操作，二是按照索引顺序扫描得出的结果是有序的。如果explain的结果中，type列的值为index表示使用了索引扫描来做排序。</p> 
+<p>索引扫描本身很快，因为只需要从一条索引的记录移动到相邻的下一条记录。但如果索引本身不能覆盖所有需要查询的列，那么就不得不每扫描一条索引记录就回表查询一次对应的行。这个读取操作基本上是随机I/O的，因此按照索引顺序读取数据的速度通常比顺序的全表扫描要慢</p> 
+<p>在设计索引时，如果一个索引既能满足排序，又能满足查询是最好的</p> 
+<p>只有当索引的列顺序和order by子句的顺序完全一致，并且所有列的排序方向也一样的时候，才能使用索引来对结果做排序。如果查询需要关联多张表，则只有order by子句引用的字段全部为第一张表时，才能使用索引排序。order by子句和查询的限制是一样的，都要满足最左前缀的要求（有一种例外，就是最左的列被指定为常数，下面是一个简单的示例），其他情况下都要执行排序操作，而无法利用索引排序。</p> 
+<pre><code class="prism language-sql"><span class="token comment">// 最左列为常数，索引：(date,staff_id,customer_id)</span>
+<span class="token keyword">select</span>  staff_id<span class="token punctuation">,</span>customer_id <span class="token keyword">from</span> demo <span class="token keyword">where</span> <span class="token keyword">date</span> <span class="token operator">=</span> <span class="token string">'2015-06-01'</span> <span class="token keyword">order</span> <span class="token keyword">by</span> staff_id<span class="token punctuation">,</span>customer_id
+</code></pre> 
+<p><strong>7、冗余和重复索引</strong><br> 冗余索引是指在相同的列上按照相同的顺序创建的相同类型的索引，应当尽量避免这种索引，发现后立即删除。比如有一个索引（A,B），在创建A就是冗余索引。冗余索引经常发生在为表添加新索引时，比如有人创建了（A,B），但是这个索引不是扩展已有的索引（A）。</p> 
+<p>大多数情况下都应该尽量扩展已有的索引而不是创建新索引。但有极少情况下出现性能方面的考虑需要冗余索引，比如扩展已有索引而导致变得过大，从而影响到其他使用该索引的查询。</p> 
+<p><strong>8、删除长期未使用的索引</strong><br> 定期删除一些长时间未使用的索引是一个非常好的习惯。</p> 
+<p>索引并不总是最好的工具，只有索引帮助提高查询速度带来的好处大于带来的负担时，索引才是有效的。对于非常小的表，简单的全表扫描更加高效。对于中到大型订单表，索引非常有效。对于超大型的表，建立和维护索引的代价随之增长，这时候其他技术也许更加有效，比如分区表。</p> 
+<h2><a id="_263"></a>特定类型查询优化</h2> 
+<p><strong>优化count()查询</strong><br> count()可能是大家误解的最多的函数了，它有两个作用，其一是统计某个列值的数量，其二是统计行数。统计列值时，要求列值是非空的，他不会统计null。如果确认括号中的表达式不可能为空时，实际上就是在统计行数。最简单的就是当使用count(*)时，并不是我们想象的那样扩展成所有的列，实际上它会忽略所有的列而直接统计所有的行数。</p> 
+<p>我们最常见的误解也就在这。在括号内指定了一列缺希望统计结果是行数，而且还常常误以为前者的的性能会更好。但实际上并非这样，如果要统计行数，直接用count(*)，意义清晰，性能更好。</p> 
+<p>有时候某些业务场景并不需要完全精确的count()值，可以用近似值来代替，explain出来的行数就是一个不错的近似值，而且执行explain不需要真正的去执行查询，所以成本非常低。通常来说，执行count()都需要扫描大量的行才能获得精确的数据，因此很难优化，MySQL层面还能做的也就是覆盖索引了。如果还不能解决问题，只能从架构层面解决了，比如添加汇总表，或者使用redis这样的外部缓存系统。</p> 
+<p><strong>优化关联查询</strong></p> 
+<p>在大数据场景下，表与表之间通过一个冗余字段来关联，要比直接使用join有更好的性能。如果确实需要使用关联查询的情况下，需要注意的是：</p> 
+<ul><li>确保on和using子句的列上有索引。在创建索引的时候就要考虑到关联的顺序。当表A和表B用c列关联的时候，如果优化器关联的顺序是A、B，那么就不需要在A表的对应列上创建索引。没有用到的索引会带来额外的负担，一般来说，除非有其他理由，只需要在关联顺序中的第二张表的相应列上创建索引</li><li>确保任何的group by和order by中的表达式只涉及一个表中的列，这样MySQL才有可能使用索引来优化</li></ul> 
+<p>要理解优化关联查询的第一个技巧，就需要理解MySQL是如何执行关联查询的。当前MySQL关联执行的策略非常简单，它对任何的关联查询都执行嵌套循环关联操作，即现在一个表中循环取出单条数据，然后再嵌套循环到下一个表中寻找匹配的行，依次下去，知道找到所有表中匹配的行为位置。然后根据各个表匹配的行，返回查询中需要的各个列。</p> 
+<p>太抽象了？以上面的实例来说明，比如有这样的一个查询：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> A<span class="token punctuation">.</span>xx<span class="token punctuation">,</span>B<span class="token punctuation">.</span>yy
+<span class="token keyword">FROM</span> A <span class="token keyword">INNER</span> <span class="token keyword">JOIN</span> B <span class="token keyword">USING</span><span class="token punctuation">(</span>c<span class="token punctuation">)</span>
+<span class="token keyword">WHERE</span> A<span class="token punctuation">.</span>xx <span class="token operator">IN</span> <span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">,</span><span class="token number">6</span><span class="token punctuation">)</span>
+</code></pre> 
+<p>假设MySQL按照查询中的关联顺序A，B来进行关联操作，那么可以用下面的伪代码表示MySQL如何完成这个查询：</p> 
+<pre><code class="prism language-sql">outer_iterator <span class="token operator">=</span> <span class="token keyword">SELECT</span> A<span class="token punctuation">.</span>xx<span class="token punctuation">,</span>A<span class="token punctuation">.</span>c <span class="token keyword">FROM</span> A <span class="token keyword">WHERE</span> A<span class="token punctuation">.</span>xx <span class="token operator">IN</span> <span class="token punctuation">(</span><span class="token number">5</span><span class="token punctuation">,</span><span class="token number">6</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+outer_row <span class="token operator">=</span> outer_iterator<span class="token punctuation">.</span><span class="token keyword">next</span><span class="token punctuation">;</span>
+<span class="token keyword">while</span><span class="token punctuation">(</span>outer_row<span class="token punctuation">)</span> {
+    inner_iterator <span class="token operator">=</span> <span class="token keyword">SELECT</span> B<span class="token punctuation">.</span>yy <span class="token keyword">FROM</span> B <span class="token keyword">WHERE</span> B<span class="token punctuation">.</span>c <span class="token operator">=</span> outer_row<span class="token punctuation">.</span>c<span class="token punctuation">;</span>
+    inner_row <span class="token operator">=</span> inner_iterator<span class="token punctuation">.</span><span class="token keyword">next</span><span class="token punctuation">;</span>
+    <span class="token keyword">while</span><span class="token punctuation">(</span>inner_row<span class="token punctuation">)</span> {
+        output<span class="token punctuation">[</span>inner_row<span class="token punctuation">.</span>yy<span class="token punctuation">,</span>outer_row<span class="token punctuation">.</span>xx<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        inner_row <span class="token operator">=</span> inner_iterator<span class="token punctuation">.</span><span class="token keyword">next</span><span class="token punctuation">;</span>
+    }
+    outer_row <span class="token operator">=</span> outer_iterator<span class="token punctuation">.</span><span class="token keyword">next</span><span class="token punctuation">;</span>
+}
+</code></pre> 
+<p>可以看到，最外层的查询是根据A.XX列来查询的，A.c上如果有索引的话，整个关联查询也不会使用。再看内层的查询，很明显B.c上如果有索引的话，能够加速查询，因此只要在关联顺序中的第二张表上的相应列上创建索引即可。</p> 
+<p><strong>优化limit分页</strong><br> 当需要分页操作时，通常会使用limit加上偏移量的办法实现，同时加上合适的order by子句。如果有对应的索引，通常效率会不错，否则，MySQL需要大量的文件排序操作</p> 
+<p>一个常见的问题是当偏移量非常大的时候，比如limit 10000 20这样的查询，MySQL需要查询10020条记录然后只返回20条记录，前面的10000条都被抛弃，这样的代价非常高。</p> 
+<p>优化这种查询的一个最简单的办法就是尽可能的使用覆盖索引扫描，而不是查询所有的列。然后根据需要做一次关联查询再返回所有的列。对应偏移量很大时，这样做的效率会提升非常大。考虑下面的查询：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> film_id<span class="token punctuation">,</span>description <span class="token keyword">FROM</span> film <span class="token keyword">ORDER</span> <span class="token keyword">BY</span> title <span class="token keyword">LIMIT</span> <span class="token number">50</span><span class="token punctuation">,</span><span class="token number">5</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>如果这张表非常大，那么这个查询最好改成下面的样子：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> film<span class="token punctuation">.</span>film_id<span class="token punctuation">,</span>film<span class="token punctuation">.</span>description
+<span class="token keyword">FROM</span> film <span class="token keyword">INNER</span> <span class="token keyword">JOIN</span> <span class="token punctuation">(</span>
+    <span class="token keyword">SELECT</span> film_id <span class="token keyword">FROM</span> film <span class="token keyword">ORDER</span> <span class="token keyword">BY</span> title <span class="token keyword">LIMIT</span> <span class="token number">50</span><span class="token punctuation">,</span><span class="token number">5</span>
+<span class="token punctuation">)</span> <span class="token keyword">AS</span> tmp <span class="token keyword">USING</span><span class="token punctuation">(</span>film_id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>这里的延迟关联将大大提升查询效率，让MySQL扫描尽可能少的页面，获取需要访问的记录后在根据关联列回原表扫描需要的列。</p> 
+<p>有时候如果可以使用书签记录上次取数据的位置，那么下次就可以直接从该书签记录的位置开始扫描，这样可以避免使用offset，比如下面的查询：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> id <span class="token keyword">FROM</span> t <span class="token keyword">LIMIT</span> <span class="token number">10000</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">;</span>
+改为：
+<span class="token keyword">SELECT</span> id <span class="token keyword">FROM</span> t <span class="token keyword">WHERE</span> id <span class="token operator">&gt;</span> <span class="token number">10000</span> <span class="token keyword">LIMIT</span> <span class="token number">10</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>其他优化的办法还包括预先计算的汇总表，或者关联到一个冗余表，冗余表中只包含主键列和需要做排序的列。</p> 
+<p><strong>优化union</strong></p> 
+<p>MySQL处理union的策略是先创建临时表，然后再把各个查询结果插入到临时表中，最后再来做查询。因此很多优化策略在union查询中都没有办法很好的的工作的时候，经常需要手动将where，limit，order by等子句下推到各个子查询中，以便优化器可以充分利用这些条件优化。</p> 
+<p>除非确实需要服务器去重，否则一定要使用union all，如果没有all关键字，MySQL会给临时表加上distinct字段，导致整个临时表的数据做唯一性检查，这样的代价非常高。当然即使使用了all，MySQL总是将结果放入临时表，然后再读出，再返回给客户端。虽然很多时候没有这个必要，比如有时候可以直接把每个子查询 结果返回给客户端。</p> 
+<p><strong>结语</strong></p> 
+<p>理解查询是如何执行以及时间都消耗在那些地方，再加上一些优化过程的知识，可以帮助大家更好的理解MySQL，理解常见优化技巧背后的原理。希望本文中的原理、示例能够帮助大家更高的将理论和实践结合起来。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/72ccb399322704a6be17521af76b2bf4/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">快速学习“堆“排序（C语言数据结构）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4584eae326bdef053d685ca14f02a775/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">PHP基础之面向对象讲解</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【MySQL】MySQL连接池原理与简易网站数据流动是如何进行 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/d68ba3a0a8000e210deb51d09358c5b7/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【MySQL】MySQL连接池原理与简易网站数据流动是如何进行">
+  <meta property="og:description" content="MySQL连接池原理与简易网站数据流动是如何进行 1.MySQL连接池原理2.简易网站数据流动是如何进行 点赞👍👍收藏🌟🌟关注💖💖
+你的支持是对我最大的鼓励，我们一起努力吧!😃😃
+1.MySQL连接池原理 目前我们对mysql有了一定的理解，下面我们谈一下，mysql在网站或者公司内部一套存储方案它定位的问题。
+实际上在开发的时候把表结构各方面设计好了，接下来要做的不是写各种各样的sql，在做开发的时候，是先要连接数据库的。而我们会发现连接数据库的时候每一次连的都是先创建数据库对象然后connet用完之后要把释放把连接关掉，这种执行一条sql这种就把连接关了这是一种短连接，并且挺浪费的。
+所以mysql在网站和数据库之间，除了一些缓存方面的技术，还有一个在编码层面上的技术叫做 连接池。
+那这个连接池如何理解呢？
+以前是这样做的，需要就连接一下连接之后返回，返回之后就断开。而实际上我们可以自己设计一个连接池的小组件，它可以预先让多个线程预先和mysql建立好连接，建立好连接之后不动就一直处于连接的状态，我们可以把sql语句封装成任务扔到连接池中，然后就可以把任务交给连接池中的线程。一定是这个线程启动的时候就绑定或者关联了mysql连接资源，说白了不就是给线程设计一个类，线程内部里在创建MYSQL对象。在线程池构造线程的同时把MYSQL对象也构建除了。线程启动之后就把mysql连接连上，连上之后线程不就进入自己的事件主循环，然后我们就可以直接用这个连接了。
+那这个玩意怎么做呢？
+如果在Linux学过线程池的话非常简单，这个连接池内部其实只需要维护一个任务队列就可以。这个连接池里面创建线程池今天还需要加上MYSQL对象，每一个线程给它搞一个MYSQL对象，这个创建MYSQL对象可以当作线程类的类内成员，当初始化线程就可以把对应的MYSQL对象也初始化出来。当启动线程之后也把mysql连接建立好，这样每一个线程都有自己mysql的句柄，都维护了自己的连接。然后线程进入等待任务到来的死循环中不断从任务队列中拿任务，有任务就拿没任务就在条件变量下去等。我们未来就可以通过任务队列把任务下达下去。
+上层可以构建任务task类，里面可以包含两个成员一个是string sql，还有一个回调函数function cb。比如我现在是一个调用方，我要向mysql服务器下达一个delete指令，所以写一个delete 的sql语句然后把它构建成一个task，然后把这个task扔到连接池的任务队列里，然后线程就可以从任务队列里拿到任务，然后拿到对应任务的线程不是有msyql连接吗，就可以去执行mysql_query，把task对象中的sql拿出来交给mysql_query执行。线程池预先创建，连接池预先创建，所以就避免了重新建立连接的动作，所以此时一旦拿到task之后就给对mysql下达sql指令了。
+为什么任务类里面放一个回调函数fuction？
+这是因为我们自己的模块可以有一个函数A。如果向mysql增加删除更新还好说，但是读取的时候我们需要把结果拿到。线程拿到这个sql执行之后，然后多做一个动作看看这个fuction是否存在，如果没有那执行完sql就真的完了。如果设置了然后线程池继续回调这个fuction把我们查询出来的结果通过回调拿回来。这个回调就是我们曾经构建task把自己的方法函数A绑定到task里面的function，所以数据就被拿回来了。
+所以我们可以用这种想法去设计成一个连接池。
+2.简易网站数据流动是如何进行 一个用户逻辑是怎么走的？以注册和登录为例。
+现在有一个服务器上面搭载了一个网站，然后还有一台服务器上面搭载了内网中的mysql。这个服务器上面一定要搭建http：nginx或者业务型的tomcat。现在有一个用户向网站发起一个注册请求，然后这个网站给你回应一个注册页面。然后把对应信息填完就提交。可能用的是GET或者POST方法把数据提交给了服务器，在服务器内部它可能会用一些web语言 比如说php，python，java，然后就可以把你提交的这些数据进行提取出来。然后判断你这是注册，所以就把你的数据构建成sql直接提交到mysql里，自此这个用户信息就被记录到用户表里了。但直接和数据库打交道太慢了， 其次一般公司数据库服务可能存在多份，所以它可能存在后端接入多个数据库。那这个网站怎么去选择用那个数据库呢？那就需要一个中间键，可以用一些效率更到的语言如C/C&#43;&#43;等。这个构建成sql不用直接交道数据库了，直接先交给它。然后它内部做一些负载均衡，选择把记录插入数据库。这些数据库会定期做数据的互相同步，然后数据就都有了。
+所以网站根本不关心后端有多少数据库，我们把数据库集群化。这里就出现这么多数据库选择那一个。你也不用管了，这个时候就在这两个模块之间添加一层软件层。这就是在计算机学科任何的问题都可以通过加一层软件来解决。所以加软件层来解决对应的问题。
+然后别人想登录，登录也是一样的要进行请求登录页面，然后就返回登录页面，然后输入用户名和密码接下来就以POST或者GET方法提交上来，然后怎么去验证这个用户呢？所以还是提取后构建一个sql语句，把这个sql通过服务下达给后端的数据库。可以根据负载均衡随便去找个数据库，因为数据是同步的。然后就去查，查完后把查询结果返回，只要有结果说明这个用户是合法，然后就可以在服务器层面给它形成各种cookie，session这样的信息。另外我们在访问页面时可能会有一些高频热度的数据我们可以在加一些缓存之类的，比如说Rides之类的。所以在查数据时不一定要去数据库里查，而先到缓存里，有的话直接从缓存里返回。没有的话就去访问mysql。
+这就是一个网站整个初步的逻辑就是这个样子的。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-08T15:01:31+08:00">
+    <meta property="article:modified_time" content="2024-07-08T15:01:31+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【MySQL】MySQL连接池原理与简易网站数据流动是如何进行</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>MySQL连接池原理与简易网站数据流动是如何进行</h4> 
+ <ul><li><a href="#1MySQL_7" rel="nofollow">1.MySQL连接池原理</a></li><li><a href="#2_37" rel="nofollow">2.简易网站数据流动是如何进行</a></li></ul> 
+</div> 
+<p></p> 
+<p><img src="https://images2.imgbox.com/6c/bf/buUJXFGp_o.jpg" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p><strong>点赞</strong>👍👍<strong>收藏</strong>🌟🌟<strong>关注</strong>💖💖<br> <font color="red"><strong>你的支持是对我最大的鼓励，我们一起努力吧!😃😃</strong></font></p> 
+</blockquote> 
+<h2><a id="1MySQL_7"></a>1.MySQL连接池原理</h2> 
+<p>目前我们对mysql有了一定的理解，下面我们谈一下，mysql在网站或者公司内部一套存储方案它定位的问题。</p> 
+<p>实际上在开发的时候把表结构各方面设计好了，接下来要做的不是写各种各样的sql，在做开发的时候，是先要连接数据库的。而我们会发现连接数据库的时候每一次连的都是先创建数据库对象然后connet用完之后要把释放把连接关掉，这种执行一条sql这种就把连接关了这是一种短连接，并且挺浪费的。</p> 
+<p>所以mysql在网站和数据库之间，除了一些缓存方面的技术，还有一个在编码层面上的技术叫做 <strong>连接池</strong>。</p> 
+<p>那这个连接池如何理解呢？</p> 
+<p>以前是这样做的，需要就连接一下连接之后返回，返回之后就断开。而实际上我们可以自己设计一个连接池的小组件，它可以预先让多个线程预先和mysql建立好连接，建立好连接之后不动就一直处于连接的状态，我们可以把sql语句封装成任务扔到连接池中，然后就可以把任务交给连接池中的线程。一定是这个线程启动的时候就绑定或者关联了mysql连接资源，说白了不就是给线程设计一个类，线程内部里在创建MYSQL对象。在线程池构造线程的同时把MYSQL对象也构建除了。线程启动之后就把mysql连接连上，连上之后线程不就进入自己的事件主循环，然后我们就可以直接用这个连接了。</p> 
+<p>那这个玩意怎么做呢？</p> 
+<p>如果在Linux学过线程池的话非常简单，这个连接池内部其实只需要维护一个任务队列就可以。这个连接池里面创建线程池今天还需要加上MYSQL对象，每一个线程给它搞一个MYSQL对象，这个创建MYSQL对象可以当作线程类的类内成员，当初始化线程就可以把对应的MYSQL对象也初始化出来。当启动线程之后也把mysql连接建立好，这样每一个线程都有自己mysql的句柄，都维护了自己的连接。然后线程进入等待任务到来的死循环中不断从任务队列中拿任务，有任务就拿没任务就在条件变量下去等。我们未来就可以通过任务队列把任务下达下去。</p> 
+<p><img src="https://images2.imgbox.com/4d/00/mi5SFdM5_o.png" alt="在这里插入图片描述"></p> 
+<p>上层可以构建任务task类，里面可以包含两个成员一个是string sql，还有一个回调函数function cb。比如我现在是一个调用方，我要向mysql服务器下达一个delete指令，所以写一个delete 的sql语句然后把它构建成一个task，然后把这个task扔到连接池的任务队列里，然后线程就可以从任务队列里拿到任务，然后拿到对应任务的线程不是有msyql连接吗，就可以去执行mysql_query，把task对象中的sql拿出来交给mysql_query执行。线程池预先创建，连接池预先创建，所以就避免了重新建立连接的动作，所以此时一旦拿到task之后就给对mysql下达sql指令了。</p> 
+<p><img src="https://images2.imgbox.com/42/95/DBNXgE0U_o.png" alt="在这里插入图片描述"></p> 
+<p>为什么任务类里面放一个回调函数fuction？<br> 这是因为我们自己的模块可以有一个函数A。如果向mysql增加删除更新还好说，但是读取的时候我们需要把结果拿到。线程拿到这个sql执行之后，然后多做一个动作看看这个fuction是否存在，如果没有那执行完sql就真的完了。如果设置了然后线程池继续回调这个fuction把我们查询出来的结果通过回调拿回来。这个回调就是我们曾经构建task把自己的方法函数A绑定到task里面的function，所以数据就被拿回来了。</p> 
+<p><img src="https://images2.imgbox.com/0c/c4/w6ZUhHmC_o.png" alt="在这里插入图片描述"></p> 
+<p>所以我们可以用这种想法去设计成一个连接池。</p> 
+<h2><a id="2_37"></a>2.简易网站数据流动是如何进行</h2> 
+<p>一个用户逻辑是怎么走的？以注册和登录为例。</p> 
+<p>现在有一个服务器上面搭载了一个网站，然后还有一台服务器上面搭载了内网中的mysql。这个服务器上面一定要搭建http：nginx或者业务型的tomcat。现在有一个用户向网站发起一个注册请求，然后这个网站给你回应一个注册页面。然后把对应信息填完就提交。可能用的是GET或者POST方法把数据提交给了服务器，在服务器内部它可能会用一些web语言 比如说php，python，java，然后就可以把你提交的这些数据进行提取出来。然后判断你这是注册，所以就把你的数据构建成sql直接提交到mysql里，自此这个用户信息就被记录到用户表里了。但直接和数据库打交道太慢了， 其次一般公司数据库服务可能存在多份，所以它可能存在后端接入多个数据库。那这个网站怎么去选择用那个数据库呢？那就需要一个中间键，可以用一些效率更到的语言如C/C++等。这个构建成sql不用直接交道数据库了，直接先交给它。然后它内部做一些负载均衡，选择把记录插入数据库。这些数据库会定期做数据的互相同步，然后数据就都有了。</p> 
+<p>所以网站根本不关心后端有多少数据库，我们把数据库集群化。这里就出现这么多数据库选择那一个。你也不用管了，这个时候就在这两个模块之间添加一层软件层。这就是在计算机学科任何的问题都可以通过加一层软件来解决。所以加软件层来解决对应的问题。</p> 
+<p><img src="https://images2.imgbox.com/69/ec/TTfwk6wl_o.png" alt="在这里插入图片描述"></p> 
+<p>然后别人想登录，登录也是一样的要进行请求登录页面，然后就返回登录页面，然后输入用户名和密码接下来就以POST或者GET方法提交上来，然后怎么去验证这个用户呢？所以还是提取后构建一个sql语句，把这个sql通过服务下达给后端的数据库。可以根据负载均衡随便去找个数据库，因为数据是同步的。然后就去查，查完后把查询结果返回，只要有结果说明这个用户是合法，然后就可以在服务器层面给它形成各种cookie，session这样的信息。另外我们在访问页面时可能会有一些高频热度的数据我们可以在加一些缓存之类的，比如说Rides之类的。所以在查数据时不一定要去数据库里查，而先到缓存里，有的话直接从缓存里返回。没有的话就去访问mysql。</p> 
+<p><img src="https://images2.imgbox.com/b1/8a/vyxVFUps_o.png" alt="在这里插入图片描述"></p> 
+<p>这就是一个网站整个初步的逻辑就是这个样子的。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/20c3d6f86b4e33b875e99a906049bd9d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【基础算法总结】分治—归并</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/225cbea2792487797df8a0a66c588411/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【Stable Diffusion】来了来了！属于SDXL的ControlNet模型它终于来了！</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

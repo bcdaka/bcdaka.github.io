@@ -1,0 +1,205 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>安卓root详解（supersu，magisk原理说明） - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/f0ce4ff3aa92ff50b1c74679cd84e928/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="安卓root详解（supersu，magisk原理说明）">
+  <meta property="og:description" content="原创：转载请注明！
+root 的过去和现在 从 Android 诞生到现在，我们实际上所使用的 root 方案，大致为以下几种
+系统漏洞提权root 远古时期，早期的安卓可以通过某些系统漏洞提取，进而获取 root 权限；在安卓6.0之前，各种一键 root 软件满天飞，比如 kingroot，360 一键root等，他们本质上都是通过系统漏洞来获取特殊权限；在安卓6.0之后，谷歌封堵了大量的漏洞，各种所谓的一键 root 工具全都玩完，随着 Android 系统的进化与完善，这种通过漏洞提权获取 root 的方式已经完全被淘汰了。
+原理：早期root方案基本上是通过 SUID 实现的。SUID 是一个特殊的权限位，它的特殊之处在于，如果某个可执行文件设置了这个权限位，某个用户在执行这个文件的之后，启动进程的 uid 会被自动切换为文件所有者的 uid。
+打个比方，假设我有个文件名叫 su，它的所有者是 root，其他进程有其可执行权限；如果没有设置 SUID，那么某个进程比如 uid 为 10000，在执行这文件之后，它启动的进程实际 uid 也是 10000，也就是一个普通进程；而如果这个文件有被设置 SUID 位，那么 uid 为 10000 的用户在执行这个文件之后，所启动的进程 uid 会被自动切换为文件所有者，也就是 root 用户，这个进程就是一个特权进程。
+用这种方式实现 root 可谓是非常简单，只需要丢一个 SUID 的文件到系统里面就结束了。然而，Android 5 系统的安全性改进让这种机制退出了历史舞台。
+这种机制其实非常简单，就是通过 capabilities 机制，给 zygote 的子进程限制了 CAP_SETUID；而我们的 Android App 都是 zygote 子进程，因此 App 从此与 SUID root 告别了。然而，我们的 shell 用户还是可以 SUID 的；某些系统中自带的 su 还是这种 SUID 的 root，在这种系统中我们会发现，adb shell 可以获取 root 权限，但是 App 进程死活无法获取 root，这时候可以看一下 su 文件是否有 SUID 位，如果有的话就是这个原因。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-06T17:06:56+08:00">
+    <meta property="article:modified_time" content="2024-05-06T17:06:56+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">安卓root详解（supersu，magisk原理说明）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p><span style="color:#fe2c24;"><strong>原创：转载请注明！</strong></span></p> 
+<p></p> 
+<h3 id="root-的过去和现在">root 的过去和现在</h3> 
+<p>从 Android 诞生到现在，我们实际上所使用的 root 方案，大致为以下几种</p> 
+<h4>系统漏洞提权root</h4> 
+<blockquote> 
+ <p>远古时期，早期的安卓可以通过某些系统漏洞提取，进而获取 root 权限；在安卓6.0之前，各种一键 root 软件满天飞，比如 kingroot，360 一键root等，他们本质上都是通过系统漏洞来获取特殊权限；在安卓6.0之后，谷歌封堵了大量的漏洞，各种所谓的一键 root 工具全都玩完，随着 Android 系统的进化与完善，这种通过漏洞提权获取 root 的方式已经完全被淘汰了。</p> 
+ <p>原理：早期root方案基本上是通过 SUID 实现的。<a href="https://source.android.com/security/enhancements/enhancements43" rel="nofollow" title="SUID">SUID</a> 是一个特殊的权限位，它的特殊之处在于，如果某个可执行文件设置了这个权限位，某个用户在执行这个文件的之后，启动进程的 uid 会被自动切换为文件所有者的 uid。</p> 
+ <p>打个比方，假设我有个文件名叫 <code>su</code>，它的所有者是 root，其他进程有其可执行权限；如果没有设置 SUID，那么某个进程比如 uid 为 10000，在执行这文件之后，它启动的进程实际 uid 也是 10000，也就是一个普通进程；而如果这个文件有被设置 SUID 位，那么 uid 为 10000 的用户在执行这个文件之后，所启动的进程 uid 会被自动切换为文件所有者，也就是 root 用户，这个进程就是一个特权进程。</p> 
+ <p>用这种方式实现 root 可谓是非常简单，只需要丢一个 SUID 的文件到系统里面就结束了。然而，Android 5 系统的安全性改进让这种机制退出了历史舞台。</p> 
+ <p>这种机制其实非常简单，就是通过 capabilities 机制，给 zygote 的子进程限制了 CAP_SETUID；而我们的 Android App 都是 zygote 子进程，因此 App 从此与 SUID root 告别了。然而，我们的 shell 用户还是可以 SUID 的；某些系统中自带的 <code>su</code> 还是这种 SUID 的 root，在这种系统中我们会发现，adb shell 可以获取 root 权限，但是 App 进程死活无法获取 root，这时候可以看一下 <code>su</code> 文件是否有 SUID 位，如果有的话就是这个原因。</p> 
+</blockquote> 
+<p></p> 
+<h4>SuperSu Root</h4> 
+<blockquote> 
+ <p>SuperSU 进行 Root 的原理主要涉及以下几个步骤：</p> 
+ <p>1. 刷入 Recovery：首先，用户需要刷入一个自定义的 Recovery，如 TWRP（Team Win Recovery Project），以便能够安装 Root 文件包。</p> 
+ <p>2. 刷入 SuperSU：用户下载并刷入一个包含 SuperSU 的 zip 文件到 Recovery 中。这个 zip 文件包含了管理 Root 权限所需的二进制文件和脚本。</p> 
+ <p>3. 替换 su 二进制文件：SuperSU 通常替换系统原有的 su 二进制文件，这是执行 su 命令（切换到超级用户）的程序。SuperSU 的 su 文件会管理权限请求，允许或拒绝应用程序的 Root 访问。</p> 
+ <p>4. 管理 Root 权限：安装后，SuperSU 会监控所有对 su 命令的调用，询问用户是否授权特定的应用程序获取 Root 权限。</p> 
+ <p>5. 日志记录：SuperSU 还记录了所有请求 Root 权限的应用程序，用户可以查看日志来了解哪些应用曾经尝试获取最高权限。</p> 
+ <p></p> 
+ <p>原理：</p> 
+ <p>在安卓系统中，进程通过su命令可以将自身提权到root权限，但是原生SU程序在设定中就把非root和非shell用户封死了，只有root用户和shell用户可以执行su命令，否则权限不足</p> 
+ <pre><code class="language-bash">//android/system/extras/su/su.c 
+int main(int argc, char** argv) {
+    uid_t current_uid = getuid();
+    if (current_uid != AID_ROOT &amp;&amp; current_uid != AID_SHELL) error(1, 0, "not allowed");</code></pre> 
+ <p>SuperSU提供了另外一套su文件和对应的权限管理方案，使所有APP都可以调用su文件，同时需要经过supersu的许可；可以用到以下的文件：</p> 
+ <p>   common/Superuser.apk<br>    ARCH/su<br>    ARCH/supolicy<br>    ARCH/libsupol.so</p> 
+</blockquote> 
+<p>然而，随着 Android 9 的发布，谷歌引入了更多的安全特性，这使得 SuperSU 无法正常工作。最主要的变化包括：</p> 
+<ul><li> <p><strong>增强的系统分区加密</strong>：Android 9 引入了进一步加强的系统分区加密，系统分区权限为只读；</p> </li><li> <p><strong>SELinux 策略变更</strong>：SELinux（安全增强型 Linux）策略的变更进一步限制了对敏感操作的访问。</p> </li><li> <p><strong>对系统文件的修改检测</strong>：Android 9 增强了对系统文件修改的检测，SuperSU 通过修改系统文件来管理 Root 权限，这在新版本中受到了限制。</p> </li></ul> 
+<p>因此，由于这些安全增强，SuperSU 无法在 Android 9 上提供透明和稳定的 Root 访问，而 Magisk 作为替代方案，采用了 systemless（无需修改系统分区）的方法，通过挂载一个与系统文件相隔离的文件系统来加载自定义内容，从而避开了对系统文件的直接修改，这使得 Magisk 能够在新的安全机制下继续提供 Root 权限管理。</p> 
+<p></p> 
+<h4>Magisk Root</h4> 
+<blockquote> 
+ <p>Magisk 是目前最流行的用于Android设备的Root解决方案，它允许用户获取Root权限，同时尽量不影响设备的安全性和保修状态。Magisk的工作原理相对复杂，但可以概括为以下几个关键步骤和概念：</p> 
+ <p>1. 系统分区修改：Magisk通过对系统的boot.img文件进行patch，实现对系统分区的修改，而无需直接触碰/system分区。这是通过在启动时创建一个挂载点来实现的，Magisk会在/data分区创建一个magisk.img镜像文件，并在系统启动时将其挂载到/magisk目录。</p> 
+ <p>2. Systemless机制：Magisk采用了一种称为systemless的技术，这意味着它在不修改原始系统分区的情况下提供Root权限。这种技术避免了对系统文件的直接修改，从而减少了引发系统问题的风险。</p> 
+ <p>3. Magisk二进制文件：Magisk包含了自己的su二进制文件，这个文件在系统启动时被加载，并且可以取代系统中原有的su文件来管理Root权限。</p> 
+ <p>4. 权限管理：Magisk提供了一个管理界面，允许用户授予或拒绝特定应用的Root权限请求。这是通过Magisk管理器应用实现的，它提供了一个用户友好的界面来管理Root权限。</p> 
+ <p>5. SELinux策略：Magisk还能够处理SELinux策略，这是Android系统中用于增强安全性的机制。Magisk可以配置SELinux以允许Root权限的适当使用，同时保持系统的安全性。</p> 
+ <p>6. Magisk Hide：Magisk提供了一个名为Magisk Hide的功能，允许用户隐藏Root权限，以规避某些应用的Root检测，这对于需要使用银行或某些安全敏感应用的用户来说非常有用。</p> 
+ <p>7. 模块系统：Magisk支持模块化，用户可以通过刷入模块来实现各种系统级别的定制和功能增强，如主题定制、功能添加等，而无需对系统进行永久性修改。</p> 
+ <p>8. Bootloader解锁：为了使用Magisk，用户通常需要解锁设备的Bootloader。解锁Bootloader允许用户刷入自定义的Recovery和Magisk，这是获取Root权限的前提步骤之一。</p> 
+ <p>9. Recovery刷入：用户可以通过刷入如TWRP这样的自定义Recovery来安装Magisk.zip文件，这是另一种安装Magisk的方法。</p> 
+ <p>10. OTA升级兼容：Magisk设计时考虑了与OTA（Over-The-Air）系统升级的兼容性，这意味着使用Magisk的设备可以接收和安装官方的系统更新，而不会因为Root权限而受到影响。</p> 
+</blockquote> 
+<p></p> 
+<p></p> 
+<h3>拓展：</h3> 
+<h4>Xposed框架</h4> 
+<blockquote> 
+ <p>Xposed框架是一个在Android系统中非常流行的工具，它允许用户通过安装特定的模块来自定义和修改系统及应用程序的行为，而无需修改应用程序本身的APK文件。Xposed框架的工作原理和特点如下：</p> 
+ <p></p> 
+ <p>1. 无需修改APK：用户可以安装Xposed模块来改变应用程序的功能，而不需要对应用程序的安装包进行解包、修改和重新打包。</p> 
+ <p>2. 系统级接管：Xposed通过替换系统启动时的`app_process`文件来接管整个系统。`app_process`是Android系统中用于启动应用进程的关键程序。</p> 
+ <p>3. Zygote进程：在Android系统中，Zygote是一个特殊的系统进程，它负责孵化（fork）新的应用进程。Xposed框架通过Hook（钩住）Zygote进程，影响所有从Zygote fork出来的应用进程。</p> 
+ <p>4. 模块化：Xposed框架的自定义功能通过模块实现，用户可以根据需要选择安装或卸载不同的模块。</p> 
+ <p>5. 易于使用：Xposed提供了一个用户界面，用户可以通过它来激活或停用不同的模块，无需重启手机。</p> 
+ <p>6. 高级功能：Xposed模块可以实现很多高级功能，如应用行为的修改、系统设置的调整、状态栏和导航栏的自定义等。</p> 
+ <p>7. 需要Root权限：为了能够替换系统文件和影响系统进程，使用Xposed框架通常需要设备具有Root权限。</p> 
+ <p>8. 兼容性：Xposed框架支持多个版本的Android系统，但需要根据具体的系统版本选择合适的Xposed版本。</p> 
+ <p>9. 安全性：虽然Xposed框架本身是安全的，但是安装不受信任的模块可能会带来安全风险。因此，用户应该只从可信赖的来源安装Xposed模块。</p> 
+ <p>10. 社区支持：Xposed有一个活跃的社区，许多开发者创建并分享了各种模块，以满足不同用户的需求。</p> 
+ <p></p> 
+ <p>总的来说，Xposed框架是一个功能强大的工具，它为用户提供了一种灵活、安全（在正确使用的前提下）的方式来定制他们的Android设备。然而，由于它修改了系统的核心组件，使用时还是需要一定的技术知识，以避免潜在的风险。</p> 
+</blockquote> 
+<p></p> 
+<h4>Zygote进程</h4> 
+<blockquote> 
+ <p>在Android操作系统中，Zygote是一个特殊的系统进程，它在系统启动时被创建。Zygote进程的主要作用是启动一个特殊的虚拟机实例，并预加载一些常用的类和资源，然后等待来自系统或应用程序的请求来创建新的应用程序进程。以下是Zygote进程的一些关键点：</p> 
+ <p></p> 
+ <p>1. 启动过程：在Android系统启动时，init进程会启动Zygote进程。Zygote进程会启动一个虚拟机实例，并加载运行Android应用程序所需的核心类和资源。</p> 
+ <p>2. 孵化新进程：当系统或应用程序需要一个新的进程时，它会向Zygote发送一个请求。Zygote进程会复制自身（通过fork操作），创建一个新的进程，并将这个新进程与请求的应用程序相关联。</p> 
+ <p>3. 预加载资源：为了提高应用程序启动速度，Zygote进程会预加载一些常用的类和资源，如Java核心库和Android框架类。这样，当新进程被创建时，它已经拥有了一个包含必要资源的虚拟机实例。</p> 
+ <p>4. 应用隔离：每个Android应用程序都运行在自己的进程中，这是为了确保应用程序之间的隔离。Zygote进程是实现这一隔离模型的关键组件。</p> 
+ <p>5. 系统性能：通过Zygote机制，Android系统可以更高效地管理资源。预加载的Zygote进程减少了每次启动新应用程序时的资源加载时间，从而提高了系统的整体性能。</p> 
+ <p>6. 安全机制：Zygote进程在创建新进程时，会为每个应用程序设置适当的安全上下文和权限，这是Android安全架构的一部分。</p> 
+ <p>7. 脚本解释器：Zygote进程还负责启动Android的脚本解释器，如JavaScriptCore，这对于运行Web内容的应用程序（如浏览器）是必要的。</p> 
+ <p>8. 系统服务：Zygote进程还可以用来启动系统服务，这些服务在后台运行，为整个系统或多个应用程序提供功能。</p> 
+ <p>9. ART组件：随着Android操作系统的发展，Zygote进程现在与Android运行时（ART）紧密集成，负责启动和管理Android应用的运行时环境。</p> 
+ <p></p> 
+ <p>简而言之，Zygote是Android系统中一个至关重要的组件，它通过孵化新的应用程序进程来支持Android的应用程序模型，同时确保了应用程序的性能和安全性。</p> 
+</blockquote> 
+<p></p> 
+<h4>通俗易懂的解释与延伸：</h4> 
+<p>Xposed框架：<br> 想象一下，你的手机操作系统就像一个有很多房间的大房子（安卓系统），每个房间都负责不同的任务（比如微信是一个房间，用来聊天）。Xposed框架就是一个特殊的管家，它在房子的门口（app_process，启动Zygote的地方）等着，每当有人要进入房间（启动应用）之前，这个管家都可以先和他们谈话（加载模块代码），然后这些人进入房间后，就会按照管家的指示去做（改变应用行为）。比如，管家可以告诉微信房间的人，让他们不要听主人（微信用户）关于撤回消息的命令，或者在玩摇骰子游戏时总是赢。</p> 
+<p>Magisk工具：<br> 现在，想象一下Magisk是一个魔术师，它不是在房子门口等，而是在房子旁边创造了一个完全一样的幻影房子（虚拟文件系统）。这个幻影房子看起来和原来的一模一样，但实际上它是独立存在的，不会影响原来的房间。魔术师可以让你在不改变原来房间的情况下，使用幻影房间来做实验或者改变设置，这样即使做了一些改变，原来的房间还是保持原样。这就意味着，即使系统升级（房子翻新），幻影房间的实验也不会受到影响。</p> 
+<p>两者的主要区别：<br> - Xposed 需要在系统中安装一个特殊的管家（修改app_process），这个管家可以直接和房间里的人（应用进程）交流，改变他们的行为。但是，如果房子翻新（系统升级），管家可能会受到影响。<br> - Magisk 则是创建了一个幻影房子，让你在不改变真房子的情况下做实验。这样，即使真房子翻新，幻影房子里的实验也不会受影响。</p> 
+<p>使用场景：<br> - 如果你想改变应用的行为，比如微信防撤回，你可能需要 Xposed。<br> - 如果你想获取Root权限来做一些高级的系统定制，但又不想影响系统的安全性和升级，你可能需要 Magisk。</p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b9590fefe8ca648fa9fe410d0cfdaf5b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Mac本地部署LLama3&#43;AnythingLLM&#43;Docker方式的本地知识库</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/8667871f112a677f64ac59c8ccb5474f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Llama-Factory &#43; Ollama 打造属于自己的中文版 Llama3</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

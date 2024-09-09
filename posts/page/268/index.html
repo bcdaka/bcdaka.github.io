@@ -1,0 +1,619 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Posts - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Posts">
+  <meta property="og:description" content="编程大咖的博客">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="website">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+	<link rel="alternate" type="application/rss+xml" href="/posts/index.xml" title="编程大咖">
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main list" role="main">
+	<header class="main__header">
+		<h1 class="main__title">Posts</h1>
+	</header><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/dae95a3b6820801471cc6d23e83af6a2/" rel="bookmark">
+			Flink作业执行之 2.算子 StreamOperator
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		Flink作业执行之 2.算子 StreamOperator 前文介绍了Transformation创建过程，大多数情况下通过UDF完成DataStream转换中，生成的Transformation实例中，核心逻辑是封装了SimpleOperatorFactory实例。
+UDF场景下，DataStream到Transformationg过程中，SimpleOperatorFactory实例的创建过程大致如下伪代码所示。
+// 具体的函数实例 Function function = ; // 将函数实例封装到算子实例中 AbstractUdfStreamOperator operator = new AbstractUdfStreamOperator(function); // 通过算子实例得到其SimpleOperatorFactory实例 SimpleOperatorFactory factory = SimpleOperatorFactory.of(operator) 这里的UDF可以简单理解为需要我们自己传入对应Function实现类的操作，如map、filter等。
+问题：
+StreamOperator是什么？
+为什么需要将Function封装到StreamOperator中？
+1. Flink算子 在应用程序中通过各种各样的Function完成DataStream转换，但是Function仅表示数据处理逻辑，并不关心数据从哪里来到哪里去。
+以MapFunction为例，map方法中仅包含对每一条到来数据的具体处理逻辑，并不清楚map方法何时被调用，结果返回到哪。
+一个完整的数据处理逻辑应该是获取数据-&gt;处理数据-&gt;输出数据，在Flink中这个最小的完整逻辑通过算子表示，顶层抽象接口为StreamOperator。
+因此Function作为算子的一部分参与后续的数据加工。
+算子包含生命周期、状态和容错管理、数据处理3个方面。设计时分为两条线：
+生命周期、状态和容错管理，主要是AbstractStreamOperator抽象类及其子类实现，以及未来的AbstractStreamOperatorV2抽象类。数据处理，主要是OneInputStreamOperator、TwoInputStreamOperator和MultipleInputStreamOperator接口，分别表示单流、双流和多流的数据处理。在接口中定义了数据的处理方法。 StreamOperator完整的顶层抽象如下。
+AbstractStreamOperator，所有流运算的基类。提供了生命周期和属性方法的默认实现。
+包含UDF的算子需继承其AbstractUdfStreamOperator子类
+对于其具体实现，还必须实现OneInputStreamOperator或TwoInputStreamOperator其中一个。
+将来将会使用AbstractStreamOperatorV2替换该基类OneInputStreamOperator，支持单流输入的运算符接口，如果要实现自定义运算符，需要使用AbatractUdfStreamOperator作为基类TwoInputStreamOperator，支持双流输入的运算符基类。同样需要和AbstractStreamOperator一起使用。AbstractStreamOperatorV2，所有流运算符的新基类，旨在取代AbatractUdfStreamOperator。
+当前仅仅用于和MultipleInputStreamOperator一起配合使用。 OneInputStreamOperator、TwoInputStreamOperator和MultipleInputStreamOperator分别对应了Tranformation实现类的OneInputTransformation、TwoInputTransformation和AbstractMultipleInputTransformation。
+MultipleInputStreamOperator和AbstractStreamOperatorV2是高版本中才加入的。因此，flink中最初仅支持单流或双流的输入，多流场景下需要拆分成单流或双流进行处理。在支持不同输入的流的实现中，梳理数据的方法分别如下
+// 单流输入 public interface OneInputStreamOperator&lt;IN, OUT&gt; extends StreamOperator&lt;OUT&gt;, Input&lt;IN&gt; { // 处理数据 void processElement(StreamRecord&lt;IN&gt; element) throws Exception; } // 双流输入 public interface TwoInputStreamOperator&lt;IN1, IN2, OUT&gt; extends StreamOperator&lt;OUT&gt; { // 处理双流输入中第一个流上的元素 void processElement1(StreamRecord&lt;IN1&gt; element) throws Exception; // 处理双流输入中第二个流上的元素 void processElement2(StreamRecord&lt;IN2&gt; element) throws Exception; } // 多流输入，这里的Input和单流输入继承的Input父类为同一个 public interface MultipleInputStreamOperator&lt;OUT&gt; extends StreamOperator&lt;OUT&gt; { List&lt;Input&gt; getInputs(); } 在AbstractStreamOperator众多子类中，AbstractUdfStreamOperator抽象类中封装了Function接口，并且其中open、close等算子生命周期等方法，实际上就是调用Function实例的对应方法。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/dae95a3b6820801471cc6d23e83af6a2/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/0386e9491b39b469817176a379dd7bd6/" rel="bookmark">
+			mysql 分组后每个取最新的一条记录
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		在MySQL中，若要从一个分组中获取每组的最新一条记录（通常基于时间戳或其他递增的列），可以使用子查询或者窗口函数（如果MySQL版本支持）。
+以下是两种不同的实现方法：
+方法1: 使用子查询和LIMIT子句
+SELECT t1.* FROM your_table t1 INNER JOIN ( SELECT id, MAX(timestamp) AS max_timestamp FROM your_table GROUP BY id ) t2 ON t1.id = t2.id AND t1.timestamp = t2.max_timestamp; 在这个查询中：
+your_table 是你要查询的表名。
+id 是用于分组的字段。
+timestamp 是用于确定哪条记录是“最新”的时间戳字段。
+方法2: 使用窗口函数ROW_NUMBER()（如果MySQL 8.0+）
+SELECT id, other_columns, timestamp FROM ( SELECT id, other_columns, timestamp, ROW_NUMBER() OVER(PARTITION BY id ORDER BY timestamp DESC) as rn FROM your_table ) t WHERE rn = 1; 在这个查询中：
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/0386e9491b39b469817176a379dd7bd6/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/7c17486904d410fabc360d302dbffbd4/" rel="bookmark">
+			浅谈C&#43;&#43;基本框架内涵及其学习路线
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		目录
+一.C++的内涵本质
+1. 面向对象编程（OOP）
+2. 低级控制
+3. 模板编程
+4. 标准库（STL）
+5. 多范式支持
+二.学习路线
+1. 基础阶段
+C++基础语法
+函数
+数组和指针
+2. 面向对象编程
+类和对象
+继承和多态
+运算符重载
+3. 高级特性
+模板编程
+异常处理
+标准模板库（STL）
+4. 实战项目
+三.内容框架
+1. C++的历史和发展
+起源和发展历程
+与C语言的关系
+2. C++的核心概念
+面向对象编程
+低级控制
+模板编程
+标准库
+多范式支持
+3. C++的语法和特性
+基础语法
+控制结构
+函数和作用域
+指针和引用
+内存管理
+4. 面向对象编程
+类和对象的概念
+继承和多态
+运算符重载
+友元函数和友元类
+5. 高级编程技术
+模板和泛型编程
+异常处理
+多线程编程
+文件和流处理
+6. 标准模板库（STL）
+STL概述
+容器
+迭代器和算法
+7. 实战项目
+项目需求分析
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/7c17486904d410fabc360d302dbffbd4/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/f31c0c28651a71a0b94b2751a58cea72/" rel="bookmark">
+			【C&#43;&#43;】AVL树/红黑树实现及map与set的封装
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		前言
+【C++】二叉树进阶（二叉搜索树） 这篇文章讲述了关于二叉搜索树知识，但是二叉搜索树有其自身的缺陷，假如往树中插入的元素有序或者接近有序，二叉搜索树就会退化成单支树，时间复杂度会退化成O(N)，因此map、set等关联式容器的底层结构是对二叉树进行了平衡处理，即采用平衡树来实现，AVL树和红黑树都在不同程度下优化了二叉搜索树。在这篇文章中 【C++】─篇文章带你熟练掌握 map 与 set 的使用 我们对map与set的使用进行了详细的讲解，那么这篇文章会在实现AVL树的基础上对map与set进行封装。
+目录 一、AVL 树1.1 AVL树的概念1.2 AVL树节点的定义1.3 AVL树的插入1.4 AVL树的旋转1.4.1 新节点插入较高左子树的左侧----左左高：右单旋1.4.2 新节点插入较高右子树的右侧----右右高：左单旋1.4.3 新节点插入较高左子树的右侧---左右高：先左单旋再右单旋1.4.4 新节点插入较高右子树的左侧---右左高：先右单旋再左单旋 1.5 AVL树的验证1.6 AVL树的性能1.7 AVL树的整体实现 二、红黑树2.1 红黑树的概念2.2 红黑树的性质2.3 红黑树节点的定义2.4 红黑树的结构2.5 红黑树的插入操作2.6 红黑树的验证2.7 红黑树与AVL树的比较 三、红黑树的模拟实现3.1 红黑树中迭代器的实现3.2 红黑树中clear、size 和 empty 的实现3.3 获得红黑树中的最左/右节点3.4 红黑树中 begin 和 end 的实现3.5 红黑树中 insert 的实现3.6 红黑树中 find 的实现3.7 红黑树的整体实现 四、set 和 map 的封装4.1 set的封装4.2 map的封装 结尾 一、AVL 树 1.1 AVL树的概念 二叉搜索树虽可以缩短查找的效率，但如果数据有序或接近有序二叉搜索树将退化为单支树，查
+找元素相当于在顺序表中搜索元素，效率低下。因此，两位俄罗斯的数学家G.M.Adelson-Velskii
+和E.M.Landis在1962年发明了一种解决上述问题的方法：当向二叉搜索树中插入新结点后，如果能保证每个结点的左右子树高度之差的绝对值不超过1(需要对树中的结点进行调整)，即可降低树的高度，从而减少平均搜索长度。
+一棵AVL树或者是空树，或者是具有以下性质的二叉搜索树：
+它或是它的左右子树都是AVL树左右子树的高度差（平衡因子）的绝对值不超过1 如果一棵二叉搜索树是高度平衡的，它就是AVL树。如果它有n个结点，其高度可保持在 O ( l o g 2 n ) O(log_2 n) O(log2​n)，搜索时间复杂度O( l o g 2 n log_2 n log2​n)
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/f31c0c28651a71a0b94b2751a58cea72/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/7fbdccfd7056e50499830350aa6a7409/" rel="bookmark">
+			体验亚马逊AIGC——Amazon Bedrock
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		前言
+随着人工智能技术的不断发展，我们已经进入了一个全新的时代，即AI驱动的时代。在这个时代，人工智能已经逐渐成为我们生活中不可或缺的一部分，它可以帮助我们更好地处理各种复杂的问题，提高我们的工作效率，让我们的生活变得更加便捷。在这个背景下，全模态大模型技术得到了快速发展，其应用场景也越来越广泛。例如，在医疗领域，全模态大模型可以帮助医生更好地诊断疾病，提高治疗效果；在金融领域，全模态大模型可以帮助银行等机构更好地分析客户数据，提供更加个性化的服务；在教育领域，全模态大模型可以帮助学生更好地学习知识，提高学习效率。今天我们就来一起了解一下Amazon Bedrock这个AIGC平台。
+Amazon Bedrock简介
+Amazon Bedrock 是亚马逊网络服务（Amazon Web Services，Amazon）推出的一项服务，旨在帮助企业更轻松地构建、运行和管理微服务架构。Bedrock 提供了一整套工具和服务，以简化容器化应用程序的部署、监控和管理。它结合了 亚马逊云科技 的弹性计算、存储和网络服务，以及一系列开发工具和最佳实践，为开发人员和运维团队提供了更好的体验和效率。通过 Amazon Bedrock，用户可以利用容器技术（如 Docker 和 Kubernetes）来构建和部署他们的应用程序，从而实现更高的可伸缩性、可靠性和安全性。Bedrock 还提供了自动化工具，帮助用户简化部署和管理任务，减少手动操作的需求，提高整体的运维效率。此外，Bedrock 还包括了强大的监控和日志记录功能，帮助用户实时监控他们的应用程序性能和健康状况，及时发现和解决潜在的问题。Amazon Bedrock 旨在为企业提供一个全面的解决方案，帮助他们在亚马逊云科技平台上构建和管理现代化的微服务架构，从而加速应用程序的开发和交付过程，提升业务的灵活性和竞争力。
+它主要包括如下几个部分：AI21 labs的Jurassic-2模型、Anthropic的Claude模型、Amazon自家的Titan模型、Cohere的Command模型、Meta的Llama模型和Stability AI的Stability Diffusion模型。用户可以利用自己的数据对基础模型进行微调和使用检索增强生成（RAG）等技术进行定制，以适应特定的使用案例。
+Bedrock还是SageMake？
+Amazon Bedrock和Amazon SageMaker都是Amazon Web Services（Amazon）提供的机器学习和数据科学平台，但它们的重点和功能略有不同。Bedrock 更专注于微服务架构的构建和管理，而 SageMaker 则专注于机器学习模型的构建和部署。
+Amazon Bedrock:
+1.Amazon Bedrock 是一个构建在 亚马逊云科技 云平台上的服务，旨在帮助企业构建、运行和管理微服务架构。
+2.Bedrock 提供了一整套工具和服务，包括容器化应用程序的部署、监控和管理，以及自动化工具，帮助简化部署和管理任务。
+3.它通过结合 亚马逊云科技 的弹性计算、存储和网络服务，以及一系列开发工具和最佳实践，为开发人员和运维团队提供了更好的体验和效率。
+Amazon SageMaker:
+1.Amazon SageMaker 是一个用于构建、训练和部署机器学习模型的托管服务。
+2.SageMaker 提供了一个端到端的机器学习平台，包括数据准备、模型训练、模型调优和部署等一系列功能。
+3.用户可以使用 SageMaker 提供的预置算法和容器来构建和训练自己的模型，也可以使用自定义算法进行训练。
+4.此外，SageMaker 还提供了一系列自动化工具和功能，如自动模型调优和自动化模型部署，帮助用户简化机器学习模型的开发和部署流程。
+申请与使用
+使用Bedrock服务必须要先申请模型的访问权限，注意目前只在us-east-1,us-west-2,ap-southeast-1,ap-northeast-1节点中可用。
+首先我们需要注册Amazon帐号。
+这里需要我们填写账户名、邮箱和密码。邮箱作为找回账户的凭证，还需要额外的验证。
+注册并登录帐号后，在左侧导航栏的底部可以找到模型访问权限，点击进入。
+进入模型访问权限页面，点击管理模型访问权限即可申请权限。
+点击保存，等待后台处理，模型状态改变后即可使用。
+创建完成后，在操场中即可使用模型的各个功能。
+接下来我们来制作一个属于自己的聊天工具。点击聊天板块。
+在这里选择模型为Titian Text G1。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/7fbdccfd7056e50499830350aa6a7409/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/7ccaedb339eea7ef78b32eba3f5d0f5e/" rel="bookmark">
+			IntelliJ IDEA 创建（连接）数据库详解（以MySQL数据库为例）
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		首先，我们需要明确一点，IDEA只是个工具，它和Navicat那些软件机制差不多，可以控制、调用、回显MySQL数据，实际上数据库表的创建还是MySQL自身来完成的，只是MySQL自身没有显式的操作界面，所以我们如果不使用用指令集（命令行）来操作数据库，就需要借助工具来实现。
+而IDEA本身是个编译器，它之所以有操作数据库的功能，主要是因为里面集成了一个工具——DataGrip（可以作为独立的软件单独下载）。
+综上所述，与其说IDEA创建数据库，不如说是IDEA连接了数据库，下面开始介绍流程。
+Step1：找到界面左上角的创建功能图标，四条横线这个图标，点击。
+Step2：File-&gt;New-&gt;DataSource-&gt;MySQL
+Step3：填写数据库连接配置
+Name:默认是下图这个，可以随便修改，表示你的数据库连接昵称，没啥实际用，随便填或者使用默认的就行。
+Comment：写给自己看的，也没啥用，就是个注释一样的东西，可以不填。
+Host:主机号，使用本机的数据库就使用默认的localhost就行，使用远程的数据库，里面就填远程主机的IP地址就行。IP地址，不会使用命令行查的就点你桌面右下角的网络图标，找到以太网，点击，查看IPv4的地址。
+Port:端口号，默认3306，你自己改过就用你改过之后的。
+Authentication：权限，使用默认的就行。
+User：默认为root
+Password：默认为root
+Database：你需要连接的数据库名，没创建过就不填。
+URL：就是你Mysql的路径，它是根据你前面填的主机号、端口号和Database自动生成的，默认就行，不用管。
+这些都完事以后，测试一下连接，点那个Test Connection，如果显示下面这样Succeded，就说明连上了。
+连接成功后，你右侧就会出现Database的图标，同时你的项目目录下也会有相应的数据库连接文件。（我这个是指定了数据库名的，所以前缀有个wms，是我自己指定的，没有指定就是@localhost）。
+点开右侧这个图标，就能看到数据库的界面了
+简单说一下这个结构，最上层的目录表示你的数据库连接名，可以在这个位置右键新创建数据库（Schema）
+往下的wms是你的数据库名，一个库里面可以有多个表。也是一样，右键可以新建数据表
+然后tables就相当于一个目录一下，里面是你的各种表
+再往下就是表名，以goods这张表为例，其下面的结构是：
+columns表示你数据表的列，也可以叫字段名，带个🔑脚标的表示主键。keys里面存放就是主键，indexes表示你这张表的索引，一般默认是使用主键作为索引，关于索引这块，自己详细去了解吧，涉及到sql优化。
+（最后，个人还是不太建议直接在IDEA里面操作数据库，一般IDEA里面只是做一个连接的配置，IDEA内置的DataGrip感觉不咋好用，当然也可能是我个人习惯，推荐使用Navicat来操作数据库表，跟IDEA一样都是工具，本质上操作的都是数据库本身，所以Navicat和IDEA连接同一张表，所做的修改会同步。你用Navicat操作完之后，在IDEA中刷新一下就行了，刷新后就能看到修改了。这个旋转的箭头就是刷新。）
+创作不易，如果对您有用，麻烦点赞收藏一下！
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/d336d9a476d43b396bf81f28a3209584/" rel="bookmark">
+			详解 Flink CDC 的介绍和入门案例
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		一、Flink CDC 简介 1. CDC 介绍 ​ CDC 是 Change Data Capture（变更数据获取）的简称。核心思想是监测并捕获数据库的变动（包括数据或数据表的插入、更新以及删除等），将这些变更按发生的顺序完整记录下来，写入到消息中间件中以供其他服务进行订阅及消费。
+2. CDC 种类 基于查询的 CDC基于 Binlog 的 CDC开源产品Sqoop、Kafka JDBC SourceCanal、Maxwell、Debezium执行模式BatchStreaming是否可以捕获所有数据变化否是延迟性高延迟低延迟是否增加数据库压力是否 3. Flink CDC 介绍 ​ Flink CDC 是一个内置了 Debezium 的基于 Binlog 的可以直接从 MySQL、PostgreSQL 等数据库直接读取全量数据和增量变更数据的 source 组件。开源地址：https://github.com/ververica/flink-cdc-connectors
+二、Flink CDC 案例实操 1. DataStream 实现 1.1 导入依赖 &lt;dependencies&gt; &lt;dependency&gt; &lt;groupId&gt;org.apache.flink&lt;/groupId&gt; &lt;artifactId&gt;flink-java&lt;/artifactId&gt; &lt;version&gt;1.12.0&lt;/version&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;org.apache.flink&lt;/groupId&gt; &lt;artifactId&gt;flink-streaming-java_2.12&lt;/artifactId&gt; &lt;version&gt;1.12.0&lt;/version&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;org.apache.flink&lt;/groupId&gt; &lt;artifactId&gt;flink-clients_2.12&lt;/artifactId&gt; &lt;version&gt;1.12.0&lt;/version&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;org.apache.hadoop&lt;/groupId&gt; &lt;artifactId&gt;hadoop-client&lt;/artifactId&gt; &lt;version&gt;3.1.3&lt;/version&gt; &lt;/dependency&gt; &lt;dependency&gt; &lt;groupId&gt;mysql&lt;/groupId&gt; &lt;artifactId&gt;mysql-connector-java&lt;/artifactId&gt; &lt;version&gt;5.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/d336d9a476d43b396bf81f28a3209584/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/da3391606821432b88fc05fecf51e236/" rel="bookmark">
+			C语言中的弱函数是什么？
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		在C语言编程中，“弱函数”（weak function）是一种特殊的函数声明方式，它允许在链接时可以被另一个具有相同名称的强函数（strong function）所覆盖。弱函数通常用于库函数或嵌入式系统中的启动代码，因为它们提供了默认实现，用户可以选择性地提供自己的实现以替代默认行为。
+弱函数的声明 在大多数C编译器中，可以使用特定的编译器属性（如__attribute__((weak))）来声明弱函数。下面是一个简单的示例：
+#include &lt;stdio.h&gt; // 声明一个弱函数 void __attribute__((weak)) my_function() { printf("Default implementation of my_function\n"); } int main() { my_function(); return 0; } 在这个示例中，my_function被声明为弱函数。如果没有提供其他实现，那么调用my_function时将使用这个默认实现。
+覆盖弱函数 用户可以提供一个相同名称的强函数来覆盖弱函数的默认实现。强函数不需要任何特殊的属性声明，只要函数名称相同即可。例如：
+#include &lt;stdio.h&gt; // 覆盖弱函数的实现 void my_function() { printf("User provided implementation of my_function\n"); } int main() { my_function(); return 0; } 在这个例子中，my_function的用户提供实现会覆盖弱函数的默认实现，因此程序运行时将输出“User provided implementation of my_function”。
+应用场景 弱函数在以下场景中非常有用：
+库函数： 库开发者可以提供一些默认的函数实现，这些函数在没有用户提供实现的情况下使用。例如，标准C库中的一些函数可以作为弱函数，以便用户在需要时提供特定平台或应用的实现。嵌入式系统启动代码： 在嵌入式系统中，启动代码（如中断处理程序）通常使用弱函数声明，允许用户根据具体硬件需求提供实现，而无需修改系统启动代码。 示例：嵌入式系统中的中断处理程序 在嵌入式系统中，通常有一些默认的中断处理程序，这些处理程序可以声明为弱函数。例如：
+void __attribute__((weak)) Default_Handler() { while (1); } void __attribute__((weak)) SysTick_Handler() { Default_Handler(); } 用户可以在自己的代码中提供特定的中断处理程序实现：
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/da3391606821432b88fc05fecf51e236/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/ab3c09c23b8d23ae019326143c85d5b4/" rel="bookmark">
+			LeetCode 2813.子序列最大优雅度
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		给你一个长度为 n 的二维整数数组 items 和一个整数 k 。
+items[i] = [profiti, categoryi]，其中 profiti 和 categoryi 分别表示第 i 个项目的利润和类别。
+现定义 items 的 子序列 的 优雅度 可以用 total_profit + distinct_categories^2 计算，其中 total_profit 是子序列中所有项目的利润总和，distinct_categories 是所选子序列所含的所有类别中不同类别的数量。
+你的任务是从 items 所有长度为 k 的子序列中，找出 最大优雅度 。
+用整数形式表示并返回 items 中所有长度恰好为 k 的子序列的最大优雅度。
+注意：数组的子序列是经由原数组删除一些元素（可能不删除）而产生的新数组，且删除不改变其余元素相对顺序。
+示例 1：
+输入：items = [[3,2],[5,1],[10,1]], k = 2 输出：17 解释： 在这个例子中，我们需要选出长度为 2 的子序列。 其中一种方案是 items[0] = [3,2] 和 items[2] = [10,1] 。 子序列的总利润为 3 + 10 = 13 ，子序列包含 2 种不同类别 [2,1] 。 因此，优雅度为 13 + 2^2 = 17 ，可以证明 17 是可以获得的最大优雅度。 示例 2：
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/ab3c09c23b8d23ae019326143c85d5b4/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/c2824eca2f34560fe92b98a277930ddd/" rel="bookmark">
+			C&#43;&#43; 34 之 单例模式
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		#include &lt;iostream&gt; #include &lt;string.h&gt; using namespace std; class King{ // 公共的函数，为了让外部可以获取唯一的实例 public: // getInstance 获取单例 约定俗成 static King* getInstance(){ return true_king; } private: // 私有化 // 构造函数设置为私有，无法直接从外部创建类的对象 // 只能在类内进行调用 King(){ // 在main函数执行之前，先打印一句话 cout &lt;&lt; "我什么时候打印阿" &lt;&lt; endl; } //默认的拷贝构造函数要覆盖重写，让它变成私有的，就可以把这个漏洞补上了 King(const King&amp; k){ } // 静态成员会最优先执行（在main之前执行） // 私有的静态指针，用于存储类的唯一实例 static King* true_king; // 静态成员：类内声明，类外部初始化 }; // 类外初始化静态成员 King* King::true_king = new King; int main() { // King k1; // King* k2 = new King; 构造函数设置为私有，无法直接从外部创建类的对象 King* k1 = King::getInstance(); King* k2 = King::getInstance(); //默认的拷贝构造函数要覆盖重写，让它变成私有的，就可以把这个漏洞补上了 // King* k3 = new King(*k1); if(k1 == k2) { cout &lt;&lt; "
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/c2824eca2f34560fe92b98a277930ddd/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/07433b8ae9e2bc1579c18d1f60e9b1e3/" rel="bookmark">
+			解决：安装MySQL 5.7 的时候报错：unknown variable ‘mysqlx_port=0.0‘
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		目录 1. 背景2. 解决步骤 1. 背景 吐槽1，没被收购之前可以随便下载，现在下载要注册登录吐槽2，5.7安装到初始化数据库的时候就会报错，而8.x的可以一镜到底，一开始以为是国区的特色问题，google了一圈，各个国家的人都遇到过，一视同仁了属于是吐槽3，这个问题居然搜了一圈，没有特别明确的解决方案，所以就有了这个文章了 2. 解决步骤 官网下载5.7版本的，这是官网地址，直接双击安装，一路默认选项不用改，中间要填一下root的密码，一直到报错，如下图：
+点开Log，里面提示的就是标题写的，无法识别的参数“mysqlx_port=0.0”，大写的疑惑啊，官方的安装程序都不能跑？这个时候不管如何改，都没用了，用官方的安装程序就到这，接下来是手动操作模式第一步：找到my.ini文件，推荐用everything，下载地址，如果前面的安装程序都是默认选择的话，那my.ini的位置应该是C:\ProgramData\MySQL\MySQL Server 5.7\my.ini，找到my.ini文件后，搜索一下报错的参数mysqlx_port=0.0，其实就在最后一行，注释掉（这时候可能以为重新用官方安装程序能够继续下去，其实不能，每次它都会重新生成my.ini，然后mysqlx_port=0.0又出现了！）第二步：如果前面的安装程序都是默认选择的话，那mysql的data文件应该在C:\ProgramData\MySQL\MySQL Server 5.7\Data，打开这个目录，把里面的文件删光第三步：找到mysqld.exe文件，可以用上一步推荐的everything，如果前面的安装程序都是默认选择的话，位置应该在C:\Program Files\MySQL\MySQL Server 5.7\bin\mysqld.exe，找到这个文件后，在这个目录下打开cmd，最方便的方式是直接地址栏输入cmd，回车打开cmd窗口后，构建这样一个命令：mysqld --defaults-file="C:\ProgramData\MySQL\MySQL Server 5.7\my.ini" --console --initialize-insecure，然后回车(可选)有可能遇到这样的一个错误，是编码问题，打开上面找到的my.ini，另存为，选编码格式为ANSI，覆盖掉之前的那份my.ini，然后重新运行mysqld --defaults-file="C:\ProgramData\MySQL\MySQL Server 5.7\my.ini" --console --initialize-insecure
+上面那一步没有报错的运行到最后，代表离成功不远了，接下来构建这样一个命令mysqld --defaults-file="C:\ProgramData\MySQL\MySQL Server 5.7\my.ini" --console ，意思是在cmd里直接运行MySQL然后在C:\Program Files\MySQL\MySQL Server 5.7\bin\这个目录下再新打开一个cmd窗口，输入命令mysql -u root，直接进入MySQL了，是的，不用密码接下来，给root用户加个密码，在MySQL内部，输入命令：ALTER USER 'root'@'localhost' IDENTIFIED BY '123456';(分号必须要！！！这里的123456就是新密码，可随意)，回车刷新权限命令：FLUSH PRIVILEGES;(分号必须要！！！)，回车退出MySQL命令：EXIT;，回城接下来验证一下密码生效了没，上一步退出来的cmd里输入：mysql -u root -p，再输入密码123456，ok，如愿进入MySQL了，这时候其实MySQL已经可以在电脑里运行了，但是是cmd运行的方式，每次都要手动输入，太麻烦了，做成系统服务，开机自动启动先把上面手动运行的MySQL关掉，然后打开任务管理器，如果任务管理器之前打开了，就关了重新打开，切到服务页，找MySQL字眼的服务，右键，开始，如果能够正常启动，就表示服务版的MySQL装好了，以后开机自动启动。目前观察到win11家庭版的系统，不能用上面的方式启动MySQL服务，还找不到原因，贴一个bat命令，可以手动点击开启MySQL，新建一个txt文件，把后缀改成bat，然后把下面的代码复制进去，保存退出，尝试双击打开，如果cmd窗口不会自动关闭，保持运行，说明MySQL运行起来了 @echo off echo Starting MySQL Server... "C:\Program Files\MySQL\MySQL Server 5.7\bin\mysqld" --defaults-file="C:\ProgramData\MySQL\MySQL Server 5.7\my.ini" --console echo. echo MySQL Server started. Press any key to exit.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/07433b8ae9e2bc1579c18d1f60e9b1e3/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/11c7457f478103a7fb9f148f735e7f33/" rel="bookmark">
+			CUDA算子优化：矩阵乘GEMM优化(三)
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		一.从汇编代码分析程序性能
+由于做完优化之后，需要有一个东西来判断机器是否能够真正地按照我们设想的模式运行。使用了float4之后，GPU是不是真的使用了向量化指令。采用循环展开后，GPU是不是真的会进行展开？另外，CUDA C和汇编代码之间还隔着编译器。只有看最底层的汇编码，才能真正地理解我们所做的优化是哪个地方起了作用，节省了哪个部分的耗时。
+NV的GPU提供了ptx和sass两个层面的汇编码。ptx本质上是一个伪汇编码，事实上机器真正能够识别的是sass码。ptx还需要使用ptxas工具再转化成sass码才能被GPU识别。然后nv提供了cuobjdump和nvdisasm两个工具，我们可以通过这两个工具来看到最底层的汇编码。
+NV每一代机器的指令集都有所不同。关于指令集相关资料，NV GPU指令集 。此外NV的指令还有一些其他，control code，后面直接用控制码表示。通过控制码将一些本来应该在硬件实现的逻辑软件化了，从而在同样大小的电路面积上塞下更大的计算单元。关于CUDA指令集的资料可以详见cloudcore的相关文章 cloudcore文章 。
+第二个问题，当我们在看汇编代码的时候，我们到底看的是什么东西？访存密集型的kernel和计算密集型的kernel。
+访存密集型的kernel：我们需要关注访问global memory 的时候是不是合并访存了，访问shared memory的时候是不是有bank冲突了。在汇编代码中，这些代码不太能看的出来。我们主要关注的是有没有采用LDG.128的访存指令，以及计算指令的占比是不是太多，#pragma unroll是不是有效展开了。
+计算密集型的kernel：我们重点关注计算指令的占比。这个一般跟并行策略会联系在一起。一般而言，如果并行策略不太行，那么计算指令的占比会很低，这样的话，访存所导致的latency很难被计算指令掩盖，计算效率会非常差。如果并行策略比较好，那么计算指令的占比也会非常高。也只有当计算指令占比非常高的时候，才有可能地逼近峰值性能。
+二、对于现有sgemm的代码的分析和观察
+回顾，sgemm是hpc领域的经典问题，目前有大量的论文在针对不同硬件结构，不同矩阵特性进行研究。对于NV的GPU，关于sgemm最著名的工作是scott的maxas。在Maxwell架构上的部分卡能够达到98%的浮点性能，几乎达到极限。
+scott工作在CUDA C层面，主要有3个方面：
+技巧1，global-&gt;shared memory，采用了texture内存，将线程划分，一般线程只读A，一般线程只读B。
+技巧2，shared memory-&gt;，将8*8的读取变成4个4*4的读取，从而避免bank冲突。
+技巧3，Store C矩阵的时候，为了合并访存，采用了一种非常奇怪的方式取store。
+针对大矩阵的sgemm计算时。如果k维度足够大，global-&gt;shared memory以及Store C的耗时占比会非常小，所以这两个优化技巧在大矩阵中并不能起到很大的作用。所以相对来说，技巧2会更加具有借鉴意义。所以相对来说，技巧2会更加有借鉴意义。
+紧接着，我们来分析一下sgemm中最耗时的部分，也就是最内层的迭代部分。需要计算8*8*8=512次乘加运算。scott的sgemm在maxwell产生的汇编代码如下图左，为了比较，我们将GEMM(二)中的代码sgemm_v2最后生成的SASS码放在一起用比较。
+三.汇编级别代码调整
+减少FFMA指令所产生的register bank冲突。这里面有两个优化技巧，一个是寄存器的重映射，另一个是调整FFMA顺序，尽可能地在指令中使用.reuse标识以及提高双发射的效率。
+3.1寄存器的重映射
+由于每代架构中的硬件细节有所不同，所以register的remapping细节也有所不同。首先说一下这里面的硬件细节不同是指，不同的架构中，寄存器到bank的映射方式不同。kepler架构的映射方式比较奇怪。
+对于Maxwell架构而言，相对来说简单一些，bank index即reg_index%4这么一个简单的关系。Pascal架构和Maxwell架构的寄存器bank映射关系一样。而volta架构又有一些不同，在volta之前都是4路的bank，而volta架构变成了2路的bank。
+由于架构不一样，针对不同架构的register重映射方式也不一样。
+3.2指令重排
+主要是针对FFMA指令的重排。作用：在maxwell架构中，scott重排主要是为了尽可能地解决对角线那些元素的寄存器bank冲突。举例来说，要计算C矩阵1，2，3，4，5的元素的值，正常的顺序是调用FFMA指令先算1，再算2等。重排后先算2，再算1，再算3。从指令角度的话，就是FFMA指令的排序顺序有所不同，所以是指令重排。
+重排的目的是为了更好地使用reuse标识。读取指令的操作数的时候，有一个寄存器的reuse cache。在指令中使用这个标识就代表这个数被hold住了，下一条指令可以直接使用。
+四、实验
+如何解决bank冲突
+以B矩阵对应的shared memory为例，首先，计算warp_id，也就是当前线程属于哪个warp，有tid/32即可得。随后计算lane_id，即当前线程属于这个warp上得哪个线程，由tid%32即可得。随后通过warp_id和lane_id来计算出，对应128个元素得哪一个元素。先算（warp_id%4）*16，假设是warp2，就是图左侧第二个warp。前面有2个warp，跳过了2*16=32个元素。然后再看看当前lane_id。0-15在左半边，16-31在右半边。所以lane_id/16，先看是左半边还是右半边。右半边的话，先跳过8个元素。最后再lane_id的奇偶数，如果奇数就再跳一个4个元素。代码实现如下。
+//load index of the tile const int warp_id = tid / 32; const int lane_id = tid % 32; const int tile_index_b = (warp_id%4)*16 + (lane_id/16)*8 + (lane_id%2)*4; const int tile_index_a = (warp_id/4)*32 + ((lane_id%16)/2)*4; shared memory取数的代码更改就是下面这样，以B矩阵块为例：
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/11c7457f478103a7fb9f148f735e7f33/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/116dd5e3ba853cf833a669910dbbb08a/" rel="bookmark">
+			【C&#43;&#43;】类的默认成员函数
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		类的默认成员函数 类的六个默认成员函数构造函数构造函数的概念构造函数的特性 析构函数析构函数的概念析构函数的特性 构造函数与析构函数的调用顺序拷贝构造拷贝构造的概念拷贝构造的特性赋值运算符重载运算符重载赋值运算符重载前置++与后置++重载输入输出流重载 const修饰成员实现完整的日期系统取地址操作符重载const取地址操作符重载 类的六个默认成员函数 当一个类中什么成员都没有时被称为空类。
+空类：即任何类在什么都不写时，编译器会自动生成6个默认成员函数。
+默认成员函数：用户没有显式实现，编译器会自动生成的成员函数称为默认成员函数。
+默认成员函数 初始化和清理 构造函数主要完成初始化工作 析构函数主要完成清理工作 拷贝赋值 拷贝构造是使用同类对象初始化创建对象 赋值重载主要是把一个对象赋值给另一个对象 取地址重载 主要是普通对象和const对象取地址,这俩个很少会自己实现 构造函数 构造函数的概念 class Data { public: void Init(int year = 2000, int month = 1, int day = 1) { _year = year; _month = month; _day = day; } void Print() { cout &lt;&lt; _year &lt;&lt; "/" &lt;&lt; _month &lt;&lt; "/" &lt;&lt; _day &lt;&lt; endl; } private: int _year; int _month; int _day; }; int main(void) { Data d1; d1.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/116dd5e3ba853cf833a669910dbbb08a/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/9f8d227542b0ae0ab256d53d822884e3/" rel="bookmark">
+			Luma AI：视频生成界的新星，还是未来的王者？
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		本来应该是 SD3上头条的，看到了 SD3 开源的信息，调试好 ComfyUI环境，美滋滋地在群内发了几张图片，正等着小伙伴们来一波点赞了，没想到整个 AI 圈瞬间被 Luma 的 Dream Machine 刷屏了。
+好家伙，可灵 AI 的风头还没过去，Luma 又来卷 AI 视频了。
+看了 Luma 的官方宣传片，不由自主地闪过了一个念头：”还在等待 SORA？Luma AI** 视频技术已经让创意触手可及了"。
+Luma 发布 DIT 视频生成模型 Dream Machine，生成的视频的表现相当惊艳，无论是画质、美学表现、运动幅度、概念组合等等，绝对是电影级表现。
+1.Luma AI 介绍 Luma AI，这是一家成立于 2021 年 9 月的美国加州公司，专注于 3D 内容生成技术。该公司的核心技术是 NeRF（Neural Radiance Fields），这是一种三维重建技术，可以通过少量照片生成、着色和渲染逼真的 3D 模型。
+Luma 推出的 Dream Machine 基于 DiT 视频生成架构，能够在 120 秒内生成一个包含 120 帧的高质量视频，实现快速创意迭代。它能理解物理交互，确保生成的视频角色和场景具有一致性和物理准确性。
+2.Luma AI 案例欣赏 下面的几组是使用 Luma AI 图生视频生成的，生成的视频画质、人像精度、镜头效果都是比较不错的。
+3.Dream Machine 优势说明 Luma AI 支持文生视频、图生视频两种模式，生成 5 秒高质量视频：
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/9f8d227542b0ae0ab256d53d822884e3/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/f80299d85754f20f47efa0e494d1edd6/" rel="bookmark">
+			前端菜鸡流水账日记 -- pnpm的学习
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		哈咯哇大家，我又来了，最近稍微悠闲一些，所以就趁着这个机会学习一些新的知识，今天就是碰巧遇到了pnm，这个可以看作是npm的升级版本，比npm要快，用起来也更得劲更迅速
+官网地址：https://pnpm.io/zh/installation
+我们使用的话主要是从官网中找到对应的这部分就可以了，先在npm的基础上全局安装pnpm
+mac本的伙伴需要sodo 一下，给个权限才可以全局安装
+sodo npm install -g pnpm 监测是否安装成功使用命令
+pnpm -v //输出的是版本号即为装成功了 创建项目命令：
+pnpm create vite //可以创建一个vite的项目 根据提示去进行一些创建项目中的操作，比如起项目名字，选择前端的框架等等，按需选择
+Now run 就创建成功了
+pnpm 默认不装依赖，所以需要手动装
+pnpm install //安装依赖 pnpm dev //跑项目 run 可以省略不写，效果是一样的 ，这样就实现了，pnpm 创建的一个vite的vue3的项目啦~~~
+其实基本上和npm是一样的不是特别难，可以做为一个扩展了解下，或许继续发展就用到了呢~
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/b88337c303801ee2b4b1853480a3717b/" rel="bookmark">
+			使用ant-design/cssinjs向plasmo浏览器插件的内容脚本content中注入antd的ui组件样式
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		之前写过一篇文章用来向content内容脚本注入antd的ui：https://xiaoshen.blog.csdn.net/article/details/136418199，但是方法就是比较繁琐，需要将antd的样式拷贝出来，然后贴到一个单独的css样式文件中，然后引入到内容脚本中。但是细心的网友给出了一个评论，说官方有现成的引入方式，把我开心坏了，赶紧研究一下：https://github.com/PlasmoHQ/examples/blob/main/with-antd/content.tsx
+环境准备 需要使用antd5.0以后的版本，并且需要单独使用GitHub - ant-design/cssinjs这个依赖库，需要先安装：
+npm install @ant-design/cssinjs yarn add @ant-design/cssinjs pnpm add @ant-design/cssinjs 引入到content 需要注意，先按部就班的使用官方给的demo走一遍比较安全：
+import { StyleProvider } from "@ant-design/cssinjs" import Button from "antd/es/button" import antdResetCssText from "data-text:antd/dist/reset.css" import type { PlasmoCSConfig, PlasmoGetShadowHostId } from "plasmo" import { ThemeProvider } from "~theme" export const config: PlasmoCSConfig = { matches: ["https://www.plasmo.com/*"] } const HOST_ID = "engage-csui" export const getShadowHostId: PlasmoGetShadowHostId = () =&gt; HOST_ID export const getStyle = () =&gt; { const style = document.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/b88337c303801ee2b4b1853480a3717b/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/b7075c00d5dfff458b09567871bd8b41/" rel="bookmark">
+			File及典型案例
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		File File对象表示一个路径，可以是文件的路径，也可以是文件夹的路径
+这个路径可以是存在的，也允许不存在
+常见的构造方法 图来自黑马程序员网课
+package com.lazyGirl.filedemo; import java.io.File; public class Demo1 { public static void main(String[] args) { String str = "E:\\bishe\\paper1\\SignalToNoisy\\a.txt"; File file = new File(str); System.out.println(file); String parent = "E:\\bishe\\paper1\\SignalToNoisy"; String child = "a.txt"; File file1 = new File(parent, child); System.out.println(file1); File file2 = new File(parent + "\\" + child); System.out.println(file2); File parent2 = new File(parent); String child2 = "a.txt"; File file3 = new File(parent, child2); System.
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/b7075c00d5dfff458b09567871bd8b41/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/9a706b7237ac0613b671c16696c509a7/" rel="bookmark">
+			在vite&#43;vue3&#43;ts时pnpm build打包失败
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		~~~~~ node_modules/.pnpm/element-plus@2.7.5_vue@3.4.27_typescript@5.4.5_/node_modules/element-plus/es/utils/objects.d.ts:1:30 - error TS2307: Cannot find module 'type-fest' or its corresponding type declarations. 1 import type { Entries } from 'type-fest'; ~~~~~~~~~~~ node_modules/.pnpm/pinia@2.1.7_typescript@5.4.5_vue@3.4.27_typescript@5.4.5_/node_modules/pinia/dist/pinia.d.ts:354:26 - error TS2536: Type 'key' cannot be used to index type 'Store&lt;string, S, G, {}&gt;'. 354 [key in Keys]: () =&gt; Store&lt;string, S, G, {}&gt;[key]; ~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Found 47 errors in 19 files. Errors Files 5 node_modules/.pnpm/@vueuse+core@9.13.0_vue@3.4.27_typescript@5.4.5_/node_modules/@v 解决办法：
+增加："skipLibCheck":true
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/96c41c4adc7102c43dc9a77487dc28ca/" rel="bookmark">
+			基于STM32和人工智能的智能家居监控系统
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		目录 引言环境准备智能家居监控系统基础代码实现：实现智能家居监控系统 4.1 数据采集模块4.2 数据处理与分析4.3 控制系统4.4 用户界面与数据可视化应用场景：智能家居管理与优化问题解决方案与优化收尾与总结 1. 引言 随着智能家居技术的快速发展，智能家居监控系统在提升家居舒适度、安全性和能源效率方面起到了重要作用。通过人工智能算法对家居环境数据进行分析，可以实现更智能的家居管理。本文将详细介绍如何在STM32嵌入式系统中结合人工智能技术实现一个智能家居监控系统，包括环境准备、系统架构、代码实现、应用场景及问题解决方案和优化方法。
+2. 环境准备 硬件准备 开发板：STM32F407 Discovery Kit调试器：ST-LINK V2或板载调试器温湿度传感器：如DHT22空气质量传感器：如MQ-135光照传感器：如BH1750摄像头模块：用于安防监控电器控制模块：如继电器模块显示屏：如TFT LCD显示屏按键或旋钮：用于用户输入和设置电源：12V或24V电源适配器 软件准备 集成开发环境（IDE）：STM32CubeIDE或Keil MDK调试工具：STM32 ST-LINK Utility或GDB库和中间件：STM32 HAL库、TensorFlow Lite人工智能模型：用于数据分析和预测 安装步骤 下载并安装 STM32CubeMX下载并安装 STM32CubeIDE配置STM32CubeMX项目并生成STM32CubeIDE项目安装必要的库和驱动程序下载并集成 TensorFlow Lite 库 3. 智能家居监控系统基础 控制系统架构 智能家居监控系统由以下部分组成：
+数据采集模块：用于采集家居环境数据（温湿度、空气质量、光照强度、视频监控等）数据处理与分析：使用人工智能算法对采集的数据进行分析和预测控制系统：根据分析结果控制家电设备、安防系统等显示系统：用于显示环境参数和系统状态用户输入系统：通过按键或旋钮进行设置和调整 功能描述 通过传感器和摄像头采集家居环境数据，并使用人工智能算法进行分析和预测，自动控制家电设备和安防系统，实现智能化的家居管理。用户可以通过按键或旋钮进行设置，并通过显示屏查看当前状态和系统建议。
+4. 代码实现：实现智能家居监控系统 4.1 数据采集模块 配置DHT22温湿度传感器
+使用STM32CubeMX配置GPIO接口：
+打开STM32CubeMX，选择您的STM32开发板型号。
+在图形化界面中，找到需要配置的GPIO引脚，设置为输入模式。
+生成代码并导入到STM32CubeIDE中。
+代码实现
+#include "stm32f4xx_hal.h" #include "dht22.h" void DHT22_Init(void) { // 初始化DHT22传感器 } void DHT22_Read_Data(float* temperature, float* humidity) { // 读取DHT22传感器的温度和湿度数据 } int main(void) { HAL_Init(); SystemClock_Config(); DHT22_Init(); float temperature, humidity; while (1) { DHT22_Read_Data(&amp;temperature, &amp;humidity); HAL_Delay(2000); } } 配置MQ-135空气质量传感器
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/96c41c4adc7102c43dc9a77487dc28ca/">Read more…</a>
+	</div>
+</article><article class="list__item post">
+	
+	<header class="list__header">
+		<h2 class="list__title post__title">
+			<a href="/posts/11a5508f6ceb0232389a5ad43408736a/" rel="bookmark">
+			【前端速通系列|第一篇】ES6核心语法
+			</a>
+		</h2>
+		
+	</header>
+	<div class="content list__excerpt post__content clearfix">
+		文章目录 1.ES6简介2.let和const3.解构4.链判断5.参数默认值6.箭头函数7.模板字符串8.Promise9.Async函数10.Await关键字11.模块化 1.ES6简介 ES6 是 ECMAScript 2015 的缩写，是 ECMAScript 语言标准的第6个版本。ECMAScript 是 JavaScript 语言的国际标准化组织制定的规范，规定了语言的基本语法、类型、对象、属性以及方法等内容。ES6 于2015年6月正式发布，引入了许多重要的新特性和语法改进，旨在使 JavaScript 更适合构建复杂和大规模的应用程序。
+2.let和const let 和 const 是在ES6中引入的两个新的变量声明关键字，它们为 JavaScript 的变量声明和作用域管理带来了重要的改进。
+在此之前还有一个关键字可以声明变量,那就是var
+例如:
+var a = 1; let b = 2; 可能大家也听说过,能用var的地方都可以使用let进行替代. 至于为什么,是因为使用var会出现以下几个问题:
+越狱 如图所示,a和b实在代码块中定义的,但是a越出了代码块,所以在使用时可能会出现一些问题
+重复声明 用var声明变量时,可以对同一个变量重复声明,而使用let不行,只允许声明一次
+变量提升 在Java中是使用变量是要先声明变量的,与let相同.但是使用var声明变量时则可以不先声明就可以使用. 而let则不行
+接着说const, const修饰的变量是不允许修改的,可以看到这里就直接报错了
+3.解构 解构允许你将数组或对象的属性直接赋值给不同的变量。
+这里的解构分为数组结构和对象结构
+数组解构:能够将数组中的元素直接分配给独立的变量。 let arr = [1, 2, 3]; console.log(arr[0]) console.log(arr[1]) console.log(arr[2]) let [a, b, c] = arr; console.log(a) console.log(b) console.log(c) 一般我们在取数组中的元素时,都是按照下标来取. 数组解构是将数组 [1, 2, 3] 的元素分别被解构赋值给变量 a, b, 和 c。
+	</div>
+	<div class="list__footer clearfix">
+		<a class="list__footer-readmore btn" href="/posts/11a5508f6ceb0232389a5ad43408736a/">Read more…</a>
+	</div>
+</article>
+</main>
+
+<div class="pagination">
+	<a class="pagination__item pagination__item--prev btn" href="/posts/page/267/">«</a>
+	<span class="pagination__item pagination__item--current">268/621</span>
+	<a class="pagination__item pagination__item--next btn" href="/posts/page/269/">»</a>
+</div>
+
+			</div>
+			
+
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

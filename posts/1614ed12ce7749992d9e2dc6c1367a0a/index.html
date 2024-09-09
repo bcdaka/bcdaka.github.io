@@ -1,0 +1,454 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Hive大表join大表如何调优 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/1614ed12ce7749992d9e2dc6c1367a0a/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Hive大表join大表如何调优">
+  <meta property="og:description" content="目录 一、调优思路1、SQL优化1.1 大小表join1.2 大大表join 2、insert into替换union all3、排序order by换位sort by4、并行执行5、数据倾斜优化6、小文件优化 二、实战2.1 场景2.2 限制所需的字段，间接mapjoin2.2 解决异常值倾斜，如NULL加随机数打散2.3 扩容解决数据倾斜2.3.1 客户表扩大N倍2.3.2 部分倾斜key扩容，大卖家扩容2.3.3 推荐：分而治之：倾斜和非倾斜再union all 在Hive中，优化器会根据统计信息决定是将大表放在前面（Join的左边）还是小表放在前面。通常，优化器会选择数据量较小的表作为驱动表（小表作为左边），因为这样可以减少内存消耗并提高效率。 但是，如果你有特定的需求，比如你知道大部分数据能快速过滤掉，希望减少任务的执行时间，那么你可以强制指定某个表作为小表。在Hive中，可以使用/*&#43; MAPJOIN(table_name) */ 注释来强制将一个大表作为小表处理。
+例如，如果你想要将big_table作为小表：
+SELECT /*&#43; MAPJOIN(big_table) */ a.column1, a.column2, b.column1, b.column2 FROM small_table a JOIN big_table b ON a.common_column = b.common_column; 一、调优思路 1、SQL优化 1.1 大小表join 1、mapjoin,小表使用mapjoin,或者强制hint
+2、将大表放后头，原因：Hive假定查询中最后的一个表是大表。它会将其它表缓存起来，然后扫描最后那个表。因此通常需要将小表放前面，或者标记哪张表是大表：/*streamtable(table_name) */
+3、过滤无效值：空值、不使用的字段等。
+4、不能过滤的空值，将空值转化为随机数避免数据倾斜。
+1.2 大大表join 1）创建第二张大表 create table bigtable2( id bigint, t bigint, uid string, keyword string, url_rank int, click_num int, click_url string) row format delimited fields terminated by &#39;\t&#39;; load data local inpath &#39;/opt/module/data/bigtable&#39; into table bigtable2; 2）测试大表直接JOIN insert overwrite table jointable select b.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-11T08:46:25+08:00">
+    <meta property="article:modified_time" content="2024-05-11T08:46:25+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Hive大表join大表如何调优</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>目录</h4> 
+ <ul><li><a href="#_15" rel="nofollow">一、调优思路</a></li><li><ul><li><a href="#1SQL_16" rel="nofollow">1、SQL优化</a></li><li><ul><li><a href="#11_join_17" rel="nofollow">1.1 大小表join</a></li><li><a href="#12_join_22" rel="nofollow">1.2 大大表join</a></li></ul> 
+   </li><li><a href="#2insert_intounion_all_123" rel="nofollow">2、insert into替换union all</a></li><li><a href="#3order_bysort_by_126" rel="nofollow">3、排序order by换位sort by</a></li><li><a href="#4_130" rel="nofollow">4、并行执行</a></li><li><a href="#5_140" rel="nofollow">5、数据倾斜优化</a></li><li><a href="#6_143" rel="nofollow">6、小文件优化</a></li></ul> 
+  </li><li><a href="#_148" rel="nofollow">二、实战</a></li><li><ul><li><a href="#21__150" rel="nofollow">2.1 场景</a></li><li><a href="#22_mapjoin_178" rel="nofollow">2.2 限制所需的字段，间接mapjoin</a></li><li><a href="#22_NULL_205" rel="nofollow">2.2 解决异常值倾斜，如NULL加随机数打散</a></li><li><a href="#23__222" rel="nofollow">2.3 扩容解决数据倾斜</a></li><li><ul><li><a href="#231_N_224" rel="nofollow">2.3.1 客户表扩大N倍</a></li><li><a href="#232_key_258" rel="nofollow">2.3.2 部分倾斜key扩容，大卖家扩容</a></li><li><a href="#233_union_all_307" rel="nofollow">2.3.3 推荐：分而治之：倾斜和非倾斜再union all</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<br> 在Hive中，优化器会根据统计信息决定是将大表放在前面（Join的左边）还是小表放在前面。通常，优化器会选择数据量较小的表作为驱动表（小表作为左边），因为这样可以减少内存消耗并提高效率。 
+<p></p> 
+<p>但是，如果你有特定的需求，比如你知道大部分数据能快速过滤掉，希望减少任务的执行时间，那么你可以强制指定某个表作为小表。在Hive中，可以使用/*+ MAPJOIN(table_name) */ 注释来强制将一个大表作为小表处理。<br> 例如，如果你想要将big_table作为小表：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> <span class="token comment">/*+ MAPJOIN(big_table) */</span>
+  a<span class="token punctuation">.</span>column1<span class="token punctuation">,</span> a<span class="token punctuation">.</span>column2<span class="token punctuation">,</span> b<span class="token punctuation">.</span>column1<span class="token punctuation">,</span> b<span class="token punctuation">.</span>column2
+<span class="token keyword">FROM</span>
+  small_table a
+<span class="token keyword">JOIN</span>
+  big_table b
+<span class="token keyword">ON</span>
+  a<span class="token punctuation">.</span>common_column <span class="token operator">=</span> b<span class="token punctuation">.</span>common_column<span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_15"></a>一、调优思路</h2> 
+<h3><a id="1SQL_16"></a>1、SQL优化</h3> 
+<h4><a id="11_join_17"></a>1.1 大小表join</h4> 
+<p>1、mapjoin,小表使用mapjoin,或者强制hint<br> 2、<strong>将大表放后头</strong>，原因：Hive假定查询中最后的一个表是大表。它会将其它表缓存起来，然后扫描最后那个表。因此通常需要将小表放前面，或者标记哪张表是大表：/*streamtable(table_name) */<br> 3、过滤无效值：空值、不使用的字段等。<br> 4、不能过滤的空值，将空值转化为随机数避免数据倾斜。</p> 
+<h4><a id="12_join_22"></a>1.2 大大表join</h4> 
+<pre><code class="prism language-sql"><span class="token number">1</span>）创建第二张大表
+<span class="token keyword">create</span> <span class="token keyword">table</span> bigtable2<span class="token punctuation">(</span>
+    id <span class="token keyword">bigint</span><span class="token punctuation">,</span>
+    t <span class="token keyword">bigint</span><span class="token punctuation">,</span>
+    uid string<span class="token punctuation">,</span>
+    keyword string<span class="token punctuation">,</span>
+    url_rank <span class="token keyword">int</span><span class="token punctuation">,</span>
+    click_num <span class="token keyword">int</span><span class="token punctuation">,</span>
+    click_url string<span class="token punctuation">)</span>
+<span class="token keyword">row</span> format delimited <span class="token keyword">fields</span> <span class="token keyword">terminated</span> <span class="token keyword">by</span> <span class="token string">'\t'</span><span class="token punctuation">;</span>
+<span class="token keyword">load</span> <span class="token keyword">data</span> <span class="token keyword">local</span> inpath <span class="token string">'/opt/module/data/bigtable'</span> <span class="token keyword">into</span> <span class="token keyword">table</span> bigtable2<span class="token punctuation">;</span>
+
+<span class="token number">2</span>）测试大表直接<span class="token keyword">JOIN</span>
+<span class="token keyword">insert</span> overwrite <span class="token keyword">table</span> jointable
+<span class="token keyword">select</span> b<span class="token punctuation">.</span>id<span class="token punctuation">,</span> b<span class="token punctuation">.</span>t<span class="token punctuation">,</span> b<span class="token punctuation">.</span>uid<span class="token punctuation">,</span> b<span class="token punctuation">.</span>keyword<span class="token punctuation">,</span> b<span class="token punctuation">.</span>url_rank<span class="token punctuation">,</span> b<span class="token punctuation">.</span>click_num<span class="token punctuation">,</span> b<span class="token punctuation">.</span>click_url
+<span class="token keyword">from</span> bigtable a
+<span class="token keyword">join</span> bigtable2 b
+<span class="token keyword">on</span> a<span class="token punctuation">.</span>id <span class="token operator">=</span> b<span class="token punctuation">.</span>id<span class="token punctuation">;</span>
+测试结果：<span class="token keyword">Time</span> taken: <span class="token number">72.289</span> seconds
+<span class="token keyword">insert</span> overwrite <span class="token keyword">table</span> jointable
+<span class="token keyword">select</span> b<span class="token punctuation">.</span>id<span class="token punctuation">,</span> b<span class="token punctuation">.</span>t<span class="token punctuation">,</span> b<span class="token punctuation">.</span>uid<span class="token punctuation">,</span> b<span class="token punctuation">.</span>keyword<span class="token punctuation">,</span> b<span class="token punctuation">.</span>url_rank<span class="token punctuation">,</span> b<span class="token punctuation">.</span>click_num<span class="token punctuation">,</span> b<span class="token punctuation">.</span>click_url
+<span class="token keyword">from</span> bigtable a
+<span class="token keyword">join</span> bigtable2 b
+<span class="token keyword">on</span> a<span class="token punctuation">.</span>id <span class="token operator">=</span> b<span class="token punctuation">.</span>id<span class="token punctuation">;</span>
+
+<span class="token number">3</span>）创建分桶表<span class="token number">1</span>
+<span class="token keyword">create</span> <span class="token keyword">table</span> bigtable_buck1<span class="token punctuation">(</span>
+    id <span class="token keyword">bigint</span><span class="token punctuation">,</span>
+    t <span class="token keyword">bigint</span><span class="token punctuation">,</span>
+    uid string<span class="token punctuation">,</span>
+    keyword string<span class="token punctuation">,</span>
+    url_rank <span class="token keyword">int</span><span class="token punctuation">,</span>
+    click_num <span class="token keyword">int</span><span class="token punctuation">,</span>
+    click_url string<span class="token punctuation">)</span>
+<span class="token keyword">clustered</span> <span class="token keyword">by</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+sorted <span class="token keyword">by</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+<span class="token keyword">into</span> <span class="token number">6</span> buckets
+<span class="token keyword">row</span> format delimited <span class="token keyword">fields</span> <span class="token keyword">terminated</span> <span class="token keyword">by</span> <span class="token string">'\t'</span><span class="token punctuation">;</span>
+
+<span class="token keyword">load</span> <span class="token keyword">data</span> <span class="token keyword">local</span> inpath <span class="token string">'/opt/module/data/bigtable'</span> <span class="token keyword">into</span> <span class="token keyword">table</span> bigtable_buck1<span class="token punctuation">;</span>
+
+<span class="token number">4</span>）创建分桶表<span class="token number">2</span>，分桶数和第一张表的分桶数为倍数关系
+<span class="token keyword">create</span> <span class="token keyword">table</span> bigtable_buck2<span class="token punctuation">(</span>
+    id <span class="token keyword">bigint</span><span class="token punctuation">,</span>
+    t <span class="token keyword">bigint</span><span class="token punctuation">,</span>
+    uid string<span class="token punctuation">,</span>
+    keyword string<span class="token punctuation">,</span>
+    url_rank <span class="token keyword">int</span><span class="token punctuation">,</span>
+    click_num <span class="token keyword">int</span><span class="token punctuation">,</span>
+    click_url string<span class="token punctuation">)</span>
+<span class="token keyword">clustered</span> <span class="token keyword">by</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+sorted <span class="token keyword">by</span><span class="token punctuation">(</span>id<span class="token punctuation">)</span>
+<span class="token keyword">into</span> <span class="token number">6</span> buckets
+<span class="token keyword">row</span> format delimited <span class="token keyword">fields</span> <span class="token keyword">terminated</span> <span class="token keyword">by</span> <span class="token string">'\t'</span><span class="token punctuation">;</span>
+
+<span class="token keyword">load</span> <span class="token keyword">data</span> <span class="token keyword">local</span> inpath <span class="token string">'/opt/module/data/bigtable'</span> <span class="token keyword">into</span> <span class="token keyword">table</span> bigtable_buck2<span class="token punctuation">;</span>
+
+<span class="token number">5</span>）设置参数
+<span class="token keyword">set</span> hive<span class="token punctuation">.</span><span class="token keyword">optimize</span><span class="token punctuation">.</span>bucketmapjoin <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+<span class="token keyword">set</span> hive<span class="token punctuation">.</span><span class="token keyword">optimize</span><span class="token punctuation">.</span>bucketmapjoin<span class="token punctuation">.</span>sortedmerge <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+<span class="token keyword">set</span> hive<span class="token punctuation">.</span>input<span class="token punctuation">.</span>format<span class="token operator">=</span>org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>hive<span class="token punctuation">.</span>ql<span class="token punctuation">.</span>io<span class="token punctuation">.</span>BucketizedHiveInputFormat<span class="token punctuation">;</span>
+
+<span class="token number">6</span>）测试 <span class="token keyword">Time</span> taken: <span class="token number">34.685</span> seconds
+<span class="token keyword">insert</span> overwrite <span class="token keyword">table</span> jointable
+<span class="token keyword">select</span> b<span class="token punctuation">.</span>id<span class="token punctuation">,</span> b<span class="token punctuation">.</span>t<span class="token punctuation">,</span> b<span class="token punctuation">.</span>uid<span class="token punctuation">,</span> b<span class="token punctuation">.</span>keyword<span class="token punctuation">,</span> b<span class="token punctuation">.</span>url_rank<span class="token punctuation">,</span> b<span class="token punctuation">.</span>click_num<span class="token punctuation">,</span> b<span class="token punctuation">.</span>click_url
+<span class="token keyword">from</span> bigtable_buck1 s
+<span class="token keyword">join</span> bigtable_buck2 b
+<span class="token keyword">on</span> b<span class="token punctuation">.</span>id <span class="token operator">=</span> s<span class="token punctuation">.</span>id<span class="token punctuation">;</span>
+</code></pre> 
+<p>1、使用相同的连接键</p> 
+<ul><li>当对3个或者更多个表进行join连接时，如果每个on子句都使用相同的连接键的话，那么只会产生一个MapReduce job。</li></ul> 
+<p>2、过滤无效、未使用的数据：减少每个阶段的数据量，对于分区表要加分区，同时只选择需要使用到的字段。</p> 
+<pre><code class="prism language-sql">加随机数打散
+<span class="token number">1</span>）空值<span class="token number">0</span>值 或 关联不上的，用随机数
+<span class="token keyword">from</span> a <span class="token keyword">join</span> b
+<span class="token keyword">on</span> <span class="token keyword">if</span><span class="token punctuation">(</span>a<span class="token punctuation">.</span><span class="token keyword">key</span><span class="token operator">=</span>’’<span class="token punctuation">,</span> rand<span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token operator">%</span><span class="token number">10</span><span class="token punctuation">,</span> a<span class="token punctuation">.</span><span class="token keyword">key</span><span class="token punctuation">)</span><span class="token operator">=</span>b<span class="token punctuation">.</span><span class="token keyword">key</span>
+–rand<span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token number">0</span><span class="token operator">-</span><span class="token number">1</span>之间的小数
+
+（<span class="token number">2</span>）都是有用的<span class="token keyword">key</span>，则加随机数后缀
+<span class="token keyword">group</span> <span class="token keyword">by</span> concat<span class="token punctuation">(</span><span class="token keyword">key</span><span class="token punctuation">,</span> cast<span class="token punctuation">(</span><span class="token function">round</span><span class="token punctuation">(</span>rand<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token operator">*</span><span class="token number">10</span><span class="token punctuation">)</span> <span class="token keyword">as</span> <span class="token keyword">int</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+缺点是分成<span class="token number">10</span>份是提前写好的，数据变更大时，还是会跑得慢。
+</code></pre> 
+<p>3、逻辑拆分，使用中间表计算</p> 
+<ul><li>尽量原子化操作：多个表关联时,避免包含复杂逻辑大sql(因为无法控制中间job)，最好分拆成小段，可以使用中间表来完成复杂的逻辑</li><li>写入HDFS之后：多次INSERT OVERWRITE TABLE写法参考：<a href="https://blog.csdn.net/weixin_44931681/article/details/131620051">spark调优-小文件问题</a></li></ul> 
+<p>4、列裁剪，避免使用select * 如果查询的是分区表，一定要记得带上分区条件<br> 5、where条件写在子查询中：先过滤再关联（最好使用这种笨办法，虽然hive3.0自带谓词下推）<br> 6、关联条件写在on中，而不是where中</p> 
+<ul><li>非主表谓词下推情况下，可以理解为where是全部执行完在reduce中进行过滤，on是在关联过程中filter</li></ul> 
+<p>7、数据量小时，用in代替join<br> 8、使用semi join替代in/exists<br> <a href="https://blog.csdn.net/weixin_44931681/article/details/121343949">inner join和left semi join的联系和区别</a></p> 
+<h3><a id="2insert_intounion_all_123"></a>2、insert into替换union all</h3> 
+<p>如果union all的部分个数大于2，或者每个union部分数据量大，应该拆成多个insert into 语句,效率有提升。<br> ？insert into到不同分区？</p> 
+<h3><a id="3order_bysort_by_126"></a>3、排序order by换位sort by</h3> 
+<p>order by：对输入做全局排序，因此只有一个reducer（多个reducer无法保证全局有序），只有一个reducer，会导致当输入规模较大时，需要较长的计算时间。<br> sort by：局部排序，保证每个reducer的输出文件是有序的。<br> <a href="https://blog.csdn.net/weixin_44931681/article/details/107817174">hive order by,sort by, distribute by, cluster by作用以及用法</a></p> 
+<h3><a id="4_130"></a>4、并行执行</h3> 
+<p>Hive会将一个查询转化成一个或者多个阶段。这样的阶段可以是MapReduce阶段、抽样阶段、合并阶段、limit阶段。或者Hive执行过程中可能需要的其他阶段。<br> 默认情况下，Hive一次只会执行一个阶段。不过，某个特定的job可能包含众多的阶段，而这些阶段可能并非完全互相依赖的，也就是说有些阶段是可以并行执行的，这样可能使得整个job的执行时间缩短。如果有更多的阶段可以并行执行，那么job可能就越快完成。<br> 通过设置参数<strong>hive.exec.parallel值为true，就可以开启并发执行</strong>。在共享集群中，需要注意下，如果job中并行阶段增多，那么集群利用率就会增加。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">set</span> hive<span class="token punctuation">.</span><span class="token keyword">exec</span><span class="token punctuation">.</span>parallel<span class="token operator">=</span><span class="token boolean">true</span><span class="token punctuation">;</span> <span class="token comment">//打开任务并行执行</span>
+<span class="token keyword">set</span> hive<span class="token punctuation">.</span><span class="token keyword">exec</span><span class="token punctuation">.</span>parallel<span class="token punctuation">.</span>thread<span class="token punctuation">.</span>number<span class="token operator">=</span><span class="token number">16</span><span class="token punctuation">;</span> <span class="token comment">//同一个sql允许最大并行度，默认为8。</span>
+<span class="token keyword">set</span> hive<span class="token punctuation">.</span><span class="token keyword">exec</span><span class="token punctuation">.</span>parallel<span class="token operator">=</span><span class="token boolean">true</span>
+</code></pre> 
+<h3><a id="5_140"></a>5、数据倾斜优化</h3> 
+<p><a href="https://blog.csdn.net/weixin_44931681/article/details/134586752">spark-数据倾斜</a>、<br> <a href="https://blog.csdn.net/weixin_44931681/article/details/108322015">hadoop-hive-数据倾斜问题</a></p> 
+<h3><a id="6_143"></a>6、小文件优化</h3> 
+<p><a href="https://blog.csdn.net/weixin_44931681/article/details/131620051">spark调优-小文件问题</a></p> 
+<p>参考链接<br> <a href="https://blog.51cto.com/u_16099267/10519997" rel="nofollow">HiveSQL大表join大表数据倾斜</a></p> 
+<h2><a id="_148"></a>二、实战</h2> 
+<p><a href="https://www.cnblogs.com/shaosks/p/9491905.html" rel="nofollow">添加链接描述</a></p> 
+<h3><a id="21__150"></a>2.1 场景</h3> 
+<p>【背景】<br> A表为一个汇总表，汇总的是卖家买家最近N天交易汇总信息，即对于每个卖家最近N天，其每个买家共成交了多少单，总金额是多少，假设N取90天，汇总值仅取成交单数。<br> A表的字段有：buyer_id、seller_id、pay_cnt_90day。<br> B表为卖家基本信息表，其字段有seller_id、sale_level，其中sale_levels是卖家的一个分层评级信息，比如吧卖家分为6个级别：S0、S1、S2、S3、S4和S5。<br> 要获得的结果是每个<strong>买家在各个级别的卖家的成交比例信息</strong>，比如：某买家：S0:10%；S1:20%；S2:20%；S3:10%；S4:20%；S5:10%。<br> 【初始思路】<br> 第一反应是直接join两表并统计：</p> 
+<pre><code class="prism language-sql">	<span class="token keyword">select</span>
+　　　　　　　　 m<span class="token punctuation">.</span>buyer_id<span class="token punctuation">,</span>
+　　　　　　　　<span class="token function">sum</span><span class="token punctuation">(</span>pay_cnt_90day<span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day<span class="token punctuation">,</span>
+　　　　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">0</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s0<span class="token punctuation">,</span>
+　　　　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">1</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s1<span class="token punctuation">,</span>
+　　　　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">2</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s2<span class="token punctuation">,</span>
+　　　　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">3</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s3<span class="token punctuation">,</span>
+　　　　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">4</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s4<span class="token punctuation">,</span>
+　　　　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">5</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s5
+　　　　　　<span class="token keyword">from</span> <span class="token punctuation">(</span>
+　　　　　　　　<span class="token keyword">select</span>  a<span class="token punctuation">.</span>buer_id<span class="token punctuation">,</span>  a<span class="token punctuation">.</span>seller_id<span class="token punctuation">,</span>  b<span class="token punctuation">.</span>sale_level<span class="token punctuation">,</span> a<span class="token punctuation">.</span>pay_cnt_90day
+　　　　　　　　<span class="token keyword">from</span> <span class="token punctuation">(</span>  <span class="token keyword">select</span> buyer_id<span class="token punctuation">,</span>  seller_id<span class="token punctuation">,</span>  pay_cnt_90day   <span class="token keyword">from</span> table_A<span class="token punctuation">)</span>  a
+　　　　　　　　<span class="token keyword">join</span>
+　　　　　　　　       <span class="token punctuation">(</span><span class="token keyword">select</span> seller_id<span class="token punctuation">,</span>  sale_level  <span class="token keyword">from</span> table_B<span class="token punctuation">)</span>  b
+　　　　　　　　<span class="token keyword">on</span>  a<span class="token punctuation">.</span>seller_id  <span class="token operator">=</span> b<span class="token punctuation">.</span>seller_id
+　　　　　　　　<span class="token punctuation">)</span>  m
+　　　　　　<span class="token keyword">group</span> <span class="token keyword">by</span> m<span class="token punctuation">.</span>buyer_id
+</code></pre> 
+<p>但是此SQL会<strong>引起数据倾斜</strong>，原因在于卖家的二八准则，某些卖家90天内会有几百万甚至上千万的买家，但是大部分的卖家90天内买家的数目并不多，join table_A和table_B的时候，ODPS会按照seller_id进行分发，table_A的大卖家引起了数据倾斜。但是数据本身<strong>无法用mapjoin table_B解决</strong>，因为卖家超过千万条，文件大小有几个GB，超过了1GB的限制。</p> 
+<h3><a id="22_mapjoin_178"></a>2.2 限制所需的字段，间接mapjoin</h3> 
+<p>思路：只看90天内有交易的卖家，不join全部的卖家表<br> 局限：此方案在一些情况可以起作用，但是很多时候还是无法解决上述问题，因为大部分卖家尽管90天内买家不多，但还是有一些的，过滤后的B表仍然很多。</p> 
+<pre><code class="prism language-sql">　<span class="token keyword">select</span>
+　　　　　　　　 m<span class="token punctuation">.</span>buyer_id<span class="token punctuation">,</span>
+　　　　　　　　<span class="token function">sum</span><span class="token punctuation">(</span>pay_cnt_90day<span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day<span class="token punctuation">,</span>
+　　　　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">0</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s0<span class="token punctuation">,</span>
+　　　　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">1</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s1<span class="token punctuation">,</span>
+　　　　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">2</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s2<span class="token punctuation">,</span>
+　　　　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">3</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s3<span class="token punctuation">,</span>
+　　　　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">4</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s4<span class="token punctuation">,</span>
+　　　　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">5</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s5
+　　　　　　<span class="token keyword">from</span> <span class="token punctuation">(</span> 
+　　　　　　　　<span class="token keyword">select</span>  <span class="token comment">/*+mapjoin(b)*/</span>
+　　　　　　　　　　a<span class="token punctuation">.</span>buer_id<span class="token punctuation">,</span>  a<span class="token punctuation">.</span>seller_id<span class="token punctuation">,</span>  b<span class="token punctuation">.</span>sale_level<span class="token punctuation">,</span> a<span class="token punctuation">.</span>pay_cnt_90day
+　　　　　　　　<span class="token keyword">from</span> <span class="token punctuation">(</span>  <span class="token keyword">select</span> buyer_id<span class="token punctuation">,</span>  seller_id<span class="token punctuation">,</span>  pay_cnt_90day   <span class="token keyword">from</span> table_A<span class="token punctuation">)</span>  a
+　　　　　　　　<span class="token keyword">join</span>  <span class="token punctuation">(</span>
+		　　　　　　　　　　　<span class="token keyword">select</span> seller_id<span class="token punctuation">,</span>  sale_level  <span class="token keyword">from</span> table_B b0
+		　　　　　　　　　　　<span class="token keyword">join</span>
+		　　　　　　　　　　　<span class="token punctuation">(</span><span class="token keyword">select</span> seller_id <span class="token keyword">from</span> table_A <span class="token keyword">group</span> <span class="token keyword">by</span> seller_id<span class="token punctuation">)</span> a0
+		　　　　　　　　　　   <span class="token keyword">on</span> b0<span class="token punctuation">.</span>seller_id <span class="token operator">=</span> a0<span class="token punctuation">.</span>selller_id
+　　　　　　　　　　<span class="token punctuation">)</span>  b
+　　　　　　　　<span class="token keyword">on</span>  a<span class="token punctuation">.</span>seller_id  <span class="token operator">=</span> b<span class="token punctuation">.</span>seller_id
+　　　　　　　　<span class="token punctuation">)</span>  m
+　　　　　　<span class="token keyword">group</span> <span class="token keyword">by</span> m<span class="token punctuation">.</span>buyer_id　　　
+</code></pre> 
+<h3><a id="22_NULL_205"></a>2.2 解决异常值倾斜，如NULL加随机数打散</h3> 
+<p>**思路：**核心是将这些引起倾斜的值随机分发到Reduce，join时对这些特殊值concat随机数，从而达到随机分发的目的。<br> **适用于：**倾斜的值是明确的而且数量很少，比如null值引起的倾斜。<br> **局限：**无法解决本问题场景的倾斜问题，因为倾斜的卖家大量存在而且动态变化。<br> 此方案的核心逻辑如下：</p> 
+<pre><code class="prism language-sql">		<span class="token keyword">select</span> a<span class="token punctuation">.</span>user_id<span class="token punctuation">,</span> a<span class="token punctuation">.</span>order_id<span class="token punctuation">,</span> b<span class="token punctuation">.</span>user_id
+　　　　　　<span class="token keyword">from</span> table_a a 
+　　　　　　<span class="token keyword">join</span> table_b b
+　　　　　　<span class="token keyword">on</span> <span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> a<span class="token punctuation">.</span>user_is <span class="token operator">is</span> <span class="token boolean">null</span> <span class="token keyword">then</span> concat<span class="token punctuation">(</span><span class="token string">'hive'</span><span class="token punctuation">,</span> rand<span class="token punctuation">(</span>id<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token keyword">else</span> a<span class="token punctuation">.</span>user_id <span class="token keyword">end</span><span class="token punctuation">)</span> <span class="token operator">=</span> b<span class="token punctuation">.</span>user_id
+
+</code></pre> 
+<p>Hive 已对此进行了优化，只需要设置参数skewinfo和skewjoin参数，不修改SQL代码，例如，由于table_B的值“0” 和“1”引起了倾斜，值需要做如下设置：</p> 
+<pre><code class="prism language-sql"><span class="token keyword">set</span> hive<span class="token punctuation">.</span><span class="token keyword">optimize</span><span class="token punctuation">.</span>skewinfo<span class="token operator">=</span>table_B:<span class="token punctuation">(</span>selleer_id<span class="token punctuation">)</span> <span class="token punctuation">[</span> <span class="token punctuation">(</span> <span class="token string">"0"</span><span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token string">"1"</span><span class="token punctuation">)</span> <span class="token punctuation">)</span> <span class="token punctuation">]</span> 
+<span class="token keyword">set</span> hive<span class="token punctuation">.</span><span class="token keyword">optimize</span><span class="token punctuation">.</span>skewjoin <span class="token operator">=</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="23__222"></a>2.3 扩容解决数据倾斜</h3> 
+<p>推荐”2.3.3 推荐：分而治之：倾斜和非倾斜再union all“，可直接看。若不行，推荐方案2.3.2倾斜key扩容。</p> 
+<h4><a id="231_N_224"></a>2.3.1 客户表扩大N倍</h4> 
+<p><strong>思路</strong>：按照seller_id分发会倾斜，那么再人工增加一列进行分发，这样之前倾斜的值的倾斜程度会减少到原来的1/10，可以通过配置numbers表改放大倍数来降低倾斜程度。<br> <strong>代码实现</strong>：建立一个numbers表，其值只有一列int 行，比如从1到10（具体值可根据倾斜程度确定），然后放大B表10倍，再取模join。<br> <strong>局限性</strong>：数据量翻倍，B表也会膨胀N倍。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> m<span class="token punctuation">.</span>buyer_id<span class="token punctuation">,</span>
+         <span class="token function">sum</span><span class="token punctuation">(</span>pay_cnt_90day<span class="token punctuation">)</span> <span class="token keyword">AS</span> pay_cnt_90day<span class="token punctuation">,</span>
+         <span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span>  <span class="token keyword">WHEN</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">0</span> <span class="token keyword">THEN</span> pay_cnt_90day <span class="token keyword">end</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> pay_cnt_90day_s0<span class="token punctuation">,</span> 
+         <span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">WHEN</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">1</span> <span class="token keyword">THEN</span> pay_cnt_90day <span class="token keyword">end</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> pay_cnt_90day_s1<span class="token punctuation">,</span>
+         <span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">WHEN</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">2</span> <span class="token keyword">THEN</span>  pay_cnt_90day <span class="token keyword">end</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> pay_cnt_90day_s2<span class="token punctuation">,</span> 
+　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">3</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s3<span class="token punctuation">,</span>
+　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">4</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s4<span class="token punctuation">,</span>
+　　　　　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">5</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s5
+<span class="token keyword">FROM</span> 
+    <span class="token punctuation">(</span><span class="token keyword">SELECT</span> a<span class="token punctuation">.</span>buer_id<span class="token punctuation">,</span>
+         a<span class="token punctuation">.</span>seller_id<span class="token punctuation">,</span>
+         b<span class="token punctuation">.</span>sale_level<span class="token punctuation">,</span>
+         a<span class="token punctuation">.</span>pay_cnt_90day
+    <span class="token keyword">FROM</span> 
+        <span class="token punctuation">(</span><span class="token keyword">SELECT</span> buyer_id<span class="token punctuation">,</span>
+         seller_id<span class="token punctuation">,</span>
+         pay_cnt_90day
+        <span class="token keyword">FROM</span> table_A<span class="token punctuation">)</span> a
+        <span class="token keyword">JOIN</span> <span class="token comment">-- 将B表扩容N倍</span>
+            <span class="token punctuation">(</span><span class="token keyword">SELECT</span> <span class="token comment">/*+mapjoin(members)*/</span> seller_id<span class="token punctuation">,</span>
+         sale_level <span class="token punctuation">,</span>
+        member
+            <span class="token keyword">FROM</span> table_B
+            <span class="token keyword">JOIN</span> members <span class="token comment">-- 扩容N倍的表</span>
+             <span class="token punctuation">)</span> b
+          <span class="token keyword">ON</span> a<span class="token punctuation">.</span>seller_id <span class="token operator">=</span> b<span class="token punctuation">.</span>seller_id
+              <span class="token operator">AND</span> <span class="token function">mod</span><span class="token punctuation">(</span>a<span class="token punctuation">.</span>pay_cnt_90day<span class="token punctuation">,</span><span class="token number">10</span><span class="token punctuation">)</span><span class="token operator">+</span><span class="token number">1</span> <span class="token operator">=</span> b<span class="token punctuation">.</span>number <span class="token punctuation">)</span> m
+        <span class="token keyword">GROUP</span> <span class="token keyword">BY</span>  m<span class="token punctuation">.</span>buyer_id 
+</code></pre> 
+<h4><a id="232_key_258"></a>2.3.2 部分倾斜key扩容，大卖家扩容</h4> 
+<p><strong>思路</strong>：把大卖家放大倍数即可：需要首先知道大卖家的名单，即先建立一个临时表动态存放每天最新的大卖家（比如dim_big_seller）,同时此表的大卖家要膨胀预先设定的倍数（1000倍）。<br> <strong>代码实现</strong>：在A表和B表分别新建一个join列，其逻辑为：如果是大卖家，那么concat一个随机分配正整数（0到预定义的倍数之间，本例为0~1000）；如果不是，保持不变。<br> <strong>局限性</strong>：　相比全部数据扩容，仅倾斜指标扩容的运行效率有提升，但代码复杂性高，必须首先建立大数据表。</p> 
+<pre><code class="prism language-sql"><span class="token keyword">SELECT</span> m<span class="token punctuation">.</span>buyer_id<span class="token punctuation">,</span>
+         <span class="token function">sum</span><span class="token punctuation">(</span>pay_cnt_90day<span class="token punctuation">)</span> <span class="token keyword">AS</span> pay_cnt_90day<span class="token punctuation">,</span>
+         <span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span>  <span class="token keyword">WHEN</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">0</span> <span class="token keyword">THEN</span> pay_cnt_90day <span class="token keyword">end</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> pay_cnt_90day_s0<span class="token punctuation">,</span> 
+         <span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">WHEN</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">1</span> <span class="token keyword">THEN</span> pay_cnt_90day <span class="token keyword">end</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> pay_cnt_90day_s1<span class="token punctuation">,</span>
+         <span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">WHEN</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">2</span> <span class="token keyword">THEN</span>  pay_cnt_90day <span class="token keyword">end</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> pay_cnt_90day_s2<span class="token punctuation">,</span> 
+　　　　 <span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">3</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s3<span class="token punctuation">,</span>
+　　　　 <span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">4</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s4<span class="token punctuation">,</span>
+　　　 　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">5</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s5
+    pay_cnt_90day <span class="token keyword">end</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> pay_cnt_90day_s5
+<span class="token keyword">FROM</span> 
+    <span class="token punctuation">(</span><span class="token keyword">SELECT</span> a<span class="token punctuation">.</span>buer_id<span class="token punctuation">,</span>
+         a<span class="token punctuation">.</span>seller_id<span class="token punctuation">,</span>
+         b<span class="token punctuation">.</span>sale_level<span class="token punctuation">,</span>
+         a<span class="token punctuation">.</span>pay_cnt_90day
+    <span class="token keyword">FROM</span> 
+        <span class="token punctuation">(</span><span class="token keyword">SELECT</span> <span class="token comment">/*+mapjoin(big)*/</span> buyer_id<span class="token punctuation">,</span>
+         seller_id<span class="token punctuation">,</span>
+         pay_cnt_90day<span class="token punctuation">,</span>
+         <span class="token keyword">if</span><span class="token punctuation">(</span>big<span class="token punctuation">.</span>seller_id <span class="token operator">is</span> <span class="token operator">NOT</span> <span class="token boolean">null</span><span class="token punctuation">,</span>
+         concat<span class="token punctuation">(</span> table_A<span class="token punctuation">.</span>seller_id<span class="token punctuation">,</span>
+         <span class="token string">'rnd'</span><span class="token punctuation">,</span> cast<span class="token punctuation">(</span> rand<span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">*</span> <span class="token number">1000</span> <span class="token keyword">AS</span> <span class="token keyword">bigint</span> <span class="token punctuation">)</span><span class="token punctuation">,</span> table_A<span class="token punctuation">.</span>seller_id<span class="token punctuation">)</span> <span class="token keyword">AS</span> seller_id_joinkey
+        <span class="token keyword">FROM</span> table_A <span class="token keyword">left</span> <span class="token keyword">outer</span>
+        <span class="token keyword">JOIN</span> <span class="token comment">--big表seller_id有重复，请注意一定要group by 后再join,保证table_A的行数保持不变 </span>
+        （  <span class="token keyword">SELECT</span> seller_id
+             <span class="token keyword">FROM</span> dim_big_seller
+             <span class="token keyword">GROUP</span> <span class="token keyword">BY</span>  seller_id
+         ）big
+            <span class="token keyword">ON</span> table_A<span class="token punctuation">.</span>seller_id <span class="token operator">=</span> big<span class="token punctuation">.</span>seller_id <span class="token punctuation">)</span> a
+        <span class="token keyword">JOIN</span> 
+            <span class="token punctuation">(</span><span class="token keyword">SELECT</span> <span class="token comment">/*+mapjoin(big)*/</span> seller_id<span class="token punctuation">,</span>
+                     sale_level <span class="token punctuation">,</span>
+                  <span class="token comment">--big表的seller_id_joinkey生成逻辑和上面的生成逻辑一样 coalesce(seller_id_joinkey,</span>
+                     table_B<span class="token punctuation">.</span>seller_id<span class="token punctuation">)</span> <span class="token keyword">AS</span> seller_id_joinkey
+            <span class="token keyword">FROM</span> table_B 
+            <span class="token keyword">left</span> <span class="token keyword">out</span> <span class="token keyword">JOIN</span> <span class="token comment">--table_B表join大卖家表后大卖家行数扩大1000倍，其它卖家行数保持不变 </span>
+                <span class="token punctuation">(</span><span class="token keyword">SELECT</span> seller_id<span class="token punctuation">,</span>
+                         seller_id_joinkey
+                <span class="token keyword">FROM</span> dim_big_seller
+                <span class="token punctuation">)</span> big
+                    <span class="token keyword">ON</span> table_B<span class="token punctuation">.</span>seller_id<span class="token operator">=</span> big<span class="token punctuation">.</span>seller_id <span class="token punctuation">)</span> b
+                    <span class="token keyword">ON</span> a<span class="token punctuation">.</span>seller_id_joinkey<span class="token operator">=</span> b<span class="token punctuation">.</span>seller_id_joinkey
+                        <span class="token operator">AND</span> <span class="token function">mod</span><span class="token punctuation">(</span>a<span class="token punctuation">.</span>pay_cnt_90day<span class="token punctuation">,</span><span class="token number">10</span><span class="token punctuation">)</span><span class="token operator">+</span><span class="token number">1</span> <span class="token operator">=</span> b<span class="token punctuation">.</span>number <span class="token punctuation">)</span> m
+                <span class="token keyword">GROUP</span> <span class="token keyword">BY</span>  m<span class="token punctuation">.</span>buyer_id
+</code></pre> 
+<h4><a id="233_union_all_307"></a>2.3.3 推荐：分而治之：倾斜和非倾斜再union all</h4> 
+<p><strong>思路</strong>：对倾斜的键值和不倾斜的键值分开处理，不倾斜的正常join即可，倾斜的把他们找出来做mapjoin,最后union all其结果即可。<br> <strong>代码实现</strong>：<br> <strong>局限性</strong>：较麻烦，代码复杂而且需要一个临时表存放倾斜的键值。</p> 
+<pre><code class="prism language-sql"><span class="token comment">--1、构建临时表，由于数据倾斜，先找出90天买家超过10000的卖家 </span>
+<span class="token keyword">insert</span> overwrite <span class="token keyword">table</span> temp_table_B
+<span class="token keyword">SELECT</span> m<span class="token punctuation">.</span>seller_id<span class="token punctuation">,</span>
+         n<span class="token punctuation">.</span>sale_level
+<span class="token keyword">FROM</span> 
+    <span class="token punctuation">(</span><span class="token keyword">SELECT</span> seller_id
+    <span class="token keyword">FROM</span> 
+        <span class="token punctuation">(</span><span class="token keyword">SELECT</span> seller_id<span class="token punctuation">,</span>
+        <span class="token function">count</span><span class="token punctuation">(</span>buyer_id<span class="token punctuation">)</span> <span class="token keyword">AS</span> byr_cnt
+        <span class="token keyword">FROM</span> table_A
+        <span class="token keyword">GROUP</span> <span class="token keyword">BY</span>  seller_id <span class="token punctuation">)</span> a
+        <span class="token keyword">WHERE</span> a<span class="token punctuation">.</span>byr_cnt <span class="token operator">&gt;</span><span class="token number">10000</span> <span class="token punctuation">)</span> m
+    <span class="token keyword">LEFT</span> <span class="token keyword">JOIN</span> 
+    <span class="token punctuation">(</span><span class="token keyword">SELECT</span> seller_id<span class="token punctuation">,</span>
+         sale_level
+    <span class="token keyword">FROM</span> table_B 
+    <span class="token punctuation">)</span> n
+    <span class="token keyword">ON</span> m<span class="token punctuation">.</span>seller_id <span class="token operator">=</span> n<span class="token punctuation">.</span>seller_id<span class="token punctuation">;</span> 
+    
+    
+ <span class="token comment">--2、分而治之，不倾斜union all 倾斜。</span>
+ <span class="token comment">--对于90天买家超过10000的卖家直接mapjoin,对其它卖家直接正常join即可</span>
+ 。<span class="token keyword">SELECT</span> m<span class="token punctuation">.</span>buyer_id<span class="token punctuation">,</span>
+         <span class="token function">sum</span><span class="token punctuation">(</span>pay_cnt_90day<span class="token punctuation">)</span> <span class="token keyword">AS</span> pay_cnt_90day<span class="token punctuation">,</span>
+         <span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span>  <span class="token keyword">WHEN</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">0</span> <span class="token keyword">THEN</span> pay_cnt_90day <span class="token keyword">end</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> pay_cnt_90day_s0<span class="token punctuation">,</span> 
+         <span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">WHEN</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">1</span> <span class="token keyword">THEN</span> pay_cnt_90day <span class="token keyword">end</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> pay_cnt_90day_s1<span class="token punctuation">,</span>
+         <span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">WHEN</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">2</span> <span class="token keyword">THEN</span>  pay_cnt_90day <span class="token keyword">end</span><span class="token punctuation">)</span> <span class="token keyword">AS</span> pay_cnt_90day_s2<span class="token punctuation">,</span> 
+　　　　 <span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">3</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s3<span class="token punctuation">,</span>
+　　　　 <span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">4</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s4<span class="token punctuation">,</span>
+　　　 　<span class="token function">sum</span><span class="token punctuation">(</span><span class="token keyword">case</span> <span class="token keyword">when</span> m<span class="token punctuation">.</span>sale_level <span class="token operator">=</span> <span class="token number">5</span>  <span class="token keyword">then</span> pay_cnt_90day  <span class="token keyword">end</span><span class="token punctuation">)</span>  <span class="token keyword">as</span> pay_cnt_90day_s5
+<span class="token keyword">FROM</span> 
+    <span class="token punctuation">(</span><span class="token keyword">SELECT</span> a<span class="token punctuation">.</span>buer_id<span class="token punctuation">,</span>
+         a<span class="token punctuation">.</span>seller_id<span class="token punctuation">,</span>
+         b<span class="token punctuation">.</span>sale_level<span class="token punctuation">,</span>
+         a<span class="token punctuation">.</span>pay_cnt_90day
+    <span class="token keyword">FROM</span> 
+        <span class="token punctuation">(</span><span class="token keyword">SELECT</span> buyer_id<span class="token punctuation">,</span>
+         seller_id<span class="token punctuation">,</span>
+         pay_cnt_90day
+        <span class="token keyword">FROM</span> table_A
+        <span class="token punctuation">)</span> a
+        <span class="token keyword">JOIN</span> 
+            <span class="token punctuation">(</span><span class="token keyword">SELECT</span> seller_id<span class="token punctuation">,</span>
+                    a<span class="token punctuation">.</span>sale_level
+            <span class="token keyword">FROM</span> table_A a
+            <span class="token keyword">LEFT</span> <span class="token keyword">JOIN</span> temp_table_B b
+                <span class="token keyword">ON</span> a<span class="token punctuation">.</span>seller_id <span class="token operator">=</span> b<span class="token punctuation">.</span>seller_id
+            <span class="token keyword">WHERE</span> b<span class="token punctuation">.</span>seller_id <span class="token operator">is</span>  <span class="token boolean">NULL</span> <span class="token comment">-- 限制为不倾斜的卖家</span>
+            <span class="token punctuation">)</span> b
+                <span class="token keyword">ON</span> a<span class="token punctuation">.</span>seller_id <span class="token operator">=</span> b<span class="token punctuation">.</span>seller_id
+       <span class="token keyword">UNION</span> <span class="token keyword">all</span>
+       <span class="token keyword">SELECT</span> <span class="token comment">/*+mapjoin(b)*/</span> a<span class="token punctuation">.</span>buer_id<span class="token punctuation">,</span>
+         a<span class="token punctuation">.</span>seller_id<span class="token punctuation">,</span>
+         b<span class="token punctuation">.</span>sale_level<span class="token punctuation">,</span>
+         a<span class="token punctuation">.</span>pay_cnt_90day
+            <span class="token keyword">FROM</span> 
+                <span class="token punctuation">(</span><span class="token keyword">SELECT</span> buyer_id<span class="token punctuation">,</span>
+                         seller_id<span class="token punctuation">,</span>
+                         pay_cnt_90day
+                <span class="token keyword">FROM</span> table_A
+                <span class="token punctuation">)</span> a
+                <span class="token keyword">JOIN</span> 
+                    <span class="token punctuation">(</span><span class="token keyword">SELECT</span> seller_id<span class="token punctuation">,</span>
+                            sale_level
+                    <span class="token keyword">FROM</span> table_B <span class="token comment">-- 只看倾斜卖家</span>
+                    <span class="token punctuation">)</span> b
+               <span class="token keyword">ON</span> a<span class="token punctuation">.</span>seller_id <span class="token operator">=</span> b<span class="token punctuation">.</span>seller_id
+               <span class="token punctuation">)</span> m
+                <span class="token keyword">GROUP</span> <span class="token keyword">BY</span>  m<span class="token punctuation">.</span>buyer_id <span class="token punctuation">)</span> m
+            <span class="token keyword">GROUP</span> <span class="token keyword">BY</span>  m<span class="token punctuation">.</span>buyer_id 
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0e2f76c97e37ee796c5ed4d8691ac7e1/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">无界AI算法总监邹国平：Midjourney领跑，没有标准答案的文生图，下半场还能怎么卷？</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/23f350fae507e20b2d345fc4118d6848/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">vue&#43;onlyOffice&#43;java : 集成在线编辑word并保存</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

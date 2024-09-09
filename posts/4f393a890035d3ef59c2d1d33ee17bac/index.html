@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>关于Mysql 中 Row size too large (＞ 8126) 错误的解决和理解 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/4f393a890035d3ef59c2d1d33ee17bac/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="关于Mysql 中 Row size too large (＞ 8126) 错误的解决和理解">
+  <meta property="og:description" content="提示：啰嗦一嘴 ，数据库的任何操作和验证前，一定要记得先备份！！！不会有错；
+文章目录 问题发现一、问题导致的可能原因1、页大小2、行格式2.1 compact格式2.2 Redundant格式2.3 Dynamic格式2.4 Compressed格式 3、BLOB和TEXT列 二、解决办法1、修改页大小（不推荐）2、修改行格式3、修改数据类型为BLOB和TEXT列4、其他优化方式（可以参考使用）4.1 合理设置数据类型大小4.2 合理进行表结构设计4.3 更换存储引擎 问题发现 今天在导入他人项目中的sql数据库文件时，出现一个mysql的错误提示，大致描述是：
+Row size too large (&gt; 8126)，英文不算好的我看字面意思，估摸着大概就是说我们插入的行数据可能太大了，超过了设定的阙值；
+一、问题导致的可能原因 这个限制主要是因为MySQL内部存储机制的约束，MySQL的InnoDB存储引擎有一个最大行大小限制关于mysql引擎内容比较多，以后再专门写一篇内容好好说说；这里我们只需要知道他是目前mysql 默认的存储引擎就好啦；
+而这个最大行大小限制主要由于几个因素影响：
+1、页大小 页是InnoDB管理数据的最小单位，InnoDB使用16KB的页来存储数据，行数据在进行保存插入的时候，要求我们的单行数据不能跨越多于半个页（8KB）。否则数据库会自动按照是否进行溢出页的机制来处理数据；
+简单说的话，其实就是数据库中的每行数据我们可以看作是一所个人专属的小房子，里面预留了一个固定的空间给他们放东西，如果放入的东西太多了，超过这个空间大小，屋主就会考虑是否可以把东西放在屋外，来保障空间不至于太过拥挤，这里的房间内的空间就是页内空间大小，房外就是多出的
+2、行格式 InnoDB支持几种行格式，如compact、redundant、dynamic和compressed。其中，dynamic和compressed格式是为了解决行大小限制而引入的，允许行中的某些列（如BLOB和TEXT类型）存储在页外。
+这点简单的来说，四种行格式可以看作是房屋管理办法四个准则，每个准则都有各自适用的场景和优点；
+关于行格式，我们这里只需要知道有哪几种，以及他们数据存储方式，各自应用场景即可；
+2.1 compact格式 InnoDB的默认行格式，也是最常用常见的格式；采取的是位图压缩的存储方式；适用于大多数OLTP（在线事务处理应用场景。OLTP其实就是指那种较高并发，并且要求低延迟，专注业务操作的应用，类似银行交易、订单处理、库存更新那些情况比较常用；
+2.2 Redundant格式 MySQL 5.0以前的默认行格式；适用具有大量NULL值的表；
+2.3 Dynamic格式 从 MySQL 5.6.3 开始，默认的行格式是 DYNAMIC，Dynamic行格式具有高度的灵活性，可以动态地调整行的大小和存储方式。基于实际数据长度大小来进行调整存储空间，以节省存储空间；适用于包含大量长度可变列的表，例如包含TEXT、BLOB等大型字段的表。
+2.4 Compressed格式 Compressed行格式采用压缩存储方式，它适用于存储大量重复数据或较大的表。Compressed行格式使用多种压缩算法，如Zlib和LZO等，能够显著减少磁盘I/O操作，提高存储和读取性能
+3、BLOB和TEXT列 这点因素与上面那点有关，Blob 和 Text 是mysql中的大数据存储类型，但是在我们不设置行模式为ynamic和compressed的时候，这些列通常存储在页外，但它们的元数据（如长度）仍然存储在行内，而这个存储的大小跟行格式的设置会有所不同。也就是说明他会计入行大小限制的计算；
+二、解决办法 好了，既然知道问题原因的可能了，现在就是开始如何解决了；
+1、修改页大小（不推荐） 虽然mysql InnoDB的引擎默认的页大小是16KB，但是这个值并不是不能修改，修改配置文件；
+添加或修改innodb_page_size参数来设置新的页大小。例如，innodb_page_size = 16384（以字节为单位，对应16KB），或者设置的更大；
+不过需要注意的是：页大小的调整最好是在数据库初始化的初期去设置，一旦数据库初始化完成后，就不建议更改了，这种情况下意味着你原来已经存在的所有ibdata和ib_logfile文件都需要重建，那就不是很合适了，而且这样做也可能会带来一定的性能影响；
+2、修改行格式 既然dynamic和compressed行格式就是为了解决行大小限制而引入的，我们可以修改该格式即可；当然了，我们也不是都要去修改这个，这个也是和我们的mysql版本有关的；
+从 MySQL 5.6.3 开始，默认的行格式是 DYNAMIC，也就是说，其实在这个版本之后的我们其实就不需要修改行格式了；">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-13T09:40:00+08:00">
+    <meta property="article:modified_time" content="2024-06-13T09:40:00+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">关于Mysql 中 Row size too large (＞ 8126) 错误的解决和理解</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <p>提示：啰嗦一嘴 ，数据库的任何操作和验证前，一定要记得先备份！！！不会有错；</p> 
+</blockquote> 
+<p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_7" rel="nofollow">问题发现</a></li><li><a href="#_12" rel="nofollow">一、问题导致的可能原因</a></li><li><ul><li><a href="#1_17" rel="nofollow">1、页大小</a></li><li><a href="#2_21" rel="nofollow">2、行格式</a></li><li><ul><li><a href="#21_compact_26" rel="nofollow">2.1 compact格式</a></li><li><a href="#22_Redundant_29" rel="nofollow">2.2 Redundant格式</a></li><li><a href="#23_Dynamic_31" rel="nofollow">2.3 Dynamic格式</a></li><li><a href="#24_Compressed_33" rel="nofollow">2.4 Compressed格式</a></li></ul> 
+   </li><li><a href="#3BLOBTEXT_36" rel="nofollow">3、BLOB和TEXT列</a></li></ul> 
+  </li><li><a href="#_40" rel="nofollow">二、解决办法</a></li><li><ul><li><a href="#1_44" rel="nofollow">1、修改页大小（不推荐）</a></li><li><a href="#2_49" rel="nofollow">2、修改行格式</a></li><li><a href="#3BLOBTEXT_56" rel="nofollow">3、修改数据类型为BLOB和TEXT列</a></li><li><a href="#4_59" rel="nofollow">4、其他优化方式（可以参考使用）</a></li><li><ul><li><a href="#41__60" rel="nofollow">4.1 合理设置数据类型大小</a></li><li><a href="#42__62" rel="nofollow">4.2 合理进行表结构设计</a></li><li><a href="#43__64" rel="nofollow">4.3 更换存储引擎</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<hr> 
+<h2><a id="_7"></a>问题发现</h2> 
+<p>今天在导入他人项目中的sql数据库文件时，出现一个mysql的错误提示，大致描述是：<br> <code>Row size too large (&gt; 8126)</code>，英文不算好的我看字面意思，估摸着大概就是说我们插入的行数据可能太大了，超过了设定的阙值；</p> 
+<h2><a id="_12"></a>一、问题导致的可能原因</h2> 
+<p>这个限制主要是因为<code>MySQL内部存储机制的约束</code>，MySQL的<code>InnoDB存储引擎</code>有一个<code>最大行大小限制</code>关于mysql引擎内容比较多，以后再专门写一篇内容好好说说；这里我们只需要知道他是目前mysql 默认的存储引擎就好啦；</p> 
+<p>而这个<code>最大行大小限制</code>主要由于几个因素影响：</p> 
+<h3><a id="1_17"></a>1、页大小</h3> 
+<p>页是InnoDB管理数据的最小单位，InnoDB使用16KB的页来存储数据，行数据在进行保存插入的时候，要求我们的单行数据不能跨越多于半个页（8KB）。否则数据库会自动按照是否进行溢出页的机制来处理数据；<br> <code>简单说的话，其实就是数据库中的每行数据我们可以看作是一所个人专属的小房子，里面预留了一个固定的空间给他们放东西，如果放入的东西太多了，超过这个空间大小，屋主就会考虑是否可以把东西放在屋外，来保障空间不至于太过拥挤</code>，这里的房间内的空间就是页内空间大小，房外就是多出的</p> 
+<h3><a id="2_21"></a>2、行格式</h3> 
+<p>InnoDB支持几种行格式，如compact、redundant、dynamic和compressed。其中，dynamic和compressed格式是为了解决行大小限制而引入的，允许行中的某些列（如BLOB和TEXT类型）存储在页外。<br> <code>这点简单的来说，四种行格式可以看作是房屋管理办法四个准则，每个准则都有各自适用的场景和优点</code>；</p> 
+<p><mark>关于行格式，我们这里只需要知道有哪几种，以及他们数据存储方式，各自应用场景即可；</mark></p> 
+<h4><a id="21_compact_26"></a>2.1 compact格式</h4> 
+<p>InnoDB的默认行格式，也是最常用常见的格式；采取的是<code>位图压缩</code>的存储方式；适用于大多数<code>OLTP（在线事务处理</code>应用场景。OLTP其实就是指那种较高并发，并且要求低延迟，专注业务操作的应用，类似银行交易、订单处理、库存更新那些情况比较常用；</p> 
+<h4><a id="22_Redundant_29"></a>2.2 Redundant格式</h4> 
+<p><code>MySQL 5.0以前的默认行格式</code>；适用具有大量NULL值的表；</p> 
+<h4><a id="23_Dynamic_31"></a>2.3 Dynamic格式</h4> 
+<p>从 MySQL 5.6.3 开始，默认的行格式是 DYNAMIC，Dynamic行格式具有高度的灵活性，可以<code>动态地调整行的大小和存储方式</code>。基于实际数据长度大小来进行调整存储空间，以节省存储空间；适用于包含大量长度可变列的表，例如包含TEXT、BLOB等大型字段的表。</p> 
+<h4><a id="24_Compressed_33"></a>2.4 Compressed格式</h4> 
+<p>Compressed行格式采用<code>压缩存储方式</code>，它适用于<code>存储大量重复数据或较大的表</code>。Compressed行格式使用多种压缩算法，如Zlib和LZO等，能够显著减少磁盘I/O操作，提高存储和读取性能</p> 
+<h3><a id="3BLOBTEXT_36"></a>3、BLOB和TEXT列</h3> 
+<p>这点因素与上面那点有关，Blob 和 Text 是mysql中的大数据存储类型，但是在我们<code>不设置行模式为ynamic和compressed</code>的时候，这些列通常存储在页外，但它们的元数据（如长度）仍然存储在行内，而这个<code>存储的大小</code>跟<code>行格式的设置</code>会有所不同。也就是说明他会<code>计入行大小限制的计算</code>；</p> 
+<h2><a id="_40"></a>二、解决办法</h2> 
+<blockquote> 
+ <p>好了，既然知道问题原因的可能了，现在就是开始如何解决了；</p> 
+</blockquote> 
+<h3><a id="1_44"></a>1、修改页大小（不推荐）</h3> 
+<p>虽然mysql InnoDB的引擎默认的页大小是16KB，但是这个值并不是不能修改，修改配置文件；<br> 添加或修改<code>innodb_page_size</code>参数来设置新的页大小。例如，<code>innodb_page_size = 16384（以字节为单位，对应16KB）</code>，或者设置的更大；<br> <code>不过需要注意的是：</code>页大小的调整最好是在数据库初始化的初期去设置，一旦数据库初始化完成后，就不建议更改了，这种情况下意味着你原来已经存在的所有ibdata和ib_logfile文件都需要重建，那就不是很合适了，而且这样做也可能会带来一定的性能影响；</p> 
+<h3><a id="2_49"></a>2、修改行格式</h3> 
+<p>既然dynamic和compressed行格式就是为了解决行大小限制而引入的，我们可以修改该格式即可；当然了，我们也不是都要去修改这个，这个也是和我们的mysql版本有关的；</p> 
+<p><code>从 MySQL 5.6.3 开始，默认的行格式是 DYNAMIC</code>，也就是说，其实在这个版本之后的我们其实就不需要修改行格式了；<br> 不过如果你和博主一样是通过导入sql文件的方式创建的表的话，需要确认你的sql文件中是否有另外定义行格式；例如：<br> <img src="https://images2.imgbox.com/23/51/NKOB57az_o.png" alt="在这里插入图片描述"><br> 博主虽然数据库是8.0+，默认行模式已经是DYNAMIC，但是对方给的sql文件创建表的语句中指定了Compact行格式，这个原因大概率是因为它在导出时候环境是基于mysql5.x，而博主是8.0+的，所以这里导出的时候会有所出入；这里我讲所有的行模式设置都去掉了，默认就会按照DYNAMIC设置，就不会报错了；<mark>因此我们在做不同版本mysql的数据导入与导出时，需要特别小心版本不同带来的影响</mark></p> 
+<h3><a id="3BLOBTEXT_56"></a>3、修改数据类型为BLOB和TEXT列</h3> 
+<p>如果你本来该字段就会需要存储较大的数据，就应该用blob和text来替换原来的数据类型VARCHAR或CHAR，这样能让数据大部分存储在溢出页中，而不去纳入大小限制的值计算；而如果我们之前设置了行模式的话，这个纳入计算的值占用会更小；</p> 
+<h3><a id="4_59"></a>4、其他优化方式（可以参考使用）</h3> 
+<h4><a id="41__60"></a>4.1 合理设置数据类型大小</h4> 
+<p>在进行表设计时候，一些列字段我们根据实际需要设计，例如varchar数据类型，如果实际存储值不大，长度就定义足够空间大小即可（即能用varchar64就不用varchar128，能用128就不要用256，尽可能合理分配空间）；</p> 
+<h4><a id="42__62"></a>4.2 合理进行表结构设计</h4> 
+<p>如果设计表的时候，单表列尽量不要太多，适当的进行拆表将列分出去，也能在一定横渡上避免问题；</p> 
+<h4><a id="43__64"></a>4.3 更换存储引擎</h4> 
+<p>换另一种存储引擎，这个方法的话见仁见智，要根据自己的业务场景来抉择了，比如MyISAM引擎最大的缺点就是它不支持事务和高并发，所以才使得大多数情况下我们仍然在用InnoDB引擎的原因，虽然它读写性能上并没有前者优秀；</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/4608f55c8f7a19095be134d1edc86bae/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">AIGC实践｜用AI制作视频短片创作全流程</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/79a50e655c390f4aee1f8fc7af8dc96d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">阿里最强开源大模型本地部署、API调用和WebUI对话机器人</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

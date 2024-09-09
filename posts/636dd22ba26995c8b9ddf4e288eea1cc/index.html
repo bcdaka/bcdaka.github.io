@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【高性能服务器】select模型 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/636dd22ba26995c8b9ddf4e288eea1cc/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【高性能服务器】select模型">
+  <meta property="og:description" content="🔥博客主页： 我要成为C&#43;&#43;领域大神
+🎥系列专栏：【C&#43;&#43;核心编程】 【计算机网络】 【Linux编程】 【操作系统】
+❤️感谢大家点赞👍收藏⭐评论✍️
+本博客致力于知识分享，与更多的人进行学习交流
+IO多路复用就是复用一个线程，从原先一个客户端需要一个线程去调用recv询问内核数据是否已经就绪，那么多个客户端就需要多个线程，转变成现在多个客户端都用一个线程使用select/poll去统一管理，主动通知用户哪些数据已经就绪（read，write，accept等事件），所以复用了这个线程，减少了系统开销。
+在客户端增加时，线程不会呈O(n)增加。
+关于recv和accept工作流程 accpet通过服务端文件描述符监听socket事件，当监听到READ_EVENT事件时，说明有其他网络端向此socket发送数据，触发socket读事件（三次握手中客户端会发送数据），建立TCP连接。
+recv通过客户端文件描述符监听socket事件，当监听到READ_EVENT事件，处理事件，将数据读取到用户缓冲区buffer
+通过IO复用，实现监听到socket事件就绪后，直接调用accpet或recv即可，直接完成TCP连接或者数据读取，两个函数不会阻塞。
+可以实现单进程一对多效果，但是没有使用并发技术
+处理的业务复杂度不能过高，要在极短的时间内处理若干任务，投入二次监听
+IO多路复用第一版select 实现原理 select 实现多路复用的方式是，将已连接的 Socket 都放到一个监听集合，然后调用 select 函数将文件描述符集合拷贝到内核里，让内核来检查是否有网络事件产生，就是通过遍历监听集合的方式进行检查。
+当检查到有事件产生后，将此 Socket 标记为可读或可写， 接着再把整个文件描述符集合拷贝回用户态里，然后用户态还需要再通过遍历的方法找到可读或可写的 Socket，然后再对其处理。
+所以，对于 select 这种方式，需要进行 2 次「遍历」文件描述符集合，一次是在内核态里，一个次是在用户态里 ，而且还会发生 2 次「拷贝」文件描述符集合，先从用户空间传入内核空间，由内核修改后，再传出到用户空间中。
+select 使用固定长度的 BitsMap，表示文监听集合，而且所支持的文件描述符的个数是有限制的，在 Linux 系统中，由内核中的 FD_SETSIZE 限制， 默认最大值为 1024，最多只能监听1021个用户socket，因为0、1、2是标准文件描述符。
+监听集合中对应的socket位码是1，表示监听次socket，为0表示不监听
+在select这种I/O多路复用机制下，我们需要把想监控的文件描述集合通过函数参数的形式告诉select，然后select会将这些文件描述符集合拷贝到内核中，我们知道数据拷贝是有性能损耗的，因此为了减少这种数据拷贝带来的性能损耗，Linux内核对集合的大小做了限制，并规定用户监控的文件描述集合不能超过1024个，同时当select返回后我们仅仅能知道有些文件描述符可以读写了，但是我们不知道是哪一个，因此必须再遍历一边找到具体是哪个文件描述符可以读写了。 实现流程 核心接口 void FD_ZERO(fd_set *fdset) 初始化监听集合为0
+void FD_SET(int fd,fd_set *fdset) 对set集合中fd对应位码设置为1
+void FD_CLR(int fd,fd_set *fdset) 对set集合中fd对应位码设置为0
+int bitcode=void FD_ISSET(int fd,fd_set *fdset) 查看fd在监听集合中是1还是0，并直接返回">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-06T18:37:55+08:00">
+    <meta property="article:modified_time" content="2024-07-06T18:37:55+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【高性能服务器】select模型</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <blockquote> 
+ <p>🔥<strong>博客主页</strong>： <a href="https://blog.csdn.net/Coldreams?type=blog" title="我要成为C++领域大神">我要成为C++领域大神</a><br><strong>🎥</strong><strong>系列专栏</strong>：<a href="https://blog.csdn.net/coldreams/category_12692533.html" title="【C++核心编程】">【C++核心编程】</a> <a href="https://blog.csdn.net/coldreams/category_12683159.html" title="【计算机网络】">【计算机网络】</a> <a href="https://blog.csdn.net/coldreams/category_12683164.html" title="【Linux编程】">【Linux编程】</a> <a href="https://blog.csdn.net/coldreams/category_12688033.html" title="【操作系统】">【操作系统】</a><br> ❤️<strong>感谢大家点赞👍收藏⭐评论✍️</strong></p> 
+ <p id="u4bb28a99"><strong>本博客致力于知识分享，与更多的人进行学习交流</strong></p> 
+</blockquote> 
+<p class="img-center"><img alt="" height="80" src="https://images2.imgbox.com/8f/35/AwEbTv3v_o.gif" width="640"></p> 
+<p>IO多路复用就是复用一个线程，从原先一个客户端需要一个线程去调用recv询问内核数据是否已经就绪，那么多个客户端就需要多个线程，转变成现在多个客户端都用一个线程使用select/poll去统一管理，主动通知用户哪些数据已经就绪（read，write，accept等事件），所以复用了这个线程，减少了系统开销。</p> 
+<p id="u428f8e5e"><em><strong>在客户端增加时，线程不会呈O(n)增加</strong></em>。</p> 
+<h2 id="WbWns">关于recv和accept工作流程</h2> 
+<p id="uaa8bd6af"><code>accpet</code>通过服务端文件描述符监听socket事件，当监听到<code>READ_EVENT</code>事件时，说明有其他网络端向此socket发送数据，触发socket读事件（三次握手中客户端会发送数据），建立TCP连接。</p> 
+<p id="u36080f93"><code>recv</code>通过客户端文件描述符监听socket事件，当监听到READ_EVENT事件，处理事件，将数据读取到用户缓冲区buffer</p> 
+<p id="ud70f210f"></p> 
+<p class="img-center"><img alt="" height="842" id="HP1vO" src="https://images2.imgbox.com/d6/f3/4BKYACKW_o.png" width="1200"></p> 
+<p id="ufc55fb86">通过IO复用，实现监听到socket事件就绪后，直接调用accpet或recv即可，直接完成TCP连接或者数据读取，两个函数不会阻塞。</p> 
+<p id="u98b023e4"></p> 
+<p class="img-center"><img alt="" height="434" id="JILTp" src="https://images2.imgbox.com/25/7c/rNAvdV6Q_o.png" width="1200"></p> 
+<p id="u5448e695">可以实现单进程一对多效果，但是没有使用并发技术</p> 
+<p id="ud44dfaef">处理的业务复杂度不能过高，要在极短的时间内处理若干任务，投入二次监听</p> 
+<h2 id="DG6AB" style="background-color:transparent;">IO多路复用第一版select</h2> 
+<p id="u38090a48"></p> 
+<p class="img-center"><img alt="" height="748" id="ua9a8e2af" src="https://images2.imgbox.com/71/24/nhOMWhEg_o.png" width="1200"></p> 
+<hr id="YMWSn"> 
+<h3 id="Pla2u" style="background-color:transparent;">实现原理</h3> 
+<p id="u310ff8bd"></p> 
+<p class="img-center"><img alt="" height="524" id="ud7ea758d" src="https://images2.imgbox.com/8c/47/yCaWIwJV_o.png" width="1200"></p> 
+<p id="u3d6b4223">select 实现多路复用的方式是，将已连接的 Socket 都放到一个<strong>监听集合</strong>，然后调用 select 函数将文件描述符集合<strong>拷贝</strong>到内核里，让内核来检查是否有网络事件产生，就是通过<strong>遍历监听集合</strong>的方式进行检查。</p> 
+<p id="u4c53d00f">当检查到有事件产生后，将此 Socket 标记为可读或可写， 接着再把整个文件描述符集合<strong>拷贝</strong>回用户态里，然后用户态还需要再通过<strong>遍历</strong>的方法找到可读或可写的 Socket，然后再对其处理。</p> 
+<p id="udff555c6">所以，对于 select 这种方式，需要进行 <strong>2 次「遍历」文件描述符集合</strong>，一次是在内核态里，一个次是在用户态里 ，而且还会发生 <strong>2 次「拷贝」文件描述符集合</strong>，先从用户空间传入内核空间，由内核修改后，再传出到用户空间中。</p> 
+<p id="u4fba7ad1">select 使用固定长度的 BitsMap，表示文<strong>监听集合</strong>，而且所支持的文件描述符的个数是有限制的，在 Linux 系统中，由内核中的 FD_SETSIZE 限制， 默认最大值为 1024，最多只能监听1021个用户socket，因为0、1、2是标准文件描述符。</p> 
+<p id="ude7bb3e8">监听集合中对应的socket位码是1，表示监听次socket，为0表示不监听</p> 
+<p class="img-center"><img alt="" height="918" id="u1fbe0294" src="https://images2.imgbox.com/c6/a1/o7WOIdvE_o.png" width="1200"></p> 
+<p>在select这种I/O多路复用机制下，我们需要把想监控的文件描述集合通过函数参数的形式告诉select，然后select会将这些文件描述符集合拷贝到内核中，我们知道数据拷贝是有性能损耗的，因此为了减少这种数据拷贝带来的性能损耗，Linux内核对集合的大小做了限制，并规定用户监控的文件描述集合不能超过1024个，同时当select返回后我们仅仅能知道有些文件描述符可以读写了，但是我们不知道是哪一个，因此必须再遍历一边找到具体是哪个文件描述符可以读写了。 </p> 
+<hr id="k5ibE"> 
+<h3 id="eJ2XP" style="background-color:transparent;">实现流程</h3> 
+<p id="u4c8cd071"></p> 
+<p class="img-center"><img alt="" height="1198" id="ufecb25f7" src="https://images2.imgbox.com/0b/94/6OoslrLD_o.png" width="1200"></p> 
+<h3 id="oja6A" style="background-color:transparent;">核心接口</h3> 
+<blockquote> 
+ <p id="ue0daf4a5"><code>void FD_ZERO(fd_set *<em>fdset</em>)</code> 初始化监听集合为0</p> 
+ <p id="ud2541e8d"><code>void FD_SET(int <em>fd</em>,fd_set *<em>fdset</em>)</code> 对set集合中fd对应位码设置为1</p> 
+ <p id="u60ef67ef"><code>void FD_CLR(int <em>fd</em>,fd_set *<em>fdset</em>)</code> 对set集合中fd对应位码设置为0</p> 
+ <p id="ufb30738a"><code>int bitcode=void FD_ISSET(int <em>fd</em>,fd_set *<em>fdset</em>)</code> 查看fd在监听集合中是1还是0，并直接返回</p> 
+</blockquote> 
+<hr id="Y3Jo8"> 
+<blockquote> 
+ <p id="u1716e54f"><code>int ready=select(int nfds, fd_set* readset, fd_set* writeset, fd_set* exeptset,struct timeval* timeout);</code></p> 
+ <p id="uf0e560e0"><code>nfds</code>表示被select管理的描述符个数。值为最大描述符+1.不是描述符最大值</p> 
+ <p id="ucdaa0197"><code>readset</code>、<code>writeset</code>、<code>exeptset</code>可读事件集合、可写事件集合、异常事件集合。这三者都可以填null</p> 
+ <p id="ue814c7b2"><code>timeout</code>超时时间有三种含义: 阻塞(null)、正常超时、非阻塞(0)</p> 
+</blockquote> 
+<hr id="gtz9T"> 
+<p id="u1279e760"><strong>使用服务器测试业务：</strong></p> 
+<blockquote> 
+ <p id="u88f36d7c">客户端向标准输入发送小写字符串，服务端响应回复对应大写字符，"abcAS"-&gt;"ABCAS"</p> 
+ <p id="u42893e86">客户端向服务端发送关键字localtime，服务端响应回复系统时间、</p> 
+</blockquote> 
+<h3 id="B5xa9" style="background-color:transparent;">代码实现</h3> 
+<p id="u36d836c4">MySock.h</p> 
+<pre id="mDWKa"><code class="language-cpp">#ifndef _MYSOCK_H_
+#define _MYSOCK_H_
+
+#include &lt;arpa/inet.h&gt;
+#include &lt;ctype.h&gt;
+#include &lt;errno.h&gt;
+#include &lt;netinet/in.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+#include &lt;sys/select.h&gt;
+#include &lt;sys/socket.h&gt;
+#include &lt;sys/types.h&gt;
+#include &lt;time.h&gt;
+#include &lt;unistd.h&gt;
+
+int SOCKET(int domain, int type, int protocol);
+int BIND(int sockfd, struct sockaddr* addr, socklen_t addrlen);
+ssize_t RECV(int sockfd, void* buf, size_t len, int flags);
+ssize_t SEND(int sockfd, void* buf, size_t len, int flags);
+int CONNECT(int sockfd, struct sockaddr* addr, socklen_t addrlen);
+int ACCEPT(int sockfd, struct sockaddr* addr, socklen_t* addrlen);
+int LISTEN(int sockfd, int backlog);
+char* FGETS(char* s, int size, FILE* stream);
+int SELECT(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds,
+           struct timeval* timeout);
+int socket_init();
+int return_response(int clientfd, const char* clientip);
+//void strDeal(int *client_fd);
+
+// 全局变量声明
+char recv_buf[1024];
+char time_buf[64];
+int serverFd, clientFd;
+struct sockaddr_in clientAddr;
+fd_set set, oset;
+int client_array[1020];
+int maxfd, ready;
+socklen_t addrlen;
+char clientip[16];
+time_t tp;
+ssize_t recvlen;
+int toupper_flag;
+#define SHUTDOWN 1
+#endif</code></pre> 
+<p id="u478a31c8">MySock.c</p> 
+<pre id="Wyph0"><code class="language-cpp">#include "MySock.h"
+
+int SOCKET(int domain, int type, int protocol) {
+    int reval = socket(domain, type, protocol);
+    if (reval == -1) {
+        perror("socket call failed");
+        exit(0);
+    }
+    return reval;
+}
+
+int BIND(int sockfd, struct sockaddr* addr, socklen_t addrlen) {
+    int reval = bind(sockfd, addr, addrlen);
+    if (reval == -1) {
+        perror("bind call failed");
+        exit(0);
+    }
+    return reval;
+}
+
+ssize_t RECV(int sockfd, void* buf, size_t len, int flags) {
+    ssize_t reval;
+    reval = recv(sockfd, buf, len, flags);
+    return reval;
+}
+
+ssize_t SEND(int sockfd, void* buf, size_t len, int flags) {
+    ssize_t reval;
+    reval = send(sockfd, buf, len, flags);
+    if (reval == -1)
+        perror("send call failed");
+    return reval;
+}
+
+int CONNECT(int sockfd, struct sockaddr* addr, socklen_t addrlen) {
+    int reval = connect(sockfd, addr, addrlen);
+    if (reval == -1) {
+        perror("connect call failed");
+        exit(0);
+    }
+    return reval;
+}
+
+int ACCEPT(int sockfd, struct sockaddr* addr, socklen_t* addrlen) {
+    int reval = accept(sockfd, addr, addrlen);
+    if (reval == -1) {
+        perror("accept call failed");
+        exit(0);
+    }
+    return reval;
+}
+
+int LISTEN(int sockfd, int backlog) {
+    int reval = listen(sockfd, backlog);
+    if (reval == -1) {
+        perror("listen call failed");
+        exit(0);
+    }
+    return reval;
+}
+
+char* FGETS(char* s, int size, FILE* stream) {
+    char* str;
+    if ((str = fgets(s, size, stream)) != NULL) {
+        return str;
+    } else {
+        perror("fgets call failed");
+        exit(0);
+    }
+}
+
+int SELECT(int nfds, fd_set* readfds, fd_set* writefds, fd_set* exceptfds,
+           struct timeval* timeout) {
+    int reval = select(nfds, readfds, writefds, exceptfds, timeout);
+    if (reval == -1) {
+        perror("select call failed");
+        exit(0);
+    }
+    return reval;
+}
+
+int socket_init() {
+    struct sockaddr_in sockAddr;
+    sockAddr.sin_family = AF_INET;
+    sockAddr.sin_addr.s_addr = htonl(INADDR_ANY);
+    sockAddr.sin_port = htons(8080);
+    int sock_fd = SOCKET(AF_INET, SOCK_STREAM, 0);
+    BIND(sock_fd, (struct sockaddr*)&amp;sockAddr, sizeof(sockAddr));
+    LISTEN(sock_fd, 5);
+    return sock_fd;
+}
+
+int return_response(int clientfd, const char* clientip) {
+    char response[1024];
+    bzero(response, sizeof(response));
+    sprintf(response, "Hi [%s],This is TCP Server Working...\n", clientip);
+    SEND(clientfd, response, sizeof(response), 0);
+}
+</code></pre> 
+<p id="u07ad696d">SelectServer.c</p> 
+<pre id="bgkqO"><code class="language-cpp">#include "MySock.h"
+
+int main() {
+    bzero(recv_buf, sizeof(recv_buf));
+    bzero(time_buf, sizeof(time_buf));
+    bzero(clientip,sizeof(clientip));
+    serverFd = socket_init();
+    FD_SET(serverFd, &amp;set); // 设置监听
+    int i;
+    for (i = 0; i &lt; 1020; ++i) {
+        client_array[i] = -1;
+    }
+
+    maxfd = serverFd;
+
+    printf("Test Select Server is Running...\n");
+
+    while (SHUTDOWN) {
+        oset = set;
+        ready = SELECT(maxfd+1, &amp;oset, NULL, NULL, NULL);
+        while (ready) { // 辨别就绪
+            if (FD_ISSET(serverFd, &amp;oset)) {
+                addrlen = sizeof(clientAddr);
+                clientFd =ACCEPT(serverFd, (struct sockaddr*)&amp;clientAddr, &amp;addrlen);
+                inet_ntop(AF_INET, &amp;clientAddr.sin_addr.s_addr, clientip, 16);
+                printf("Listen Server Socket Successfully Call Accept, Client IP [%s], PORT[%d]\n",clientip, ntohs(clientAddr.sin_port));
+                return_response(clientFd, clientip);
+                if (maxfd &lt; clientFd)
+                    maxfd = clientFd;
+                for (i = 0; i &lt; 1020; ++i)
+                    if (client_array[i] == -1) {
+                        client_array[i] = clientFd;
+                        break;
+                    }
+                FD_SET(clientFd, &amp;set);//新socket设置监听
+                FD_CLR(serverFd,&amp;oset);//处理完毕，清理就绪集合
+            } else {
+                // 仅处理一次客户端请求，单进程不允许客户端持续占用
+                for (i = 0; i &lt; 1020; ++i)
+                    {if (client_array[i] != -1)
+                        if (FD_ISSET(client_array[i], &amp;oset))
+                        {
+                            if ((recvlen = RECV(client_array[i], recv_buf, sizeof(recv_buf), 0)) &gt;0) 
+                             { // 处理客户端业务
+                                    printf("Client Say:%s\n", recv_buf);
+                                    if (strcmp(recv_buf, "localtime") == 0) {
+                                        tp = time(NULL); // 获取时间种子
+                                        ctime_r(&amp;tp, time_buf);
+                                        time_buf[strcspn(time_buf, "\n")] = '\0';
+                                        printf("[%s]Response SysTime Successfully!\n", clientip);
+                                        SEND(client_array[i], time_buf, strlen(time_buf) + 1, 0);
+                                        bzero(time_buf, sizeof(time_buf));
+                                    } else {
+                                        toupper_flag = 0;
+                                        while (recvlen &gt; toupper_flag) {
+                                            recv_buf[toupper_flag] = toupper(recv_buf[toupper_flag]);
+                                            ++toupper_flag;
+                                        }
+                                        printf("[%s]Response Toupper Successfully!\n", clientip);
+                                        SEND(client_array[i], recv_buf, recvlen, 0);
+                                        bzero(recv_buf, sizeof(recv_buf));
+                                    }
+                                } else if (recvlen == 0) {
+                                    FD_CLR(client_array[i], &amp;set); // 删除监听
+                                    close(client_array[i]);
+                                    client_array[i] = -1;
+                                    printf("Client is Exiting, Delete Listen Item.\n");
+                                }
+                                FD_CLR(client_array[i],&amp;oset);//处理完毕，清理就绪集合
+                                break;
+                            }
+                    }
+            }
+            ready--;
+        }
+    }
+
+    printf("Server is Over\n");
+    close(serverFd);
+    return 0;
+}</code></pre> 
+<p id="uc1c42898">Client.c</p> 
+<pre id="lYTub"><code class="language-cpp">#include "MySock.c"
+
+
+//客户端源码编写，连接服务器成功，服务器反馈信息
+
+#define _IP "xxx.xxx.xxx.xxx"
+#define _PORT 8080
+int main()
+{
+    struct sockaddr_in ServerAddr;
+    bzero(&amp;ServerAddr,sizeof(ServerAddr));
+    ServerAddr.sin_family=AF_INET;
+	ServerAddr.sin_port=htons(_PORT);
+    inet_pton(AF_INET,_IP,&amp;ServerAddr.sin_addr.s_addr);
+    
+    int Myfd=SOCKET(AF_INET,SOCK_STREAM,0);
+    //看需求决定是否要绑定
+    char Response[1024];//存放服务端反馈信息
+    ssize_t recvlen;
+    bzero(Response,sizeof(Response));
+    char sendbuf[1024];
+    
+    if((CONNECT(Myfd,(struct sockaddr *)&amp;ServerAddr,sizeof(ServerAddr)))==0)
+    {
+    while(1)
+    {    
+     if((recvlen=RECV(Myfd,Response,sizeof(Response),0))&gt;0)
+     {
+         printf("%s\n",Response);
+     }
+    
+    printf("Please Type Some text:");//读取标准输入发送给服务端
+    FGETS(sendbuf,sizeof(sendbuf),stdin);    
+    sendbuf[strcspn(sendbuf,"\n")]='\0';
+    SEND(Myfd,sendbuf,sizeof(sendbuf),0);
+    }
+    }
+    close(Myfd);
+    printf("Client is Over\n");
+    return 0;
+}</code></pre> 
+<h3 id="esMk8" style="background-color:transparent;">运行结果</h3> 
+<p class="img-center"><img alt="" height="366" id="u4d62d6cb" src="https://images2.imgbox.com/10/5d/us0oU3id_o.png" width="1200"></p> 
+<p class="img-center"><img alt="" height="850" id="uc601bce4" src="https://images2.imgbox.com/56/81/DZn5Rcct_o.png" width="1200"></p> 
+<p id="u004a2fc2">select模型使用一个进程实现对多个客户端的统一管理</p> 
+<p class="img-center"><img alt="" height="376" id="u9785878f" src="https://images2.imgbox.com/b3/e8/lq9CVqvF_o.png" width="1200"></p> 
+<h3 id="UVdEY" style="background-color:transparent;">select模式优缺点</h3> 
+<h4 id="uacbf54fd"><strong>优点</strong></h4> 
+<blockquote> 
+ <p id="u7f12255b">1.可以通过简单的代码实现一对多效果， 比较轻量</p> 
+ <p id="u0e402551">2.select模型拥有较强的兼容性，各个平台和语言都有实现</p> 
+ <p id="u7d348c80">3.支持微秒级别的定时阻塞监听，如果对时间精度有需求，select可以满足</p> 
+ <p id="u22f4be21">4.较为适合监听数量较小(局域网)等场景</p> 
+</blockquote> 
+<h4 id="ucbb3ef90"><strong>缺点</strong></h4> 
+<blockquote> 
+ <p id="u233684e6">1.监听数量较小，最大只能监听1024,无法满足 高并发需求</p> 
+ <p id="u169ad437">2.轮询问题， 随着轮询数量的增长，IO处理性能呈线性下降</p> 
+ <p id="u80b8ca60">3.用户需要对传出传出监听集合进行分离设置</p> 
+ <p id="u054579ec">4.select只返回就绪的数量，没有反馈就绪的socket，需要用户自行遍历查找，开销较大</p> 
+ <p id="u3abd0d9b">5.select可以监听的事件数量较少，select设置监听是批处理以集合为单位的无法对不同的socket 设置不同的事件监听</p> 
+ <p id="u9568194f">6.select多轮使用会出现大量重复的拷贝开销和挂载监听开销</p> 
+</blockquote>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/11f03ffbddb65750b4242787934ad74c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Linux安装部署PostgreSQL详细步骤</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/5c1685e5fbff4e81b1eee4fc1c7a057d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【C语言小知识】缓冲区</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

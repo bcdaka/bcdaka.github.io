@@ -1,0 +1,624 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Android12 MultiMedia框架之GenericSource extractor - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/7c264b1142295125f28c0a3fc954a41c/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Android12 MultiMedia框架之GenericSource extractor">
+  <meta property="og:description" content="前面两节学习到了各种Source的创建和extractor service的启动，本节将以本地播放为例记录下GenericSource是如何创建一个extractor的。extractor是在PrepareAsync()方法中被创建出来的，为了不过多赘述，我们直接从GenericSource的onPrepareAsync()开始看。
+onPrepareAsync() Android系统自带了很多源生的extractor，我们这里主要基于MP4 extractor来进行以下内容的分析。
+//frameworks/av/media/libmediaplayerservice/nuplayer/GenericSource.cpp void NuPlayer::GenericSource::onPrepareAsync() { mDisconnectLock.lock(); // delayed data source creation if (mDataSource == NULL) { // set to false first, if the extractor // comes back as secure, set it to true then. mIsSecure = false; if (!mUri.empty()) { //省略 } else { //第一部分 if (property_get_bool(&#34;media.stagefright.extractremote&#34;, true) &amp;&amp; !PlayerServiceFileSource::requiresDrm( mFd.get(), mOffset, mLength, nullptr /* mime */)) { sp&lt;IBinder&gt; binder = defaultServiceManager()-&gt;getService(String16(&#34;media.extractor&#34;)); if (binder != nullptr) { ALOGD(&#34;">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-11T09:08:40+08:00">
+    <meta property="article:modified_time" content="2024-07-11T09:08:40+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Android12 MultiMedia框架之GenericSource extractor</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>前面两节学习到了各种Source的创建和extractor service的启动，本节将以本地播放为例记录下GenericSource是如何创建一个extractor的。extractor是在PrepareAsync()方法中被创建出来的，为了不过多赘述，我们直接从GenericSource的onPrepareAsync()开始看。</p> 
+<h2>onPrepareAsync()</h2> 
+<p>Android系统自带了很多源生的extractor，我们这里主要基于MP4 extractor来进行以下内容的分析。</p> 
+<pre><code class="language-cpp">//frameworks/av/media/libmediaplayerservice/nuplayer/GenericSource.cpp
+void NuPlayer::GenericSource::onPrepareAsync() {
+    mDisconnectLock.lock();
+
+    // delayed data source creation
+    if (mDataSource == NULL) {
+        // set to false first, if the extractor
+        // comes back as secure, set it to true then.
+        mIsSecure = false;
+
+        if (!mUri.empty()) {
+            //省略
+        } else {
+            //第一部分
+            if (property_get_bool("media.stagefright.extractremote", true) &amp;&amp;
+                    !PlayerServiceFileSource::requiresDrm(
+                            mFd.get(), mOffset, mLength, nullptr /* mime */)) {
+                sp&lt;IBinder&gt; binder =
+                        defaultServiceManager()-&gt;getService(String16("media.extractor"));
+                if (binder != nullptr) {
+                    ALOGD("FileSource remote");
+                    sp&lt;IMediaExtractorService&gt; mediaExService(
+                            interface_cast&lt;IMediaExtractorService&gt;(binder));
+                    sp&lt;IDataSource&gt; source;
+                    mediaExService-&gt;makeIDataSource(base::unique_fd(dup(mFd.get())), mOffset, mLength, &amp;source);
+                    ALOGV("IDataSource(FileSource): %p %d %lld %lld",
+                            source.get(), mFd.get(), (long long)mOffset, (long long)mLength);
+                    if (source.get() != nullptr) {
+                        mDataSource = CreateDataSourceFromIDataSource(source);
+                    }
+                    //省略
+            }
+            //省略
+        }
+        //省略
+    }
+    //省略
+
+    mDisconnectLock.unlock();
+
+    //第二部分
+    // init extractor from data source
+    status_t err = initFromDataSource();
+
+    if (err != OK) {
+        ALOGE("Failed to init from data source!");
+        notifyPreparedAndCleanup(err);
+        return;
+    }
+
+    if (mVideoTrack.mSource != NULL) {
+        sp&lt;MetaData&gt; meta = getFormatMeta_l(false /* audio */);
+        sp&lt;AMessage&gt; msg = new AMessage;
+        err = convertMetaDataToMessage(meta, &amp;msg);
+        if(err != OK) {
+            notifyPreparedAndCleanup(err);
+            return;
+        }
+        notifyVideoSizeChanged(msg);
+    }
+
+    notifyFlagsChanged(
+            // FLAG_SECURE will be known if/when prepareDrm is called by the app
+            // FLAG_PROTECTED will be known if/when prepareDrm is called by the app
+            FLAG_CAN_PAUSE |
+            FLAG_CAN_SEEK_BACKWARD |
+            FLAG_CAN_SEEK_FORWARD |
+            FLAG_CAN_SEEK);
+
+    //第三部分
+    finishPrepareAsync();
+
+    ALOGV("onPrepareAsync: Done");
+}</code></pre> 
+<p>上述代码中省略了mp4文件播放时不会走到的流程，只抓主干做了解。我将onPrepareAsync()分成了三个部分，下面逐个进行分析。</p> 
+<h3>DataSource的创建</h3> 
+<p>初始阶段GenericSource的mDataSource是没有值的，因此需要基于setDataSource()传递下来的文件fd/offset/length变量来创建一个。先将步骤总结如下：</p> 
+<ul><li>获取"media.extractor" service的本地代理，为调用其接口做准备。</li><li>基于被打开MP4文件的fd/offset/length创建一个RemoteDataSource，并返回其Bp端（BpDataSource）。</li><li>将BpDataSource转化为TinyCacheSource，保存到mDataSource中。</li></ul> 
+<p>第一步没啥好讲的，直接开始讲第二步：</p> 
+<pre><code class="language-cpp">//frameworks/av/services/mediaextractor/MediaExtractorService.cpp
+::android::binder::Status MediaExtractorService::makeIDataSource(
+        base::unique_fd fd,
+        int64_t offset,
+        int64_t length,
+        ::android::sp&lt;::android::IDataSource&gt;* _aidl_return) {
+    sp&lt;DataSource&gt; source = DataSourceFactory::getInstance()-&gt;CreateFromFd(fd.release(), offset, length);
+    *_aidl_return = CreateIDataSourceFromDataSource(source);
+    return binder::Status::ok();
+}
+
+//frameworks/av/media/libdatasource/DataSourceFactory.cpp
+sp&lt;DataSourceFactory&gt; DataSourceFactory::getInstance() {
+    Mutex::Autolock l(sInstanceLock);
+    if (!sInstance) {
+        sInstance = new DataSourceFactory();
+    }
+    return sInstance;
+}
+
+sp&lt;DataSource&gt; DataSourceFactory::CreateFromFd(int fd, int64_t offset, int64_t length) {
+    sp&lt;FileSource&gt; source = new FileSource(fd, offset, length);
+    return source-&gt;initCheck() != OK ? nullptr : source;
+}
+
+//frameworks/av/media/libstagefright/InterfaceUtils.cpp
+sp&lt;IDataSource&gt; CreateIDataSourceFromDataSource(const sp&lt;DataSource&gt; &amp;source) {
+    if (source == nullptr) {
+        return nullptr;
+    }
+    return RemoteDataSource::wrap(source);
+}
+
+//frameworks/av/media/libstagefright/include/media/stagefright/RemoteDataSource.h
+static sp&lt;IDataSource&gt; wrap(const sp&lt;DataSource&gt; &amp;source) {
+	if (source.get() == nullptr) {
+		return nullptr;
+	}
+	if (source-&gt;getIDataSource().get() != nullptr) {
+		return source-&gt;getIDataSource();
+	}
+	return new RemoteDataSource(source);
+}</code></pre> 
+<p>这里直接调用extractor service的makeIDataSource()方法，在该方法中会先构建一个FileSource实例，通过这个实例可以读取文件内容。基于FileSource再封装成一个RemoteDataSource实例，通过binder回传到GenericSource那的已经是Bp端了。</p> 
+<p>接下来是第三步：</p> 
+<pre><code class="language-cpp">//frameworks/av/media/libstagefright/InterfaceUtils.cpp
+sp&lt;DataSource&gt; CreateDataSourceFromIDataSource(const sp&lt;IDataSource&gt; &amp;source) {
+    if (source == nullptr) {
+        return nullptr;
+    }
+    return new TinyCacheSource(new CallbackDataSource(source));
+}</code></pre> 
+<p>可以很清楚的看到，BpDataSource被先后封装了两层最终返回的则是TinyCacheSource实例。</p> 
+<p>到这里，第一部分结束了。</p> 
+<h3>initFromDataSource()</h3> 
+<p>第二部分则是重点了，这里是创建extractor的位子所在。</p> 
+<pre><code class="language-cpp">//frameworks/av/media/libmediaplayerservice/nuplayer/GenericSource.cpp
+status_t NuPlayer::GenericSource::initFromDataSource() {
+    sp&lt;IMediaExtractor&gt; extractor;
+    sp&lt;DataSource&gt; dataSource;
+    {
+        Mutex::Autolock _l_d(mDisconnectLock);
+        dataSource = mDataSource;
+    }
+    CHECK(dataSource != NULL);
+
+    // This might take long time if data source is not reliable.
+    extractor = MediaExtractorFactory::Create(dataSource, NULL);
+    //省略
+    sp&lt;MetaData&gt; fileMeta = extractor-&gt;getMetaData();
+
+    size_t numtracks = extractor-&gt;countTracks();
+    //省略
+    mFileMeta = fileMeta;
+    //省略
+    for (size_t i = 0; i &lt; numtracks; ++i) {
+        sp&lt;IMediaSource&gt; track = extractor-&gt;getTrack(i);
+        if (track == NULL) {
+            continue;
+        }
+
+        sp&lt;MetaData&gt; meta = extractor-&gt;getTrackMetaData(i);
+        //省略
+        // Do the string compare immediately with "mime",
+        // we can't assume "mime" would stay valid after another
+        // extractor operation, some extractors might modify meta
+        // during getTrack() and make it invalid.
+        if (!strncasecmp(mime, "audio/", 6)) {
+            if (mAudioTrack.mSource == NULL) {
+                mAudioTrack.mIndex = i;
+                mAudioTrack.mSource = track;
+                mAudioTrack.mPackets =
+                    new AnotherPacketSource(mAudioTrack.mSource-&gt;getFormat());
+
+                if (!strcasecmp(mime, MEDIA_MIMETYPE_AUDIO_VORBIS)) {
+                    mAudioIsVorbis = true;
+                } else {
+                    mAudioIsVorbis = false;
+                }
+
+                mMimes.add(String8(mime));
+            }
+        } else if (!strncasecmp(mime, "video/", 6)) {
+            if (mVideoTrack.mSource == NULL) {
+                mVideoTrack.mIndex = i;
+                mVideoTrack.mSource = track;
+                mVideoTrack.mPackets =
+                    new AnotherPacketSource(mVideoTrack.mSource-&gt;getFormat());
+
+                // video always at the beginning
+                mMimes.insertAt(String8(mime), 0);
+            }
+        }
+        //省略
+    }
+    //省略
+
+    return OK;
+}
+</code></pre> 
+<p>上述代码只保留了主干，这段代码的主要做了这些事情：</p> 
+<ul><li>创建RemoteMediaExtractor，并返回其Bp端（BpMediaExtractor）。这里比较复杂，稍后详细展开。</li><li>通过BpMediaExtractor调用getMetaData()读取并解析MP4文件的metadata，保存到mFileMeta中。</li><li>调用countTracks()获取MP4文件中包含的track数量。</li><li>依次遍历这些track，根据其内的MIME type将对应的track区分为video还是audio track，保存在mVideoTrack/mAudioTrack中。mVideoTrack/mAudioTrack每个都会创建一个AnotherPacketSource保存起来，这个AnotherPacketSource应该就是为后面解码提供数据了。</li></ul> 
+<h4>MediaExtractorFactory::Create()</h4> 
+<p>下面来解析下MediaExtractorFactory::Create()。</p> 
+<pre><code class="language-cpp">//frameworks/av/media/libstagefright/MediaExtractorFactory.cpp
+sp&lt;IMediaExtractor&gt; MediaExtractorFactory::Create(
+        const sp&lt;DataSource&gt; &amp;source, const char *mime) {
+    ALOGV("MediaExtractorFactory::Create %s", mime);
+
+    // remote extractor
+    ALOGV("get service manager");
+    sp&lt;IBinder&gt; binder = defaultServiceManager()-&gt;getService(String16("media.extractor"));
+
+    if (binder != 0) {
+        sp&lt;IMediaExtractorService&gt; mediaExService(
+                    interface_cast&lt;IMediaExtractorService&gt;(binder));
+        sp&lt;IMediaExtractor&gt; ex;
+        mediaExService-&gt;makeExtractor(
+                    CreateIDataSourceFromDataSource(source),
+                    mime ? std::optional&lt;std::string&gt;(mime) : std::nullopt,
+                    &amp;ex);
+        return ex;
+    }
+}</code></pre> 
+<p>调用extractor的makeExtractor()方法直接创建extractor。在此之前，需要先从TinyCacheSource对象中剥离出BpDataSource，因为需要跨binder传输。</p> 
+<pre><code class="language-cpp">//frameworks/av/media/libstagefright/InterfaceUtils.cpp
+sp&lt;IDataSource&gt; CreateIDataSourceFromDataSource(const sp&lt;DataSource&gt; &amp;source) {
+    if (source == nullptr) {
+        return nullptr;
+    }
+    return RemoteDataSource::wrap(source);
+}
+
+//frameworks/av/media/libstagefright/include/media/stagefright/RemoteDataSource.h
+static sp&lt;IDataSource&gt; wrap(const sp&lt;DataSource&gt; &amp;source) {
+	if (source.get() == nullptr) {
+		return nullptr;
+	}
+	if (source-&gt;getIDataSource().get() != nullptr) {
+		return source-&gt;getIDataSource();
+	}
+	return new RemoteDataSource(source);
+}</code></pre> 
+<p>来看看makeExtractor()方法：</p> 
+<pre><code class="language-cpp">//frameworks/av/services/mediaextractor/MediaExtractorService.cpp
+::android::binder::Status MediaExtractorService::makeExtractor(
+        const ::android::sp&lt;::android::IDataSource&gt;&amp; remoteSource,
+        const ::std::optional&lt; ::std::string&gt; &amp;mime,
+        ::android::sp&lt;::android::IMediaExtractor&gt;* _aidl_return) {
+    ALOGV("@@@ MediaExtractorService::makeExtractor for %s", mime ? mime-&gt;c_str() : nullptr);
+
+    sp&lt;DataSource&gt; localSource = CreateDataSourceFromIDataSource(remoteSource);
+
+    MediaBuffer::useSharedMemory();
+    sp&lt;IMediaExtractor&gt; extractor = MediaExtractorFactory::CreateFromService(
+            localSource,
+            mime ? mime-&gt;c_str() : nullptr);
+
+    ALOGV("extractor service created %p (%s)",
+            extractor.get(),
+            extractor == nullptr ? "" : extractor-&gt;name());
+
+    if (extractor != nullptr) {
+        registerMediaExtractor(extractor, localSource, mime ? mime-&gt;c_str() : nullptr);
+    }
+    *_aidl_return = extractor;
+    return binder::Status::ok();
+}</code></pre> 
+<p>这里remoteSource经过binder已经处于extractor service端了，那已经是RemoteDataSource的本体了。在service端会通过CreateDataSourceFromIDataSource()将RemoteDataSource重新封装成另一个TinyCacheSource对象。虽然这里和GenericSource端的TinyCacheSource是不同的东西，但其核心都是指向extractor service端的RemoteDataSource。</p> 
+<p>接下来就要开始真正创建extractor了。</p> 
+<pre><code class="language-cpp">//frameworks/av/media/libstagefright/MediaExtractorFactory.cpp
+sp&lt;IMediaExtractor&gt; MediaExtractorFactory::CreateFromService(
+        const sp&lt;DataSource&gt; &amp;source, const char *mime) {
+
+    ALOGV("MediaExtractorFactory::CreateFromService %s", mime);
+
+    void *meta = nullptr;
+    void *creator = NULL;
+    FreeMetaFunc freeMeta = nullptr;
+    float confidence;
+    sp&lt;ExtractorPlugin&gt; plugin;
+    uint32_t creatorVersion = 0;
+
+    creator = sniff(source, &amp;confidence, &amp;meta, &amp;freeMeta, plugin, &amp;creatorVersion);
+    if (!creator) {
+        ALOGV("FAILED to autodetect media content.");
+        return NULL;
+    }
+
+    MediaExtractor *ex = nullptr;
+    if (creatorVersion == EXTRACTORDEF_VERSION_NDK_V1 ||
+            creatorVersion == EXTRACTORDEF_VERSION_NDK_V2) {
+        CMediaExtractor *ret = ((CreatorFunc)creator)(source-&gt;wrap(), meta);
+        if (meta != nullptr &amp;&amp; freeMeta != nullptr) {
+            freeMeta(meta);
+        }
+        ex = ret != nullptr ? new MediaExtractorCUnwrapper(ret) : nullptr;
+    }
+
+    ALOGV("Created an extractor '%s' with confidence %.2f",
+         ex != nullptr ? ex-&gt;name() : "&lt;null&gt;", confidence);
+
+    return CreateIMediaExtractorFromMediaExtractor(ex, source, plugin);
+}
+
+void *MediaExtractorFactory::sniff(
+        const sp&lt;DataSource&gt; &amp;source, float *confidence, void **meta,
+        FreeMetaFunc *freeMeta, sp&lt;ExtractorPlugin&gt; &amp;plugin, uint32_t *creatorVersion) {
+    *confidence = 0.0f;
+    *meta = nullptr;
+
+    std::shared_ptr&lt;std::list&lt;sp&lt;ExtractorPlugin&gt;&gt;&gt; plugins;
+    {
+        Mutex::Autolock autoLock(gPluginMutex);
+        if (!gPluginsRegistered) {
+            return NULL;
+        }
+        plugins = gPlugins;
+    }
+
+    void *bestCreator = NULL;
+    for (auto it = plugins-&gt;begin(); it != plugins-&gt;end(); ++it) {
+        ALOGV("sniffing %s", (*it)-&gt;def.extractor_name);
+
+        float newConfidence;
+        void *newMeta = nullptr;
+        FreeMetaFunc newFreeMeta = nullptr;
+
+        void *curCreator = NULL;
+        if ((*it)-&gt;def.def_version == EXTRACTORDEF_VERSION_NDK_V1) {
+            curCreator = (void*) (*it)-&gt;def.u.v2.sniff(
+                    source-&gt;wrap(), &amp;newConfidence, &amp;newMeta, &amp;newFreeMeta);
+        } else if ((*it)-&gt;def.def_version == EXTRACTORDEF_VERSION_NDK_V2) {
+            curCreator = (void*) (*it)-&gt;def.u.v3.sniff(
+                    source-&gt;wrap(), &amp;newConfidence, &amp;newMeta, &amp;newFreeMeta);
+        }
+
+        if (curCreator) {
+            if (newConfidence &gt; *confidence) {
+                *confidence = newConfidence;
+                if (*meta != nullptr &amp;&amp; *freeMeta != nullptr) {
+                    (*freeMeta)(*meta);
+                }
+                *meta = newMeta;
+                *freeMeta = newFreeMeta;
+                plugin = *it;
+                bestCreator = curCreator;
+                *creatorVersion = (*it)-&gt;def.def_version;
+            } else {
+                if (newMeta != nullptr &amp;&amp; newFreeMeta != nullptr) {
+                    newFreeMeta(newMeta);
+                }
+            }
+        }
+    }
+
+    return bestCreator;
+}
+
+//frameworks/av/media/libstagefright/InterfaceUtils.cpp
+sp&lt;IMediaExtractor&gt; CreateIMediaExtractorFromMediaExtractor(
+        MediaExtractor *extractor,
+        const sp&lt;DataSource&gt; &amp;source,
+        const sp&lt;RefBase&gt; &amp;plugin) {
+    if (extractor == nullptr) {
+        return nullptr;
+    }
+    return RemoteMediaExtractor::wrap(extractor, source, plugin);
+}</code></pre> 
+<p>罗列下CreateFromService()做的事情：</p> 
+<ul><li>调用自身的sniff()方法来依次遍历注册在系统内的gPlugins（ExtractorPlugin list），逐个调用每个extractor实现的sniff()来解析文件，成功解析则会返回一个confidence。然后再根据这个confidence来选取一个得分最高的extractor，本文则选取的是libmp4extractor。</li><li>sniff()执行完，返回的是libmp4extractor的CreateExtractor函数指针。直接执行CreateExtractor()，这里会创建一个MPEG4Extractor并wrap成CMediaExtractor返回。</li><li>CMediaExtractor进一步被wrap成MediaExtractorCUnwrapper对象。</li><li>为了能够跨binder操作，又通过CreateIMediaExtractorFromMediaExtractor()将MediaExtractorCUnwrapper封装成RemoteMediaExtractor对象。</li></ul> 
+<p>看到这里，可以看出这个RemoteMediaExtractor已经和libmp4extractor中创建的MPEG4Extractor挂钩了。</p> 
+<p>MPEG4Extractor关于sniff()和CreateExtractor()代码这里就不贴了，代码位置在frameworks/av/media/extractors/mp4/，大家自行查看。</p> 
+<h4>extractor相关操作</h4> 
+<p>上面的分析完，extractor已经创建了，接下来就是执行initFromDataSource()中的四个操作了：</p> 
+<ul><li>getMetaData()</li><li>countTracks()</li><li>getTrack()</li><li>getTrackMetaData()</li></ul> 
+<p>上述四个接口看名字都能大概知道是在做什么。四个接口都会调用到readMetaData()方法。</p> 
+<pre><code class="language-cpp">//frameworks/av/media/extractors/mp4/MPEG4Extractor.cpp
+status_t MPEG4Extractor::readMetaData() {
+    if (mInitCheck != NO_INIT) {
+        return mInitCheck;
+    }
+
+    off64_t offset = 0;
+    status_t err;
+    bool sawMoovOrSidx = false;
+
+    while (!((mHasMoovBox &amp;&amp; sawMoovOrSidx &amp;&amp; (mMdatFound || mMoofFound)) ||
+             (mIsHeif &amp;&amp; (mPreferHeif || !mHasMoovBox) &amp;&amp;
+                     (mItemTable != NULL) &amp;&amp; mItemTable-&gt;isValid()))) {
+        off64_t orig_offset = offset;
+        err = parseChunk(&amp;offset, 0);
+
+        if (err != OK &amp;&amp; err != UNKNOWN_ERROR) {
+            break;
+        } else if (offset &lt;= orig_offset) {
+            // only continue parsing if the offset was advanced,
+            // otherwise we might end up in an infinite loop
+            ALOGE("did not advance: %lld-&gt;%lld", (long long)orig_offset, (long long)offset);
+            err = ERROR_MALFORMED;
+            break;
+        } else if (err == UNKNOWN_ERROR) {
+            sawMoovOrSidx = true;
+        }
+    }
+
+    if ((mIsAvif || mIsHeif) &amp;&amp; (mItemTable != NULL) &amp;&amp; (mItemTable-&gt;countImages() &gt; 0)) {
+        //avif/heif图片相关处理，省略
+    }
+
+    if (mInitCheck == OK) {
+        if (findTrackByMimePrefix("video/") != NULL) {
+            AMediaFormat_setString(mFileMetaData,
+                    AMEDIAFORMAT_KEY_MIME, MEDIA_MIMETYPE_CONTAINER_MPEG4);
+        } else if (findTrackByMimePrefix("audio/") != NULL) {
+            AMediaFormat_setString(mFileMetaData,
+                    AMEDIAFORMAT_KEY_MIME, "audio/mp4");
+        } else if (findTrackByMimePrefix(
+                MEDIA_MIMETYPE_IMAGE_ANDROID_HEIC) != NULL) {
+            AMediaFormat_setString(mFileMetaData,
+                    AMEDIAFORMAT_KEY_MIME, MEDIA_MIMETYPE_CONTAINER_HEIF);
+        } else if (findTrackByMimePrefix(
+                MEDIA_MIMETYPE_IMAGE_AVIF) != NULL) {
+            AMediaFormat_setString(mFileMetaData,
+                    AMEDIAFORMAT_KEY_MIME, MEDIA_MIMETYPE_IMAGE_AVIF);
+        } else {
+            AMediaFormat_setString(mFileMetaData,
+                    AMEDIAFORMAT_KEY_MIME, "application/octet-stream");
+        }
+    } else {
+        mInitCheck = err;
+    }
+
+    CHECK_NE(err, (status_t)NO_INIT);
+
+    // copy pssh data into file metadata
+    //pssh DRM解密相关处理，省略
+
+    return mInitCheck;
+}</code></pre> 
+<p>这里的主体内容就是那个while循环以及循环内的parseChunk()函数。这个parseChunk()的命名感觉不太合适，个人觉得改成parseBox()更好，不容易引起初学者的误解（我刚学的时候乍一看以为是media data中的chunk概念）。</p> 
+<p>parseChunk()方法很长，这里就不贴了，简单解释以下它的功能：</p> 
+<blockquote> 
+ <p>它是一个递归函数，在外层while循环里会从MP4文件的开头开始启动parseChunk()函数去依次解析文件中的每个box，如果这个box是一个container box，那么它就会去递归的解析下一级的box直到没有更下一级的box为止。解析出来的信息会保存到MPEG4Extractor的变量中。</p> 
+</blockquote> 
+<p>说一句题外话，大家学习的时候如果能下载到对应视频格式解析软件，最好还是下载一个。我这里用的是“MP4 Inspector”软件。实际做extractor开发和维护工作还是需要诸多的spec来支撑的。</p> 
+<p>用这个软件打开我用的MP4文件的信息可以很清晰的看到如下内容：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/aa/1b/Bcx9hpQ1_o.png"></p> 
+<p>返回正文，parseChunk()方法读取文件的功能则是通过mDataSource-&gt;readAt()来做到的，实际就是调用上文中创建的FileSource去读取。</p> 
+<p>第二部分到这里就分析结束了。AnotherPacketSource的内容在本节暂不展开了，等后续学习完了在其他章节解读。</p> 
+<p>在开始讲解第三部分之前，简单提一下notifyVideoSizeChanged()和notifyFlagsChanged()这两个方法。</p> 
+<ul><li>notifyVideoSizeChanged()是将从视频文件中读取到的video的width和height通知到NuPlayer中去。</li><li>notifyFlagsChanged()是将FLAG_CAN_PAUSE/FLAG_CAN_SEEK_BACKWARD/FLAG_CAN_SEEK_FORWARD/FLAG_CAN_SEEK这四个flags通知到NuPlayer中去并保存到mPlayerFlags中。在java层会调用getMetadata()接口时在NuPlayer中会根据mPlayerFlags构造成一个Metadata返回。</li></ul> 
+<h3>finishPrepareAsync()</h3> 
+<pre><code class="language-cpp">//frameworks/av/media/libmediaplayerservice/nuplayer/GenericSource.cpp
+void NuPlayer::GenericSource::finishPrepareAsync() {
+    ALOGV("finishPrepareAsync");
+
+    status_t err = startSources();
+    if (err != OK) {
+        ALOGE("Failed to init start data source!");
+        notifyPreparedAndCleanup(err);
+        return;
+    }
+
+    if (mIsStreaming) {
+        mCachedSource-&gt;resumeFetchingIfNecessary();
+        mPreparing = true;
+        schedulePollBuffering();
+    } else {
+        notifyPrepared();
+    }
+
+    if (mAudioTrack.mSource != NULL) {
+        postReadBuffer(MEDIA_TRACK_TYPE_AUDIO);
+    }
+
+    if (mVideoTrack.mSource != NULL) {
+        postReadBuffer(MEDIA_TRACK_TYPE_VIDEO);
+    }
+}
+
+status_t NuPlayer::GenericSource::startSources() {
+    // Start the selected A/V tracks now before we start buffering.
+    // Widevine sources might re-initialize crypto when starting, if we delay
+    // this to start(), all data buffered during prepare would be wasted.
+    // (We don't actually start reading until start().)
+    //
+    // TODO: this logic may no longer be relevant after the removal of widevine
+    // support
+
+    if (mAudioTrack.mSource != NULL &amp;&amp; mAudioTrack.mSource-&gt;start() != OK) {
+        ALOGE("failed to start audio track!");
+        return UNKNOWN_ERROR;
+    }
+
+    if (mVideoTrack.mSource != NULL &amp;&amp; mVideoTrack.mSource-&gt;start() != OK) {
+        ALOGE("failed to start video track!");
+        return UNKNOWN_ERROR;
+    }
+
+    return OK;
+}</code></pre> 
+<p>这里主要关注两个函数：startSources()和postReadBuffer()。由于篇幅原因，不再展开code。直接文字简要描述他俩的功能：</p> 
+<ul><li>startSources()：看名字是start，其实还没有start起来。这里主要是在分配、创建MediaBuffer并加入管理。</li><li>postReadBuffer()：这个才是真正开始从视频文件中读取media data的地方。</li></ul> 
+<h3>总结</h3> 
+<p>onPrepareAsync() 函数到这里结束，主要内容基本都过了一遍，暂时还缺少了MediaBuffer的部分没有涉及到。下面还是老规矩，以图的方式总结下本节的内容：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/8f/f2/ikoOeE5x_o.jpg"></p> 
+<p style="text-align:center;">图一 onPrepareAsync()执行流程</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/0c/51/VuO9hNY0_o.jpg"></p> 
+<p style="text-align:center;">图二 MP4 extractor关系架构图</p> 
+<p>看代码感觉还没那么强烈，但是从图二的架构图来看，就可以看出设计NuPlayer这个架构的架构师太牛了。图中绿色方框框起来的是MP4 extractor自己实现的内容，其他extractor也是按照这种方式去替换方框中的实现即可。这种plugin的设计模式太溜了。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/74/1d/kXGaHyck_o.jpg"></p> 
+<p style="text-align:center;">图三 mp4常见组成box示意图</p> 
+<p>图三是我简单查看spec稍微画的一个示意图，只画了常见的一些内容，并不专业和正确，只是方便我自己回顾。</p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a0a46f3f351785f7a09612ae1b61eca6/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">报错：python扩展中的调试器不再支持小于3.7的python版本（debugpy）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7cc926e8fda23cf0fcc24dc0327c63d0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">机器学习库实战：DL4J与Weka在Java中的应用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

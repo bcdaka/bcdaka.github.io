@@ -1,0 +1,379 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Flink作业执行之 1.DataStream和Transformation - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/9d348e316cbd51d170a03a54aa1f925a/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Flink作业执行之 1.DataStream和Transformation">
+  <meta property="og:description" content="Flink作业执行之 1.DataStream和Transformation 1. 滥觞 在使用Flink完成业务功能之余，有必要了解下我们的任务是如何跑起来的。知其然，知其所以然。
+既然重点是学习应用程序如何跑起来，那么应用程序的内容不重要，越简单越好。
+WordCount示例作为学习数据引擎时hello word程序，再合适不过。接下来便以任务执行顺序为线索开启对源码逐步学习。
+public class WordCount { public static void main(String[] args) throws Exception { // 初始化执行环境 Configuration configuration = new Configuration(); configuration.setString(&#34;rest.port&#34;, &#34;9091&#34;); StreamExecutionEnvironment env = StreamExecutionEnvironment.createLocalEnvironmentWithWebUI(configuration); env.setParallelism(1); // 业务逻辑转换 DataStream&lt;String&gt; text = env.fromCollection(Arrays.asList(&#34;zhangsan&#34;, &#34;lisi&#34;, &#34;wangwu&#34;, &#34;zhangsan&#34;)).name(&#34;zl-source&#34;); DataStream&lt;Tuple2&lt;String, Integer&gt;&gt; counts = text.map(row -&gt; Tuple2.of(row, 1)) .returns(Types.TUPLE(Types.STRING, Types.INT)) .keyBy(value -&gt; value.f0) .sum(1) .name(&#34;counter&#34;); counts.print().name(&#34;print-sink&#34;); // 执行应用程序 env.execute(&#34;WordCount&#34;); } } 为了使示例代码足够纯粹（直接复制粘贴后即可跑起来的那种），因此在示例中直接使用List数据作为Source。
+最后，计划将自己学习的过程以系列文档的形式作为记录。同时作为自己学习过程的记录，可能存在错误或片面理解，欢迎一起讨论。
+2. 头疼的“角色” 在学习源码或查阅资料的同时，以下单词（但不限于）一定会频繁出现，它们或者直接对应flink源码中的接口、类名，或者是一些概念名称。初次看到难免让人抓狂。现在先对这些单词混个脸熟。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-14T13:21:08+08:00">
+    <meta property="article:modified_time" content="2024-06-14T13:21:08+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Flink作业执行之 1.DataStream和Transformation</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="Flink_1DataStreamTransformation_0"></a>Flink作业执行之 1.DataStream和Transformation</h2> 
+<h3><a id="1__2"></a>1. 滥觞</h3> 
+<p>在使用Flink完成业务功能之余，有必要了解下我们的任务是如何跑起来的。知其然，知其所以然。</p> 
+<p>既然重点是学习应用程序如何跑起来，那么应用程序的内容不重要，越简单越好。<br> WordCount示例作为学习数据引擎时hello word程序，再合适不过。接下来便以任务执行顺序为线索开启对源码逐步学习。</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">WordCount</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 初始化执行环境</span>
+        <span class="token class-name">Configuration</span> configuration <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">Configuration</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        configuration<span class="token punctuation">.</span><span class="token function">setString</span><span class="token punctuation">(</span><span class="token string">"rest.port"</span><span class="token punctuation">,</span> <span class="token string">"9091"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">StreamExecutionEnvironment</span> env <span class="token operator">=</span> <span class="token class-name">StreamExecutionEnvironment</span><span class="token punctuation">.</span><span class="token function">createLocalEnvironmentWithWebUI</span><span class="token punctuation">(</span>configuration<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        env<span class="token punctuation">.</span><span class="token function">setParallelism</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 业务逻辑转换</span>
+        <span class="token class-name">DataStream</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">&gt;</span></span> text <span class="token operator">=</span> env<span class="token punctuation">.</span><span class="token function">fromCollection</span><span class="token punctuation">(</span><span class="token class-name">Arrays</span><span class="token punctuation">.</span><span class="token function">asList</span><span class="token punctuation">(</span><span class="token string">"zhangsan"</span><span class="token punctuation">,</span> <span class="token string">"lisi"</span><span class="token punctuation">,</span> <span class="token string">"wangwu"</span><span class="token punctuation">,</span> <span class="token string">"zhangsan"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">name</span><span class="token punctuation">(</span><span class="token string">"zl-source"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">DataStream</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Tuple2</span><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">Integer</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> counts <span class="token operator">=</span> text<span class="token punctuation">.</span><span class="token function">map</span><span class="token punctuation">(</span>row <span class="token operator">-&gt;</span> <span class="token class-name">Tuple2</span><span class="token punctuation">.</span><span class="token function">of</span><span class="token punctuation">(</span>row<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">returns</span><span class="token punctuation">(</span><span class="token class-name">Types</span><span class="token punctuation">.</span><span class="token function">TUPLE</span><span class="token punctuation">(</span><span class="token class-name">Types</span><span class="token punctuation">.</span><span class="token constant">STRING</span><span class="token punctuation">,</span> <span class="token class-name">Types</span><span class="token punctuation">.</span><span class="token constant">INT</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">keyBy</span><span class="token punctuation">(</span>value <span class="token operator">-&gt;</span> value<span class="token punctuation">.</span>f0<span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">sum</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+                <span class="token punctuation">.</span><span class="token function">name</span><span class="token punctuation">(</span><span class="token string">"counter"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        counts<span class="token punctuation">.</span><span class="token function">print</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">name</span><span class="token punctuation">(</span><span class="token string">"print-sink"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 执行应用程序</span>
+        env<span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token string">"WordCount"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>为了使示例代码足够纯粹（直接复制粘贴后即可跑起来的那种），因此在示例中直接使用List数据作为Source。</p> 
+<p>最后，计划将自己学习的过程以系列文档的形式作为记录。同时作为自己学习过程的记录，可能存在错误或片面理解，欢迎一起讨论。</p> 
+<h3><a id="2__37"></a>2. 头疼的“角色”</h3> 
+<p>在学习源码或查阅资料的同时，以下单词（但不限于）一定会频繁出现，它们或者直接对应flink源码中的接口、类名，或者是一些概念名称。初次看到难免让人抓狂。现在先对这些单词混个脸熟。</p> 
+<p>Client<br> JobManager/JobMaster<br> TaskManager/TaskExecutor<br> Transformation<br> StreamOperator<br> StreamGraph<br> JobGraph<br> ExecutionGraph<br> Task<br> StreamTask<br> ……</p> 
+<h3><a id="3__53"></a>3. 宏观视角</h3> 
+<p>当任务开始执行后，便可以在WebUI上查看其对应的物理执行拓扑，即Task DAG。从我们编写的应用程序代码到Task DAG势必经历了复杂的解析转换操作，这个过程大体如下所示。</p> 
+<p><img src="https://images2.imgbox.com/1c/8e/ZhJcAD7H_o.png" alt="在这里插入图片描述"></p> 
+<p>我们编写的应用程序代码首先会转化为Transformation，该实例将作为Flink世界中的起点，开启了之后一系列“旅程”。</p> 
+<h3><a id="4_envexecute_62"></a>4. <code>env.execute()</code>方法做了什么？</h3> 
+<p>在使用DataStream API编写应用程序时，无论业务逻辑如何如何的复杂，但整体结构大致由三部分构成，即</p> 
+<pre><code class="prism language-java"><span class="token comment">// 1.初始化执行环境</span>
+<span class="token class-name">StreamExecutionEnvironment</span> env <span class="token operator">=</span> <span class="token punctuation">;</span>
+<span class="token comment">// 2.业务逻辑转换，即一系列的DataStream转化</span>
+<span class="token class-name">DataStream</span> source <span class="token operator">=</span> <span class="token punctuation">;</span>
+<span class="token comment">// 3.env.execute()</span>
+env<span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>既然最后必须执行 <code>env.execute()</code>方法，那么首先了解下execute都执行了那些操作。</p> 
+<p>基于1.16版本的源码，并只保留了源码中的关键逻辑。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 方法1</span>
+<span class="token keyword">public</span> <span class="token class-name">JobExecutionResult</span> <span class="token function">execute</span><span class="token punctuation">(</span><span class="token class-name">String</span> jobName<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">final</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Transformation</span><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> originalTransformations <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ArrayList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>transformations<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 生成StreamGraph，最终调用方法4，通过StreamGraphGenerator生成StreamGraph</span>
+    <span class="token class-name">StreamGraph</span> streamGraph <span class="token operator">=</span> <span class="token function">getStreamGraph</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// ...</span>
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 调用方法2</span>
+        <span class="token keyword">return</span> <span class="token function">execute</span><span class="token punctuation">(</span>streamGraph<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> t<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// ...</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+<span class="token comment">// 方法2</span>
+<span class="token keyword">public</span> <span class="token class-name">JobExecutionResult</span> <span class="token function">execute</span><span class="token punctuation">(</span><span class="token class-name">StreamGraph</span> streamGraph<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 调用方法3，通过StreamGraph最终得到JobClient</span>
+    <span class="token keyword">final</span> <span class="token class-name">JobClient</span> jobClient <span class="token operator">=</span> <span class="token function">executeAsync</span><span class="token punctuation">(</span>streamGraph<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">final</span> <span class="token class-name">JobExecutionResult</span> jobExecutionResult<span class="token punctuation">;</span>
+        <span class="token comment">// ...</span>
+        jobListeners<span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span>
+                jobListener <span class="token operator">-&gt;</span> jobListener<span class="token punctuation">.</span><span class="token function">onJobExecuted</span><span class="token punctuation">(</span>jobExecutionResult<span class="token punctuation">,</span> <span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> jobExecutionResult<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> t<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// ...</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+<span class="token comment">// 方法3</span>
+<span class="token keyword">public</span> <span class="token class-name">JobClient</span> <span class="token function">executeAsync</span><span class="token punctuation">(</span><span class="token class-name">StreamGraph</span> streamGraph<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">Exception</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 根据启动环境，得到对应环境的Executor实现</span>
+    <span class="token comment">// 如miniCluster环境则对应LocalExecutor</span>
+    <span class="token keyword">final</span> <span class="token class-name">PipelineExecutor</span> executor <span class="token operator">=</span> <span class="token function">getPipelineExecutor</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 在具体的executor.execute方法中，将StreamGraph先转化成JobGraph，在将JobGraph提交到JobManager中</span>
+    <span class="token class-name">CompletableFuture</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">JobClient</span><span class="token punctuation">&gt;</span></span> jobClientFuture <span class="token operator">=</span>
+            executor<span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span>streamGraph<span class="token punctuation">,</span> configuration<span class="token punctuation">,</span> userClassloader<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">JobClient</span> jobClient <span class="token operator">=</span> jobClientFuture<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        jobListeners<span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span>jobListener <span class="token operator">-&gt;</span> jobListener<span class="token punctuation">.</span><span class="token function">onJobSubmitted</span><span class="token punctuation">(</span>jobClient<span class="token punctuation">,</span> <span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        collectIterators<span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span>iterator <span class="token operator">-&gt;</span> iterator<span class="token punctuation">.</span><span class="token function">setJobClient</span><span class="token punctuation">(</span>jobClient<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        collectIterators<span class="token punctuation">.</span><span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> jobClient<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">ExecutionException</span> executionException<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// ...</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+<span class="token comment">// 方法4</span>
+<span class="token keyword">private</span> <span class="token class-name">StreamGraph</span> <span class="token function">getStreamGraph</span><span class="token punctuation">(</span><span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Transformation</span><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> transformations<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">synchronizeClusterDatasetStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 根据Transformation生成StreamGraph</span>
+    <span class="token keyword">return</span> <span class="token function">getStreamGraphGenerator</span><span class="token punctuation">(</span>transformations<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">generate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>通过上述源码调用链可以，完成从<code>DataStream API-&gt;Transformation-&gt;StreamGraph-&gt;JobGraph</code>的转化。最后将JobGraph提交到了JobManager中并，执行后续操作。</p> 
+<p>从上述方法4<code>getStreamGraph(List&lt;Transformation&lt;?&gt;&gt; transformations)</code>可知，StreamGraph由Transformation演变而来，此处不禁会产生一个新的疑问，Transformation又从何而来？</p> 
+<p>WordCount示例代码中并没有与Transformation直接相关的代码。通过查看getSreamGraph方法的完成调用链可知其入参直接来自是StreamExecutionEnvironment类中的<code>transformations</code>成员属性值。在应用程序第一步便生成了StreamExecutionEnvironment的实例，接下来通过env得到DataStream并进行了一系列的转化操作，而在最后的execute方法中便已直接使用<code>transformations</code>属性值了，那么该属性中一定是前面2个过程中实际赋值的。</p> 
+<pre><code class="prism language-java"><span class="token keyword">protected</span> <span class="token keyword">final</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Transformation</span><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span><span class="token punctuation">&gt;</span></span> transformations <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ArrayList</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="5_Transformation_143"></a>5. Transformation何时生成？</h3> 
+<p>从StreamExecutionEnvironment的源码中可知，<code>transformations</code>属性只有addOperator方法会执行集合的add操作，其余地方均为集合的get操作。<br> 然而addOperator方法有诸多调用方，且均为其他类中的调用，继续往上查看调用方有些困难，因此这里暂时记下addOperator方法唯一对<code>transformations</code>集合中执行add操作的结论。</p> 
+<pre><code class="prism language-java"><span class="token comment">// 该方法不适合用户使用。创建operator的api方法必须调用此方法</span>
+<span class="token annotation punctuation">@Internal</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">addOperator</span><span class="token punctuation">(</span><span class="token class-name">Transformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span> transformation<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">Preconditions</span><span class="token punctuation">.</span><span class="token function">checkNotNull</span><span class="token punctuation">(</span>transformation<span class="token punctuation">,</span> <span class="token string">"transformation must not be null."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">this</span><span class="token punctuation">.</span>transformations<span class="token punctuation">.</span><span class="token function">add</span><span class="token punctuation">(</span>transformation<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>通过查看StreamExecutionEnvironment实例的创建过程，可以发现在创建过程中并无transformations的add操作，因此是在DataStream转换操作中对transformations执行了add操作。</p> 
+<h4><a id="51_DataStream_159"></a>5.1. DataStream</h4> 
+<p>在Flink中使用DataStream表示数据流。其仅用于表达业务转化逻辑，实际上并没有真正的存储数据。</p> 
+<p>DataSteam是顶层封装类，其子类如下</p> 
+<p><img src="https://images2.imgbox.com/41/76/NyHkxvM1_o.png" alt="在这里插入图片描述"><br> DataStream类中只有两个成员属性，分别是StreamExecutionEnvironment和Transformation，并在构造方法中对其进行初始化。因此实例化DataStream的同时除执行环境外，还必须传入Transformation的实例。</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">DataStream</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">protected</span> <span class="token keyword">final</span> <span class="token class-name">StreamExecutionEnvironment</span> environment<span class="token punctuation">;</span>
+    <span class="token keyword">protected</span> <span class="token keyword">final</span> <span class="token class-name">Transformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> transformation<span class="token punctuation">;</span>
+
+    <span class="token keyword">public</span> <span class="token class-name">DataStream</span><span class="token punctuation">(</span><span class="token class-name">StreamExecutionEnvironment</span> environment<span class="token punctuation">,</span> <span class="token class-name">Transformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> transformation<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>environment <span class="token operator">=</span>
+                <span class="token class-name">Preconditions</span><span class="token punctuation">.</span><span class="token function">checkNotNull</span><span class="token punctuation">(</span>environment<span class="token punctuation">,</span> <span class="token string">"Execution Environment must not be null."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">this</span><span class="token punctuation">.</span>transformation <span class="token operator">=</span>
+                <span class="token class-name">Preconditions</span><span class="token punctuation">.</span><span class="token function">checkNotNull</span><span class="token punctuation">(</span>
+                        transformation<span class="token punctuation">,</span> <span class="token string">"Stream Transformation must not be null."</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// ...</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>回到WordCount示例代码中，从集合到DataStream的过程，封装示意如下。</p> 
+<p><img src="https://images2.imgbox.com/92/c8/P7Ko9yvq_o.png" alt="在这里插入图片描述"></p> 
+<p>注意，Transformation中并不是直接持有了AbstractUdfStreamOperator的引用，而是对应的工厂。</p> 
+<p>源码中关键步骤如下</p> 
+<pre><code class="prism language-java"><span class="token comment">// 步骤1，从List到Function</span>
+<span class="token keyword">public</span> <span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">&gt;</span></span> <span class="token class-name">DataStreamSource</span><span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">&gt;</span></span> <span class="token function">fromCollection</span><span class="token punctuation">(</span>
+        <span class="token class-name">Collection</span><span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">&gt;</span></span> data<span class="token punctuation">,</span> <span class="token class-name">TypeInformation</span><span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">&gt;</span></span> typeInfo<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// ...</span>
+    <span class="token comment">// 创建SourceFunction实例，SourceFunction是Function的实现</span>
+    <span class="token class-name">SourceFunction</span><span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">&gt;</span></span> function <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">FromElementsFunction</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token function">addSource</span><span class="token punctuation">(</span>function<span class="token punctuation">,</span> <span class="token string">"Collection Source"</span><span class="token punctuation">,</span> typeInfo<span class="token punctuation">,</span> <span class="token class-name">Boundedness</span><span class="token punctuation">.</span><span class="token constant">BOUNDED</span><span class="token punctuation">)</span>
+            <span class="token punctuation">.</span><span class="token function">setParallelism</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">// 步骤2，从Function到StreamOperator</span>
+<span class="token keyword">private</span> <span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">&gt;</span></span> <span class="token class-name">DataStreamSource</span><span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">&gt;</span></span> <span class="token function">addSource</span><span class="token punctuation">(</span>
+        <span class="token keyword">final</span> <span class="token class-name">SourceFunction</span><span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">&gt;</span></span> function<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">String</span> sourceName<span class="token punctuation">,</span>
+        <span class="token annotation punctuation">@Nullable</span> <span class="token keyword">final</span> <span class="token class-name">TypeInformation</span><span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">&gt;</span></span> typeInfo<span class="token punctuation">,</span>
+        <span class="token keyword">final</span> <span class="token class-name">Boundedness</span> boundedness<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// ...</span>
+    <span class="token comment">// 创建StreamSource实例，StreamSource是AbstractUdfStreamOperator的子类，Flink中算子的表示</span>
+    <span class="token keyword">final</span> <span class="token class-name">StreamSource</span><span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">,</span> <span class="token operator">?</span><span class="token punctuation">&gt;</span></span> sourceOperator <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">StreamSource</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>function<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">DataStreamSource</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>
+            <span class="token keyword">this</span><span class="token punctuation">,</span> resolvedTypeInfo<span class="token punctuation">,</span> sourceOperator<span class="token punctuation">,</span> isParallel<span class="token punctuation">,</span> sourceName<span class="token punctuation">,</span> boundedness<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">// 步骤3，从StreamOperator到Transformation，再到DataStream</span>
+<span class="token keyword">public</span> <span class="token class-name">DataStreamSource</span><span class="token punctuation">(</span>
+        <span class="token class-name">StreamExecutionEnvironment</span> environment<span class="token punctuation">,</span>
+        <span class="token class-name">TypeInformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> outTypeInfo<span class="token punctuation">,</span>
+        <span class="token class-name">StreamSource</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">,</span> <span class="token operator">?</span><span class="token punctuation">&gt;</span></span> operator<span class="token punctuation">,</span>
+        <span class="token keyword">boolean</span> isParallel<span class="token punctuation">,</span>
+        <span class="token class-name">String</span> sourceName<span class="token punctuation">,</span>
+        <span class="token class-name">Boundedness</span> boundedness<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">super</span><span class="token punctuation">(</span>
+            environment<span class="token punctuation">,</span>
+            <span class="token comment">// 创建Transformation实例,Transformation是PhysicalTransformation的子类</span>
+            <span class="token keyword">new</span> <span class="token class-name">LegacySourceTransformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>
+                    sourceName<span class="token punctuation">,</span>
+                    <span class="token comment">// 将StreamSource封装到Transformation中</span>
+                    operator<span class="token punctuation">,</span>
+                    outTypeInfo<span class="token punctuation">,</span>
+                    environment<span class="token punctuation">.</span><span class="token function">getParallelism</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+                    boundedness<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// ...</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>继续查看DataStream的map操作可以可以发现，核心流程和上述由集合创建DataStream的过程基本一致：</p> 
+<ul><li>首先创建Function实例</li><li>其次由Function实例创建AbstractUdfStreamOperator实例</li><li>然后将AbstractUdfStreamOperator实例封装到Transformation实例中</li><li>最后由Transformation和StreamExecutionEnvironment实例创建DataStream实例</li></ul> 
+<p>不同之处在于，map操作最后将得到的PhysicalTransformation实例添加到StreamExecutionEnvironment实例中的transformations集合中去了。这点差异其实和Transformation实例表示的含义有关，放在文章末尾解释。</p> 
+<pre><code class="prism language-java"><span class="token keyword">protected</span> <span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">R</span><span class="token punctuation">&gt;</span></span> <span class="token class-name">SingleOutputStreamOperator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">R</span><span class="token punctuation">&gt;</span></span> <span class="token function">doTransform</span><span class="token punctuation">(</span>
+        <span class="token class-name">String</span> operatorName<span class="token punctuation">,</span>
+        <span class="token class-name">TypeInformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">R</span><span class="token punctuation">&gt;</span></span> outTypeInfo<span class="token punctuation">,</span>
+        <span class="token class-name">StreamOperatorFactory</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">R</span><span class="token punctuation">&gt;</span></span> operatorFactory<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// ...</span>
+    <span class="token class-name">OneInputTransformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">,</span> <span class="token class-name">R</span><span class="token punctuation">&gt;</span></span> resultTransform <span class="token operator">=</span>
+            <span class="token keyword">new</span> <span class="token class-name">OneInputTransformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span>
+                    <span class="token keyword">this</span><span class="token punctuation">.</span>transformation<span class="token punctuation">,</span>
+                    operatorName<span class="token punctuation">,</span>
+                    operatorFactory<span class="token punctuation">,</span>
+                    outTypeInfo<span class="token punctuation">,</span>
+                    environment<span class="token punctuation">.</span><span class="token function">getParallelism</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name">SingleOutputStreamOperator</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">R</span><span class="token punctuation">&gt;</span></span> returnStream <span class="token operator">=</span>
+            <span class="token keyword">new</span> <span class="token class-name">SingleOutputStreamOperator</span><span class="token punctuation">(</span>environment<span class="token punctuation">,</span> resultTransform<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 区别：添加Transformation到StreamExecutionEnvironment中</span>
+    <span class="token function">getExecutionEnvironment</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">addOperator</span><span class="token punctuation">(</span>resultTransform<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> returnStream<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>但并不是全部的DataStream转化操作都需要经历上述将Function实例封装成AbstractUdfStreamOperator实例，然后将AbstractUdfStreamOperator实例封装到PhysicalTransformation实例的过程。如示例代码中的keyBy和sum操作。其中keyBy并未直接涉及Function，而sum操作直接将得到的SumAggregator函数实例封装到了ReduceTransformation实例中，然后由ReduceTransformation实例得到DataStream实例。</p> 
+<h4><a id="52_Transformation_274"></a>5.2. Transformation</h4> 
+<p>DataStream面向开发者，而Transformation面向flink内核。<br> 每个DataStream实例中都包含一个Transformation实例，表示当前Datastream从上游的DataStream使用该Transformation而来。而所有DataStream中Transformation又都添加到了StreamExecutionEnvironment实例中的transformations集合中去，用于接下来的StreamGraph实例的生成。<br> Transformation中记录了上游的数据来源，但其并关心数据的物理来源、序列化、转发等问题。</p> 
+<p>Transformatio是顶层抽象类，有众多的子类，涵盖了DataStream的所有转换，其直接子类如下，可以分为两大类</p> 
+<ul><li>PhysicalTransformation，将会转换成后续graph中节点信息</li><li>非PhysicalTransformation，将会转换成后续graph中的边信息</li></ul> 
+<p><img src="https://images2.imgbox.com/04/0a/6BAk7dmz_o.png" alt="在这里插入图片描述"><br> Transformation中属性如下所示，其中<code>Optional&lt;SlotSharingGroup&gt;</code>表示共享槽位信息，只有开启了允许共享槽位后，该属性才会被设置值。</p> 
+<p>其构造方法如下，除name外还需要输出类型和并行度两个参数。</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token class-name">Transformation</span><span class="token punctuation">(</span><span class="token class-name">String</span> name<span class="token punctuation">,</span> <span class="token class-name">TypeInformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> outputType<span class="token punctuation">,</span> <span class="token keyword">int</span> parallelism<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">this</span><span class="token punctuation">.</span>id <span class="token operator">=</span> <span class="token function">getNewNodeId</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">this</span><span class="token punctuation">.</span>name <span class="token operator">=</span> <span class="token class-name">Preconditions</span><span class="token punctuation">.</span><span class="token function">checkNotNull</span><span class="token punctuation">(</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">this</span><span class="token punctuation">.</span>outputType <span class="token operator">=</span> outputType<span class="token punctuation">;</span>
+    <span class="token keyword">this</span><span class="token punctuation">.</span>parallelism <span class="token operator">=</span> parallelism<span class="token punctuation">;</span>
+    <span class="token keyword">this</span><span class="token punctuation">.</span>slotSharingGroup <span class="token operator">=</span> <span class="token class-name">Optional</span><span class="token punctuation">.</span><span class="token function">empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>PhysicalTransformation仅在其父类的基础上增加了设置ChainingStrategy的方法，用于表示生成算子链的策略。</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Internal</span>
+<span class="token keyword">public</span> <span class="token keyword">abstract</span> <span class="token keyword">class</span> <span class="token class-name">PhysicalTransformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> <span class="token keyword">extends</span> <span class="token class-name">Transformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+    <span class="token class-name">PhysicalTransformation</span><span class="token punctuation">(</span><span class="token class-name">String</span> name<span class="token punctuation">,</span> <span class="token class-name">TypeInformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> outputType<span class="token punctuation">,</span> <span class="token keyword">int</span> parallelism<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">super</span><span class="token punctuation">(</span>name<span class="token punctuation">,</span> outputType<span class="token punctuation">,</span> parallelism<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">/** Sets the chaining strategy of this {@code Transformation}. */</span>
+    <span class="token keyword">public</span> <span class="token keyword">abstract</span> <span class="token keyword">void</span> <span class="token function">setChainingStrategy</span><span class="token punctuation">(</span><span class="token class-name">ChainingStrategy</span> strategy<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>PhysicalTransformation中有众多的实现子类，全部子类继承关系如下。</p> 
+<p><img src="https://images2.imgbox.com/e1/76/XkUPBIk1_o.png" alt="在这里插入图片描述"><br> 其中以下几个子类出场频率相对更高一些，其他子类只有我们的业务逻辑比较复杂时才会用到。</p> 
+<ul><li><code>LegacySourceTransformation</code> 表示Source的Transformation</li><li><code>LegacySinkTransformation</code> 表示Sink的Transformation</li><li><code>SourceTransformation</code></li><li><code>SinkTransformation</code></li><li><code>OneInputTransformation</code> 表示单个输入流的Transformation，如常见的map、flatMap、fliter等</li><li><code>TwoInputTransformation</code> 表示两个输入流的Transformation，如concat</li></ul> 
+<p>疑问：为什么Source和Sink都各自分别有两个Transformation子类？<br> 通过名称也可以看出一些端倪，新老两种实现。<br> 在1.14版本之前，分别通过<code>env.addSource(SourceFunction)</code>和<code>DataStream.addSink(SinkFunction)</code>方法生成source和sink<br> 从1.14版本开始新增了<code>env.fromSource(Source)</code>和<code>DataStream.sinkTo(Sink)</code>的方式生成source和sink。<br> 新旧方法中入参类型不同，因此导致了两种不同的Transformation实现，从各自的实现类中也可以体现这一点，如下所示。</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">LegacySourceTransformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> <span class="token keyword">extends</span> <span class="token class-name">PhysicalTransformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span>
+        <span class="token keyword">implements</span> <span class="token class-name">WithBoundedness</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// sourceFunction的引用</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">StreamOperatorFactory</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> operatorFactory<span class="token punctuation">;</span>
+    <span class="token comment">// ...</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">SourceTransformation</span><span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">,</span> <span class="token class-name">SplitT</span> <span class="token keyword">extends</span> <span class="token class-name">SourceSplit</span><span class="token punctuation">,</span> <span class="token class-name">EnumChkT</span><span class="token punctuation">&gt;</span></span>
+        <span class="token keyword">extends</span> <span class="token class-name">PhysicalTransformation</span><span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">&gt;</span></span> <span class="token keyword">implements</span> <span class="token class-name">WithBoundedness</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// source的引用</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">Source</span><span class="token generics"><span class="token punctuation">&lt;</span>OUT<span class="token punctuation">,</span> <span class="token class-name">SplitT</span><span class="token punctuation">,</span> <span class="token class-name">EnumChkT</span><span class="token punctuation">&gt;</span></span> source<span class="token punctuation">;</span>
+    <span class="token comment">// ...</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">LegacySinkTransformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> <span class="token keyword">extends</span> <span class="token class-name">PhysicalTransformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">Transformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> input<span class="token punctuation">;</span>
+    <span class="token comment">// sinkFunction的引用</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">StreamOperatorFactory</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">Object</span><span class="token punctuation">&gt;</span></span> operatorFactory<span class="token punctuation">;</span>
+    <span class="token comment">// ...</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">SinkTransformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">InputT</span><span class="token punctuation">,</span> <span class="token class-name">OutputT</span><span class="token punctuation">&gt;</span></span> <span class="token keyword">extends</span> <span class="token class-name">PhysicalTransformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">OutputT</span><span class="token punctuation">&gt;</span></span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">DataStream</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">InputT</span><span class="token punctuation">&gt;</span></span> inputStream<span class="token punctuation">;</span>
+    <span class="token comment">// sink的引用</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">Sink</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">InputT</span><span class="token punctuation">&gt;</span></span> sink<span class="token punctuation">;</span>
+    <span class="token keyword">private</span> <span class="token keyword">final</span> <span class="token class-name">Transformation</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">InputT</span><span class="token punctuation">&gt;</span></span> input<span class="token punctuation">;</span>
+    <span class="token comment">// ...</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>Source作为整个数据流的头部，不存在上游，因此其Transformation实现中没有上游Transformation的引用，除此之外其余的Transformation子类中，均持有一个表示上游Transformation的引用，如上述sink中的input属性。</p> 
+<p>最后解释下，前面提到的为什么没有将表示Source的DataStream中的Transformation加入到env中表示Transformation的集合中，而接下来的转化中，将对应的Transformation加入到了env中。因为Source作为数据源的头部，不会存在上游，而Source作为其他DataSteam的上游，一定会加入到其Transformation的input中，因此没必要单独将Source的transformation加入到env中。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/dae95a3b6820801471cc6d23e83af6a2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Flink作业执行之 2.算子 StreamOperator</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a8be3fa3107065f943fa99ef44c3f4b0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">云原生化有什么特点？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

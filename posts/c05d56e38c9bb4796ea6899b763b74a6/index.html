@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>CAP理论与ZooKeeper - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/c05d56e38c9bb4796ea6899b763b74a6/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="CAP理论与ZooKeeper">
+  <meta property="og:description" content="ZK遵循的是CP原则，即一致性和分区容错性。
+ZooKeeper也是一种分布式系统，它在一致性上有人认为它提供的是一种强一致性的服务（通过sync操作），也有人认为是单调一致性（更新时的大多说概念），还有人为是最终一致性（顺序一致性），它在分区容错性和可用性上做了一定折中，这和CAP理论是吻合的。
+ZooKeeper从以下几点保证了数据的一致性：
+顺序一致性
+来自任意特定客户端的更新都会按其发送顺序被提交。也就是说，如果一个客户端将Znode z的值更新为a，在之后的操作中，它又将z的值更新为b，则没有客户端能够在看到z的值是b之后再看到值a（如果没有其他对z的更新）。
+原子性
+每个更新要么成功，要么失败。这意味着如果一个更新失败，则不会有客户端会看到这个更新的结果。
+单一系统映像
+一 个客户端无论连接到哪一台服务器，它看到的都是同样的系统视图。这意味着，如果一个客户端在同一个会话中连接到一台新的服务器，它所看到的系统状态不会比 在之前服务器上所看到的更老。当一台服务器出现故障，导致它的一个客户端需要尝试连接集合体中其他的服务器时，所有滞后于故障服务器的服务器都不会接受该 连接请求，除非这些服务器赶上故障服务器。
+持久性
+一个更新一旦成功，其结果就会持久存在并且不会被撤销。这表明更新不会受到服务器故障的影响。
+实时性：在特定的一段时间内，客户端看到的系统需要被保证是实时的（在十几秒的时间里）。在此时间段内，任何系统的改变将被客户端看到，或者被客户端侦测到。
+ZK遵循的是CP原则，即一致性和分区容错性，牺牲了可用性，具体牺牲在哪里呢？
+1、不能保证每次服务请求的可用性。任何时刻对ZooKeeper的访问请求能得到一致的数据结果，同时系统对网络分割具备容错性；但是它不能保证每次服务请求的可用性（注：也就是在极端环境下，ZooKeeper可能会丢弃一些请求，消费者程序需要重新请求才能获得结果）。
+2、当Leader宕机以后，集群机器马上会进去到新的Leader选举中，但是选举时长在30s — 120s之间，这个选取Leader期间，是不提供服务的，不满足可用性。
+经过上面的简单讲解，为什么选举时长，会长达半分钟到2分钟呢？
+当然是为了保证一致性，为了保证集群中各个节点数据的一致性，ZK做了两类数据同步，初始化同步和更新同步。
+1：当新的Leader选举出来后，各个Follower需要将新的Leader的数据同步到自己的缓存中，这就是初始化同步。
+2：当Leader数据被客户端修改后，其会向Follower发出广播，然后各个Follwer会竹筒去同步更新的数据，这是更新同步。
+无论是初始化同步还是更新同步，ZK集群为了保证数据的一致性，若发现超过半数的Follower同步超时，则其会再次进行同步，而这个过程中ZK集群同样出去不可用状态。
+由于ZK采用的是CP原则，所以其可用性降低，这是其致命的问题，Spring Cloud集成的Eureka采用的就是AP原则，牺牲了一致性，但是保证了可用性。
+ZooKeeper提供的一致性服务
+很多文章和博客里提到，zookeeper是一种提供强一致性的服务，在分区容错性和可用性上做了一定折中，这和CAP理论是吻合的。但实际上zookeeper提供的只是单调一致性。
+假设有2n&#43;1个server，在同步流程中，leader向follower同步数据，当同步完成的follower数量大于 n&#43;1时同步流程结束，系统可接受client的连接请求。如果client连接的并非同步完成的follower，那么得到的并非最新数据，但可以保证单调性。
+follower接收写请求后，转发给leader处理；leader完成两阶段提交的机制。向所有server发起提案，当提案获得超过半数（n&#43;1）的server认同后，将对整个集群进行同步，超过半数（n&#43;1）的server同步完成后，该写请求完成。如果client连接的并非同步完成follower，那么得到的并非最新数据，但可以保证单调性。
+用分布式系统的CAP原则来分析Zookeeper
+C: Zookeeper保证了最终一致性,在十几秒可以Sync到各个节点.
+A: Zookeeper保证了可用性,数据总是可用的,没有锁.并且有一大半的节点所拥有的数据是最新的,实时的. 如果想保证取得是数据一定是最新的,需要手工调用Sync()
+P: 有2点需要分析的.
+节点多了会导致写数据延时非常大,因为需要多个节点同步.
+节点多了Leader选举非常耗时, 就会放大网络的问题. 可以通过引入 observer节点缓解这个问题.
+zookeeper的CP特性
+zookeeper在选举leader时，会停止服务，直到选举成功之后才会再次对外提供服务，这个时候就说明了服务不可用，但是在选举成功之后，因为一主多从的结构，zookeeper在这时还是一个高可用注册中心，只是在优先保证一致性的前提下，zookeeper才会顾及到可用性。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2023-05-06T09:46:47+08:00">
+    <meta property="article:modified_time" content="2023-05-06T09:46:47+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">CAP理论与ZooKeeper</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p style="margin-left:0;"><strong>ZK遵循的是CP原则，即一致性和分区容错性。</strong></p> 
+<p style="margin-left:0;">ZooKeeper也是一种分布式系统，它在一致性上有人认为它提供的是一种强一致性的服务（通过sync操作），也有人认为是单调一致性（更新时的大多说概念），还有人为是最终一致性（顺序一致性），它在分区容错性和可用性上做了一定折中，这和CAP理论是吻合的。</p> 
+<p style="margin-left:0;">ZooKeeper从以下几点保证了数据的一致性：</p> 
+<p style="margin-left:0;">顺序一致性</p> 
+<p style="margin-left:0;">来自任意特定客户端的更新都会按其发送顺序被提交。也就是说，如果一个客户端将Znode z的值更新为a，在之后的操作中，它又将z的值更新为b，则没有客户端能够在看到z的值是b之后再看到值a（如果没有其他对z的更新）。</p> 
+<p style="margin-left:0;">原子性</p> 
+<p style="margin-left:0;">每个更新要么成功，要么失败。这意味着如果一个更新失败，则不会有客户端会看到这个更新的结果。</p> 
+<p style="margin-left:0;">单一系统映像</p> 
+<p style="margin-left:0;">一 个客户端无论连接到哪一台服务器，它看到的都是同样的系统视图。这意味着，如果一个客户端在同一个会话中连接到一台新的服务器，它所看到的系统状态不会比 在之前服务器上所看到的更老。当一台服务器出现故障，导致它的一个客户端需要尝试连接集合体中其他的服务器时，所有滞后于故障服务器的服务器都不会接受该 连接请求，除非这些服务器赶上故障服务器。</p> 
+<p style="margin-left:0;">持久性</p> 
+<p style="margin-left:0;">一个更新一旦成功，其结果就会持久存在并且不会被撤销。这表明更新不会受到服务器故障的影响。</p> 
+<p style="margin-left:0;">实时性：在特定的一段时间内，客户端看到的系统需要被保证是实时的（在十几秒的时间里）。在此时间段内，任何系统的改变将被客户端看到，或者被客户端侦测到。</p> 
+<p style="margin-left:0;"><strong>ZK遵循的是CP原则，即一致性和分区容错性，牺牲了可用性，具体牺牲在哪里呢？</strong></p> 
+<p style="margin-left:0;"><strong>1、不能保证每次服务请求的可用性。</strong>任何时刻对ZooKeeper的访问请求能得到一致的数据结果，同时系统对网络分割具备容错性；但是它不能保证每次服务请求的可用性（注：也就是在极端环境下，ZooKeeper可能会丢弃一些请求，消费者程序需要重新请求才能获得结果）。</p> 
+<p style="margin-left:0;">2、当Leader宕机以后，集群机器马上会进去到新的Leader选举中，但是选举时长在30s — 120s之间，这个<strong>选取Leader期间，是不提供服务的，不满足可用性。</strong></p> 
+<p style="margin-left:0;"></p> 
+<p style="margin-left:0;"><strong>经过上面的简单讲解，为什么选举时长，会长达半分钟到2分钟呢？</strong></p> 
+<p style="margin-left:0;">当然是为了保证一致性，为了保证集群中各个节点数据的一致性，ZK做了两类数据同步，初始化同步和更新同步。</p> 
+<p style="margin-left:0;">1：当新的Leader选举出来后，各个Follower需要将新的Leader的数据同步到自己的缓存中，这就是初始化同步。</p> 
+<p style="margin-left:0;">2：当Leader数据被客户端修改后，其会向Follower发出广播，然后各个Follwer会竹筒去同步更新的数据，这是更新同步。</p> 
+<p style="margin-left:0;">无论是初始化同步还是更新同步，ZK集群为了保证数据的一致性，若发现超过半数的Follower同步超时，则其会再次进行同步，而这个过程中ZK集群同样出去不可用状态。</p> 
+<p style="margin-left:0;">由于ZK采用的是CP原则，所以其可用性降低，这是其致命的问题，Spring Cloud集成的Eureka采用的就是AP原则，牺牲了一致性，但是保证了可用性。</p> 
+<p style="margin-left:0;"><strong>ZooKeeper提供的一致性服务</strong></p> 
+<p style="margin-left:0;">很多文章和博客里提到，zookeeper是一种提供强一致性的服务，在分区容错性和可用性上做了一定折中，这和CAP理论是吻合的。但实际上zookeeper提供的只是单调一致性。</p> 
+<p style="margin-left:0;">假设有2n+1个server，在同步流程中，leader向follower同步数据，当同步完成的follower数量大于 n+1时同步流程结束，系统可接受client的连接请求。如果client连接的并非同步完成的follower，那么得到的并非最新数据，但可以保证单调性。</p> 
+<p style="margin-left:0;">follower接收写请求后，转发给leader处理；leader完成两阶段提交的机制。向所有server发起提案，当提案获得超过半数（n+1）的server认同后，将对整个集群进行同步，超过半数（n+1）的server同步完成后，该写请求完成。如果client连接的并非同步完成follower，那么得到的并非最新数据，但可以保证单调性。</p> 
+<p style="margin-left:0;">用分布式系统的CAP原则来分析Zookeeper</p> 
+<p style="margin-left:0;">C: Zookeeper保证了最终一致性,在十几秒可以Sync到各个节点.</p> 
+<p style="margin-left:0;">A: Zookeeper保证了可用性,数据总是可用的,没有锁.并且有一大半的节点所拥有的数据是最新的,实时的. 如果想保证取得是数据一定是最新的,需要手工调用Sync()</p> 
+<p style="margin-left:0;">P: 有2点需要分析的.</p> 
+<p style="margin-left:0;">节点多了会导致写数据延时非常大,因为需要多个节点同步.</p> 
+<p style="margin-left:0;">节点多了Leader选举非常耗时, 就会放大网络的问题. 可以通过引入 observer节点缓解这个问题.</p> 
+<p style="margin-left:0;">zookeeper的CP特性</p> 
+<p style="margin-left:0;">zookeeper在选举leader时，会停止服务，直到选举成功之后才会再次对外提供服务，这个时候就说明了服务不可用，但是在选举成功之后，因为一主多从的结构，zookeeper在这时还是一个高可用注册中心，只是在优先保证一致性的前提下，zookeeper才会顾及到可用性。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/8f3a0eeded5099fdb1a824b97eb1fb29/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">〖大前端 - 基础入门三大核心之JS篇⑱〗- JavaScript的流程控制语句「break 和 continue语句」</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/6e80132ad9cd01b17e89be9f44c180fd/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Could not install Gradle distribution from ‘https://services.gradle.org/distributions/gradle-7.0.2-b</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

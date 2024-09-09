@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【手写数据库内核组件】0201 哈希表hashtable的实战演练，多种非加密算法，hash桶的冲突处理，查找插入删除操作的代码实现 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/e4446d5b74f3651123a16992c334fb29/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【手写数据库内核组件】0201 哈希表hashtable的实战演练，多种非加密算法，hash桶的冲突处理，查找插入删除操作的代码实现">
+  <meta property="og:description" content="hash表原理与实战 ​专栏内容：
+postgresql使用入门基础手写数据库toadb并发编程 个人主页：我的主页
+管理社区：开源数据库
+座右铭：天行健，君子以自强不息；地势坤，君子以厚德载物.
+文章目录 hash表原理与实战一、概述 二、hash表整体介绍 2.1 hash表的应用场景 2.2 整体架构 三、hash算法选择 四、hash表操作 4.1 冲突处理 4.2 查找操作 4.3 插入操作 4.4 删除操作 五、总结 结尾 一、概述 hash表的应用非常广泛，在网上也可以看到分享的各种hash表的实现，都比较概念化。
+本章节从实战的角度出发，以数据库内核中的应用为例，来看看hash表的原理与实现。
+二、hash表整体介绍 哈希算法（Hash）又称摘要算法，它的作用是：对任意一组输入数据进行计算，得到一个固定长度的输出摘要。
+哈希算法最重要的特点就是：
+相同的输入一定得到相同的输出；不同的输入大概率得到不同的输出； 我们想利用hash算法的这一特性，将输入的一组数据，经过hash算法计算后，输出唯一的 32位或64位的整形值key。
+当我们需要找到存储的数据时，通过这个key查找，而查找整型值的效率就很高了，可以用二分法进行查找。
+这样一个存储数据的结构，我们叫它hash表，也就是通常说的key-value形式的存储，它的查找效率与数据的类型无关。
+2.1 hash表的应用场景 hash表一般用于存储大量的数据，而数据的类型是字符串，或者更复杂的复合类型结构体，或者是更大的数据；
+直接通过原始数据进行查找时，代价非常高，将它们转换为hash 值后，就可以通过恒定的效率进行查找。
+在数据库中的应用有：
+数据块缓存，某个数据块是否已经在缓存中，通过对数据块编号的hash值进行查找；系统字典的查找，某个表是否已经创建了，通过表的hash值进行查找；hash索引，记录数据的hash值，查找时按hash值进行查找； 2.2 整体架构 hash表的实现一般由几方面组成，hash算法，bucket计算，冲突处理，key-value对应形式，以及三种操作。
+既然是一个table，那么内部基本存储结构是一个数组，数组的最大元素个数就是capacity；数组中的每个元索叫做bucket桶，来存储key-value对数据；bucket位置的计算，一般会采用 hash值 % capacity 来计算；hash值一般是一个32位，64位或者128位的整数，取余后得到数组中的下标，这就是当前key-value要存储的位置； 三、hash算法选择 查找主要依赖高效的hash值的计算，一个高效，碰撞少的算法，能让hashtable的效率大大提升。
+常见的hash算法有，MD5, sha-256等，这些常用于加密，而hashtable并不需要对数据进行加密，更看重计算的效率。
+由此出现了一些快速hash算法，比较有名的如：
+murmurhash3, 这是第三个版本，速度公认的非常快，开源了各种语言实现；Spookyhash，这个目前支持128位；cityhash，是google发布的，会利用现代CPU的特性进行性能提升，对于低于64位的输入处理比较复杂； 建议使用murmurhash3，算法简单高效，对于较少的输入也能高效处理。
+这些算法都可以在github上下载得到，加入.c,.h文件后就可以直接调用使用。
+类似如下调用：
+seed = 123456789 data = &#34;example data&#34; hash_value = murmur_hash(seed, data) 四、hash表操作 hash表的操作一般有插入，查找，删除三类基本操作。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-07T15:26:39+08:00">
+    <meta property="article:modified_time" content="2024-07-07T15:26:39+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【手写数据库内核组件】0201 哈希表hashtable的实战演练，多种非加密算法，hash桶的冲突处理，查找插入删除操作的代码实现</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="hash_0"></a>hash表原理与实战</h2> 
+<blockquote> 
+ <p>​<strong>专栏内容</strong>：</p> 
+ <ul><li><a href="https://blog.csdn.net/senllang/category_12346885.html">postgresql使用入门基础</a></li><li><a href="https://senllang.blog.csdn.net/category_12338586.html" rel="nofollow">手写数据库toadb</a></li><li><a href="https://blog.csdn.net/senllang/category_12265530.html">并发编程</a></li></ul> 
+</blockquote> 
+<blockquote> 
+ <p><strong>个人主页</strong>：<a href="https://senllang.blog.csdn.net" rel="nofollow">我的主页</a><br> <strong>管理社区</strong>：<a href="https://bbs.csdn.net/forums/a0a6ea788b3949b6a06ab4811f9eec5d">开源数据库</a><br> <strong>座右铭：天行健，君子以自强不息；地势坤，君子以厚德载物.</strong></p> 
+</blockquote> 
+<p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#hash_0" rel="nofollow">hash表原理与实战</a></li><li><a href="#font_colorA0522D_font_13" rel="nofollow"><font color="#A0522D">一、概述 </font></a></li><li><a href="#font_colorA0522Dhash_font_20" rel="nofollow"><font color="#A0522D">二、hash表整体介绍 </font></a></li><li><ul><li><a href="#font_color224070_21_hash_font_35" rel="nofollow"><font color="#224070"> 2.1 hash表的应用场景 </font></a></li><li><a href="#font_color224070_22__font_47" rel="nofollow"><font color="#224070"> 2.2 整体架构 </font></a></li></ul> 
+  </li><li><a href="#font_colorA0522Dhash_font_59" rel="nofollow"><font color="#A0522D">三、hash算法选择 </font></a></li><li><a href="#font_colorA0522Dhash_font_83" rel="nofollow"><font color="#A0522D">四、hash表操作 </font></a></li><li><ul><li><a href="#font_color224070_41__font_90" rel="nofollow"><font color="#224070"> 4.1 冲突处理 </font></a></li><li><a href="#font_color224070_42__font_120" rel="nofollow"><font color="#224070"> 4.2 查找操作 </font></a></li><li><a href="#font_color224070_43__font_190" rel="nofollow"><font color="#224070"> 4.3 插入操作 </font></a></li><li><a href="#font_color224070_44__font_229" rel="nofollow"><font color="#224070"> 4.4 删除操作 </font></a></li></ul> 
+  </li><li><a href="#font_colorA0522D_font_273" rel="nofollow"><font color="#A0522D">五、总结 </font></a></li><li><a href="#font_colorA0522D_font_281" rel="nofollow"><font color="#A0522D">结尾 </font></a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="font_colorA0522D_font_13"></a><font color="#A0522D">一、概述 </font></h2> 
+<hr> 
+<p>hash表的应用非常广泛，在网上也可以看到分享的各种hash表的实现，都比较概念化。</p> 
+<p>本章节从实战的角度出发，以数据库内核中的应用为例，来看看hash表的原理与实现。</p> 
+<h2><a id="font_colorA0522Dhash_font_20"></a><font color="#A0522D">二、hash表整体介绍 </font></h2> 
+<hr> 
+<p>哈希算法（Hash）又称摘要算法，它的作用是：对任意一组输入数据进行计算，得到一个固定长度的输出摘要。</p> 
+<p>哈希算法最重要的特点就是：</p> 
+<ul><li>相同的输入一定得到相同的输出；</li><li>不同的输入大概率得到不同的输出；</li></ul> 
+<p>我们想利用hash算法的这一特性，将输入的一组数据，经过hash算法计算后，输出唯一的 32位或64位的整形值key。</p> 
+<p>当我们需要找到存储的数据时，通过这个key查找，而查找整型值的效率就很高了，可以用二分法进行查找。</p> 
+<p>这样一个存储数据的结构，我们叫它hash表，也就是通常说的key-value形式的存储，它的查找效率与数据的类型无关。</p> 
+<h3><a id="font_color224070_21_hash_font_35"></a><font color="#224070"> 2.1 hash表的应用场景 </font></h3> 
+<p>hash表一般用于存储大量的数据，而数据的类型是字符串，或者更复杂的复合类型结构体，或者是更大的数据；</p> 
+<p>直接通过原始数据进行查找时，代价非常高，将它们转换为hash 值后，就可以通过恒定的效率进行查找。</p> 
+<p>在数据库中的应用有：</p> 
+<ul><li>数据块缓存，某个数据块是否已经在缓存中，通过对数据块编号的hash值进行查找；</li><li>系统字典的查找，某个表是否已经创建了，通过表的hash值进行查找；</li><li>hash索引，记录数据的hash值，查找时按hash值进行查找；</li></ul> 
+<h3><a id="font_color224070_22__font_47"></a><font color="#224070"> 2.2 整体架构 </font></h3> 
+<p>hash表的实现一般由几方面组成，hash算法，bucket计算，冲突处理，key-value对应形式，以及三种操作。</p> 
+<p><img src="https://images2.imgbox.com/b2/59/uSLB3MNy_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>既然是一个table，那么内部基本存储结构是一个数组，数组的最大元素个数就是capacity；</li><li>数组中的每个元索叫做bucket桶，来存储key-value对数据；</li><li>bucket位置的计算，一般会采用 <code>hash值 % capacity</code> 来计算；hash值一般是一个32位，64位或者128位的整数，取余后得到数组中的下标，这就是当前key-value要存储的位置；</li></ul> 
+<h2><a id="font_colorA0522Dhash_font_59"></a><font color="#A0522D">三、hash算法选择 </font></h2> 
+<hr> 
+<p>查找主要依赖高效的hash值的计算，一个高效，碰撞少的算法，能让hashtable的效率大大提升。</p> 
+<p>常见的hash算法有，MD5, sha-256等，这些常用于加密，而hashtable并不需要对数据进行加密，更看重计算的效率。</p> 
+<p>由此出现了一些快速hash算法，比较有名的如：</p> 
+<ul><li>murmurhash3, 这是第三个版本，速度公认的非常快，开源了各种语言实现；</li><li>Spookyhash，这个目前支持128位；</li><li>cityhash，是google发布的，会利用现代CPU的特性进行性能提升，对于低于64位的输入处理比较复杂；</li></ul> 
+<p>建议使用murmurhash3，算法简单高效，对于较少的输入也能高效处理。</p> 
+<p>这些算法都可以在github上下载得到，加入.c,.h文件后就可以直接调用使用。</p> 
+<p>类似如下调用：</p> 
+<pre><code class="prism language-txt">seed = 123456789
+data = "example data"
+hash_value = murmur_hash(seed, data)
+</code></pre> 
+<h2><a id="font_colorA0522Dhash_font_83"></a><font color="#A0522D">四、hash表操作 </font></h2> 
+<hr> 
+<p>hash表的操作一般有插入，查找，删除三类基本操作。</p> 
+<p>对于修改操作可以分解为这三项的组合，先查找，再删除，然后插入，因为修改后的键值发生变化，对于它在hash表中的位置也会发生变化。</p> 
+<h3><a id="font_color224070_41__font_90"></a><font color="#224070"> 4.1 冲突处理 </font></h3> 
+<p>在开始操作之前，需要注意一种情况，因为我们数组元素个数有限，在取余之后难免会出现多个key-value数据在相同位置的情况，也就是key产生了冲突。</p> 
+<p>一般有两种处理方式：</p> 
+<ul><li>一是在冲突位置往后继续找空位置存储；</li><li>二是在当前桶内以链表的形式存储；</li></ul> 
+<p>两种不同的冲突处理，对应了后面操作的不同。这里采用第二种方法，如果有多个相同数据在同一桶中时，以单链表的形式存储。</p> 
+<p><img src="https://images2.imgbox.com/37/b3/lJj3n09O_o.png" alt="在这里插入图片描述"></p> 
+<p>图中可以看到，出现冲突时，key4,key5直接追加到key1后面。</p> 
+<p>那么定义数组元素类型时，就要定义为链表形式。</p> 
+<pre><code class="prism language-txt">typedef unsigned long long HASHKEY; 
+
+typedef struct HashElement
+{
+    struct HashElement *link;
+    HASHKEY             hashKey;
+    char                *value;
+}HashElement;
+</code></pre> 
+<p>这里定义hash为64位的整形，当然可以是其它位数。</p> 
+<h3><a id="font_color224070_42__font_120"></a><font color="#224070"> 4.2 查找操作 </font></h3> 
+<p>查找一个key-value值是否在hashtable中的步骤如下：</p> 
+<ul><li>调用hash算法接口，计算value的hash值；</li><li>按找hash值计算bucket位置；</li><li>找到bucket，查看是否为空；</li><li>如果bucket中有多个元素，遍历链表进行比对hash值；</li><li>如果存在相同的hash值元素，则找到；否则没有找到。</li></ul> 
+<p><strong>获取hashkey函数</strong></p> 
+<pre><code class="prism language-c"><span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">define</span> <span class="token macro-name">Hash_capacity</span> <span class="token expression"><span class="token number">100</span></span></span>
+HashElement <span class="token operator">*</span> hashtable<span class="token punctuation">[</span>Hash_capacity<span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+HASHKEY <span class="token function">getHashKey</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>value<span class="token punctuation">,</span> <span class="token keyword">int</span> valueSize<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token function">spooky_hash64</span><span class="token punctuation">(</span>value<span class="token punctuation">,</span> valueSize<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>获取bucket函数</strong></p> 
+<pre><code class="prism language-c"><span class="token keyword">int</span> <span class="token function">GetBucketIndex</span><span class="token punctuation">(</span>HASHKEY key<span class="token punctuation">,</span> PHashTableInfo hashTableInfo<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> bucket <span class="token operator">=</span> key <span class="token operator">&amp;</span> Hash_capacity<span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> bucket<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p><strong>查找函数</strong></p> 
+<pre><code class="prism language-c">HashElement<span class="token operator">*</span> <span class="token function">HashFindEntry</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>value<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    HashElement <span class="token operator">*</span>entry <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> bucket <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    HASHKEY key <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    key <span class="token operator">=</span> <span class="token function">getHashKey</span><span class="token punctuation">(</span>value<span class="token punctuation">,</span> <span class="token function">strlen</span><span class="token punctuation">(</span>value<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    bucket <span class="token operator">=</span> <span class="token function">GetBucketIndex</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    entry <span class="token operator">=</span> <span class="token function">GetHashEntryFromBucket</span><span class="token punctuation">(</span>hashtable<span class="token punctuation">[</span>bucket<span class="token punctuation">]</span><span class="token punctuation">,</span> key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> entry<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p><strong>从bucket链中查找</strong></p> 
+<pre><code class="prism language-c">HashElement<span class="token operator">*</span> <span class="token function">GetHashEntryFromBucket</span><span class="token punctuation">(</span>HashElement<span class="token operator">*</span> bucket<span class="token punctuation">,</span> HASHKEY key<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    HashElement<span class="token operator">*</span> element <span class="token operator">=</span> bucket<span class="token punctuation">;</span>
+
+    <span class="token keyword">while</span><span class="token punctuation">(</span>element <span class="token operator">!=</span> <span class="token constant">NULL</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>element<span class="token operator">-&gt;</span>hashKey <span class="token operator">==</span> key<span class="token punctuation">)</span> 
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span> element<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        element <span class="token operator">=</span> element<span class="token operator">-&gt;</span>link<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">return</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>当然这里，除取比较key值外，还可以对value定义比较函数，这样避免hash值冲突的情况。</p> 
+<h3><a id="font_color224070_43__font_190"></a><font color="#224070"> 4.3 插入操作 </font></h3> 
+<p>插入操作就比较简单，步骤如下：</p> 
+<ul><li>计算hash 值；</li><li>根据hash值获取bucket位置；</li><li>存储对应bucket，如果已经有元素，存到链到头部；</li></ul> 
+<pre><code class="prism language-c">HashElement<span class="token operator">*</span> <span class="token function">HashInsertEntry</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>value<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    HashElement <span class="token operator">*</span>entry <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> bucket <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    HASHKEY key <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    key <span class="token operator">=</span> <span class="token function">getHashKey</span><span class="token punctuation">(</span>value<span class="token punctuation">,</span> <span class="token function">strlen</span><span class="token punctuation">(</span>value<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    bucket <span class="token operator">=</span> <span class="token function">GetBucketIndex</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    entry <span class="token operator">=</span> <span class="token function">malloc</span><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span>HashElement<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token constant">NULL</span> <span class="token operator">==</span> entry<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">return</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    entry<span class="token operator">-&gt;</span>link <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    entry<span class="token operator">-&gt;</span>hashKey <span class="token operator">=</span> key<span class="token punctuation">;</span>
+    entry<span class="token operator">-&gt;</span>value <span class="token operator">=</span> value<span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span><span class="token punctuation">(</span><span class="token constant">NULL</span> <span class="token operator">!=</span> hashtable<span class="token punctuation">[</span>bucket<span class="token punctuation">]</span><span class="token punctuation">)</span>
+      entry<span class="token operator">-&gt;</span>link <span class="token operator">=</span> hashtable<span class="token punctuation">[</span>bucket<span class="token punctuation">]</span><span class="token punctuation">;</span>
+    
+    hashtable<span class="token punctuation">[</span>bucket<span class="token punctuation">]</span> <span class="token operator">=</span> entry<span class="token punctuation">;</span>
+    <span class="token keyword">return</span> entry<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>hash节点数量不确定，故采用动态内存分配；</p> 
+<p>在冲突时采用了头插法，这样操作比较简单；</p> 
+<h3><a id="font_color224070_44__font_229"></a><font color="#224070"> 4.4 删除操作 </font></h3> 
+<p>从hash表中找到并删除一个元素的步骤如下：</p> 
+<ul><li>计算value的hash值；</li><li>计算对应的bucket位置</li><li>从bucket链中进行查找，同时记录下它的前继；</li><li>将对应key的元素从链表中删除；注意链表只有一个元素的情况；</li><li>将删除的元素返回，由调用者释放内存空间；</li></ul> 
+<pre><code class="prism language-c">HashElement<span class="token operator">*</span> <span class="token function">DeleteHashEntry</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>value<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    HashElement <span class="token operator">*</span>pre <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    HashElement<span class="token operator">*</span> element <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> bucket <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    HASHKEY key <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+    key <span class="token operator">=</span> <span class="token function">getHashKey</span><span class="token punctuation">(</span>value<span class="token punctuation">,</span> <span class="token function">strlen</span><span class="token punctuation">(</span>value<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    bucket <span class="token operator">=</span> <span class="token function">GetBucketIndex</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    pre <span class="token operator">=</span> element <span class="token operator">=</span> hashtable<span class="token punctuation">[</span>bucket<span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token keyword">while</span><span class="token punctuation">(</span>element <span class="token operator">!=</span> <span class="token constant">NULL</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>element<span class="token operator">-&gt;</span>hashKey <span class="token operator">==</span> key<span class="token punctuation">)</span> 
+        <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span><span class="token punctuation">(</span>pre <span class="token operator">==</span> element<span class="token punctuation">)</span>
+            <span class="token punctuation">{<!-- --></span>
+              hashtable<span class="token punctuation">[</span>bucket<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">else</span>
+            <span class="token punctuation">{<!-- --></span>
+              pre<span class="token operator">-&gt;</span>link <span class="token operator">=</span> element<span class="token operator">-&gt;</span>link<span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">return</span> element<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        pre <span class="token operator">=</span> element<span class="token punctuation">;</span>
+        element <span class="token operator">=</span> element<span class="token operator">-&gt;</span>link<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h2><a id="font_colorA0522D_font_273"></a><font color="#A0522D">五、总结 </font></h2> 
+<hr> 
+<p>本文介绍了哈希表的实现及原理，同时介绍了几种hash计算方法。</p> 
+<p>当然本节介绍的内容，都是在没有并发冲突的情况下使用，如果多线程操作时，需要进行加锁处理。</p> 
+<p>如果需要更高效的并发场景下的hash表，后面章节会继续介绍。</p> 
+<h2><a id="font_colorA0522D_font_281"></a><font color="#A0522D">结尾 </font></h2> 
+<hr> 
+<blockquote> 
+ <p><strong>非常感谢大家的支持，在浏览的同时别忘了留下您宝贵的评论，如果觉得值得鼓励，请点赞，收藏，我会更加努力！</strong></p> 
+</blockquote> 
+<p>作者邮箱：study@senllang.onaliyun.com<br> 如有错误或者疏漏欢迎指出，互相学习。</p> 
+<p>注：未经同意，不得转载！</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6d2546c893e0f625decc4f00aa873ed8/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">封装了一个仿照抖音效果的iOS评论弹窗</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e53b51deb439bee331ed6571c4c95119/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">python 10个自动化脚本</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

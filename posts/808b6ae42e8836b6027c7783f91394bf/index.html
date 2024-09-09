@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>技术分享 | MySQL 的几种数据迁移方案 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/808b6ae42e8836b6027c7783f91394bf/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="技术分享 | MySQL 的几种数据迁移方案">
+  <meta property="og:description" content="1需求背景 应用侧的同学需要对数据进行导出和导入，于是跑来找 DBA 咨询问题：MySQL 如何导入大批量的数据？
+应用侧目前的方式： mysqldump 工具
+select outfile 语句
+图形化管理工具（MySQL Workbench、Navicat 、DBeaver）
+DBA 听了觉得挺好的呀！
+DBA 想了，我的数据库我做主。通知应用侧，目前先使用之前熟悉的方式进行，测试之后给建议。
+Tips：为了防止导入时出现大事务，造成主从延迟。
+2方案准备 待测方案：mysqldump、mydumper、select outfile 语句、Util.dumpTables 、Util.exportTable。
+环境配置信息 配置项说明MySQL 版本5.7.39磁盘随机读写100 MiB/sec测试表名test.t_order_info行数1000W字段数6 建表语句 CREATE TABLE `t_order_info` ( `ID` bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT &#39;自增主键ID&#39;, `order_no` varchar(64) NOT NULL DEFAULT &#39;0000&#39; COMMENT &#39;订单编号&#39;, `order_status` varchar(2) NOT NULL DEFAULT &#39;01&#39; COMMENT &#39;订单状态: 00-异常、01-待处理、02-进行中、03-已完成&#39;, `flag` tinyint(4) NOT NULL DEFAULT &#39;1&#39; COMMENT &#39;删除标识: 1-正常、0-逻辑删除&#39;, `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT &#39;创建时间&#39;, `modify_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT &#39;更新时间&#39;, PRIMARY KEY (`ID`), UNIQUE KEY `IDX_ORDER_NO` (`order_no`) ) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COMMENT=&#39;订单表&#39; 导出文件 包含数据结构和数据的 备份文件 （mysqldump、mydumper、Util.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-02-05T09:35:40+08:00">
+    <meta property="article:modified_time" content="2024-02-05T09:35:40+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">技术分享 | MySQL 的几种数据迁移方案</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>1需求背景</h2> 
+<p>应用侧的同学需要对数据进行导出和导入，于是跑来找 DBA 咨询问题：<strong>MySQL 如何导入大批量的数据？</strong></p> 
+<h4>应用侧目前的方式：</h4> 
+<ul><li> <p>mysqldump 工具</p> </li><li> <p>select outfile 语句</p> </li><li> <p>图形化管理工具（MySQL Workbench、Navicat 、DBeaver）</p> </li></ul> 
+<p>DBA 听了觉得挺好的呀！</p> 
+<p>DBA 想了，我的数据库我做主。通知应用侧，目前先使用之前熟悉的方式进行，测试之后给建议。</p> 
+<blockquote> 
+ <p>Tips：为了防止导入时出现大事务，造成主从延迟。</p> 
+</blockquote> 
+<h2>2方案准备</h2> 
+<p>待测方案：mysqldump、mydumper、select outfile 语句、<strong>Util.dumpTables</strong> 、<strong>Util.exportTable</strong>。</p> 
+<h4>环境配置信息</h4> 
+<table><thead><tr><th>配置项</th><th>说明</th></tr></thead><tbody><tr><td>MySQL 版本</td><td>5.7.39</td></tr><tr><td>磁盘随机读写</td><td>100 MiB/sec</td></tr><tr><td>测试表名</td><td>test.t_order_info</td></tr><tr><td>行数</td><td>1000W</td></tr><tr><td>字段数</td><td>6</td></tr></tbody></table> 
+<h4>建表语句</h4> 
+<pre><code>CREATE TABLE `t_order_info` (
+  `ID` bigint(20) unsigned NOT NULL AUTO_INCREMENT COMMENT '自增主键ID',
+  `order_no` varchar(64) NOT NULL DEFAULT '0000' COMMENT '订单编号',
+  `order_status` varchar(2) NOT NULL DEFAULT '01' COMMENT '订单状态: 00-异常、01-待处理、02-进行中、03-已完成',
+  `flag` tinyint(4) NOT NULL DEFAULT '1' COMMENT '删除标识: 1-正常、0-逻辑删除',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `modify_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`ID`),
+  UNIQUE KEY `IDX_ORDER_NO` (`order_no`)
+) ENGINE=InnoDB AUTO_INCREMENT=1 DEFAULT CHARSET=utf8mb4 COMMENT='订单表'
+</code></pre> 
+<h4>导出文件</h4> 
+<ul><li> <p>包含数据结构和数据的 <strong>备份文件</strong> （mysqldump、mydumper、Util.dumpTables）</p> </li><li> <p>只包含数据的 <strong>数据文件</strong> （select outfile、Util.exportTable）</p> </li></ul> 
+<h4>导出导入命令</h4> 
+<table><thead><tr><th>导出</th><th>导入</th></tr></thead><tbody><tr><td>mysqldump</td><td>source 或 mysql&lt; xxx.sql</td></tr><tr><td>mydumper</td><td>myloader</td></tr><tr><td>select outfile</td><td>load data</td></tr><tr><td><strong>Util.dumpTables</strong></td><td><strong>Util.loadDump</strong></td></tr><tr><td><strong>Util.exportTable</strong></td><td><strong>Util.importTable</strong></td></tr></tbody></table> 
+<h2>3方案测试</h2> 
+<p>测试首先考虑的是 <strong>提升导入效率</strong>，并新增了 MySQL Shell 的使用。</p> 
+<h3>mysqldump</h3> 
+<h4>单表导出（备份文件）</h4> 
+<pre><code>mysqldump --default-character-set=utf8mb4 --master-data=2 --single-transaction --set-gtid-purged=off --hex-blob  --tables test t_order_info
+</code></pre> 
+<ul><li> <p><code>--master-data=2</code> 参数会在备份期间对所有表加锁 <code>FLUSH TABLES WITH READ LOCK</code>，并执行 <code>SHOW MASTER STATUS</code> 语句以获取二进制日志信息。因此，在备份期间可能会影响数据库的并发性能。如果您不需要进行主从复制，则可以考虑不使用 <code>--master-data=2</code> 参数。</p> </li><li> <p><code>--single-transaction</code> 参数用于在备份期间“使用事务来确保数据一致性”，从而避免在备份期间锁定表。[必须有]</p> </li></ul> 
+<h4>备份文件</h4> 
+<p>文件内容。</p> 
+<pre><code>-- Table stricture for table `t_order_info`
+--
+
+DROP TABLE IF EXISTS `t_order_info`;
+/*!40101 SET @saved_cs_client= @@character_set_client */;
+/*!49101 SET character_set_client = utf8 */;
+CREATE TABLE `t_order_info` (
+  `ID` bigint(2) unsigned NOT NULL AUTO_INCREMENT COMMENT '自增主键ID',
+  `order_no` varchar(64) NOT NULL DEFAULT `0000` COMMENT '订单编号'，
+  `order_status` varchar(2) NOT NULL DEFAULT '01' COMMENT '订单状态: 80-异常、81-待处理、2-进行中、03-已完成',
+  `flag` tinyint(4) NOT NULL DEFAULT '1' COMMENT '删除标识: 1-正常、0-逻辑删除',
+  `create_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `modify_time` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`ID`),
+  UNIOUE KEY `IDX_ORDER_NO` (`order no`)
+) ENGINE=InnODB AUTO_INCREMENT=10129913 DEFAULT CHARSET=utf8m COMMENT='订单表';
+/*!40101 SET character_set_client = @saved_cs_client */;
+
+--
+-- Dumping data for table `t_order_info`
+--
+
+LOCK TABLES `t_order_info` WRITE;
+/*!40000 ALTER TABLE `t_order_info` DISABLE KEYS */;
+</code></pre> 
+<p>文件内容解释：</p> 
+<ul><li> <p>没有建库语句，<strong>因为是单表备份。</strong></p> </li><li> <p>有删除表，建立表的语句，<strong>小心导入目标库时，删除表的语句，造成数据误删。</strong></p> </li><li> <p>INSERT 语句没有字段名称，<strong>导入时表结构要一致。</strong></p> </li><li> <p>导入过程中有 <code>lock table write</code> 操作，<strong>导入过程中相关表不可写。</strong></p> </li><li> <p><code>ALTER TABLE t_order_info DISABLE KEYS</code> 此语句将禁用该表的所有非唯一索引，<strong>这可以提高插入大量数据时的性能。</strong> 对应的文件末尾有 <code>ALTER TABLE </code>t_order_info<code> ENABLE KEYS</code>;</p> </li></ul> 
+<p>用途，可以将备份文件中的数据导入自定义库，“文件内容解释”部分遇到的问题可以使用下面参数解决。</p> 
+<ul><li> <p><code>--no-create-info</code> 不包含建表语句（可以手动创建 <code>create table tablename like dbname.tablename;</code>）</p> </li><li> <p><code>--skip-add-drop-database</code> 不包含删库语句</p> </li><li> <p><code>--skip-add-drop-table</code> 不包含删表语句</p> </li><li> <p><code>--skip-add-locks</code> INSERT 语句前不包含 <code>LOCK TABLES t_order_info WRITE;</code></p> </li><li> <p><code>--complete-insert</code> INSERT 语句中包含 列名称（新表的列有增加的时候）。</p> </li></ul> 
+<p>单表导出备份数据（只导出数据）。</p> 
+<pre><code>mysqldump --default-character-set=utf8mb4 --master-data=2 --single-transaction --set-gtid-purged=off --hex-blob --no-create-info --skip-add-drop-table --skip-add-locks --tables dbname tablename
+
+// 部分数据导出追加参数
+--where="create_time&gt;'2023-01-02'"
+</code></pre> 
+<p>导出单库中的某表为 CSV。</p> 
+<pre><code>// 可选不导出表结构，
+--no-create-info --skip-add-drop-database --skip-add-drop-table
+/data/mysql/3306/base/bin/mysqldump -uadmin -p123456 -P3306 -h127.0.0.1 --default-character-set=utf8mb4 --single-transaction --set-gtid-purged=OFF  --triggers --routines --events --hex-blob --fields-terminated-by=',' --fields-enclosed-by='"' --lines-terminated-by='\n'  -T /data/mysql/3306/tmp test
+
+//其中 test 后面也可以指定表名，不指定就是全库。
+test t_order_info t_order_info01
+其中 --single-transaction --set-gtid-purged=OFF  --triggers --routines --events --hex-blob 
+为了防止提示，可选
+</code></pre> 
+<h4>小结</h4> 
+<p>1G 的备份文件，测试结果如下：</p> 
+<ol><li> <p>使用 <code>mysql&lt; xxx.sql</code> 导入，耗时 5 分钟。</p> </li><li> <p>使用用 <code>source xxx.sql</code> 导入， 耗时 10 分钟。</p> </li></ol> 
+<p><strong>推荐第一种，都是单线程。</strong></p> 
+<h3>mydumper</h3> 
+<ul><li> <p>版本 0.14.4</p> </li></ul> 
+<h4>多线程导出</h4> 
+<pre><code>mydumper -u admin -p 123456 -P 3306 -h 127.0.0.1 -t 8 --trx-consistency-only -G -E -R --skip-tz-utc --verbose=3 --compress --no-schemas --rows=1000000  -T test.t_order_info  -o /backup
+  
+// 导出时支持部分导出追加参数
+
+--where="create_time&gt;'2023-01-02'"
+  
+// 文件输出
+test01.t_order_info.00000.dat # 包含 CSV 数据
+test01.t_order_info.00000.sql # 包含 LOAD DATA 语句
+
+// 导入命令
+LOAD DATA LOCAL INFILE '/data/mysql/3306/tmp/test01.t_order_info.00005.dat' REPLACE INTO TABLE `t_order_info` CHARACTER SET binary FIELDS TERMINATED BY ',' ENCLOSED BY '"' ESCAPED BY '\\' LINES STARTING BY '' TERMINATED BY '\n' (`ID`,`order_no`,`order_status`,`flag`,`create_time`,`modify_time`);
+</code></pre> 
+<ul><li> <p>多线程导入</p> </li></ul> 
+<pre><code>myloader -u admin -p 123456 -P 3306 -h 127.0.0.1 --enable-binlog -t 8 --verbose=3 -B test -d /backup
+  
+//  导入主库时需要添加 
+--enable-binlog
+
+// 库名可以自定义
+-B test 
+</code></pre> 
+<h4>小结</h4> 
+<p>耗时 2 分钟，建议如下：</p> 
+<ul><li> <p>在数据量大于 50G 的场景中，更推荐 mydumper。</p> </li><li> <p>补充场景，支持导出 CSV，也支持 <code>--where</code> 过滤。</p> </li></ul> 
+<pre><code>mydumper -u admin -p 123456 -P 3306 -h 127.0.0.1 -t 8 --trx-consistency-only -G -E -R --skip-tz-utc --verbose=3 --where="create_time&gt;'2023-01-02'" --no-schemas --rows=1000000 --load-data --fields-terminated-by ',' --fields-enclosed-by '"' --lines-terminated-by '\n' -T test.t_order_info  -o /backup
+</code></pre> 
+<p>导入命令同上，且可以按需手动进行 <code>LOAD DATA</code>。</p> 
+<h3>SELECT OUTFILE 语句</h3> 
+<blockquote> 
+ <p>Tips：适合于单表数据的导出，不支持多表。</p> 
+</blockquote> 
+<p>导出命令，耗时 15 秒。</p> 
+<pre><code>SELECT * from test01.t_order_info INTO OUTFILE "/data/mysql/3306/tmp/t_order_info0630_full.csv" CHARACTER SET utf8mb4 FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\'' LINES TERMINATED BY '\n';
+  
+//  带列名导出，导入时需添加 IGNORE 1 LINES;
+SELECT *  INTO OUTFILE "/data/mysql/3306/tmp/t_order_info0630_full.csv" CHARACTER SET utf8mb4 FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\'' LINES TERMINATED BY '\n'  from (select 'id','order_no','order_status','flag','create_time','modify_time' union all select * from test01.t_order_info) b;
+</code></pre> 
+<p>导入命令，耗时 3 分钟。</p> 
+<pre><code>mysql -uadmin -P3306  -h127.0.0.1 -p123456  --local-infile
+load data local infile '/data/mysql/3306/tmp/t_order_info0630_full.csv'  into table test.t_order_info CHARACTER SET utf8mb4 fields terminated by ',' OPTIONALLY ENCLOSED BY '\'' lines terminated by '\n';
+</code></pre> 
+<h4>小结</h4> 
+<ul><li> <p>支持跨表导入。A 表的数据可以导入 B 表，因为备份文件中只有数据。</p> </li><li> <p>可自定义导出部分列，导出导入速度较快，最常用。</p> </li></ul> 
+<h3>MySQL_Shell &gt; dumpTables</h3> 
+<p>单表导出，耗时 4 秒。</p> 
+<pre><code>util.dumpTables("test", ["t_order_info"], "/backup") 
+</code></pre> 
+<p>部分导出。</p> 
+<pre><code>util.dumpTables("test", ["t_order_info"], "/backup", {"where" : {"test.t_order_info": "create_time&gt;'2023-01-02'"}})
+</code></pre> 
+<p>导入，耗时 3 分钟。</p> 
+<pre><code>util.loadDump("/backup") 
+</code></pre> 
+<blockquote> 
+ <p>注意：不支持部分导入，不支持跨数据库版本。</p> 
+</blockquote> 
+<p>因为导入时最大支持 2 个参数，可以将导出的部分数据全部导入到新的库中。</p> 
+<p>导入命令：<code>util.loadDump("/backup",{schema: "test_new"})</code></p> 
+<h4>小结</h4> 
+<ul><li> <p>支持跨库导入，A 库的数据可以导入 B 库。表名需要一致。不支持增量到已有数据的表中。</p> </li><li> <p>导出时和 <code>SELECT OUTFILE</code> 同效，导入时，比 <code>LOAD DATA</code> 快（默认 4 线程）。</p> </li></ul> 
+<blockquote> 
+ <p>注意：</p> 
+ <ol><li> <p>部分导出功能需要较新的 MySQL Shell 版本，如 8.0.33。</p> </li><li> <p><code>LOAD DATA</code> 单线程导入 耗时 1h20min。</p> </li></ol> 
+</blockquote> 
+<h3>MySQL_Shell &gt; exportTable</h3> 
+<p>单表导出，耗时 10 秒。</p> 
+<pre><code>util.exportTable("test.t_order_info",   "/backup/t_order_info.csv", {defaultCharacterSet: "utf8mb4", fieldsOptionallyEnclosed: true, fieldsTerminatedBy: ",", linesTerminatedBy: "\n", fieldsEnclosedBy: '"', defaultCharacterSet: "utf8mb4", showProgress: true, dialect: "csv"}) 
+</code></pre> 
+<p>部分导出。</p> 
+<pre><code>util.exportTable("test.t_order_info",   "/backup/t_order_info.csv",   {     dialect: "csv",     defaultCharacterSet: "utf8mb4",     fieldsOptionallyEnclosed: true,     fieldsTerminatedBy: ",",     linesTerminatedBy: "\n",     fieldsEnclosedBy: '"',     showProgress: true,     where: "create_time&gt;'2023-01-02'" } )
+</code></pre> 
+<p>导入，耗时 10 分钟。</p> 
+<pre><code>util.importTable("/backup/t_order_info.csv", { "characterSet": "utf8mb4",     "dialect": "csv",     "fieldsEnclosedBy": "\"",     "fieldsOptionallyEnclosed": true,     "fieldsTerminatedBy": ",",     "linesTerminatedBy": "\n",     "schema": "test",     "table": "t_order_info" }) 
+</code></pre> 
+<p>部分导入（不推荐使用）。</p> 
+<pre><code>util.importTable("/backup/t_order_info.csv", {     "characterSet": "utf8mb4",     "dialect": "csv",     "fieldsEnclosedBy": "\"",     "fieldsOptionallyEnclosed": true,     "fieldsTerminatedBy": ",",     "linesTerminatedBy": "\n",     "schema": "test100",     "table": "t_order_info" })util.importTable("/backup/t_order_info0630.csv", {      "characterSet": "utf8mb4",     "dialect": "csv",     "fieldsEnclosedBy": "\"",     "fieldsOptionallyEnclosed": true,     "fieldsTerminatedBy": ",",     "linesTerminatedBy": "\n",     "schema": "test",     "table": "t_order_info" }) 
+</code></pre> 
+<p>有报错 <code>MySQL Error 1205 (HY000): Lock wait timeout exceeded; try restarting transaction @ file bytes range [450000493, 500000518)</code> 需要重复执行一次，才能保证数据完整。</p> 
+<p>根据报错提示可以使用以下命令导入：</p> 
+<pre><code>LOAD DATA LOCAL INFILE '/backup/t_order_info0630.csv' INTO TABLE `test`.`t_order_info` CHARACTER SET 'utf8mb4' FIELDS TERMINATED BY ',' OPTIONALLY ENCLOSED BY '\"' ESCAPED BY '\\' LINES STARTING BY '' TERMINATED BY '\n';
+</code></pre> 
+<p>MySQL 5.7 也推荐直接使用 <code>LOAD DATA</code>。</p> 
+<h4>小结</h4> 
+<ul><li> <p>支持跨库导入，A 库的数据可以导入 B 库，表名需要一致。</p> </li><li> <p>导出时和 <code>SELECT OUTFILE</code> 同效。导入时，比 <code>LOAD DATA</code> 快（默认 8 线程）。</p> </li></ul> 
+<h2>4总结</h2> 
+<p>可以通过数据大小进行选用:</p> 
+<table><thead><tr><th>导出</th><th>导入</th><th>优点</th><th>推荐度（效率）</th></tr></thead><tbody><tr><td>mysqldump</td><td>source xxx.sql<br> MySQL&lt; xxx.sql</td><td>原生，可远程</td><td>⭐⭐⭐<br> 数据量&lt;10G</td></tr><tr><td>mydumper</td><td>myloader</td><td>多线程</td><td>⭐⭐⭐<br> 数据量&gt;50G</td></tr><tr><td>SELECT OUTFILE</td><td>LOAD  DATA</td><td>最灵活</td><td>⭐⭐<br> 数据量&lt;20G</td></tr><tr><td><strong>Util.dumpTables</strong></td><td><strong>Util.loadDump</strong></td><td>原生，多线程</td><td>⭐⭐⭐<br> 数据量&lt;50G</td></tr><tr><td><strong>Util.exportTable</strong></td><td><strong>Util.importTable</strong></td><td>原生，单线程</td><td>⭐<br> 数据量&lt;20G</td></tr></tbody></table> 
+<ul><li> <p><code>MySQL&lt;</code> 导入时，需要避免数据丢失。</p> </li><li> <p>前 3 种都支持 <code>WHERE</code> 过滤，mydumper 是最快的。<code>SELECT OUTFILE</code> 最常用（因为支持自定义导出部分列）。</p> </li><li> <p>前 2 种因为是备份工具，所以有 FTWRL 锁。</p> </li><li> <p><code>Util.dumpTables</code> 不支持增量到已有数据的表中，因为包含了库表的元数据信息，像 mydumper。</p> </li><li> <p><code>Util.exportTable</code> 备份是单线程，导入是多线程，不推荐的原因是导入容易出错（多次导入可解决）。</p> </li><li> <p>使用建议：按照数据量选择，全表备份最快用 <code>Util.dumpTables</code>，部分备份用 <code>SELECT OUTFILE</code>。</p> </li><li> <p>测试之后再使用，导出和导入均需要进行数据验证。</p> </li></ul> 
+<p>文章来源于爱可生开源社区 ，作者陈伟</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/b2dfb4d897491155a6ae16e9e8bd789a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Python以及Pycharm安装超详细教程(附带网盘资源）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1a5310e24ba74b4fd68b9dd49a52cf40/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Elcomsoft 取证工具包系列：Advanced Archive Password Recovery</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>FlinkSQL开发经验分享 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/922d689df3c47360a7e427814f4c2d0d/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="FlinkSQL开发经验分享">
+  <meta property="og:description" content="最近做了几个实时数据开发需求，也不可避免地在使用Flink的过程中遇到了一些问题，比如数据倾斜导致的反压、interval join、开窗导致的水位线失效等问题，通过思考并解决这些问题，加深了我对Flink原理与机制的理解，因此将这些开发经验分享出来，希望可以帮助到有需要的同学。
+下文会介绍3个case案例，每个case都会划分为背景、原因分析和解决方法三部分来进行介绍。
+Case1: 数据倾斜
+数据倾斜无论是在离线还是实时中都会遇到，其定义是：在并行进行数据处理的时候，按照某些key划分的数据显著多余其他部分，分布不均匀，导致大量数据集中分布到一台或者某几台计算节点上，使得该部分的处理速度远低于平均计算速度，成为整个数据集处理的瓶颈，从而影响整体计算性能。造成数据倾斜的原因有很多种，如group by时的key分布不均匀，空值过多、count distinct等，本文将只介绍group by &#43; count distinct这种情况。
+▐ 背景 对实时曝光流，实时统计近24小时创意的曝光UV和PV。且每分钟更新一次数据。通用的方法就是使用hop滑动窗口来进行统计，代码如下：
+select HOP_START( ts ,interval &#39;1&#39; minute ,interval &#39;24&#39; hour ) as window_start ,HOP_END( ts ,interval &#39;1&#39; minute ,interval &#39;24&#39; hour ) as window_end ,creative_id ,count(distinct uid) as exp_uv -- 计算曝光UV ,count(uid) as exp_pv --计算曝光PV from dwd_expos_detail group by hop( ts ,interval &#39;1&#39; minute ,interval &#39;24&#39; hour ) -- 滑动窗口开窗，窗口范围：近24小时，滑动间隔：每1分钟 ,creative_id ▐ 问题及原因 问题发现
+在上述flink程序运行的时候，该窗口聚合算子GlobalWindowAggregate出现长时间busy的情况，导致上游的算子出现反压，整个flink任务长时间延迟。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-21T17:55:28+08:00">
+    <meta property="article:modified_time" content="2024-06-21T17:55:28+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">FlinkSQL开发经验分享</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/e8/91/4d8i85QX_o.gif" alt="e96cce5a08d68f7e2e9353401bb23fff.gif"><br></p> 
+ <p>最近做了几个实时数据开发需求，也不可避免地在使用Flink的过程中遇到了一些问题，比如数据倾斜导致的反压、interval join、开窗导致的水位线失效等问题，通过思考并解决这些问题，加深了我对Flink原理与机制的理解，因此将这些开发经验分享出来，希望可以帮助到有需要的同学。</p> 
+ <p>下文会介绍3个case案例，每个case都会划分为背景、原因分析和解决方法三部分来进行介绍。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/15/f9/TSBJcKO2_o.png" alt="31d0bf6f4abe77c033483c23c526c7b6.png"></p> 
+ <p style="text-align:center;">Case1: 数据倾斜</p> 
+ <p>数据倾斜无论是在离线还是实时中都会遇到，其定义是：<strong>在并行进行数据处理的时候，按照某些key划分的数据显著多余其他部分，分布不均匀，导致大量数据集中分布到一台或者某几台计算节点上，使得该部分的处理速度远低于平均计算速度，成为整个数据集处理的瓶颈，从而影响整体计算性能</strong>。造成数据倾斜的原因有很多种，如group by时的key分布不均匀，空值过多、count distinct等，本文将只介绍group by + count distinct这种情况。</p> 
+ <h5><strong>▐</strong><strong>  </strong><strong>背景</strong></h5> 
+ <p>对实时曝光流，实时统计近24小时创意的曝光UV和PV。且每分钟更新一次数据。通用的方法就是使用hop滑动窗口来进行统计，代码如下：</p> 
+ <pre class="has"><code class="language-sql">select
+    HOP_START(
+        ts
+        ,interval '1' minute
+        ,interval '24' hour
+    ) as window_start
+    ,HOP_END(
+        ts
+        ,interval '1' minute
+        ,interval '24' hour
+    ) as window_end
+    ,creative_id
+    ,count(distinct uid) as exp_uv  -- 计算曝光UV
+    ,count(uid) as exp_pv   --计算曝光PV
+from dwd_expos_detail
+group by
+    hop(
+        ts
+        ,interval '1' minute
+        ,interval '24' hour
+    )  -- 滑动窗口开窗，窗口范围：近24小时，滑动间隔：每1分钟
+    ,creative_id</code></pre> 
+ <h5><strong>▐</strong><strong>  </strong><strong>问题及原因</strong></h5> 
+ <ul><li><p>问题发现</p></li></ul> 
+ <p>在上述flink程序运行的时候，该窗口聚合算子GlobalWindowAggregate出现长时间busy的情况，导致上游的算子出现反压，整个flink任务长时间延迟。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/7b/f7/D4PIUni2_o.png" alt="7391c76e5daaec52c01668f74e088f50.png"></p> 
+ <ul><li><p>原因分析</p></li></ul> 
+ <p>一般面对反压的现象，首先要定位到出现拥堵的算子，在该case中，使用窗口聚合计算每个创意id对应的UV和PV时，出现了计算繁忙拥堵的情况。</p> 
+ <p>针对这种情况，最常想到的就是以下两点原因：</p> 
+ <ul><li><p>数据量较大，但是设置的并发度过小（此任务中该算子的并发度设置为3）</p></li><li><p>单个slot的CPU和内存等计算资源不足</p></li></ul> 
+ <p>点击拥堵算子，并查看BackPressure，可以看到虽然并发度设置为3，但是出现拥堵的只有subtask0这一个并发子任务，因此基本上可以排出上述两种猜想，如果还是不放心，可以设置增加并行度至6，同时提高该算子上的slot的内存和CPU，结果如下：</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/61/8b/VT0McnMu_o.png" alt="4597e3720910172e8107239e1c70e35e.png"></p> 
+ <p>可以看到依然只有subtask0处于计算拥堵的状态，现在可以完全确认是由于group by时的key上的数据分布不均匀导致的数据倾斜问题。</p> 
+ <h5><strong>▐</strong><strong>  </strong><strong>解决方法</strong></h5> 
+ <ul><li><p>开启PartialFinal解决count distinct中的热点问题</p></li></ul> 
+ <ul><li> 
+   <ul><li><p><strong>实现：</strong>flink中提供了针对count distinct的自动打散和两阶段聚合，即PartialFinal优化。实现方法：在作业运维中增加如下参数设置：</p></li></ul></li></ul> 
+ <pre class="has"><code class="language-css">table.optimizer.distinct-agg.split.enabled: true</code></pre> 
+ <ul><li><p><strong>限制：</strong>这个参数适用于普通的GroupAggregate算子，对于WindowAggregate算子目前只适用于新的Window TVF（窗口表值函数），老的一套Tumble/Hop/Cumulate window是不支持的。</p></li></ul> 
+ <p><strong>由于我们的代码中并没有使用到窗口表值函数，而是直接在group中使用了hop窗口，因此该方法不适用。</strong></p> 
+ <p>人工对不均匀的key进行打散并实现两阶段聚合</p> 
+ <ul><li><p><strong>思路：</strong>增加按Distinct Key取模的打散层</p></li><li><p><strong>实现：</strong></p> 
+   <ul><li><p>第一阶段：对distinct的字段uid取hash值，并除以1024取模作为group by的key。此时的group by分组由于引入了user_id，因此分组变得均匀。</p></li></ul></li></ul> 
+ <pre class="has"><code class="language-sql">select
+        HOP_START(
+            ts
+            ,interval '1' minute
+            ,interval '24' hour
+        ) as window_start
+        ,HOP_END(
+            ts
+            ,interval '1' minute
+            ,interval '24' hour
+        ) as window_end
+        ,creative_id
+        ,count(distinct uid) as exp_uv
+        ,count(uid) as exp_pv
+    from dwd_expos_detail
+    group by
+        hop(
+            ts
+            ,interval '1' minute
+            ,interval '24' hour
+        )
+        ,creative_id
+        ,MOD(HASH_CODE(uid), 1024)</code></pre> 
+ <ul><li> 
+   <ul><li><p>第二阶段：对上述结果，再根据creative_id字段进行分组，并将UV和PV的值求和</p></li></ul></li></ul> 
+ <pre class="has"><code class="language-sql">select
+    window_start
+    ,window_end
+    ,creative_id
+    ,sum(exp_uv) as exp_uv
+    ,sum(exp_pv) as exp_pv
+from (
+    select
+        HOP_START(
+            ts
+            ,interval '1' minute
+            ,interval '24' hour
+        ) as window_start
+        ,HOP_END(
+            ts
+            ,interval '1' minute
+            ,interval '24' hour
+        ) as window_end
+        ,creative_id
+        ,count(distinct uid) as exp_uv
+        ,count(uid) as exp_pv
+    from dwd_expos_detail
+    group by
+        hop(
+            ts
+            ,interval '1' minute
+            ,interval '24' hour
+        )
+        ,creative_id
+        ,MOD(HASH_CODE(uid), 1024)
+)
+group by
+    window_start
+    ,window_end
+    ,creative_id
+;</code></pre> 
+ <ul><li><p><strong>效果：</strong>在拓扑图中可以看到原窗口聚合算子被分为两个独立的聚合算子，同时每个subtask的繁忙程度也都接近，不再出现不均匀的情况。</p></li></ul> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/39/77/jn1gODDT_o.png" alt="f8720411bd30f4e0b2944414730777fd.png"></p> 
+ <pre class="has"><code class="language-go">Case2: 水位线失效</code></pre> 
+ <h5><strong>▐</strong><strong>  </strong><strong>背景</strong></h5> 
+ <p>需要先对两条实时流进行双流join，然后再对join后的结果使用hop滑动窗口，计算每个创意的汇总指标。</p> 
+ <h5><strong>▐</strong><strong>  </strong><strong>问题及原因</strong></h5> 
+ <ul><li><p>问题发现</p></li></ul> 
+ <p>开窗后长时间无数据产生。</p> 
+ <ul><li><p>原因分析</p></li></ul> 
+ <p>水位线对于窗口函数的实现起到了决定性的作用，它决定了窗口的触发时机，Window聚合目前支持Event Time和Processing Time两种时间属性定义窗口。最常用的就是在源表的event_time字段上定义水位线，<strong>系统会根据数据的Event Time生成的Watermark来进行关窗。只有当Watermark大于关窗时间，才会触发窗口的结束</strong>，窗口结束才会输出结果。如果一直没有触发窗口结束的数据流入Flink，则该窗口就无法输出数据。</p> 
+ <ul><li><p><strong>限制：</strong>数据经过<strong>GroupBy、双流JOIN或OVER窗口节点后</strong>，会导致Watermark属性丢失，无法再使用Event Time进行开窗。</p></li></ul> 
+ <p>由于我们在代码中首先使用了interval join来处理点击流和交易流，然后在对生成的数据进行开窗，导致水位线丢失，窗口函数无法被触发。</p> 
+ <h5><strong>▐</strong><strong>  </strong><strong>解决方法</strong></h5> 
+ <p><strong>思路1: </strong>既然双流join之后的时间字段丢失了水位线属性，可以考虑再给join之后的结果再加上一个processing time的时间字段，然后使用该字段进行开窗。</p> 
+ <ul><li><p>缺点：该字段无法真正体现数据的时间属性，只是机器处理该条数据的时间戳，因此会导致窗口聚合时的结果不准确，不推荐使用。</p></li></ul> 
+ <p><strong>思路2: </strong>新建tt流</p> 
+ <ul><li><p>要开窗就必须有水位线，而水位线往往会在上述提及的聚合或者双流join加工中丢失，因此考虑新建一个flink任务专门用来进行双流join，过滤出符合条件的用户交易明细流，并写入到tt，然后再消费该tt，并对tt流中的event_time字段定义watermark水位线，并直接将数据用于hop滑动窗口。</p></li><li><p>实现：</p> 
+   <ul><li><p>步骤1：新建flink任务，通过interval join筛选出近六个小时内有过点击记录的用户交易明细，并sink到tt</p></li></ul></li></ul> 
+ <pre class="has"><code class="language-sql">insert into sink_dwd_pop_pay_detail_ri
+select
+    p1.uid
+    ,p1.order_id
+    ,p1.order_amount
+    ,p1.ts
+    ,p2.creative_id
+from (
+    select
+        uid
+        ,order_amount 
+        ,order_id
+        ,ts
+    from dwd_trade_detail
+) p1
+    join dwd_clk_uv_detail p2
+        on p2.ts between p1.ts - interval '6' hour and p1.ts
+        and p1.uid = p2.uid
+;</code></pre> 
+ <ul><li> 
+   <ul><li><p>步骤2: 消费该加工后的交易流，并直接进行滑动窗口聚合</p></li></ul></li></ul> 
+ <pre class="has"><code class="language-sql">select
+    HOP_START(
+        ts
+        ,INTERVAL '1' minute
+        ,INTERVAL '24' hour
+    ) as window_start
+    ,HOP_END(
+        ts
+        ,INTERVAL '1' minute
+        ,INTERVAL '24' hour
+    ) as window_end
+    ,creative_id
+    ,sum(order_amount) as total_gmv
+    ,count(distinct uid) as cnt_order_uv
+    ,round(
+        sum(order_amount) / count(distinct uid) / 1.0
+        ,2
+    ) as gmv_per_uv
+from source_dwd_pop_pay_detail_ri
+GROUP BY
+    HOP(
+        ts
+        ,INTERVAL '1' minute
+        ,INTERVAL '24' hour
+    )
+    ,creative_id
+;</code></pre> 
+ <pre class="has"><code class="language-go">Case3: group by失效</code></pre> 
+ <h5><strong>▐</strong><strong>  </strong><strong>背景</strong></h5> 
+ <p><strong>目的：</strong>对于实时流，需要给素材打上是否通过的标签。</p> 
+ <p><strong>打标逻辑：</strong>如果素材id同时出现在lastValidPlanInfo和validPlanInfo的两个数组字段中，则认为该素材通过（is_filtered=0），如果素材id只出现在lastValidPlanInfo数组字段中，则认为该素材未通过（is_filtered= 1）。</p> 
+ <p><strong>sink表类型：</strong>odps/sls，不支持回撤和主键更新机制。</p> 
+ <p>上述逻辑的实现sql如下：</p> 
+ <pre class="has"><code class="language-sql">SELECT
+    `user_id`
+    ,trace_id
+    ,`timestamp`
+    ,material_id 
+    ,min(is_filtered)) as is_filtered   -- 最后group by聚合，每个素材得到唯一的标签
+    FROM (
+ SELECT
+     `user_id`
+     ,trace_id
+     ,`timestamp`
+     ,material_id
+     ,1 as is_filtered   -- lastValidPlanInfo字段中出现的素材都打上1的被过滤标签
+ FROM dwd_log_parsing
+     ,lateral table(string_split(lastValidPlanInfo, ';')) as t1(material_id)
+ WHERE lastValidPlanInfo IS NOT NULL
+ UNION ALL
+ SELECT
+     `user_id`
+     ,trace_id
+     ,`timestamp`
+     ,material_id
+     ,0 as is_filtered     -- validPlanInfo字段中出现的素材都打上0的被过滤标签
+ FROM dwd_log_parsing
+   ,lateral table(string_split(validPlanInfo, ';')) as t2(material_id)
+      WHERE validPlanInfo IS NOT NULL
+    )
+    GROUP BY
+        `user_id`
+        ,trace_id
+        ,`timestamp`
+        ,material_id</code></pre> 
+ <h5><strong>▐</strong><strong>  </strong><strong>问题及原因</strong></h5> 
+ <ul><li><p>问题发现</p></li></ul> 
+ <p>原始数据样例：根据下图可以发现1905和1906两个素材id出现在lastValidPlanInfo中，只有1906这个id出现在validPlanInfo字段中，说明1905被过滤掉了，1906通过了。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/a9/1d/aHzNaaLm_o.png" alt="e53a0760d6e1e00b0c8402ca3e24a46c.png"></p> 
+ <p>期望的计算结果应该是：</p> 
+ <table width="867"><tbody><tr><td width="406"><p>material_id</p></td><td width="461"><p>is_filtered</p></td></tr><tr><td width="406"><p>1905</p></td><td width="461"><p>1</p></td></tr><tr><td width="406"><p>1906</p></td><td width="461"><p>0</p></td></tr></tbody></table> 
+ <p>但是最终写入到odps的结果如下图，可以发现material_id为1906出现了两条结果，且不一致，所以我们不禁产生了一个疑问：<strong>是fink中的group by失效了吗？</strong></p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/e1/33/kvz7EaAJ_o.png" alt="53d409d7d127521aea36c1e28f975cc2.png"></p> 
+ <ul><li><p>原因分析</p></li></ul> 
+ <p>由于odps sink表不支持回撤和upsert主键更新机制，因此对于每一条源表的流数据，只要进入到operator算子并产生结果，就会直接将该条结果写入到odps。</p> 
+ <p>union all和lateral table的使用都会把一条流数据拆分为多条流数据。上述代码中首先使用到了lateral table将lastValidPlanInfo和validPlanInfo数组字段中的material_id数字拆分为多条material_id，然后再使用union all+group by实现过滤打标功能，这些操作早已经将原tt流中的一条流数据拆分成了多条。</p> 
+ <p>综合上述两点，</p> 
+ <ul><li><p>针对1906的素材id，由于lateral table的使用，使得其和1905成为了两条独立的流数据；</p></li><li><p>由于union all的使用，又将其拆分为is_filtered =1的一条流数据（union all的前半部分），和is_filtered=0的一条流数据（union all的后半部分）；</p></li><li><p>由于flink一次只能处理一条流数据，因此如果先处理了素材1906的is_filtered=1的流数据，经过group by和min(is_filtered)操作，将is_filtered= 1的结果先写入到odps，然后再处理is_filtered=1的流数据，经过group by和min(is_filtered)操作，状态更新is_filtered的最小值变更为0，又将该条结果写入到odps。</p></li><li><p>由于odps不支持回撤和主键更新，因此会存在两条素材1906的数据，且结果不一致。</p></li></ul> 
+ <h5><strong>▐</strong><strong>  </strong><strong>解决方法</strong></h5> 
+ <ul><li><p><strong>思路：</strong>既然lateral table和union all的使用，会把一条流数据变为多条，并引发了后续的多次写入的问题。因此我们考虑让这些衍生出的多条流数据可以一次性进入到group by中参与聚合计算，最终只输出1条结果。</p></li></ul> 
+ <ul><li><p><strong>实现：</strong>mini-batch微批处理</p></li></ul> 
+ <pre class="has"><code class="language-css">table.exec.mini-batch.enabled: true
+table.exec.mini-batch.allow-latency: 1s</code></pre> 
+ <ul><li><p><strong>概念：</strong>mini-batch是缓存一定的数据后再触发处理，以减少对State的访问，从而提升吞吐并减少数据的输出量。微批处理通过增加延迟换取高吞吐，如果您有超低延迟的要求，不建议开启微批处理。通常对于聚合场景，微批处理可以显著地提升系统性能，建议开启。</p></li></ul> 
+ <ul><li><p><strong>效果：</strong>上述问题得到解决，odps表只输出每个用户的每次请求的每个素材id只有1条数据输出。</p></li></ul> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/65/68/44zeCOvg_o.png" alt="e63d0327c675a7f678973577c47b4771.png"></p> 
+ <p style="text-align:center;">总结</p> 
+ <p>FlinkSQL的开发是最方便高效的实时数据需求的实现途径，但是它和离线的ODPS SQL开发在底层的机制和原理上还是有很大的区别，根本的区别就在于流和批的处理。如果按照我们已经习惯的离线思维来写FlinkSQL，就可能会出现一些“离奇”的结果，但是遇到问题并不可怕，要始终相信根本不存在任何“离奇”，所有的问题都是可以追溯到原因的，而在这个探索的过程中，也可以学习到许多知识，所以让我们遇到更多的问题，积累更多的经验，熟练地应用Flink。</p> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/ab/ef/YnzttDTz_o.png" alt="49804261c6155a0bab227ae0b3420bcc.png"></p> 
+ <p style="text-align:center;">参考资料</p> 
+ <ul><li><p>窗口：</p><p>https://help.aliyun.com/zh/flink/developer-reference/overview-4?spm=a2c4g.11186623.0.i33</p></li><li><p>高性能优化：</p><p>https://help.aliyun.com/zh/flink/user-guide/optimize-flink-sql</p></li></ul> 
+ <p style="text-align:center;"><img src="https://images2.imgbox.com/90/ea/EuPu8tF1_o.png" alt="5bd37562fdcd3058092e813801ea3f6b.png"></p> 
+ <p style="text-align:center;">团队介绍</p> 
+ <p>淘天业务技术用户运营平台技术团队是一支懂用户，技术驱动的年轻队伍，以用户为中心，通过技术创新提升用户全生命周期体验，持续为用户创造价值。<br>团队立足体系化打造业界领先的用户增长基础设施，以媒体外投平台、ABTest平台、用户运营平台为代表的基础设施赋能阿里集团用户增长，日均处理数据量千亿规模、调用QPS千万级。</p> 
+ <p style="text-align:center;"><strong>¤</strong><strong> 拓展阅读 </strong><strong>¤</strong></p> 
+ <p style="text-align:center;"><a href="" rel="nofollow">3DXR技术</a> | <a href="" rel="nofollow">终端技术</a> | <a href="" rel="nofollow">音视频技术</a></p> 
+ <p style="text-align:center;"><a href="" rel="nofollow">服务端技术</a> | <a href="" rel="nofollow">技术质量</a> | <a href="" rel="nofollow">数据算法</a></p> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/37b70e5dc28a32d28b881579c39e6c3a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">国产AI之光！KIMI大模型详细使用入门指南（非常详细）零基础入门到精通，收藏这一篇就够了</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/be05b48a872f6cf07d143fa7ecd72812/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">猫头虎分享：IPython的使用技巧整理</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

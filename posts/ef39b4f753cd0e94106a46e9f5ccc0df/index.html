@@ -1,0 +1,514 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【研发日记】Matlab/Simulink软件优化(二)——通信负载柔性均衡算法 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/ef39b4f753cd0e94106a46e9f5ccc0df/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【研发日记】Matlab/Simulink软件优化(二)——通信负载柔性均衡算法">
+  <meta property="og:description" content="文章目录 前言
+背景介绍
+初始代码
+优化代码
+分析和应用
+总结
+前言 见《【研发日记】Matlab/Simulink软件优化(一)——动态内存负荷压缩》
+背景介绍 在一个嵌入式软件开发项目中，需要设计一个ECU节点的CAN网路数据发送，需求是在500k的通信波特率上，动态发送10到40帧报文，发送一轮的时间最长不能超过50ms。示例如下：
+初始代码 一开始算法开发的思路非常简单，就是设置一个50ms的任务，用for循环把要发送的数据装入CAN发送Buffer。示例如下：
+以上模型生成的代码如下：
+#include &#34;untitled.h&#34; #include &#34;untitled_private.h&#34; /* Block signals (default storage) */ B_untitled_T untitled_B; /* Block states (default storage) */ DW_untitled_T untitled_DW; /* Real-time model */ static RT_MODEL_untitled_T untitled_M_; RT_MODEL_untitled_T *const untitled_M = &amp;untitled_M_; /* Model step function */ void untitled_step(void) { int32_T i; int32_T rtb_Gain; int32_T s6_iter; char_T *sErr; void *inputMsgRef; /* Outputs for Enabled SubSystem: &#39;&lt;Root&gt;/Subsystem&#39; incorporates: * EnablePort: &#39;&lt;S3&gt;/Enable&#39; */ /* RelationalOperator: &#39;&lt;S1&gt;/Compare&#39; incorporates: * Constant: &#39;&lt;S1&gt;/Constant&#39; * UnitDelay: &#39;&lt;S2&gt;/Output&#39; */ if (untitled_DW.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-06T20:36:11+08:00">
+    <meta property="article:modified_time" content="2024-06-06T20:36:11+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【研发日记】Matlab/Simulink软件优化(二)——通信负载柔性均衡算法</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p class="img-center"><img alt="" height="514" src="https://images2.imgbox.com/eb/9d/iK2LZ4e5_o.png" width="1200"></p> 
+<h3 id="%E6%96%87%E7%AB%A0%E7%9B%AE%E5%BD%95" style="margin-left:0;text-align:justify;"><span style="color:#0070c0;">文章目录</span></h3> 
+<hr> 
+<p id="%E5%89%8D%E8%A8%80-toc" style="margin-left:40px;"><a href="#%E5%89%8D%E8%A8%80" rel="nofollow">前言</a></p> 
+<p id="%E8%83%8C%E6%99%AF%E4%BB%8B%E7%BB%8D-toc" style="margin-left:40px;"><a href="#%E8%83%8C%E6%99%AF%E4%BB%8B%E7%BB%8D" rel="nofollow">背景介绍</a></p> 
+<p id="%E5%88%9D%E5%A7%8B%E4%BB%A3%E7%A0%81-toc" style="margin-left:40px;"><a href="#%E5%88%9D%E5%A7%8B%E4%BB%A3%E7%A0%81" rel="nofollow">初始代码</a></p> 
+<p id="%E4%BC%98%E5%8C%96%E4%BB%A3%E7%A0%81-toc" style="margin-left:40px;"><a href="#%E4%BC%98%E5%8C%96%E4%BB%A3%E7%A0%81" rel="nofollow">优化代码</a></p> 
+<p id="%E5%88%86%E6%9E%90%E5%92%8C%E5%BA%94%E7%94%A8-toc" style="margin-left:40px;"><a href="#%E5%88%86%E6%9E%90%E5%92%8C%E5%BA%94%E7%94%A8" rel="nofollow">分析和应用</a></p> 
+<p id="%E6%80%BB%E7%BB%93-toc" style="margin-left:40px;"><a href="#%E6%80%BB%E7%BB%93" rel="nofollow">总结</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h3 id="%E5%89%8D%E8%A8%80" style="margin-left:0;text-align:justify;"><span style="color:#0070c0;">前言</span></h3> 
+<p style="margin-left:0;text-align:justify;">        见《<a class="link-info" href="https://blog.csdn.net/CSSUST/article/details/137526557" title="【研发日记】Matlab/Simulink软件优化(一)——动态内存负荷压缩">【研发日记】Matlab/Simulink软件优化(一)——动态内存负荷压缩</a>》</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<h3 id="%E8%83%8C%E6%99%AF%E4%BB%8B%E7%BB%8D" style="margin-left:0;text-align:justify;"><span style="color:#0070c0;">背景介绍</span></h3> 
+<p style="margin-left:0;text-align:justify;">        在一个嵌入式软件开发项目中，需要设计一个ECU节点的<span style="color:#FF0000;">CAN</span><span style="color:#FF0000;">网路</span>数据发送，需求是在500k的通信波特率上，<span style="color:#FF0000;">动态发送</span>10到40帧报文，发送一轮的时间最长不能超过50ms。示例如下：</p> 
+<p class="img-center"><img alt="" height="425" src="https://images2.imgbox.com/2d/3b/LEBK5REp_o.png" width="900"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<h3 id="%E5%88%9D%E5%A7%8B%E4%BB%A3%E7%A0%81" style="margin-left:0;text-align:justify;"><span style="color:#0070c0;">初始代码</span></h3> 
+<p style="margin-left:0;text-align:justify;">        一开始算法开发的思路非常简单，就是设置一个50ms的任务，用<span style="color:#FF0000;">for</span><span style="color:#FF0000;">循环</span>把要发送的数据装入<span style="color:#FF0000;">CAN</span><span style="color:#FF0000;">发送Buffer。</span>示例如下：</p> 
+<p class="img-center"><img alt="" height="642" src="https://images2.imgbox.com/a5/7a/iOQ4SBf7_o.png" width="800"></p> 
+<p class="img-center"><img alt="" height="646" src="https://images2.imgbox.com/51/68/toxfCSSQ_o.png" width="800"></p> 
+<p style="margin-left:0;text-align:justify;">        以上模型生成的代码如下：</p> 
+<pre><code class="language-cpp">
+#include "untitled.h"
+#include "untitled_private.h"
+
+/* Block signals (default storage) */
+B_untitled_T untitled_B;
+
+/* Block states (default storage) */
+DW_untitled_T untitled_DW;
+
+/* Real-time model */
+static RT_MODEL_untitled_T untitled_M_;
+RT_MODEL_untitled_T *const untitled_M = &amp;untitled_M_;
+
+/* Model step function */
+void untitled_step(void)
+{
+  int32_T i;
+  int32_T rtb_Gain;
+  int32_T s6_iter;
+  char_T *sErr;
+  void *inputMsgRef;
+
+  /* Outputs for Enabled SubSystem: '&lt;Root&gt;/Subsystem' incorporates:
+   *  EnablePort: '&lt;S3&gt;/Enable'
+   */
+  /* RelationalOperator: '&lt;S1&gt;/Compare' incorporates:
+   *  Constant: '&lt;S1&gt;/Constant'
+   *  UnitDelay: '&lt;S2&gt;/Output'
+   */
+  if (untitled_DW.Output_DSTATE == 0) {
+    if (!untitled_DW.Subsystem_MODE) {
+      /* Enable for Iterator SubSystem: '&lt;S3&gt;/For Iterator Subsystem' */
+      /* Enable for S-Function (svntcantransmit): '&lt;S6&gt;/CAN Transmit' */
+      sErr = GetErrorBuffer(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+      LibReset(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+      LibStart(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+      if (*sErr != 0) {
+        rtmSetErrorStatus(untitled_M, sErr);
+        rtmSetStopRequested(untitled_M, 1);
+      }
+
+      /* End of Enable for S-Function (svntcantransmit): '&lt;S6&gt;/CAN Transmit' */
+      /* End of Enable for SubSystem: '&lt;S3&gt;/For Iterator Subsystem' */
+      untitled_DW.Subsystem_MODE = true;
+    }
+
+    /* Outputs for Iterator SubSystem: '&lt;S3&gt;/For Iterator Subsystem' incorporates:
+     *  ForIterator: '&lt;S6&gt;/For Iterator'
+     */
+    for (s6_iter = 0; s6_iter &lt; 40; s6_iter++) {
+      /* Gain: '&lt;S6&gt;/Gain' */
+      rtb_Gain = s6_iter &lt;&lt; 3;
+      for (i = 0; i &lt; 8; i++) {
+        /* Selector: '&lt;S6&gt;/Selector' incorporates:
+         *  Constant: '&lt;Root&gt;/Constant'
+         */
+        untitled_B.Selector[i] = untitled_ConstP.Constant_Value[i + rtb_Gain];
+      }
+
+      /* S-Function (scanpack): '&lt;S6&gt;/CAN Pack' */
+      /* S-Function (scanpack): '&lt;S6&gt;/CAN Pack' */
+      untitled_B.CANPack.ID = 10U;
+      untitled_B.CANPack.Length = 8U;
+      untitled_B.CANPack.Extended = 0U;
+      untitled_B.CANPack.Remote = 0;
+      untitled_B.CANPack.Data[0] = 0;
+      untitled_B.CANPack.Data[1] = 0;
+      untitled_B.CANPack.Data[2] = 0;
+      untitled_B.CANPack.Data[3] = 0;
+      untitled_B.CANPack.Data[4] = 0;
+      untitled_B.CANPack.Data[5] = 0;
+      untitled_B.CANPack.Data[6] = 0;
+      untitled_B.CANPack.Data[7] = 0;
+
+      {
+        (void) memcpy((untitled_B.CANPack.Data), &amp;untitled_B.Selector[0],
+                      8 * sizeof(uint8_T));
+      }
+
+      /* S-Function (svntcantransmit): '&lt;S6&gt;/CAN Transmit' */
+      sErr = GetErrorBuffer(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+
+      /* S-Function (scanpack): '&lt;S6&gt;/CAN Pack' incorporates:
+       *  S-Function (svntcantransmit): '&lt;S6&gt;/CAN Transmit'
+       */
+      inputMsgRef = &amp;untitled_B.CANPack;
+
+      /* S-Function (svntcantransmit): '&lt;S6&gt;/CAN Transmit' */
+      LibOutputs_CANTransmit(&amp;untitled_DW.CANTransmit_CANTransmit[0U],
+        inputMsgRef, 1);
+      if (*sErr != 0) {
+        rtmSetErrorStatus(untitled_M, sErr);
+        rtmSetStopRequested(untitled_M, 1);
+      }
+    }
+
+    /* End of Outputs for SubSystem: '&lt;S3&gt;/For Iterator Subsystem' */
+  } else {
+    if (untitled_DW.Subsystem_MODE) {
+      /* Disable for Iterator SubSystem: '&lt;S3&gt;/For Iterator Subsystem' */
+      /* Disable for S-Function (svntcantransmit): '&lt;S6&gt;/CAN Transmit' */
+      sErr = GetErrorBuffer(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+      LibReset(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+      if (*sErr != 0) {
+        rtmSetErrorStatus(untitled_M, sErr);
+        rtmSetStopRequested(untitled_M, 1);
+      }
+
+      /* End of Disable for S-Function (svntcantransmit): '&lt;S6&gt;/CAN Transmit' */
+      /* End of Disable for SubSystem: '&lt;S3&gt;/For Iterator Subsystem' */
+      untitled_DW.Subsystem_MODE = false;
+    }
+  }
+
+  /* End of RelationalOperator: '&lt;S1&gt;/Compare' */
+  /* End of Outputs for SubSystem: '&lt;Root&gt;/Subsystem' */
+
+  /* Switch: '&lt;S5&gt;/FixPt Switch' incorporates:
+   *  Constant: '&lt;S4&gt;/FixPt Constant'
+   *  Constant: '&lt;S5&gt;/Constant'
+   *  Sum: '&lt;S4&gt;/FixPt Sum1'
+   *  UnitDelay: '&lt;S2&gt;/Output'
+   */
+  if ((uint8_T)(untitled_DW.Output_DSTATE + 1U) &gt; 49) {
+    untitled_DW.Output_DSTATE = 0U;
+  } else {
+    untitled_DW.Output_DSTATE++;
+  }
+
+  /* End of Switch: '&lt;S5&gt;/FixPt Switch' */
+}
+
+/* Model initialize function */
+void untitled_initialize(void)
+{
+  {
+    int32_T bitParams[4];
+    char_T *sErr;
+
+    /* Start for S-Function (svntcantransmit): '&lt;S6&gt;/CAN Transmit' */
+    sErr = GetErrorBuffer(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+    CreateHostLibrary("slhostlibcantransmit.dll",
+                      &amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+    if (*sErr == 0) {
+      bitParams[0U] = 1;
+      bitParams[1U] = 4;
+      bitParams[2U] = 3;
+      bitParams[3U] = 1;
+      LibCreate_CANTransmit(&amp;untitled_DW.CANTransmit_CANTransmit[0U], "vector",
+                            "slvectorxlwrapper.dll", "Virtual", 0, 1, 1, 1,
+                            "canslconverter", "vectorxlplugin", 500000.0,
+                            &amp;bitParams[0U], 0, 0, 0, 1.0, 0);
+    }
+
+    if (*sErr == 0) {
+      LibStart(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+    }
+
+    if (*sErr != 0) {
+      rtmSetErrorStatus(untitled_M, sErr);
+      rtmSetStopRequested(untitled_M, 1);
+    }
+
+    /* End of Start for S-Function (svntcantransmit): '&lt;S6&gt;/CAN Transmit' */
+    /* End of SystemInitialize for SubSystem: '&lt;S3&gt;/For Iterator Subsystem' */
+    /* End of SystemInitialize for SubSystem: '&lt;Root&gt;/Subsystem' */
+  }
+}
+
+/* Model terminate function */
+void untitled_terminate(void)
+{
+  char_T *sErr;
+
+  /* Terminate for Enabled SubSystem: '&lt;Root&gt;/Subsystem' */
+  /* Terminate for Iterator SubSystem: '&lt;S3&gt;/For Iterator Subsystem' */
+  /* Terminate for S-Function (svntcantransmit): '&lt;S6&gt;/CAN Transmit' */
+  sErr = GetErrorBuffer(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+  LibTerminate(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+  if (*sErr != 0) {
+    rtmSetErrorStatus(untitled_M, sErr);
+    rtmSetStopRequested(untitled_M, 1);
+  }
+
+  LibDestroy(&amp;untitled_DW.CANTransmit_CANTransmit[0U], 0);
+  DestroyHostLibrary(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+
+  /* End of Terminate for S-Function (svntcantransmit): '&lt;S6&gt;/CAN Transmit' */
+  /* End of Terminate for SubSystem: '&lt;S3&gt;/For Iterator Subsystem' */
+  /* End of Terminate for SubSystem: '&lt;Root&gt;/Subsystem' */
+}</code></pre> 
+<p style="margin-left:0;text-align:justify;">        按照上述示例生成的代码，调试时监测到CAN网络上的<span style="color:#FF0000;">瞬时负载率</span>，在0%和100%之间来回跳变。0%和100%各自占用一段时间，两者的比例随着发送报文数量的多少变化。当报文数为最大的40帧时，<span style="color:#FF0000;">100%</span>瞬时负载率会<span style="color:#FF0000;">持续10ms</span>左右，如下图所示：</p> 
+<p class="img-center"><img alt="" height="447" src="https://images2.imgbox.com/d0/0d/G1hXb8Xw_o.png" width="800"></p> 
+<p style="margin-left:0;text-align:justify;">        分析上述网络通信的特点，100%瞬时负载率持续的10ms时间段里，肯定会有其他ECU节点也发出报文，这时候CAN网络就会自动根据ID的优先级分配谁先发，谁等待后发，即出现<span style="color:#FF0000;">冲突抢占</span>现象。在CAN网络中如果冲突抢占是偶发的，那就不会有太大影响，但是如果冲突抢占是持续的，那就不是我们希望看到的了。</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<h3 id="%E4%BC%98%E5%8C%96%E4%BB%A3%E7%A0%81" style="margin-left:0;text-align:justify;"><span style="color:#0070c0;">优化代码</span></h3> 
+<p style="margin-left:0;text-align:justify;">        根据对上述问题的分析，我们发现每个50ms周期里边都还有至少40ms是没有利用的，那么只要把前面拥挤的报文分散开到后面一部分，就能解决前面的问题了。然后如果还有剩余的时间没有利用，那么我们就<span style="color:#FF0000;">柔性地缩短</span>50ms的周期时长，提高数据发送的频率。这样既能解决前面的问题，又能把总线资源充分利用起来，用于提高我们网络通信的性能。示例如下：</p> 
+<p class="img-center"><img alt="" height="645" src="https://images2.imgbox.com/a8/de/A5DAfjcF_o.png" width="800"></p> 
+<p class="img-center"><img alt="" height="648" src="https://images2.imgbox.com/a9/ed/c2mVXE6E_o.png" width="800"></p> 
+<p style="margin-left:0;text-align:justify;">        以上模型生成的代码如下：</p> 
+<pre><code class="language-cpp">#include "untitled.h"
+#include "untitled_private.h"
+
+/* Named constants for Chart: '&lt;S1&gt;/Chart' */
+#define untitled_IN_a                  ((uint8_T)1U)
+#define untitled_IN_a1                 ((uint8_T)2U)
+
+/* Block signals (default storage) */
+B_untitled_T untitled_B;
+
+/* Block states (default storage) */
+DW_untitled_T untitled_DW;
+
+/* Real-time model */
+static RT_MODEL_untitled_T untitled_M_;
+RT_MODEL_untitled_T *const untitled_M = &amp;untitled_M_;
+
+/* Model step function */
+void untitled_step(void)
+{
+  real_T rtb_Gain;
+  int32_T i;
+  char_T *sErr;
+  void *inputMsgRef;
+
+  /* Chart: '&lt;S1&gt;/Chart' incorporates:
+   *  Constant: '&lt;Root&gt;/Constant3'
+   */
+  if (untitled_DW.is_active_c3_untitled == 0U) {
+    untitled_DW.is_active_c3_untitled = 1U;
+    untitled_DW.is_c3_untitled = untitled_IN_a;
+    untitled_B.FrameIndex = 0.0;
+  } else if (untitled_DW.is_c3_untitled == untitled_IN_a) {
+    untitled_DW.is_c3_untitled = untitled_IN_a1;
+    untitled_B.FrameIndex++;
+  } else {
+    /* case IN_a1: */
+    if (untitled_B.FrameIndex &gt;= 39.0) {
+      untitled_DW.is_c3_untitled = untitled_IN_a;
+      untitled_B.FrameIndex = 0.0;
+    }
+  }
+
+  /* End of Chart: '&lt;S1&gt;/Chart' */
+
+  /* Gain: '&lt;S1&gt;/Gain' */
+  rtb_Gain = 8.0 * untitled_B.FrameIndex;
+  for (i = 0; i &lt; 8; i++) {
+    /* Selector: '&lt;S1&gt;/Selector' incorporates:
+     *  Constant: '&lt;Root&gt;/Constant2'
+     */
+    untitled_B.Selector[i] = untitled_ConstP.Constant2_Value[i + (int32_T)
+      rtb_Gain];
+  }
+
+  /* S-Function (scanpack): '&lt;S1&gt;/CAN Pack' */
+  /* S-Function (scanpack): '&lt;S1&gt;/CAN Pack' */
+  untitled_B.CANPack.ID = 10U;
+  untitled_B.CANPack.Length = 8U;
+  untitled_B.CANPack.Extended = 0U;
+  untitled_B.CANPack.Remote = 0;
+  untitled_B.CANPack.Data[0] = 0;
+  untitled_B.CANPack.Data[1] = 0;
+  untitled_B.CANPack.Data[2] = 0;
+  untitled_B.CANPack.Data[3] = 0;
+  untitled_B.CANPack.Data[4] = 0;
+  untitled_B.CANPack.Data[5] = 0;
+  untitled_B.CANPack.Data[6] = 0;
+  untitled_B.CANPack.Data[7] = 0;
+
+  {
+    (void) memcpy((untitled_B.CANPack.Data), &amp;untitled_B.Selector[0],
+                  8 * sizeof(uint8_T));
+  }
+
+  /* S-Function (svntcantransmit): '&lt;S1&gt;/CAN Transmit' */
+  sErr = GetErrorBuffer(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+
+  /* S-Function (scanpack): '&lt;S1&gt;/CAN Pack' incorporates:
+   *  S-Function (svntcantransmit): '&lt;S1&gt;/CAN Transmit'
+   */
+  inputMsgRef = &amp;untitled_B.CANPack;
+
+  /* S-Function (svntcantransmit): '&lt;S1&gt;/CAN Transmit' */
+  LibOutputs_CANTransmit(&amp;untitled_DW.CANTransmit_CANTransmit[0U], inputMsgRef,
+    1);
+  if (*sErr != 0) {
+    rtmSetErrorStatus(untitled_M, sErr);
+    rtmSetStopRequested(untitled_M, 1);
+  }
+}
+
+/* Model initialize function */
+void untitled_initialize(void)
+{
+  {
+    int32_T bitParams[4];
+    char_T *sErr;
+
+    /* Start for S-Function (svntcantransmit): '&lt;S1&gt;/CAN Transmit' */
+    sErr = GetErrorBuffer(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+    CreateHostLibrary("slhostlibcantransmit.dll",
+                      &amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+    if (*sErr == 0) {
+      bitParams[0U] = 1;
+      bitParams[1U] = 4;
+      bitParams[2U] = 3;
+      bitParams[3U] = 1;
+      LibCreate_CANTransmit(&amp;untitled_DW.CANTransmit_CANTransmit[0U], "vector",
+                            "slvectorxlwrapper.dll", "Virtual", 0, 1, 1, 1,
+                            "canslconverter", "vectorxlplugin", 500000.0,
+                            &amp;bitParams[0U], 0, 0, 0, 1.0, 0);
+    }
+
+    if (*sErr == 0) {
+      LibStart(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+    }
+
+    if (*sErr != 0) {
+      rtmSetErrorStatus(untitled_M, sErr);
+      rtmSetStopRequested(untitled_M, 1);
+    }
+
+    /* End of Start for S-Function (svntcantransmit): '&lt;S1&gt;/CAN Transmit' */
+
+    /* Enable for S-Function (svntcantransmit): '&lt;S1&gt;/CAN Transmit' */
+    sErr = GetErrorBuffer(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+    LibReset(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+    LibStart(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+    if (*sErr != 0) {
+      rtmSetErrorStatus(untitled_M, sErr);
+      rtmSetStopRequested(untitled_M, 1);
+    }
+
+    /* End of Enable for S-Function (svntcantransmit): '&lt;S1&gt;/CAN Transmit' */
+  }
+}
+
+/* Model terminate function */
+void untitled_terminate(void)
+{
+  char_T *sErr;
+
+  /* Terminate for S-Function (svntcantransmit): '&lt;S1&gt;/CAN Transmit' */
+  sErr = GetErrorBuffer(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+  LibTerminate(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+  if (*sErr != 0) {
+    rtmSetErrorStatus(untitled_M, sErr);
+    rtmSetStopRequested(untitled_M, 1);
+  }
+
+  LibDestroy(&amp;untitled_DW.CANTransmit_CANTransmit[0U], 0);
+  DestroyHostLibrary(&amp;untitled_DW.CANTransmit_CANTransmit[0U]);
+
+  /* End of Terminate for S-Function (svntcantransmit): '&lt;S1&gt;/CAN Transmit' */
+}</code></pre> 
+<p style="margin-left:0;text-align:justify;">        按照上述示例生成的代码，调试时监测到CAN网络上的瞬时负载率非常<span style="color:#FF0000;">均匀</span>地保持在<span style="color:#FF0000;">25%</span><span style="color:#FF0000;">左右</span>。并且不管报文数量的如何变化，软件都能自动地柔性处理，既不会负载率过高，也不会<span style="color:#FF0000;">总线资源</span>浪费，同时又能将报文频率<span style="color:#FF0000;">性能</span>发挥到最大。如下图所示：</p> 
+<p class="img-center"><img alt="" height="446" src="https://images2.imgbox.com/ea/1e/pHahWWpq_o.png" width="800"></p> 
+<p style="margin-left:0;text-align:justify;">        分析上述网络通信的特点，已实现了项目中的需求，同时也利用通信负载<span style="color:#FF0000;">柔性均衡算法</span>把性能发挥到了最优。</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<h3 id="%E5%88%86%E6%9E%90%E5%92%8C%E5%BA%94%E7%94%A8" style="margin-left:0;text-align:justify;"><span style="color:#0070c0;">分析和应用</span></h3> 
+<p style="margin-left:0;text-align:justify;">        通信负载均衡，在不同的软件开发项目中重要性是不一样的。一种是<span style="color:#FF0000;">实时性</span>要求高的的应用（例如底盘控制），每一帧消息都要在准确的时间发送出去，不允许冲突抢占导致的延误。另一种是网络<span style="color:#FF0000;">通信资源非常小</span>的总线（例如低速CAN），单位时间内能发送的报文数量本来就比较少，所以更要仔细计算充分利用，要不然很容易因为负载不均衡导致报文阻塞。</p> 
+<p style="margin-left:0;text-align:justify;">        使用通信负载柔性均衡算法时，需要注意如下几点：</p> 
+<p style="margin-left:0;text-align:justify;">        1、不同波特率，理想负载率下，单位时间对应的报文数量需要仔细的<span style="color:#FF0000;">计算</span>，才能设定出最优的算法。例如：500k波特率，在25%理想负载率下，1ms对应的报文数量就是1帧。同理如果1M波特率，那么1ms对应的报文数量就是2帧。</p> 
+<p style="margin-left:0;text-align:justify;">        2、计算好最优的理论算法之后，还要更具自己处理器的性能，设定一个合适的<span style="color:#FF0000;">控制粒度</span>。例如：自己的软件最快可以1ms运算一圈，那么就可以1ms控制一次发送1帧或者2帧。如果自己的软件最快只能5ms运算一圈，那么同理就5ms控制一次发送5帧或者10帧。这里的控制粒度越小，负载均衡的效果也越好，但是并非所有的平台都能达到理论极限，只要在自己平台的基础上发挥到最优即可。</p> 
+<p style="margin-left:0;text-align:justify;">        3、对于有<span style="color:#FF0000;">网络管理机制</span>的应用场景，需求方可能不希望我们的50ms周期发生变化。例如，网络上的主ECU节点利用同步信号，控制着各个从ECU节点分别占用这50ms中的一小段。当我们自己节点的报文发送完之后，需要等着下一个50ms的到来，或者下一个同步信号的到来。这时候就要把FrameIndex的循环Limit固定成50ms，然后在Transmit模块上加一个使能条件FrameIndex &lt; FrameNum。这样也能达到我们通信负载柔性均衡的目的，同时也满足主ECU节点的网络管理。</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<h3 id="%E6%80%BB%E7%BB%93" style="margin-left:0;text-align:justify;"><span style="color:#0070c0;">总结</span></h3> 
+<p style="margin-left:0;text-align:justify;">        以上就是本人在嵌入式软件开发中处理通信负载率不均衡问题时，一些个人理解和分析的总结，首先介绍了它的背景情况，然后展示它的初始设计和优化设计，最后分析了<span style="color:#FF0000;">通信负载均衡算法</span>的注意事项和应用场景。</p> 
+<p style="margin-left:0;text-align:justify;">        后续还会分享另外几个最近总结的软件优化知识点，欢迎评论区留言、点赞、收藏和关注，这些鼓励和支持都将成文本人持续分享的动力。</p> 
+<p style="margin-left:0;text-align:justify;">        另外，上述例程使用的Demo工程，可以到笔者的主页查找和下载。</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<hr> 
+<p style="margin-left:0;text-align:justify;">        版权声明：原创文章，转载和引用请注明出处和链接，<span style="color:#fe2c24;">侵权必究</span>！</p> 
+<p class="img-center"><img alt="" height="246" src="https://images2.imgbox.com/84/e6/Blo8v6iB_o.png" width="1179"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3d309d555da5b60009fb9e3a0d70a47b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">OpenCV的小部件最基本范例</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/fcd02bbdaa845590df8cb4eb853f7faf/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">AIGC降重：如何2分钟降低论文AI率和查重率？</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

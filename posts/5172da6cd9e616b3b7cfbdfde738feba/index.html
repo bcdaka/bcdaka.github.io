@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>多GPU并行处理[任务分配、进程调度、资源管理、负载均衡] - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/5172da6cd9e616b3b7cfbdfde738feba/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="多GPU并行处理[任务分配、进程调度、资源管理、负载均衡]">
+  <meta property="og:description" content="1. 多GPU并行处理设计 设计思路: 实现基于多GPU的并行任务处理，每个GPU运行独立的任务，以加速整体的处理速度。 实现机制: 进程隔离: 利用multiprocessing.Process为每个GPU创建独立的工作进程。 GPU资源限制: 通过设置CUDA_VISIBLE_DEVICES环境变量，确保每个进程仅能访问其对应的GPU。 任务互斥: 每个GPU拥有一个Lock对象，确保同一时间只有一个任务在特定的GPU上运行。 2. 动态任务分配与负载均衡 设计思路: 通过动态分配任务至队列，实现任务的均匀分布，确保负载均衡。 实现机制: 任务队列: 使用Manager().Queue()创建共享队列，允许多进程安全地存取任务。 设备ID计算: 通过calculate_device_id函数，基于文件路径的哈希值和GPU总数，计算出任务应分配至的GPU，确保任务均匀分配。 3. 进程间通信与同步 设计思路: 确保多进程间的安全通信，避免数据竞争和死锁。 实现机制: 任务获取原子性: 利用Lock对象保护任务获取操作，确保任务获取的原子性。 进程同步: 使用task_queue.join()等待所有任务完成，确保主进程不会在所有子任务完成前退出。 优雅退出: 通过向队列中放置None信号，通知工作进程可以安全退出，实现进程间的优雅终止。 4. 异常处理与资源管理 设计思路: 提供异常处理机制，确保资源的有效管理。 实现机制: 异常捕获: 在worker函数中，使用try-except结构捕获Empty异常，处理队列为空的情况。 资源节约: 通过检查输出文件的存在性，避免重复处理，节省计算资源。 5. 性能优化与监控 设计思路: 优化任务处理流程，提供执行状态的实时反馈。 实现机制: 进度监控: 利用tqdm.write在控制台输出任务执行信息，提供直观的进度反馈。 效率提升: 通过合理的任务分配和进程设计，最大化利用多GPU资源，提升整体处理效率。 总结 该代码的关键设计聚焦于多GPU环境下的并行任务处理，通过精细的进程管理、资源调度、负载均衡策略以及异常处理机制，确保了系统的高效、稳定运行。同时，通过进程间通信和同步机制，以及性能优化措施，进一步提升了系统的整体性能和用户体验。 # 多gpu调度 # python multi_swap_10s_v2.py import os import subprocess from tqdm import tqdm import hashlib from multiprocessing import Process, Lock, Manager, Queue from queue import Empty # 用于检查队列是否为空 # Locks for each GPU to ensure only one task runs at a time per GPU gpu_locks = [Lock(), Lock()] # A shared queue for all tasks using Manager&#39;s Queue task_queue = Manager().">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-25T10:56:08+08:00">
+    <meta property="article:modified_time" content="2024-07-25T10:56:08+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">多GPU并行处理[任务分配、进程调度、资源管理、负载均衡]</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <pre><code class="prism language-bash"><span class="token number">1</span>. 多GPU并行处理设计
+设计思路: 实现基于多GPU的并行任务处理，每个GPU运行独立的任务，以加速整体的处理速度。
+实现机制:
+进程隔离: 利用multiprocessing.Process为每个GPU创建独立的工作进程。
+GPU资源限制: 通过设置CUDA_VISIBLE_DEVICES环境变量，确保每个进程仅能访问其对应的GPU。
+任务互斥: 每个GPU拥有一个Lock对象，确保同一时间只有一个任务在特定的GPU上运行。
+<span class="token number">2</span>. 动态任务分配与负载均衡
+设计思路: 通过动态分配任务至队列，实现任务的均匀分布，确保负载均衡。
+实现机制:
+任务队列: 使用Manager<span class="token punctuation">(</span><span class="token punctuation">)</span>.Queue<span class="token punctuation">(</span><span class="token punctuation">)</span>创建共享队列，允许多进程安全地存取任务。
+设备ID计算: 通过calculate_device_id函数，基于文件路径的哈希值和GPU总数，计算出任务应分配至的GPU，确保任务均匀分配。
+<span class="token number">3</span>. 进程间通信与同步
+设计思路: 确保多进程间的安全通信，避免数据竞争和死锁。
+实现机制:
+任务获取原子性: 利用Lock对象保护任务获取操作，确保任务获取的原子性。
+进程同步: 使用task_queue.join<span class="token punctuation">(</span><span class="token punctuation">)</span>等待所有任务完成，确保主进程不会在所有子任务完成前退出。
+优雅退出: 通过向队列中放置None信号，通知工作进程可以安全退出，实现进程间的优雅终止。
+<span class="token number">4</span>. 异常处理与资源管理
+设计思路: 提供异常处理机制，确保资源的有效管理。
+实现机制:
+异常捕获: 在worker函数中，使用try-except结构捕获Empty异常，处理队列为空的情况。
+资源节约: 通过检查输出文件的存在性，避免重复处理，节省计算资源。
+<span class="token number">5</span>. 性能优化与监控
+设计思路: 优化任务处理流程，提供执行状态的实时反馈。
+实现机制:
+进度监控: 利用tqdm.write在控制台输出任务执行信息，提供直观的进度反馈。
+效率提升: 通过合理的任务分配和进程设计，最大化利用多GPU资源，提升整体处理效率。
+总结
+该代码的关键设计聚焦于多GPU环境下的并行任务处理，通过精细的进程管理、资源调度、负载均衡策略以及异常处理机制，确保了系统的高效、稳定运行。同时，通过进程间通信和同步机制，以及性能优化措施，进一步提升了系统的整体性能和用户体验。
+</code></pre> 
+<pre><code class="prism language-python"><span class="token comment"># 多gpu调度</span>
+<span class="token comment"># python multi_swap_10s_v2.py</span>
+<span class="token keyword">import</span> os
+<span class="token keyword">import</span> subprocess
+<span class="token keyword">from</span> tqdm <span class="token keyword">import</span> tqdm
+<span class="token keyword">import</span> hashlib
+<span class="token keyword">from</span> multiprocessing <span class="token keyword">import</span> Process<span class="token punctuation">,</span> Lock<span class="token punctuation">,</span> Manager<span class="token punctuation">,</span> Queue
+<span class="token keyword">from</span> queue <span class="token keyword">import</span> Empty  <span class="token comment"># 用于检查队列是否为空</span>
+
+
+<span class="token comment"># Locks for each GPU to ensure only one task runs at a time per GPU</span>
+gpu_locks <span class="token operator">=</span> <span class="token punctuation">[</span>Lock<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> Lock<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">]</span>
+<span class="token comment"># A shared queue for all tasks using Manager's Queue</span>
+task_queue <span class="token operator">=</span> Manager<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>Queue<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+<span class="token keyword">def</span> <span class="token function">worker</span><span class="token punctuation">(</span>gpu_id<span class="token punctuation">,</span> lock<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    os<span class="token punctuation">.</span>environ<span class="token punctuation">[</span><span class="token string">'CUDA_VISIBLE_DEVICES'</span><span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token builtin">str</span><span class="token punctuation">(</span>gpu_id<span class="token punctuation">)</span>  <span class="token comment"># Set the CUDA_VISIBLE_DEVICES for this process</span>
+    <span class="token keyword">while</span> <span class="token boolean">True</span><span class="token punctuation">:</span>
+        <span class="token comment"># Try to acquire the lock and get a task atomically</span>
+        <span class="token keyword">with</span> lock<span class="token punctuation">:</span>
+            <span class="token keyword">try</span><span class="token punctuation">:</span>
+                cmd <span class="token operator">=</span> task_queue<span class="token punctuation">.</span>get_nowait<span class="token punctuation">(</span><span class="token punctuation">)</span>
+            <span class="token keyword">except</span> Empty<span class="token punctuation">:</span>
+                <span class="token comment"># No more tasks available, exit the worker</span>
+                <span class="token keyword">break</span>
+
+        <span class="token comment"># Update the progress bar outside the lock to avoid contention</span>
+        tqdm<span class="token punctuation">.</span>write<span class="token punctuation">(</span><span class="token string-interpolation"><span class="token string">f"GPU </span><span class="token interpolation"><span class="token punctuation">{<!-- --></span>gpu_id<span class="token punctuation">}</span></span><span class="token string"> starting task: </span><span class="token interpolation"><span class="token punctuation">{<!-- --></span><span class="token string">' '</span><span class="token punctuation">.</span>join<span class="token punctuation">(</span>cmd<span class="token punctuation">)</span><span class="token punctuation">}</span></span><span class="token string">"</span></span><span class="token punctuation">)</span>
+
+        <span class="token comment"># Run the subprocess</span>
+        subprocess<span class="token punctuation">.</span>run<span class="token punctuation">(</span>cmd<span class="token punctuation">)</span>
+
+        <span class="token comment"># Worker finishes when it exits the loop</span>
+
+<span class="token keyword">def</span> <span class="token function">calculate_device_id</span><span class="token punctuation">(</span>vid_file<span class="token punctuation">,</span> img_file<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token comment"># Calculate a hash of the file paths to determine the device ID</span>
+    hash_object <span class="token operator">=</span> hashlib<span class="token punctuation">.</span>md5<span class="token punctuation">(</span><span class="token string-interpolation"><span class="token string">f"</span><span class="token interpolation"><span class="token punctuation">{<!-- --></span>vid_file<span class="token punctuation">}</span></span><span class="token interpolation"><span class="token punctuation">{<!-- --></span>img_file<span class="token punctuation">}</span></span><span class="token string">"</span></span><span class="token punctuation">.</span>encode<span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+    hex_dig <span class="token operator">=</span> hash_object<span class="token punctuation">.</span>hexdigest<span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token keyword">return</span> <span class="token builtin">int</span><span class="token punctuation">(</span>hex_dig<span class="token punctuation">,</span> <span class="token number">16</span><span class="token punctuation">)</span> <span class="token operator">%</span> <span class="token builtin">len</span><span class="token punctuation">(</span>gpu_locks<span class="token punctuation">)</span>
+
+<span class="token keyword">def</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+    source_videos_dir <span class="token operator">=</span> <span class="token string">"/home/nvidia/data/video/HDTF/10s"</span>
+    source_images_dir <span class="token operator">=</span> <span class="token string">"/home/nvidia/data/image/CelebA-HQ/300/0"</span>
+    output_dir <span class="token operator">=</span> source_images_dir
+
+    video_files_list <span class="token operator">=</span> <span class="token punctuation">[</span>
+        os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>join<span class="token punctuation">(</span>source_videos_dir<span class="token punctuation">,</span> f<span class="token punctuation">)</span>
+        <span class="token keyword">for</span> f <span class="token keyword">in</span> os<span class="token punctuation">.</span>listdir<span class="token punctuation">(</span>source_videos_dir<span class="token punctuation">)</span>
+        <span class="token keyword">if</span> os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>isfile<span class="token punctuation">(</span>os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>join<span class="token punctuation">(</span>source_videos_dir<span class="token punctuation">,</span> f<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token keyword">and</span> f<span class="token punctuation">.</span>endswith<span class="token punctuation">(</span><span class="token string">'.mp4'</span><span class="token punctuation">)</span> <span class="token keyword">and</span> <span class="token keyword">not</span> <span class="token builtin">any</span><span class="token punctuation">(</span>char<span class="token punctuation">.</span>isalpha<span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token keyword">for</span> char <span class="token keyword">in</span> f<span class="token punctuation">.</span>split<span class="token punctuation">(</span><span class="token string">'.'</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+    <span class="token punctuation">]</span>
+
+    image_files_list <span class="token operator">=</span> <span class="token punctuation">[</span>
+        os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>join<span class="token punctuation">(</span>source_images_dir<span class="token punctuation">,</span> f<span class="token punctuation">)</span>
+        <span class="token keyword">for</span> f <span class="token keyword">in</span> os<span class="token punctuation">.</span>listdir<span class="token punctuation">(</span>source_images_dir<span class="token punctuation">)</span>
+        <span class="token keyword">if</span> os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>isfile<span class="token punctuation">(</span>os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>join<span class="token punctuation">(</span>source_images_dir<span class="token punctuation">,</span> f<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token keyword">and</span> f<span class="token punctuation">.</span>endswith<span class="token punctuation">(</span><span class="token string">'.jpg'</span><span class="token punctuation">)</span>
+    <span class="token punctuation">]</span>
+
+    model_id <span class="token operator">=</span> <span class="token string">'c'</span>
+
+    <span class="token comment"># Fill the task queue</span>
+    <span class="token keyword">for</span> vid_file <span class="token keyword">in</span> video_files_list<span class="token punctuation">:</span>
+        <span class="token keyword">for</span> img_file <span class="token keyword">in</span> image_files_list<span class="token punctuation">:</span>
+            output_video <span class="token operator">=</span> <span class="token string-interpolation"><span class="token string">f"</span><span class="token interpolation"><span class="token punctuation">{<!-- --></span>os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>splitext<span class="token punctuation">(</span>os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>basename<span class="token punctuation">(</span>vid_file<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">}</span></span><span class="token string">_</span><span class="token interpolation"><span class="token punctuation">{<!-- --></span>os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>splitext<span class="token punctuation">(</span>os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>basename<span class="token punctuation">(</span>img_file<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">]</span><span class="token punctuation">}</span></span><span class="token string">_</span><span class="token interpolation"><span class="token punctuation">{<!-- --></span>model_id<span class="token punctuation">}</span></span><span class="token string">.mp4"</span></span>
+            output_video_path <span class="token operator">=</span> os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>join<span class="token punctuation">(</span>output_dir<span class="token punctuation">,</span> output_video<span class="token punctuation">)</span>
+            
+            <span class="token comment"># Check if the output file already exists</span>
+            <span class="token keyword">if</span> <span class="token keyword">not</span> os<span class="token punctuation">.</span>path<span class="token punctuation">.</span>exists<span class="token punctuation">(</span>output_video_path<span class="token punctuation">)</span><span class="token punctuation">:</span>
+                device_id <span class="token operator">=</span> calculate_device_id<span class="token punctuation">(</span>vid_file<span class="token punctuation">,</span> img_file<span class="token punctuation">)</span>
+                cmd <span class="token operator">=</span> <span class="token punctuation">[</span>
+                    <span class="token string">"python"</span><span class="token punctuation">,</span> <span class="token string">"multi_face_single_source.py"</span><span class="token punctuation">,</span>
+                    <span class="token string">"--retina_path"</span><span class="token punctuation">,</span> <span class="token string">"retinaface/RetinaFace-Res50.h5"</span><span class="token punctuation">,</span>
+                    <span class="token string">"--arcface_path"</span><span class="token punctuation">,</span> <span class="token string">"arcface_model/ArcFace-Res50.h5"</span><span class="token punctuation">,</span>
+                    <span class="token string">"--facedancer_path"</span><span class="token punctuation">,</span> <span class="token string">"model_zoo/FaceDancer_config_c_HQ.h5"</span><span class="token punctuation">,</span>
+                    <span class="token string">"--vid_path"</span><span class="token punctuation">,</span> vid_file<span class="token punctuation">,</span>
+                    <span class="token string">"--swap_source"</span><span class="token punctuation">,</span> img_file<span class="token punctuation">,</span>
+                    <span class="token string">"--output"</span><span class="token punctuation">,</span> output_video_path<span class="token punctuation">,</span>
+                    <span class="token string">"--compare"</span><span class="token punctuation">,</span> <span class="token string">"False"</span><span class="token punctuation">,</span>
+                    <span class="token string">"--sample_rate"</span><span class="token punctuation">,</span> <span class="token string">"1"</span><span class="token punctuation">,</span>
+                    <span class="token string">"--length"</span><span class="token punctuation">,</span> <span class="token string">"1"</span><span class="token punctuation">,</span>
+                    <span class="token string">"--align_source"</span><span class="token punctuation">,</span> <span class="token string">"True"</span><span class="token punctuation">,</span>
+                    <span class="token string">"--device_id"</span><span class="token punctuation">,</span> <span class="token builtin">str</span><span class="token punctuation">(</span>device_id<span class="token punctuation">)</span>
+                <span class="token punctuation">]</span>
+                task_queue<span class="token punctuation">.</span>put<span class="token punctuation">(</span>cmd<span class="token punctuation">)</span>
+
+    <span class="token comment"># Create worker processes for each GPU</span>
+    workers <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>
+    <span class="token keyword">for</span> gpu_id <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span><span class="token builtin">len</span><span class="token punctuation">(</span>gpu_locks<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">:</span>  <span class="token comment"># Assuming you have 2 GPUs</span>
+        p <span class="token operator">=</span> Process<span class="token punctuation">(</span>target<span class="token operator">=</span>worker<span class="token punctuation">,</span> args<span class="token operator">=</span><span class="token punctuation">(</span>gpu_id<span class="token punctuation">,</span> gpu_locks<span class="token punctuation">[</span>gpu_id<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        p<span class="token punctuation">.</span>start<span class="token punctuation">(</span><span class="token punctuation">)</span>
+        workers<span class="token punctuation">.</span>append<span class="token punctuation">(</span>p<span class="token punctuation">)</span>
+
+    <span class="token comment"># Wait for all tasks to be processed</span>
+    task_queue<span class="token punctuation">.</span>join<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    <span class="token comment"># Signal workers to exit by adding None to the queue</span>
+    <span class="token comment"># Ensure enough exit signals for all workers</span>
+    <span class="token keyword">for</span> _ <span class="token keyword">in</span> workers<span class="token punctuation">:</span>
+        task_queue<span class="token punctuation">.</span>put<span class="token punctuation">(</span><span class="token boolean">None</span><span class="token punctuation">)</span>
+
+    <span class="token comment"># Wait for all workers to finish</span>
+    <span class="token keyword">for</span> p <span class="token keyword">in</span> workers<span class="token punctuation">:</span>
+        p<span class="token punctuation">.</span>join<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+<span class="token keyword">if</span> __name__ <span class="token operator">==</span> <span class="token string">'__main__'</span><span class="token punctuation">:</span>
+    main<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    <span class="token triple-quoted-string string">"""
+    在这个版本中，我引入了一个calculate_device_id函数，它基于视频文件和图像文件的路径计算出一个哈希值，然后取模得到设备ID。
+    这样可以确保任务更均匀地分配到不同的GPU上，而不仅仅依赖于列表的索引。
+    同时，我添加了设置CUDA_VISIBLE_DEVICES的代码到worker函数中，虽然这不是严格必需的，但它强调了每个工作进程将只看到并使用分配给它的GPU。这有助于避免潜在的GPU资源冲突问题。
+    """</span>
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c4f6990bb691127c7de45594338f0470/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">qt表格模型视图</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/46e16379a0657e61c8875c0755819638/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">了解高防 IP</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

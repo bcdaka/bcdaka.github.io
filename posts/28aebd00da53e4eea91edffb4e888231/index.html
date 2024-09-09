@@ -1,0 +1,272 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【服务治理中间件】consul介绍和基本原理 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/28aebd00da53e4eea91edffb4e888231/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【服务治理中间件】consul介绍和基本原理">
+  <meta property="og:description" content="目录
+一、CAP定理
+二、服务注册中心产品比较
+三、Consul概述
+3.1 什么是Consul
+3.2 Consul架构
+3.3 Consul的使用场景
+3.4 Consul健康检查
+四、部署consul集群
+4.1 服务器部署规划
+4.2 下载解压
+4.3 启动consul
+五、服务注册到consul
+一、CAP定理 CAP定理，指的是在一个分布式系统中， Consistency（一致性）、 Availability（可用性）、Partition tolerance（分区容错性），三者不可兼得。
+一致性（C）：在分布式系统中的所有数据备份，在同一时刻是否同样的值。（等同于所有节点访问同一份最新的数据副本）可用性（A）：在集群中一部分节点故障后，集群整体是否还能响应客户端的读写请求。（对数据更新具备高可用性）分区容忍性（P）：以实际效果而言，分区相当于对通信的时限要求。系统如果不能在时限内达成数据一致性，就意味着发生了分区的情况，必须就当前操作在C和A之间做出选择。 CAP原则的精髓就是要么AP，要么CP，要么AC，但是不存在CAP。如果在某个分布式系统中数据无副本， 那么系统必然满足强一致性条件， 因为只有独一数据，不会出现数据不一致的情况，此时C和P两要素具备，但是如果系统发生了网络分区状况或者宕机，必然导致某些数据不可以访问，此时可用性条件就不能被满足，即在此情况下获得了CP系统，但是CAP不可同时满足。因此在进行分布式架构设计时，必须做出取舍。
+二、服务注册中心产品比较 服务注册中心主流产品如下：
+Zookeeper和Consul保证的是CP，而Eureka则是AP，Nacos不仅支持CP也支持AP。
+当向注册中心查询服务列表时，我们可以容忍注册中心返回的是几分钟以前的注册信息，但不能接受服务直接down掉不可用。也就是说，服务注册功能对可用性的要求要高于一致性。但是Zookeeper会出现这样一种情况，当master节点因为网络故障与其他节点失去联系时，剩余节点会重新进行leader选举。问题在于，选举leader的时间太长，30 ~ 120s， 且选举期间整个Zookeeper集群都是不可用的，这就导致在选举期间注册服务瘫痪。在云部署的环境下，因网络问题使得Zookeeper集群失去master节点是较大概率会发生的事，虽然服务能够最终恢复，但是漫长的选举时间导致的注册长期不可用是不能容忍的。
+所以Eureka看明白了这一点，因此在设计时就优先保证可用性。Eureka各个节点都是平等的，几个节点挂掉不会影响正常节点的工作，剩余的节点依然可以提供注册和查询服务。而Eureka的客户端在向某个Eureka注册或时如果发现连接失败，则会自动切换至其它节点，只要有一台Eureka还在，就能保证注册服务可用(保证可用性)，只不过查到的信息可能不是最新的(不保证强一致性)。除此之外，Eureka还有一种自我保护机制，如果在15分钟内超过85%的节点都没有正常的心跳，那么Eureka就认为客户端与注册中心出现了网络故障，此时会出现以下几种情况：
+Eureka不再从注册列表中移除因为长时间没收到心跳而应该过期的服务Eureka仍然能够接受新服务的注册和查询请求，但是不会被同步到其它节点上(即保证当前节点依然可用)当网络稳定时，当前实例新的注册信息会被同步到其它节点中 因此， Eureka可以很好的应对因网络故障导致部分节点失去联系的情况，而不会像zookeeper那样使整个注册服务瘫痪。
+三、Consul概述 3.1 什么是Consul Consul是一个服务网格解决方案，提供了一个功能齐全的控制平面，具有服务发现、配置和分段功能。这些功能中的每一项都可以根据需要单独使用，也可以一起使用来构建一个完整的服务网格。Consul需要一个数据平面，并支持代理和原生集成模型。Consul提供了一个简单的内置代理，因此一切都可以开箱即用，但也支持第三方代理集成，如Envoy。
+Consul的主要功能有:
+服务发现 : Consul的客户端可以注册一个服务，比如api或mysql，其他客户端可以使用Consul来发现特定服务的提供者。使用DNS或HTTP，应用程序可以很容易地找到他们所依赖的服务。健康检查 : Consul客户端可以提供任何数量的健康检查，要么与给定的服务相关联（如： &#34;webserver是否返回200 OK&#34;），要么与本地节点相关联（如： &#34;内存利用率是否低于90%&#34;）。这些信息提供给运维人员用来监控集群的健康状况，并被服务发现组件来路由流量（比如： 仅路由到健康节点）KV存储 ： 应用程序可以利用Consul的层级K/V存储来实现任何目的，包括动态配置、功能标记、协调、领导者选举等。Consul提供了HTTP API，使其非常简单以用。安全服务通信：Consul可以为服务生成和分发TLS（ 传输层安全性协议）证书，以建立相互的TLS连接。可以使用Intention来定义哪些服务被允许进行通信。服务隔离可以通过可以实时更改Intention策略轻松管理，而不是使用复杂的网络拓扑结构和静态防火墙规则。多数据中心:Consul支持开箱即用的多数据中心。这意味着Consul的用户不必担心建立额外的抽象层来发展到多个区域。 Consul的设计对DevOps社区和应用开发人员都很友好，使其成为现代弹性基础架构的完美选择。
+3.2 Consul架构 Consul是一个分布式、高可用的系统。每个为Consul提供服务的节点都会运行一个Consul Agent。运行代理不需要发现其他服务或获取/设置密钥/值数据。Agent负责对节点上的服务以及节点本身进行健康检查。
+Consul Agent 分为两种模式， Server 和 Client模式，一般我们得部署模型是 Server &#43; Client的模式（当然也可以纯Server）, Server 具有Client的全部功能， 但是由于Server负责存储数据，并且强一致性模型的缘故， Server数是有限的（3-5个Server节点，Client可以无限扩展的）更多信息可参考架构概述。 Agent与一个或多个Consul Server对话。Consul Server是存储和复制数据的地方。Server本身会选出一个Leader。虽然Consul可以用一台Server来运作，但建议使用3到5台，以避免故障情况导致数据丢失。建议每个数据中心采用Consul服务器集群。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-08T08:46:59+08:00">
+    <meta property="article:modified_time" content="2024-05-08T08:46:59+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【服务治理中间件】consul介绍和基本原理</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p class="img-center"><img alt="" height="534" id="FIiiy" src="https://images2.imgbox.com/a2/c7/oZBy9vc7_o.png" width="950"></p> 
+<p id="u74a39852"><strong>目录</strong></p> 
+<p id="knSIf-toc" style="margin-left:0px;"><a href="#knSIf" rel="nofollow">一、CAP定理</a></p> 
+<p id="O6wjD-toc" style="margin-left:0px;"><a href="#O6wjD" rel="nofollow">二、服务注册中心产品比较</a></p> 
+<p id="He7b6-toc" style="margin-left:0px;"><a href="#He7b6" rel="nofollow">三、Consul概述</a></p> 
+<p id="fiTSy-toc" style="margin-left:40px;"><a href="#fiTSy" rel="nofollow">3.1 什么是Consul</a></p> 
+<p id="mtgPd-toc" style="margin-left:40px;"><a href="#mtgPd" rel="nofollow">3.2 Consul架构</a></p> 
+<p id="WJcdd-toc" style="margin-left:40px;"><a href="#WJcdd" rel="nofollow">3.3 Consul的使用场景</a></p> 
+<p id="Lyow3-toc" style="margin-left:40px;"><a href="#Lyow3" rel="nofollow">3.4 Consul健康检查</a></p> 
+<p id="ALHin-toc" style="margin-left:0px;"><a href="#ALHin" rel="nofollow">四、部署consul集群</a></p> 
+<p id="Mv4nD-toc" style="margin-left:40px;"><a href="#Mv4nD" rel="nofollow">4.1 服务器部署规划</a></p> 
+<p id="YAoV1-toc" style="margin-left:40px;"><a href="#YAoV1" rel="nofollow">4.2 下载解压</a></p> 
+<p id="B1FMR-toc" style="margin-left:40px;"><a href="#B1FMR" rel="nofollow">4.3 启动consul</a></p> 
+<p id="IjFaW-toc" style="margin-left:0px;"><a href="#IjFaW" rel="nofollow">五、服务注册到consul</a></p> 
+<hr id="hr-toc"> 
+<h2><span style="color:#956fe7;">一、CAP定理</span></h2> 
+<hr id="cuDqY"> 
+<blockquote> 
+ <p id="u7c438457"><strong>CAP定理，指的是在一个分布式系统中， Consistency（一致性）、 Availability（可用性）、Partition tolerance（分区容错性），三者不可兼得。</strong></p> 
+</blockquote> 
+<ul><li id="u89a3c190"><strong>一致性（C）</strong>：在分布式系统中的所有数据备份，在同一时刻是否同样的值。（等同于所有节点访问同一份最新的数据副本）</li><li id="u1e760c28"><strong>可用性（A）</strong>：在集群中一部分节点故障后，集群整体是否还能响应客户端的读写请求。（对数据更新具备高可用性）</li><li id="ub0ff75cd"><strong>分区容忍性（P）</strong>：以实际效果而言，分区相当于对通信的时限要求。系统如果不能在时限内达成数据一致性，就意味着发生了分区的情况，必须就当前操作在C和A之间做出选择。</li></ul> 
+<p id="uef616e7b">CAP原则的精髓就是要么AP，要么CP，要么AC，但是不存在CAP。如果在某个分布式系统中数据无副本， 那么系统必然满足强一致性条件， 因为只有独一数据，不会出现数据不一致的情况，此时C和P两要素具备，但是如果系统发生了网络分区状况或者宕机，必然导致某些数据不可以访问，此时可用性条件就不能被满足，即在此情况下获得了CP系统，但是CAP不可同时满足。因此在进行分布式架构设计时，必须做出取舍。<img alt="" height="499" src="https://images2.imgbox.com/45/0b/CyWQHFPw_o.png" width="579"></p> 
+<p id="ubb1c0ac4"></p> 
+<p id="u9aff1a80"></p> 
+<hr id="Ft622"> 
+<h2 id="O6wjD"><span style="color:#956fe7;">二、服务注册中心产品比较</span></h2> 
+<hr id="nLcm6"> 
+<p id="ufed54b0d">服务注册中心主流产品如下：<img alt="" height="525" src="https://images2.imgbox.com/d3/97/2xIPELnj_o.png" width="929"></p> 
+<p id="u65876431"></p> 
+<p id="u2554383b">Zookeeper和Consul保证的是CP，而Eureka则是AP，Nacos不仅支持CP也支持AP。</p> 
+<p id="u294dbe38">当向注册中心查询服务列表时，我们可以容忍注册中心返回的是几分钟以前的注册信息，但不能接受服务直接down掉不可用。也就是说，服务注册功能对可用性的要求要高于一致性。但是Zookeeper会出现这样一种情况，当master节点因为网络故障与其他节点失去联系时，剩余节点会重新进行leader选举。问题在于，选举leader的时间太长，30 ~ 120s， 且选举期间整个Zookeeper集群都是不可用的，这就导致在选举期间注册服务瘫痪。在云部署的环境下，因网络问题使得Zookeeper集群失去master节点是较大概率会发生的事，虽然服务能够最终恢复，但是漫长的选举时间导致的注册长期不可用是不能容忍的。</p> 
+<p id="uf8b1dc50">所以Eureka看明白了这一点，因此在设计时就优先保证可用性。Eureka各个节点都是平等的，几个节点挂掉不会影响正常节点的工作，剩余的节点依然可以提供注册和查询服务。而Eureka的客户端在向某个Eureka注册或时如果发现连接失败，则会自动切换至其它节点，只要有一台Eureka还在，就能保证注册服务可用(保证可用性)，只不过查到的信息可能不是最新的(不保证强一致性)。除此之外，Eureka还有一种自我保护机制，如果在15分钟内超过85%的节点都没有正常的心跳，那么Eureka就认为客户端与注册中心出现了网络故障，此时会出现以下几种情况：</p> 
+<ol><li id="ucc14047f">Eureka不再从注册列表中移除因为长时间没收到心跳而应该过期的服务</li><li id="u118c6081">Eureka仍然能够接受新服务的注册和查询请求，但是不会被同步到其它节点上(即保证当前节点依然可用)</li><li id="u472b5285">当网络稳定时，当前实例新的注册信息会被同步到其它节点中</li></ol> 
+<p id="u6da28674">因此， Eureka可以很好的应对因网络故障导致部分节点失去联系的情况，而不会像zookeeper那样使整个注册服务瘫痪。</p> 
+<hr id="zjT39"> 
+<h2 id="He7b6"><span style="color:#956fe7;">三、Consul概述</span></h2> 
+<hr id="lhaQ5"> 
+<h3 id="fiTSy">3.1 什么是Consul</h3> 
+<hr id="mQLLk"> 
+<blockquote> 
+ <p id="ueeca2dbe">Consul是一个<strong>服务网格</strong>解决方案，提供了一个功能齐全的控制平面，具有服务发现、配置和分段功能。这些功能中的每一项都可以根据需要单独使用，也可以一起使用来构建一个完整的<strong>服务网格</strong>。Consul需要一个数据平面，并支持代理和原生集成模型。Consul提供了一个简单的内置代理，因此一切都可以开箱即用，但也支持第三方代理集成，如<strong>Envoy</strong>。</p> 
+</blockquote> 
+<p id="u0083230e"><strong>Consul的主要功能有:</strong></p> 
+<ul><li id="u6c4173cf"><strong>服务发现</strong> : Consul的客户端可以注册一个服务，比如api或mysql，其他客户端可以使用Consul来发现特定服务的提供者。使用DNS或HTTP，应用程序可以很容易地找到他们所依赖的服务。</li><li id="ue46c424c"><strong>健康检查</strong> : Consul客户端可以提供任何数量的健康检查，要么与给定的服务相关联（如： "webserver是否返回200 OK"），要么与本地节点相关联（如： "内存利用率是否低于90%"）。这些信息提供给运维人员用来<strong>监控集群的健康状况</strong>，并被服务发现组件来路由流量（比如： 仅路由到健康节点）</li><li id="ua1dad105"><strong>KV存储</strong> ： 应用程序可以利用Consul的<strong>层级K/V</strong>存储来实现任何目的，包括动态配置、功能标记、协调、领导者选举等。Consul提供了HTTP API，使其非常简单以用。</li><li id="ufdf2f063"><strong>安全服务通信</strong>：Consul可以为服务生成和分发TLS（ <a href="https://baike.baidu.com/item/TLS" rel="nofollow" title="传输层安全性协议">传输层安全性协议</a>）证书，以建立相互的TLS连接。可以使用<a href="https://www.consul.io/docs/connect/intentions" rel="nofollow" title="Intention">Intention</a>来定义哪些服务被允许进行通信。服务隔离可以通过可以实时更改<a href="https://www.consul.io/docs/connect/intentions" rel="nofollow" title="Intention">Intention</a>策略轻松管理，而不是使用复杂的网络拓扑结构和静态防火墙规则。</li><li id="u8ad552b9"><strong>多数据中心</strong>:Consul支持开箱即用的<strong>多数据中心</strong>。这意味着Consul的用户不必担心建立额外的抽象层来发展到多个区域。</li></ul> 
+<p id="u1e3e275c">Consul的设计对DevOps社区和应用开发人员都很友好，使其成为现代弹性基础架构的完美选择。</p> 
+<h3 id="mtgPd">3.2 Consul架构</h3> 
+<hr id="BwX74"> 
+<p id="u7b21cf7d">Consul是一个分布式、高可用的系统。每个为Consul提供服务的节点都会运行一个<em>Consul Agent</em>。运行代理不需要发现其他服务或获取/设置密钥/值数据。Agent负责对节点上的服务以及节点本身进行健康检查。</p> 
+<p id="u24b7ad2f"><em>Consul Agent 分为两种模式， Server 和 Client模式，一般我们得部署模型是 Server + Client的模式（当然也可以纯Server）, Server 具有Client的全部功能， 但是由于Server负责存储数据，并且强一致性模型的缘故， Server数是有限的（3-5个Server节点，Client可以无限扩展的）更多信息可参考</em><a href="https://yushuai-w.gitbook.io/consul/consul-architecture" rel="nofollow" title="架构概述">架构概述</a><em>。 </em></p> 
+<p id="u33f0b4de">Agent与一个或多个Consul Server对话。Consul Server是<strong>存储</strong>和<strong>复制数据</strong>的地方。Server本身会选出一个Leader。虽然Consul可以用一台Server来运作，但建议使用3到5台，以避免故障情况导致数据丢失。建议每个数据中心采用Consul服务器集群。</p> 
+<p id="u17344c57">Server Agent维护着一个目录（Catalog），这个目录（Catalog）是由Agent提交的信息汇总形成的。目录维护着集群的高层视图，包括哪些服务可用，哪些节点运行这些服务，健康信息等。</p> 
+<p id="u041fafbc"></p> 
+<p id="u4cb9520c">需要发现其他服务或节点的基础结构组件可以查询任何Consul Server或任何Consul Agent。Agent将查询自动转发到Server。 每个数据中心都运行一个Consul Server集群。当有跨数据中心的服务发现或配置请求时，本地Consul Server将请求转发到远程数据中心并返回结果。</p> 
+<p id="u922494e2"></p> 
+<p id="u94bedcd9">从宏观角度看, Consul架构是这样的。<img alt="" height="963" src="https://images2.imgbox.com/12/8e/L4nSJX2p_o.png" width="929"></p> 
+<p id="u42adceb8">我们来分析一下这张图，并描述一下每一个部分。首先，我们可以看到有两个数据中心，分别标注为 "DATACENTER1"和 "DATACENTER2"。Consul对多个数据中心有天然非常好的支持，并希望这是常见的情况。</p> 
+<p id="ud1fed58f">在每个数据中心内，我们有<strong>Client</strong>和<strong>Server</strong>的混合。预计会有<strong>3到5</strong>台Server。这是在权衡故障场景下<strong>可用性</strong>和<strong>性能</strong>之间取得平衡的结果，因为随着机器的增加，共识的速度会逐渐变慢。然而，Client的数量没有限制，它们可以轻松地扩展到数千或数万。</p> 
+<p id="u032f19f7">所有在数据中心的代理都会参与一个<a href="https://www.consul.io/docs/internals/gossip%E3%80%81" rel="nofollow" title="Gossip协议">Gossip协议</a>。这意味着有一个Gossip池，其中包含了某个数据中心的所有<strong>Agent</strong>。这有几个目的：</p> 
+<ul><li id="u295befa2">第一，客户端不需要配置Server的地址，发现工作是自动完成的。</li><li id="udd65ecdc">第二，检测代理故障的工作不放在Server上，而是分布式的。这使得故障检测的扩展性比原生的心跳方案要强得多。同时，它还为节点提供了故障检测，如果代理无法到达，那么该节点可能已经发生了故障。</li><li id="u06ada79e">第三，它被用作消息层，当发生重要事件（如Leader 选举）时进行通知。</li></ul> 
+<p id="uc8e8e762">每个数据中心的Server都是单一Raft对等集的一部分。这意味着它们共同选出一个单一的Leader，一个被选中的Server，它有额外的职责。<strong>Leader负责处理所有查询和事务</strong>。事务也必须复制到所有参与<a href="https://www.consul.io/docs/internals/consensus" rel="nofollow" title="共识协议">共识协议</a>的分片。由于这一要求，当<strong>None-Leader Server</strong>收到RPC请求时，它会将其转发给集群Leader。</p> 
+<p id="u7b368422"><strong>Server Agent</strong>还作为<strong>WAN（广域网）</strong> Gossip Pool的一部分进行操作。这个池子与<strong>LAN（局域网）</strong>池不同，因为它是针对互联网的较高延迟进行优化的，WAN池只包含其他Consul 数据中心的Sever Agent。这个池的目的是让数据中心以低接触的方式发现彼此。让一个新的数据中心上线就像加入现有的WAN Gossip 池一样简单。因为服务器都在这个池中运行，所以还可以实现跨数据中心的请求。当一台Server收到一个不同数据中心的请求时，它会将其转发到正确数据中心的随机Server。然后该Servevr可能会转发到本地Leader。</p> 
+<p id="ubb82c8eb">这导致数据中心之间的耦合度很低，但由于故障检测、连接缓存和多路复用，跨数据中心的请求相对快速可靠。</p> 
+<p id="u5a788d79">一般情况下，<strong>不同的Consul数据中心之间不会复制数据</strong>。当对另一个数据中心的资源进行请求时，本地Consul服务器会将该资源的RPC请求转发给远程Consul服务器，并返回结果。如果远程数据中心不可用，那么这些资源也将不可用，但这不会以其他方式影响本地数据中心。</p> 
+<p id="u4f4c3dde">在一些特殊情况下，可以复制有限的数据子集，比如使用Consul内置的ACL复制功能，或者使用consul-replicate等外部工具。 在某些地方，Client Agent可能会从Server上缓存数据，使其在本地可用，以提高性能和可靠性。例如， 包括连接证书和它允许Client代理对入站连接请求做出本地决定，而无需往返Server的场景。一些API端点还支持可选的结果缓存。这有助于可靠性，因为即使与服务器的连接中断或服务器暂时不可用，本地Agent仍然可以继续从缓存中响应一些查询，如服务发现或Connect授权。</p> 
+<p id="u6071a7de"><strong>官网： </strong> <a href="https://www.consul.io/" rel="nofollow" title="Consul by HashiCorp">Consul by HashiCorp</a><img alt="" height="390" src="https://images2.imgbox.com/f5/66/40GsTCJs_o.png" width="929"></p> 
+<p id="u9b25132e"></p> 
+<h3 id="WJcdd">3.3 Consul的使用场景</h3> 
+<hr id="mMKcK"> 
+<p id="u50faf7a4">Consul的应用场景包括服务发现、服务隔离、服务配置：</p> 
+<ul><li id="udbb186b1">服务发现场景中consul作为注册中心，服务地址被注册到consul中以后，可以使用consul提供的dns、http接口查询，consul支持health check。</li><li id="uda2064a3">服务隔离场景中consul支持以服务为单位设置访问策略，能同时支持经典的平台和新兴的平台，支持tls证书分发，service-to-service加密。</li><li id="u48db7ec7">服务配置场景中consul提供key-value数据存储功能，并且能将变动迅速地通知出去，借助Consul可以实现配置共享，需要读取配置的服务可以从Consul中读取到准确的配置信息。</li><li id="u0cb24cba">Consul可以帮助系统管理者更清晰的了解复杂系统内部的系统架构，运维人员可以将Consul看成一种监控软件，也可以看成一种资产（资源）管理系统。</li></ul> 
+<p id="uf88b5f62">比如：docker实例的注册与配置共享、coreos实例的注册与配置共享、vitess集群、SaaS应用的配置共享、Consul与confd服务集成，动态生成nginx和haproxy配置文件或者Consul结合nginx构建高可用可扩展的Web服务。</p> 
+<h3 id="Lyow3">3.4 Consul健康检查</h3> 
+<hr id="xwKE8"> 
+<p id="u7fa15058"><a href="https://so.csdn.net/so/search?q=Consul&amp;spm=1001.2101.3001.7020" title="Consul">Consul</a>的一个基本功能是提供<strong>系统级和应用级健康检查</strong>。如果健康检查与某个服务关联，则称为是应用级的；如果不予服务关联，则监控整个节点的健康。</p> 
+<p id="ucc639989">check定义在配置文件中，或运行时通过HTTP接口添加。Check是通过HTTP与节点保持一致。</p> 
+<p id="u264bb44c">有五种check方法：</p> 
+<ul><li id="ubb91cd59">Script+ Interval</li><li id="ua59792f7">HTTP+ Interval</li><li id="uc9aacc64">TCP+ Interval</li><li id="ua2405673">Timeto Live（TTL）</li><li id="ua7fc055b">Docker+ interval</li></ul> 
+<p id="ud16b421f">参考文章：<a href="https://blog.csdn.net/younger_china/article/details/52243759" title="【Consul】实践指导-健康检查（Checks）_consul health check-CSDN博客">【Consul】实践指导-健康检查（Checks）_consul health check-CSDN博客</a></p> 
+<hr> 
+<h2 id="ALHin"><span style="color:#956fe7;">四、部署consul集群</span></h2> 
+<hr id="E3CDU"> 
+<h3 id="Mv4nD">4.1 服务器部署规划</h3> 
+<table id="rpfnW"><tbody><tr><td> <p id="ub9edc8f4">主机名</p> </td><td> <p id="u05856700">IP</p> </td><td> <p id="u7480aca3">角色</p> </td></tr><tr><td> <p id="uac76d0c0">master1</p> </td><td> <p id="u2959f7ce">192.168.2.139</p> </td><td> <p id="u452d5e10">server</p> </td></tr><tr><td> <p id="udf5c9d80">node1</p> </td><td> <p id="u94e2b1a8">192.168.2.140</p> </td><td> <p id="u13b86d83">client</p> </td></tr><tr><td> <p id="u7137cfcb">node2</p> </td><td> <p id="u6274a36e">192.168.2.210</p> </td><td> <p id="u55276249">client</p> </td></tr></tbody></table> 
+<h3 id="YAoV1">4.2 下载解压</h3> 
+<hr id="vWu1D"> 
+<pre id="Hw3OR"><code>
+# 下载安装包
+https://releases.hashicorp.com/consul/1.18.1/consul_1.18.1_linux_amd64.zip
+# 解压
+unzip   consul_1.18.1_linux_amd64.zip</code></pre> 
+<p><img alt="" height="203" src="https://images2.imgbox.com/2d/06/S4WCg564_o.png" width="929"></p> 
+<p id="u77056031"></p> 
+<h3 id="B1FMR">4.3 启动consul</h3> 
+<hr id="mymSV"> 
+<pre id="ITxFk"><code>在master1上：
+cd /opt/
+nohup ./consul agent -server -bootstrap  -bind=192.168.2.139   -client=192.168.2.139 -data-dir=data -ui -node=192.168.2.139 &amp;
+
+这样就启动了master1上的consul
+
+在node1上：
+cd /opt/
+nohup ./consul agent -bind=192.168.2.140 -client=192.168.2.140 -data-dir=data -node=192.168.2.140 -join=192.168.2.139 &amp;
+
+在node2上：
+cd /opt/
+nohup ./consul agent -bind=192.168.2.141 -client=192.168.2.141 -data-dir=data -node=192.168.2.141 -join=192.168.2.139 &amp;</code></pre> 
+<p id="u11ac0f9c">各个节点都启动完之后</p> 
+<p id="uec6cb99a">在浏览器访问http://192.168.2.139:8500/</p> 
+<p id="uab3fadc5">可看到consul的管理界面<img alt="" height="793" src="https://images2.imgbox.com/58/ba/Lc1Epk3k_o.png" width="1200"></p> 
+<p id="ud3070115"></p> 
+<p id="u49eedf0a"><strong>192.1682.139 为Leader</strong><img alt="" height="476" src="https://images2.imgbox.com/ef/fe/wNLd0CBP_o.png" width="1164"></p> 
+<p id="u066e89e0"></p> 
+<p id="u7a546513">Consul 的 Web 管理界面有一些菜单，我们这里做一下简单的介绍：</p> 
+<ul><li id="u3924d8bd">Services，管理界面的默认页面，用来展示注册到 Consul 的服务，启动后默认会有一个 consul 服务，也就是它本身。</li><li id="uc6345581">Nodes，在 Services 界面双击服务名就会来到 Services 对于的 Nodes 界面，Services 是按照服务的抽象来展示的，Nodes 展示的是此服务的具体节点信息。比如启动了两个订单服务实例，Services 界面会出现一个订单服务，Nodes 界面会展示两个订单服务的节点。</li><li id="uaa66e8d0">Key/Value ，如果有用到 Key/Value 存储，可以在界面进行配置、查询。</li><li id="u0f1fd5d4">ACL，全称 Access Control List，为访问控制列表的展示信息。</li><li id="u2ff247fd">Intentions，可以在页面配置请求权限。</li></ul> 
+<hr> 
+<h2 id="IjFaW"><span style="color:#956fe7;">五、服务注册到consul</span></h2> 
+<hr id="gFAXU"> 
+<p id="u2708384c">如下示例将ambariServer服务注册奥consul</p> 
+<pre id="IACp0"><code>curl -X PUT -d '                                      
+{                                                    
+    "id": "ambari-server",                                   
+    "name": "ambari-server",                                 
+    "address": "192.168.2.152",                      
+    "port": 8080,                                    
+    "tags": ["ambari-server-service"],                       
+    "checks": [{                                     
+    	"http": "http://192.168.2.152:8080/",        
+    	"interval": "5s"                             
+    }]                                               
+}' http://192.168.2.139:8500/v1/agent/service/register
+
+</code></pre> 
+<p id="ue00de860">注册成功 且状态健康<img alt="" height="532" src="https://images2.imgbox.com/b7/05/rCfpYqeb_o.png" width="1200"></p> 
+<p id="u94382ddd"></p> 
+<p id="uc8919949"></p> 
+<p class="img-center"><img alt="" height="532" id="ue884af71" src="https://images2.imgbox.com/5e/d6/fjMVCJru_o.png" width="1200"></p> 
+<p id="ube6f2a2f">把consul中注册的ambari-server服务移除</p> 
+<pre id="b9fAh"><code>curl --request PUT http://192.168.2.139:8500/v1/agent/service/deregister/ambari-server</code></pre> 
+<hr> 
+<p id="u8928a64d">参考引用文章：<a href="https://yushuai-w.gitbook.io/consul/architecture" rel="nofollow" title="Consul 架构 | Consul">Consul 架构 | Consul</a></p> 
+<p id="uc5091df4"><a href="https://www.cnblogs.com/yifanSJ/p/17556476.html" rel="nofollow" title="Nacos和Consul的区别 - yifanSJ - 博客园">Nacos和Consul的区别 - yifanSJ - 博客园</a><br><a href="https://kangll.blog.csdn.net/article/details/104347070" rel="nofollow" title="【Hadoop】HA简介&amp;CAP理论的关系_hadoop cap-CSDN博客">【Hadoop】HA简介&amp;CAP理论的关系_hadoop cap-CSDN博客</a></p> 
+<p id="uaa1267b1">原文链接：<a href="https://blog.csdn.net/weixin_46099455/article/details/126351145" title="【超详细】Consul的安装的使用附多环境配置（傻瓜式教程）_consul安装与配置-CSDN博客">【超详细】Consul的安装的使用附多环境配置（傻瓜式教程）_consul安装与配置-CSDN博客</a></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5eeca48ee535050b45e206ccdb709888/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">全面解析：Spring Gateway如何优雅处理微服务的路由转发？</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/68d37349af97b414dd27a48fc0602ae8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">无处不在的AI：被科技巨头盯上的Agent智能体的崭新时代</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

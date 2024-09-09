@@ -1,0 +1,408 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【MySQL】事务一 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/9c7f388025994309b74aa96c00a12214/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【MySQL】事务一">
+  <meta property="og:description" content="事务一 1.什么是事务2.为什么会存在事务3.事务的版本支持4.事务的提交方式5.事务常见操作方式6.事务隔离级别6.1读未提交【Read Uncommitted】6.2读提交【Read Committed】6.3可重复读【Repeatable Read】6.4串行化【serializable】 点赞👍👍收藏🌟🌟关注💖💖
+你的支持是对我最大的鼓励，我们一起努力吧!😃😃
+1.什么是事务 mysql存的是数据注定会被多个客户端同时访问，mysql内部是采用多线程方式来实现存储相关工作的，注定会有对数据并发访问的场景，为了更好解决这类事情，关系型数据库为我们提供了事务。
+CURD不加控制，会有什么问题？
+当两个人同时向火车票售票系统买票时，买票肯定先判断是否有票，当A进入判断之后，客户端A因为某些原因线程被切走了，然后客户端B也要判断进来之后也因为某些原因线程被切走了。此时A被唤醒从被切走的地方继续往下执行然后把票数减1就结束了它的操作。B然后也被唤醒了继续往下执行因为它是已经在判断里面的，它并不知道此时票数减为0了，它以为还有此时票数又被减1了。此时就有问题了。一张票被卖了两次！
+数据库为了解决并发带来的问题，必须提出解决的方案！
+CURD满足什么属性，能解决上述问题？
+买票的过程得是原子的吧
+要么没买，要么一定买成功，不存在中间状态，出现问题回滚到开始状态，彷佛什么事情都没干一样。买票互相应该不能影响吧
+我买的过程之中，你就来了，你会影响到我。彼此之间要隔离开，你买你的，我买我的，不要互相影响。买完票应该要永久有效吧
+购买成功这件事情必须是持久的，不受其他情况影响。买前，和买后都要是确定的状态吧
+买前就是没买状态，买了就是买了状态，不能出现中间状态。 随着下面的学习，我们慢慢理解为什么四个就已经能够解决这个问题了。
+那什么是事务？
+实际上当我们写sql语句的时候，不一定一条sql就能解决所有问题，有时候我们需要一批sql语句在一起才有意义。就比如转钱，一定是这里update 减去100 ，哪里update 加上100。这两句单但拿出来就是一条sql语句没有意义，但是站在上层使用数据库的人，把两条sql合在一起（看成一个整体）它就叫做转账逻辑。所以我们把两条sql共同构成的一组DML数据管理语句，叫做事务。 换句话说，
+事务是由一条或者多条sql语句构成的sql集合体，这个集合体合在一起共同要完成某种任务。
+事务就是一组DML语句组成，这些语句在逻辑上存在相关性，（比如转账逻辑，分开就是两条单独update语句，但是合在一起它们是有逻辑关系的，所以学习事务不能站在程序员视角理解事务，一定要站在使用数据库的使用者去看待事务）这一组DML语句要么全部成功，要么全部失败，是一个整体。这是由MySQL给我们提供一种机制，保证我们达到这样的效果。事务还规定不同的客户端看到的数据是不相同的。
+事务就是要做的或所做的事情，主要用于处理操作量大，复杂度高的数据。假设一种场景：你毕业了，学校的教务系统后台 MySQL 中，不在需要你的数据，要删除你的所有信息(一般不会:) ), 那么要删除你的基本信息(姓名，电话，籍贯等)的同时，也删除和你有关的其他信息，比如：你的各科成绩，你在校表现，甚至你在论坛发过的文章等。这样，就需要多条 MySQL 语句构成，那么所有这些操作合起来，就构成了一个事务。
+正如我们上面所说，一个 MySQL 数据库，可不止你一个事务在运行，同一时刻，甚至有大量的请求被包装成事务，在向 MySQL 服务器发起事务处理请求。而每条事务至少一条 SQL ，最多很多 SQL ,这样如果大家都访问同样的表数据，在不加保护的情况，就绝对会出现并发执行访问公共数据的问题。甚至，因为事务由多条 SQL 构成，那么，也会存在执行到一半出错或者不想再执行的情况，那么已经执行的怎么办呢？
+所以，一个完整的事务，绝对不是简单的 sql 集合，还需要满足如下四个属性：
+原子性：一个事务（transaction）中的所有操作，要么全部完成，要么全部不完成，不会结束在中间某个环节。事务在执行过程中发生错误，要么自动回滚(Rollback)到事务开始前的状态，要么用户手动回滚到事务开始前的状态，就像这个事务从来没有执行过一样。
+持久性：事务处理结束后，那事务对表中数据的修改就是永久的，即便系统故障也不会丢失。
+隔离性：数据库允许多个并发事务同时对其数据进行读写和修改的能力，隔离性可以防止多个事务并发执行时由于交替去进行修改同一份数据进而导致数据的不一致。所以事务可以将我们要访问的数据一个个隔离开，你访问你的并不会影响我，这就是隔离性。事务隔离可以分为不同级别，包括读未提交（ Readuncommitted ）、读提交（ read committed ）、可重复读（ repeatable read ）和串行化（ Serializable ），因为有隔离性所以可以保证数据在不同的隔离级别下保证不同用户对数据的可见性。
+一致性：在事务开始之前和事务结束以后，数据库的完整性没有被破坏。（意思是我们从一种状态变成另一种状态它的结果是可预期的，比如我转账，我账户200，你账户50。我给你转50，所以我可以预期的是成功了，我账户150，你账户100，失败了我还是200，你还是50。这就是我还没有操作，但是为了操作后结果是可预期的，这就是一致性。）这表示写入的资料必须完全符合所有的预设规则，这包含资料的精确度、串联性以及后续数据库可以自发性地完成预定的工作。
+事务的四大特性之中，原子性和持久性最好理解，隔离性是我们要重点理解的，一致性比较不好理解，但是mysql对于事务一致性其实没有做什么工作。在技术上没有对一致性有什么策略，只不过一致性是通过原子性、持久性、隔离性来保证数据库的一致性 。原子性、持久性、隔离性是因，一致性是果。并且一致性光靠数据库是做不到的，还需要用户配合才能达到一致性，具体后面在说。
+上面四个属性，可以简称为 ACID 。
+原子性（Atomicity，或称不可分割性）一致性（Consistency）隔离性（Isolation，又称独立性）持久性（Durability） 事务是一堆sql集合在业务层面上要完成某种具体需求，mysql为了支持我们，将多条sql这些sql在逻辑上有上下文关系的把它们封装成事务。 而为了更好支持事务不仅仅是简单把sql做封装，为了事务在并发条件下更好、更快、更安全去运行，此时就需要用原子性、持久性、隔离性、一致性来保证事务正确运行。最终一句话总结，所谓的事务在ACID的加持下由一条或者多条sql共同构建出的我们就称之为事务。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-15T11:23:35+08:00">
+    <meta property="article:modified_time" content="2024-06-15T11:23:35+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【MySQL】事务一</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>事务一</h4> 
+ <ul><li><a href="#1_7" rel="nofollow">1.什么是事务</a></li><li><a href="#2_64" rel="nofollow">2.为什么会存在事务</a></li><li><a href="#3_72" rel="nofollow">3.事务的版本支持</a></li><li><a href="#4_86" rel="nofollow">4.事务的提交方式</a></li><li><a href="#5_110" rel="nofollow">5.事务常见操作方式</a></li><li><a href="#6_300" rel="nofollow">6.事务隔离级别</a></li><li><ul><li><a href="#61Read_Uncommitted_379" rel="nofollow">6.1读未提交【Read Uncommitted】</a></li><li><a href="#62Read_Committed_405" rel="nofollow">6.2读提交【Read Committed】</a></li><li><a href="#63Repeatable_Read_456" rel="nofollow">6.3可重复读【Repeatable Read】</a></li><li><a href="#64serializable_479" rel="nofollow">6.4串行化【serializable】</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<p><img src="https://images2.imgbox.com/2e/b9/KQedTZF2_o.jpg" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p><strong>点赞</strong>👍👍<strong>收藏</strong>🌟🌟<strong>关注</strong>💖💖<br> <font color="red"><strong>你的支持是对我最大的鼓励，我们一起努力吧!😃😃</strong></font></p> 
+</blockquote> 
+<h2><a id="1_7"></a>1.什么是事务</h2> 
+<p>mysql存的是数据注定会被多个客户端同时访问，mysql内部是采用多线程方式来实现存储相关工作的，注定会有对数据并发访问的场景，为了更好解决这类事情，关系型数据库为我们提供了事务。</p> 
+<p><strong>CURD不加控制，会有什么问题？</strong></p> 
+<p><img src="https://images2.imgbox.com/67/59/ieIpLImi_o.png" alt="在这里插入图片描述"></p> 
+<p>当两个人同时向火车票售票系统买票时，买票肯定先判断是否有票，当A进入判断之后，客户端A因为某些原因线程被切走了，然后客户端B也要判断进来之后也因为某些原因线程被切走了。此时A被唤醒从被切走的地方继续往下执行然后把票数减1就结束了它的操作。B然后也被唤醒了继续往下执行因为它是已经在判断里面的，它并不知道此时票数减为0了，它以为还有此时票数又被减1了。此时就有问题了。一张票被卖了两次！</p> 
+<p>数据库为了解决并发带来的问题，必须提出解决的方案！</p> 
+<p><strong>CURD满足什么属性，能解决上述问题？</strong></p> 
+<ol><li>买票的过程得是原子的吧<br> 要么没买，要么一定买成功，不存在中间状态，出现问题回滚到开始状态，彷佛什么事情都没干一样。</li><li>买票互相应该不能影响吧<br> 我买的过程之中，你就来了，你会影响到我。彼此之间要隔离开，你买你的，我买我的，不要互相影响。</li><li>买完票应该要永久有效吧<br> 购买成功这件事情必须是持久的，不受其他情况影响。</li><li>买前，和买后都要是确定的状态吧<br> 买前就是没买状态，买了就是买了状态，不能出现中间状态。</li></ol> 
+<p>随着下面的学习，我们慢慢理解为什么四个就已经能够解决这个问题了。</p> 
+<p>那<strong>什么是事务？</strong></p> 
+<p>实际上当我们写sql语句的时候，不一定一条sql就能解决所有问题，有时候我们需要一批sql语句在一起才有意义。就比如转钱，一定是这里update 减去100 ，哪里update 加上100。这两句单但拿出来就是一条sql语句没有意义，但是站在上层使用数据库的人，把两条sql合在一起（看成一个整体）它就叫做转账逻辑。所以我们把两条sql共同构成的一组DML数据管理语句，叫做事务。 换句话说，</p> 
+<p><strong>事务是由一条或者多条sql语句构成的sql集合体，这个集合体合在一起共同要完成某种任务。</strong></p> 
+<p>事务就是一组DML语句组成，这些语句在逻辑上存在相关性，（比如转账逻辑，分开就是两条单独update语句，但是合在一起它们是有逻辑关系的，所以学习事务不能站在程序员视角理解事务，一定要站在使用数据库的使用者去看待事务）这一组DML语句要么全部成功，要么全部失败，是一个整体。这是由MySQL给我们提供一种机制，保证我们达到这样的效果。事务还规定不同的客户端看到的数据是不相同的。</p> 
+<p>事务就是要做的或所做的事情，主要用于处理操作量大，复杂度高的数据。假设一种场景：你毕业了，学校的教务系统后台 MySQL 中，不在需要你的数据，要删除你的所有信息(一般不会:) ), 那么要删除你的基本信息(姓名，电话，籍贯等)的同时，也删除和你有关的其他信息，比如：你的各科成绩，你在校表现，甚至你在论坛发过的文章等。这样，就需要多条 MySQL 语句构成，那么所有这些操作合起来，就构成了一个事务。</p> 
+<p>正如我们上面所说，一个 MySQL 数据库，可不止你一个事务在运行，同一时刻，甚至有大量的请求被包装成事务，在向 MySQL 服务器发起事务处理请求。而每条事务至少一条 SQL ，最多很多 SQL ,这样如果大家都访问同样的表数据，在不加保护的情况，就绝对会出现并发执行访问公共数据的问题。甚至，因为事务由多条 SQL 构成，那么，也会存在执行到一半出错或者不想再执行的情况，那么已经执行的怎么办呢？</p> 
+<p>所以，一个完整的事务，绝对不是简单的 sql 集合，还需要满足如下四个属性：</p> 
+<ul><li> <p><strong>原子性</strong>：一个事务（transaction）中的所有操作，要么全部完成，要么全部不完成，不会结束在中间某个环节。事务在执行过程中发生错误，要么自动回滚(Rollback)到事务开始前的状态，要么用户手动回滚到事务开始前的状态，就像这个事务从来没有执行过一样。</p> </li><li> <p><strong>持久性</strong>：事务处理结束后，那事务对表中数据的修改就是永久的，即便系统故障也不会丢失。</p> </li><li> <p><strong>隔离性</strong>：数据库允许多个并发事务同时对其数据进行读写和修改的能力，隔离性可以防止多个事务并发执行时由于交替去进行修改同一份数据进而导致数据的不一致。所以事务可以将我们要访问的数据一个个隔离开，你访问你的并不会影响我，这就是隔离性。事务隔离可以分为不同级别，包括读未提交（ Readuncommitted ）、读提交（ read committed ）、可重复读（ repeatable read ）和串行化（ Serializable ），因为有隔离性所以可以保证数据在不同的隔离级别下保证不同用户对数据的可见性。</p> </li><li> <p><strong>一致性</strong>：在事务开始之前和事务结束以后，数据库的完整性没有被破坏。（意思是我们从一种状态变成另一种状态它的结果是可预期的，比如我转账，我账户200，你账户50。我给你转50，所以我可以预期的是成功了，我账户150，你账户100，失败了我还是200，你还是50。这就是我还没有操作，但是为了操作后结果是可预期的，这就是一致性。）这表示写入的资料必须完全符合所有的预设规则，这包含资料的精确度、串联性以及后续数据库可以自发性地完成预定的工作。</p> </li></ul> 
+<p>事务的四大特性之中，原子性和持久性最好理解，隔离性是我们要重点理解的，一致性比较不好理解，但是mysql对于事务一致性其实没有做什么工作。在技术上没有对一致性有什么策略，只不过一致性是通过原子性、持久性、隔离性来保证数据库的一致性 。原子性、持久性、隔离性是因，一致性是果。并且一致性光靠数据库是做不到的，还需要用户配合才能达到一致性，具体后面在说。</p> 
+<p>上面四个属性，可以简称为 ACID 。</p> 
+<ul><li>原子性（Atomicity，或称不可分割性）</li><li>一致性（Consistency）</li><li>隔离性（Isolation，又称独立性）</li><li>持久性（Durability）</li></ul> 
+<p>事务是一堆sql集合在业务层面上要完成某种具体需求，mysql为了支持我们，将多条sql这些sql在逻辑上有上下文关系的把它们封装成事务。 而为了更好支持事务不仅仅是简单把sql做封装，为了事务在并发条件下更好、更快、更安全去运行，此时就需要用原子性、持久性、隔离性、一致性来保证事务正确运行。最终一句话总结，所谓的事务在ACID的加持下由一条或者多条sql共同构建出的我们就称之为事务。</p> 
+<p>事务在mysql中的存在可以这样理解，mysql要同时帮助多个客户端完成不同的事务请求，就决定了mysql在运行期间会存在大量的事务，mysql也要把这些事务管理起来，先描述，在组织！所以mysql所谓的事务在我看来就是在mysql中来的一批sql，把这批sql打包成一个事务对象，然后将事务对象放在事务执行列表里，然后让mysql执行。</p> 
+<h2><a id="2_64"></a>2.为什么会存在事务</h2> 
+<p>刚才说的是多个sql在交叉执行可能会出现并发问题，进而导致数据不一致，进而导致数据完整性，这都知道。但是对事务的理解不能光站在程序员角度理解，一定要站在数据库使用者角度考虑。</p> 
+<p>事务被 MySQL 编写者设计出来，但是事务并不是天然就有的，而是在用一段时间发现要有这个事务。本质是为了当应用程序访问数据库的时候，事务能够简化我们的编程模型，不需要我们去考虑各种各样的潜在错误和并发问题。只需要把告诉我你要干什么，把你的sql给我，我帮你封装成事务，帮你去运行。可以想一下当我们使用事务时，要么提，要么回滚，我们不会去考虑网络异常了，服务器宕机了，同时更改一个数据怎么办对吧？这些问题统统不考虑。因此<strong>事务本质上是为了应用层服务的，是为了让上层的应用服务更好的使用数据库</strong>。而不是伴随着数据库系统天生就有的。</p> 
+<p>备注：我们后面把 MySQL 中的一行信息，称为一行记录</p> 
+<h2><a id="3_72"></a>3.事务的版本支持</h2> 
+<p>在 MySQL 中只有使用了 Innodb 数据库引擎的数据库或表才支持事务， MyISAM 不支持。</p> 
+<p>查看数据库引擎</p> 
+<pre><code class="prism language-powershell">show engines<span class="token punctuation">;</span>  <span class="token operator">--</span>表格显示
+show engines \G <span class="token operator">--</span>行显示
+</code></pre> 
+<p>我们mysql默认搜索引擎是InnoDB，并且支持事务，MyISAM支持</p> 
+<p><img src="https://images2.imgbox.com/d5/28/JrVvkiZG_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="4_86"></a>4.事务的提交方式</h2> 
+<p>事务的提交方式常见的有两种：</p> 
+<ul><li><strong>自动提交</strong></li><li><strong>手动提交</strong></li></ul> 
+<p>查看事务提交方式</p> 
+<pre><code class="prism language-powershell">show variables like <span class="token string">'autocommit'</span><span class="token punctuation">;</span>
+</code></pre> 
+<p><strong>事务默认是自动提交</strong></p> 
+<p><img src="https://images2.imgbox.com/0c/b8/wRdg0CVe_o.png" alt="在这里插入图片描述"></p> 
+<p>可以手动用 SET 来改变 MySQL 的自动提交模式:</p> 
+<pre><code class="prism language-powershell"><span class="token function">set</span> autocommit=0<span class="token punctuation">;</span> <span class="token operator">--</span>设置为手动提交
+<span class="token function">set</span> autocommit=1<span class="token punctuation">;</span> <span class="token operator">--</span>设置为自动提交
+</code></pre> 
+<p><img src="https://images2.imgbox.com/46/ad/lfLzbj6X_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="5_110"></a>5.事务常见操作方式</h2> 
+<p>Centos 7 云服务器，默认开启3306 mysqld服务<br> 使用netstat查看链接情况，可知：mysqld是一个网络服务进程，绑定端口是3306。linux下mysql是一个命令行式的客户端进程。但不仅如此mysql客户端还有很多其他客户端如图形化界面版的，还有其他语言版的。mysql是一套网络服务进程也就意味着除了本地主机，远端主机也可以连接myql。换句话说mysql服务器可能会被多个客户端同时访问！</p> 
+<p><img src="https://images2.imgbox.com/3e/99/bF6Nfkoa_o.png" alt="在这里插入图片描述"></p> 
+<p>为了更好做事务方面演示，我们将mysql的默认隔离级别设置成<strong>读未提交</strong>，隔离级别后面我们专门具体说。</p> 
+<p>设置全局事务隔离级别 读为提交</p> 
+<pre><code class="prism language-powershell"><span class="token function">set</span> global transaction isolation level READ UNCOMMITTED<span class="token punctuation">;</span>
+</code></pre> 
+<p>需要重启终端，进行查看，不然看不到改变！</p> 
+<p><img src="https://images2.imgbox.com/a0/b1/LpV3EDuO_o.png" alt="在这里插入图片描述"></p> 
+<p>然后新起两个mysql客户端，为什么这么做呢，我们主要是为了研究事务，研究事务就要研究多个客户端并发访问的情况。其次mysql是有隔离性和隔离级别的，所以目前把隔离级别跳到最低，一个mysql做操作，另一个mysql就能看到。这样很能清楚看到事务交叉所带来的问题。</p> 
+<p>创建一个员工表</p> 
+<pre><code class="prism language-powershell">create table <span class="token keyword">if</span> not exists account<span class="token punctuation">(</span>
+	id int primary key<span class="token punctuation">,</span>
+	name varchar<span class="token punctuation">(</span>50<span class="token punctuation">)</span> not null default <span class="token string">''</span><span class="token punctuation">,</span>
+	blance decimal<span class="token punctuation">(</span>10<span class="token punctuation">,</span>2<span class="token punctuation">)</span> not null default 0<span class="token punctuation">.</span>0
+<span class="token punctuation">)</span>ENGINE=InnoDB DEFAULT CHARSET=UTF8<span class="token punctuation">;</span>
+</code></pre> 
+<p>两个mysql客户端可以并发访问这张表</p> 
+<p><img src="https://images2.imgbox.com/bf/14/01QjCT05_o.png" alt="在这里插入图片描述"></p> 
+<p>准备工作全部就绪，下面我们来做试验！</p> 
+<blockquote> 
+ <p><strong>正常演示 - 事务的开始与回滚</strong></p> 
+</blockquote> 
+<p>先确认当前事务的提交方式，注意这里我们是故意设置成自动提交。</p> 
+<p><img src="https://images2.imgbox.com/78/5e/J0WFt8Zu_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>启动事务有两种方案</strong></p> 
+<pre><code class="prism language-powershell"><span class="token function">start</span> transaction
+</code></pre> 
+<pre><code class="prism language-powershell"><span class="token keyword">begin</span>
+</code></pre> 
+<p>一旦我们启动事务，从开始之后后面的所有的sql语句都属于同一个事务的内容。</p> 
+<p><img src="https://images2.imgbox.com/39/56/9xmYO503_o.png" alt="在这里插入图片描述"></p> 
+<p>我们可以给一个事务设置一个保存点。</p> 
+<pre><code class="prism language-powershell">savepoint s1<span class="token punctuation">;</span>
+</code></pre> 
+<p>然后一个事务插入数据，另一个事务也能看到。这是因为我们隔离级别调到最低了</p> 
+<p><img src="https://images2.imgbox.com/82/f6/DKGK86e1_o.png" alt="在这里插入图片描述"></p> 
+<p>然后左边的我们故意先设置一个保存点然后在插入数据，右边也能看到，这是我们故意这样做的。</p> 
+<p><img src="https://images2.imgbox.com/13/2b/Q2tZN1Fa_o.png" alt="在这里插入图片描述"></p> 
+<p>刚才说从事务的开始之后，后面所有的sql语句都同属于一个事务，也就说后面所有的sql语句会被打包成一个事务，让mysql原子性、持久性、隔离性、一致性把数据插入到数据里。可是今天事务正在运行中，我突然后悔了，我不想插入王五这条数据了，怎么办呢？我们可以进行<strong>定向回滚</strong>！</p> 
+<pre><code class="prism language-powershell">rollback to s3<span class="token punctuation">;</span>
+</code></pre> 
+<p>此时我们用另一个事务查看，王五就没有了，这就是可以对事物进行回滚。</p> 
+<p><img src="https://images2.imgbox.com/92/9b/AEAYRHNm_o.png" alt="在这里插入图片描述"></p> 
+<p>同理回滚到其他保存点也是可以的，回滚到s1，数据就全部没有了</p> 
+<p><img src="https://images2.imgbox.com/72/db/4fZs5WMk_o.png" alt="在这里插入图片描述"></p> 
+<p>如果想结束这个事务，那就提交一下，相当于把这个事务提交了</p> 
+<pre><code class="prism language-powershell">commit<span class="token punctuation">;</span>
+</code></pre> 
+<p>因为我们回滚到没插数据之前，因此提交事务后在查，是查不到的。</p> 
+<p><img src="https://images2.imgbox.com/d4/8b/I0JCJvGJ_o.png" alt="在这里插入图片描述"></p> 
+<p>那我们以后是不是必须要设置保持点才能回滚呢？<br> 并不是！没有保存点只是没有办法定向回滚了。但是可以直接<strong>回滚到最开始</strong>！</p> 
+<pre><code class="prism language-powershell">rollbackl<span class="token punctuation">;</span>
+</code></pre> 
+<p>直接回滚到最开始！然后数据就全没了。即使是结束事务，回归到单sql也是没有的。</p> 
+<p><img src="https://images2.imgbox.com/15/fd/njyfq0gO_o.png" alt="在这里插入图片描述"></p> 
+<p>事务在常规操作下，可以启动事务后可以进行单个或者多个sql操作，如果不想要了直接rollback，或者在某个地方设置保存点，定向回滚到保存点。</p> 
+<p>现在事务启动插入数据了，我不想回滚了，我也不想放弃了，就想让这个事务里sql操作让数据库把它<strong>持久化</strong>起来怎么办呢？</p> 
+<pre><code class="prism language-powershell">commit<span class="token punctuation">;</span>
+</code></pre> 
+<p>commit正常提交事务</p> 
+<p><img src="https://images2.imgbox.com/22/7c/GXPJiOaN_o.png" alt="在这里插入图片描述"></p> 
+<p>既然现在再rollback回滚也没有用了</p> 
+<p><img src="https://images2.imgbox.com/da/8c/4HfzLIAS_o.png" alt="在这里插入图片描述"></p> 
+<p>甚至右边事务也提交一下，在查，还是能看到数据的，因为左边事务的sql操作以及持久化保存到mysql里了，这个数据就永久存在了。</p> 
+<p><img src="https://images2.imgbox.com/f1/76/aO6szu8r_o.png" alt="在这里插入图片描述"></p> 
+<p>总结一下，<strong>事务已经被提交了就没有办法在rollback回滚了，换言之，回滚操作是指的在事务运行期间可以回滚，事务一旦提交之后无法回滚。</strong></p> 
+<p>以上就是事务的启动与回滚操作。</p> 
+<p>上面是我们正常的情况下操作，那非正常情况下呢？</p> 
+<blockquote> 
+ <p><strong>非正常演示1 - 证明未commit，客户端崩溃，MySQL自动会回滚（隔离级别设置为读未提交）</strong></p> 
+</blockquote> 
+<p>两个事务同时在跑，其中有个事务直接挂掉了，那会不会影响我们的数据呢？</p> 
+<p>可以看到客户端奔溃了，就会完成<strong>自动回滚</strong>，不会影响到我们的数据。所谓自动回滚指的是，事务没有完成提交异常了，不用担心，mysql会自动将操作痕迹清理，这样就保证了要么不操作，要么就操作完，没有中间状态。中间状态出现异常就自动回滚。</p> 
+<p><img src="https://images2.imgbox.com/54/0b/ULN853rJ_o.png" alt="在这里插入图片描述"></p> 
+<p>即使是直接关闭掉一个会话，没提交也是会自动回滚。</p> 
+<blockquote> 
+ <p><strong>非正常演示2 - 证明commit了，客户端崩溃，MySQL数据不会在受影响，已经持久化</strong></p> 
+</blockquote> 
+<p>只要把事务commit提交，这些操作就会被持久化都数据库里，并不会因为客户端出现异常而导致回滚。</p> 
+<p><img src="https://images2.imgbox.com/2c/b4/dwRP6v3O_o.png" alt="在这里插入图片描述"></p> 
+<blockquote> 
+ <p><strong>非正常演示3 - 对比试验。证明begin操作会自动更改提交方式，不会受MySQL是否自动提交影响</strong></p> 
+</blockquote> 
+<p>默认事务的 自动提交是被打开的。可是我们刚刚经过使用发现我不手动commit，如果异常了数据就会自动回滚。能回滚也说明没有被提交。换言之begin之后commit手动提交事务和该事务自动提交是两码事。并不会互相影响。</p> 
+<p><img src="https://images2.imgbox.com/cd/f4/tivLsV2u_o.png" alt="在这里插入图片描述"></p> 
+<p>实际上刚才一直写的<strong>begin是手动开启事务</strong>，和当前事务是否自动提交是没有关系的。注意<strong>手动开启的事务必须手动提交</strong>。</p> 
+<p>现在我们把自动提交给关掉，然后手动开始事务，插了一条数据然后客户端奔溃，在查的时候就没有那条数据了。说明异常也是自动回滚。现象和之前的一样。如果异常前commit提交了这条数据即使客户端异常奔溃了但是这条数据还在。</p> 
+<p><img src="https://images2.imgbox.com/a2/6b/nzr9zfcz_o.png" alt="在这里插入图片描述"><br> 那自动提交到底影响什么后面再说，但自动提交不影响begin，commit。<strong>手动开启的事务必须手动提交！</strong> 和自动提交没有关系。</p> 
+<blockquote> 
+ <p><strong>非正常演示4 - 证明单条 SQL 与事务的关系</strong></p> 
+</blockquote> 
+<p>我们以前都是单sql CURD或者子查询、多表查询，从没有写过事务多条sql在一起的。那单条 SQL 与事务有什么关系。</p> 
+<p>现在两边都把自动提交给关掉了。左边没有起事务就是普通的单sql语句，把一条记录删掉了，然后另一个事务可以直接看到删除后的结果，但左边异常后，我们在查的时候发现这条记录又回来了。先不说原因，我们接下来对比一下把自动打开是什么情况。</p> 
+<p><img src="https://images2.imgbox.com/af/ac/Svo3emll_o.png" alt="在这里插入图片描述"></p> 
+<p>现在是把自动提交打开的，此时单sql执行完，也没有提提交。然后客户端出现异常，我们在查的时候发现张三这条记录是真的被删掉了。</p> 
+<p><img src="https://images2.imgbox.com/90/43/3Z1al57J_o.png" alt="在这里插入图片描述"></p> 
+<p>刚开的对比实验，我们只是做了一件事情，自动提交关闭执行单sql然后出现异常了会被自动回滚，自动提交打开执行单sql，没有执行begin、commit，然后出现异常了不会被自动被回滚，删掉就是删掉了。</p> 
+<p>这个事务自动提供影响的是以前单sql，每一条sql就相当于一个事务，虽然没有写begin，commit，但是sql在我看来就是事务。如果自动提供关闭，因为没有commit单sql只是事务执行中，客户端一旦奔溃了数据就会被自动回滚。自动提交打开，单sql执行完数据直接提交到数据库被持久化。</p> 
+<p>总结一下：<strong>以前所有单SQL语句都是事务，因为是默认自动提交被打开的，一旦SQL执行完就自动提交了自动做持久化，所以感知不到。但如果关闭了自动提交，即使一句SQL执行完，也是相当于这个事务正在执行中没有结束。如果奔溃了就会做回滚，不会做持久化。但如果手动commit也是有效的。</strong></p> 
+<p>由下面也可以证明以前单SQL就是事务，必须提交才能在做持久化。</p> 
+<p><img src="https://images2.imgbox.com/66/31/o8h6z4JX_o.png" alt="在这里插入图片描述"></p> 
+<p>对上面所有实验做个结论：</p> 
+<ul><li>只要输入begin或者start transaction，事务便必须要通过commit提交，才会持久化，与是否设置set autocommit无关。</li><li>事务可以手动回滚，同时，当操作异常，MySQL会自动回滚</li><li>对于 InnoDB 每一条 SQL 语言都默认封装成事务，自动提交。（select有特殊情况，因为MySQL 有 MVCC ）</li><li>从上面的例子，我们能看到事务本身的原子性(回滚)，持久性(commit)</li><li>那么隔离性？一致性？后面再说。</li></ul> 
+<p>事务操作注意事项</p> 
+<ul><li>如果没有设置保存点，也可以回滚，只能回滚到事务的开始。直接使用 rollback(前提是事务还没有提交)</li><li>如果一个事务被提交了（commit），则不可以回退（rollback）</li><li>可以选择回退到哪个保存点</li><li>InnoDB 支持事务， MyISAM 不支持事务</li><li>开始事务可以使 start transaction 或者 begin</li></ul> 
+<h2><a id="6_300"></a>6.事务隔离级别</h2> 
+<p><strong>如何理解隔离性1</strong></p> 
+<p>MySQL作为客户端它可能会同时被多个客户端进程(线程)并发访问，向服务器下达命令以前是单SQL，现在可以通过事务一次向服务器提交多个SQL当然也可以是一个。这就意味着可能会有长事务和短事务。虽然mysql告送我事务是有原子性，但是在程序员看来这个事务注定是有执行前，执行中，执行后。只不过我们想通过一些技术手段不想让执行中被影响。被别人影响出现异常了就把已经做的工作回滚，所以在使用者看来它就是原子的，只有执行前和执行后。</p> 
+<p>一个事务可能由多条SQL构成，也就意味着，任何一个事务，都有执行前，执行中，执行后的阶段。而所谓的原子性，其实就是让用户层，要么看到执行前，要么看到执行后。执行中出现问题，可以随时回滚。所以单个事务，对用户表现出来的特性，就是原子性。</p> 
+<p>但，毕竟所有事务都要有个执行过程，那么在多个事务各自执行多个SQL的时候，就还是有可能会出现互相影响的情况。比如：多个事务同时访问同一张表，甚至同一行数据。</p> 
+<p>就如同你妈妈给你说：你要么别学，要学就学到最好。至于你怎么学，中间有什么困难，你妈妈不关心。那么你的学习，对你妈妈来讲，就是原子的。那么你学习过程中，很容易受别人干扰，此时，就需要将你的学习隔离开，保证你的学习环境是健康的。</p> 
+<p><strong>数据库中，为了保证事务执行过程中尽量不受干扰，就有了一个重要特征：<font color="red">隔离性</font></strong><br> <strong>数据库中，允许事务受不同程度的干扰，就有了一种重要特征：<font color="red">隔离级别</font></strong></p> 
+<p>就比如现在有两个事务同时执行，一个事务update，一个事务select，那让谁先跑呢？如果update先跑那select查看的一定是最新的数据，如果select跑完update才跑那select一定查看的是老数据。正常认知一定让update先跑让select拿到最新数据，但这种认知是有问题的。比如说，你是2000后出生的你看到的是现在的世界，有一个是1900年出生的看到的是它那时候的世界，也就是每个人只用看到自己生命周期之内世界的样子。在这个时间线延展的时候每个人看到的东西应该是不一样的。同理<strong>让每一个事务都看到最新的数据是不合理的，我们应该让每一个事务在它这个事务到来时看到它这个事务应该看到的对应数据。这就是隔离性。</strong> 就如上面两个事务，一个事务要做update，一个事务要做select，到底你俩谁先跑，取决于你俩谁先来，谁先来先跑。因为事务要保证原子性，它的原子性不仅仅体现在会回滚也要体现在时间范围内先来的就应该先操作。虽然事务有执行前、执行中、执行后，而执行中我们彼此交叉，但事务是一个原子整体，所以<strong>当一个事务到来的时候我们要通过事务谁先来谁后来，先来的先执行</strong>。可是先来的不一定先退出，可能先来的执行很慢，后来的反而执行很快。可能在你执行期间先来的就已经把数据更新了，那它更新的select你应不应该看到呢！不应该，因为要保证隔离性。因为update比我来的原子级别它比我来的早，它的更新就应该在我的select执行前面，它执行完我们在看。</p> 
+<p>就比如你朋友给你转账，你朋友正在给你转的时候你就过来查了，是不是只有当你朋友这个转账事务跑完了你才应该查的到。转账很慢，查找很快，但是朋友是先转的帐，然后你才去查。说明它来的早，在原子级别两个是在运行期间，查的事务还没有结束，即使转账做完了你也不应该看到，这就隔离性的表现。只要当转账事务结束了然后你才来查这才应该看到，这才是正常的隔离性。<strong>可是隔离性具体应该隔离到什么程度，那么就有了隔离级别的概念</strong>！如果别人一改你就看见就相当于没有隔离，MySQL并不是一个死板只规定一种隔离级别让我们遵守，它为了满足不同的应用场景为我们定出来不同的隔离级别。可以让我们在隔离性的前提下看到不同的内容。</p> 
+<p>以上有三个结论：</p> 
+<ol><li>在事务场景中，隔离是必要的。一定要体会到一个事务在执行是有自己的时间范围的，但是在我看来它就是原子的。整体就是原子的！隔离指的是运行中的事务，进行互相隔离。因为事务是原子的，所以当并发执行的，我们这个时候一定要体现出隔离性。</li><li>在事务运行中，"不会"出现互相干扰，就有了隔离性</li><li>根据影响程度的不同，所以就有了隔离级别</li></ol> 
+<p><strong>隔离级别</strong></p> 
+<ul><li><strong>读未提交【Read Uncommitted】</strong>： 在该隔离级别，所有的事务都可以看到其他事务没有提交的执行结果。（实际生产中不可能使用这种隔离级别的），但是相当于没有任何隔离性，也会有很多并发问题，如<strong>脏读，幻读，不可重复读</strong>等，我们上面为了做实验方便，用的就是这个隔离性。<font color="red"><strong>(一个事务没有提交另一个事务马上就能看到)</strong></font></li><li><strong>读提交【Read Committed】</strong> ：该隔离级别是大多数数据库的默认的隔离级别（不是 MySQL 默认的）。它满足了隔离的简单定义:一个事务只能看到其他的已经提交的事务所做的改变。这种隔离级别会引起<strong>不可重复读</strong>，即一个事务执行时，如果多次 select， 可能得到不同的结果。<font color="red"><strong>（一个事务提交了另一个事务才能看到）</strong></font></li><li><strong>可重复读【Repeatable Read】</strong>： 这是 <strong>MySQL 默认的隔离级别</strong>，它确保同一个事务，在执行中，多次读取操作数据时，会看到同样的数据行。但是会有<strong>幻读</strong>问题。<font color="red">（<strong>事务没有提交，提交，另一个事务都看不到。除非另一个事务结束然后才能看到）</strong></font></li><li><strong>串行化【Serializable</strong>】: 这是事务的最高隔离级别，它通过强制事务排序，使之不可能相互冲突，从而解决了幻读的问题。它在每个读的数据行上面加上共享锁，。但是可能会导致超时和锁竞争（这种隔离级别太极端，实际生产基本不使用）<font color="red"><strong>（事务按照到来时间顺序一个一个执行）</strong></font></li></ul> 
+<p>上面好像都跟读有关，没错。<strong>mysql如果事务要对同一条记录做增删改，那么此时必须通过串行化或者加锁完成！</strong> 上面的隔离级别谈的都是读写并发。怎么保证在数据安全的情况下进行读写并发是mysql的场景，因为mysql中出现纯写场景是很少的，大部分都是读写并发。 读读并发就没人去改随便去搞就行了，写写并发只能是串行化，读写是最重要的，一定要设计好。所以上面都是跟读有关。</p> 
+<p>隔离级别如何实现：隔离，基本都是通过锁实现的，不同的隔离级别，锁的使用是不同的。常见有，表锁，行锁，读锁，写锁，间隙锁(GAP),Next-Key锁(GAP+行锁)等。不过，我们目前现有这个认识就行，先关注上层使用。</p> 
+<blockquote> 
+ <p><strong>查看与设置隔离级别</strong></p> 
+</blockquote> 
+<p><strong>查看全局隔级别</strong></p> 
+<pre><code class="prism language-powershell"><span class="token function">SELECT</span> @@global<span class="token punctuation">.</span>tx_isolation<span class="token punctuation">;</span> 
+</code></pre> 
+<p><img src="https://images2.imgbox.com/9c/dd/iHFNpuLJ_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>查看会话(当前)全局隔级别</strong></p> 
+<pre><code class="prism language-powershell"><span class="token function">SELECT</span> @@session<span class="token punctuation">.</span>tx_isolation<span class="token punctuation">;</span>
+<span class="token function">SELECT</span> @@tx_isolation<span class="token punctuation">;</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/a9/5f/lAGNmJpW_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>global是session默认配置，当登录mysql，默认mysql会读取全局配置好的隔离级别用来初始化自己本次登录会话的隔离级别。当然也可以修改这个隔离级别，但是更改session隔离级别只会影响本次会话，不会影响其他会话，而更改全局的会影响后序所有的客户端登录的隔离级别。注意更改全局的隔离级别不会影响当前会话的隔离级别。除非重新登录一下！</strong></p> 
+<p><strong>设置当前会话 or 全局隔离级别语法</strong></p> 
+<pre><code class="prism language-powershell"><span class="token function">SET</span> <span class="token namespace">[SESSION | GLOBAL]</span> TRANSACTION ISOLATION LEVEL <span class="token punctuation">{<!-- --></span>READ UNCOMMITTED <span class="token punctuation">|</span> READCOMMITTED <span class="token punctuation">|</span> REPEATABLE READ <span class="token punctuation">|</span> SERIALIZABLE<span class="token punctuation">}</span>
+</code></pre> 
+<p>设置当前会话隔离级别为 读提交</p> 
+<pre><code class="prism language-powershell"><span class="token function">set</span> session transaction isolation level read committed<span class="token punctuation">;</span>
+</code></pre> 
+<p>可以看到当前会话隔离级别变了，然后全局隔离级别是没变的，并且不会影响到其他会话。那有全局的当前会话的mysql会采用那个隔离级别呢？<strong>默认mysql采用当前会话session级别！</strong> 这也说明了全局隔离级别和当前会话隔离级别是两个不同的变量。</p> 
+<p><img src="https://images2.imgbox.com/00/3c/DhiADVLT_o.png" alt="在这里插入图片描述"></p> 
+<p>当我们在一个会话中修改全局隔离级别，并不影响当前会话session隔离级别，除非重新登录一下！才会变成之前修改的全局隔离级别。 <strong>注意修改全局隔离级别，之后所有会话的隔离级别会变成修改过的隔离级别。</strong></p> 
+<p><img src="https://images2.imgbox.com/8b/f5/uYL4q5DR_o.png" alt="在这里插入图片描述"></p> 
+<p>一般不建议改默认隔离级别！</p> 
+<h3><a id="61Read_Uncommitted_379"></a>6.1读未提交【Read Uncommitted】</h3> 
+<p>几乎没有加锁，虽然效率高，但是问题太多，严重不建议采用</p> 
+<p>设置全局隔离级别为 读未提交，</p> 
+<pre><code class="prism language-powershell"><span class="token function">set</span> global transaction isolation level read uncommitted<span class="token punctuation">;</span>
+</code></pre> 
+<p>然后重新登录一下才会改变。</p> 
+<p><img src="https://images2.imgbox.com/bd/80/o8XGzxUU_o.png" alt="在这里插入图片描述"></p> 
+<p>手动启动两个事务，并发跑。永远要告诉自己在begin和commit之间，可能会存在多条CURD操作这些操作合起来打个包我称之为事务。都是事务所以并发在跑的的时候可能会出现SQL语句交叉的问题，我们不想因为交叉而产生问题，并且事务是原子的。也就是说一个事务对数据的操作不应该让其他事务看到。看到就是有问题的！相当于原子性的操作的中间就被看到，就是有问题！</p> 
+<p>当我左边插入一条数据，右边就能看到。我左边事务都还没有完后面还要其他的sql语句并且我这个事务正在原子性执行要执行这些语句的时候，刚改了一条数据就被右边事务看到了，左边事务还没commit提交呢！</p> 
+<p><img src="https://images2.imgbox.com/7f/aa/mJeYApr3_o.png" alt="在这里插入图片描述"></p> 
+<p>前面说了事务是一个整体，里面一大推sql被当做原子性的方式要么不做，要么做完。但是现在只要做了就会被其他事务看到。这就是 读未提交，其他事务读到了别的事务还没有提交的数据，这就是隔离级别 读未提交 的表现。</p> 
+<p><strong><font color="red">读未提交</font>隔离级别下，一个事务正在对数据做增删改操作还没有提交，另一个事务就能立马看到。</strong></p> 
+<p><strong>一个事务在执行中，读到另一个执行中事务的更新(或其他操作)但是未commit的数据，这种现象叫做<font color="red">脏读</font>。</strong></p> 
+<h3><a id="62Read_Committed_405"></a>6.2读提交【Read Committed】</h3> 
+<p>设置全局隔离为 读提交</p> 
+<pre><code class="prism language-powershell"><span class="token function">set</span> global transaction isolation level read committed<span class="token punctuation">;</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/de/d4/vuWBlmYh_o.png" alt="在这里插入图片描述"></p> 
+<p>当我们这次左边事务插入一条数据但是还没有提交，发现右边事务是查不到的！</p> 
+<p><img src="https://images2.imgbox.com/7d/3b/23Od9iUR_o.png" alt="在这里插入图片描述"></p> 
+<p>但是实际上这条记录在左边事务是有的。</p> 
+<p><img src="https://images2.imgbox.com/33/8d/NqVODllX_o.png" alt="在这里插入图片描述"></p> 
+<p>当左边事务commit提交后，右边事务还没有结束但是也是可以查到这条记录的</p> 
+<p><img src="https://images2.imgbox.com/df/b6/eYm3zxJP_o.png" alt="在这里插入图片描述"></p> 
+<p>即使右边事务结束了，也还是可以查到这条记录的</p> 
+<p><img src="https://images2.imgbox.com/bb/45/ktu5cMuR_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>当正在并发执行的事务，如果当前一个事务正在对数据进行增删改操作期间，其他事务是看不到的，一旦提交了，其他事务就能看到。这就是<font color="red">读提交</font>隔离级别现象</strong></p> 
+<p>那这样的话，其他事务看到的数据就不是最新的了，不是最新的有问题吗？不是最新的就是错误的吗？不是最新的也是合理的。就如2010出生的人看世界和1900出生的人看世界是不一样的。并不是所有事务都是要看到最新的这不一定。</p> 
+<p>但是读提交会有这样的问题，<strong>当一个事务正在对数据现象增删改操作时，其他事务确实看不到，可是当你一旦提交了，但是其他事务还没有提交，然后select查的时候就能看到你刚刚增删改的最新的数据。带来的问题是，在一个begin和commit之间一个事务内部调用同样的select语句可能会查到不一样的结果。这种现象我们叫做<font color="red">不可重复读</font>。</strong></p> 
+<p>一个事务不是说原子性操作的吗，但是一个事务之间select查的时候就能读到别人提交的数据，这样就会导致在这个事务内部没有办法重复调用select，可能读到不一样的结果。这就是不可重复读！</p> 
+<p><strong>不可重复读是一个问题吗？</strong><br> <strong>是一个问题</strong>，虽然你提交了是应该让其他事务看到，但是不应该是和你并发一起跑的事务在每提交之前就能看到！应该是这个并发跑的事务也提交了然后才能看到或者其他重启的事务能看到！</p> 
+<p>下面举个理解看看不可重复读带来的问题。</p> 
+<p>现在有一个公司要根据员工的薪资发年终奖，这个公司有一个员工表里面包含员工id、员工姓名、员工薪资等等，不同薪资水平发不同的奖品。<br> <img src="https://images2.imgbox.com/bd/c7/t2N2LyFI_o.png" alt="在这里插入图片描述"><br> 张三是一个程序员，它们可以手动启动一个事务，一下就把不同薪资水平的员工放在一起然后拉出来。</p> 
+<p><img src="https://images2.imgbox.com/a1/1f/6GYLkSRH_o.png" alt="在这里插入图片描述"><br> 李四也是这个公司的一名员工，他觉得他为公司抛头颅洒热血他的工资3200太低了，于是就找到老板，要求涨工资，从3200涨到4500。老板觉得他说得对，于是就给他涨到4500。于是老板找到公司另一个程序员王五，让他把李四的工资涨到4500。王五也手动启动一个事务然后向员工表更新数据。</p> 
+<p><img src="https://images2.imgbox.com/da/68/E92jIwBo_o.png" alt="在这里插入图片描述"><br> 但是此时恰好，张三和王五启动的事务在并发执行。张三在查的时候3000到4000的时候，王五还没有更新，所以张三查3000到4000里有个李四。当张三事务正在准备运行下面查4000到5000的时候，王五的事务对李四薪资做修改执行完也提交了。此时正在读提交隔离级别下，一旦提交另一个事务里面就能看到。所以当张三事务在查4000到5000的时候里面还有一个李四！就导致李四这个人得到两份奖品！这就是因不可重复的读问题带来的影响。</p> 
+<p>读提交都有这个问题，读未提交肯定也有这个问题！</p> 
+<p>一个事务能读到另一个事务的提交我们也不想这么干，所以这种读提交隔离级别虽然比读未提交好一丢丢，但我们照样不推荐。所以我们就有第三种隔离级别 可重复读。</p> 
+<h3><a id="63Repeatable_Read_456"></a>6.3可重复读【Repeatable Read】</h3> 
+<p>设置全局隔离级别为可重复读，这也是mysql默认隔离级别</p> 
+<pre><code class="prism language-powershell"><span class="token function">set</span> global transaction isolation level repeatable read<span class="token punctuation">;</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/04/89/Y4mmjp4s_o.png" alt="在这里插入图片描述"><br> 左边事务插入数据还没有提供，右边事务是看不到的，这很正常，因为RC级别下就看不到，<br> <img src="https://images2.imgbox.com/e2/c7/2sZoMweO_o.png" alt="在这里插入图片描述"></p> 
+<p>即使是把左边事务提交了，右边事务目前还是在运行中的还是看不到的<br> <img src="https://images2.imgbox.com/74/7a/2LP2SHzK_o.png" alt="在这里插入图片描述"></p> 
+<p>只有把右边事务也提交了，然后才能看到左边事务插入的数据。这就是可重复读！</p> 
+<p><img src="https://images2.imgbox.com/4b/0a/u295EfBb_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>当事务在并发运行期间，一个事务正在做增删改操作其他事务看不到，即使提交了其他并发跑的事务也看不到。除非并发在跑的事务也提交了才能看。这就是<font color="red">可重复读</font>。</strong></p> 
+<p>多次查看，发现在左边事务中insert的数据，在右边事务周期中，也没有什么影响，也符合可重复的特点。但是，一般的数据库在可重复读情况的时候，无法屏蔽其他事务insert的数据(为什么？因为隔离性实现是对数据加锁完成的，而insert待插入的数据因为并不存在，那么一般加锁无法屏蔽这类问题),会造成虽然大部分内容是可重复读的，但是insert的数据在可重复读情况被读取出来，导致多次查找时，会多查找出来新的记录，就如同产生了幻觉。这种现象，叫做<font color="red"><strong>幻读(phantom read)</strong></font>。很明显，MySQL在RR级别的时候，是解决了幻读问题的(解决的方式是用Next-Key锁(GAP+行锁)解决的。这块比较难，有兴趣的可以自己了解一下)</p> 
+<p>换句话说，在RR或者RC或者RU级别下对于插入问题，我们如果在进行读取时候可能会看到新插入的结果，这种现象叫做幻读。</p> 
+<h3><a id="64serializable_479"></a>6.4串行化【serializable】</h3> 
+<p>隔离性的表现就是彼此之间互相不影响，我们还要保证读写能够并发，你跑你的我跑我的，但是mysql还有更为严格的隔离级别，叫做<strong>串行化</strong>。这种隔离级别可以保证让mysql将所有事务串行化，注意是将所有事务串行化！不是把所有sql串行化。所以它的表现是，因为<strong>所有事务是串行执行的，就注定事务执行的时候是按照到来的顺序进行排队， 排队的时候事务是串行的，所以最终在执行的时候，我们能保证一个事务在执行的时候，没有其他事务在执行</strong>。这样就能保证mysql数据绝对的完整性。所以操作都是串行必然带来了效率的问题，所以它是一个安全的方案但并不是一个高效的方案。</p> 
+<p>对所有操作全部加锁，进行串行化，不会有问题，但是只要串行化，效率很低，几乎完全不会被采用</p> 
+<p>设置全局隔离级别为 串行化</p> 
+<pre><code class="prism language-powershell"><span class="token function">set</span> global transaction isolation level serializable<span class="token punctuation">;</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/fb/30/xWrC5lM4_o.png" alt="在这里插入图片描述"></p> 
+<p>左边事务查一下数据，注意只是sql跑完了但是事务还没有跑完。右边事务也能查。我们看到你查你的，我查我的，我们俩个在事务上没有出现阻塞的情况。这是正常的。<br> <img src="https://images2.imgbox.com/8b/7b/QRGbjJa7_o.png" alt="在这里插入图片描述"></p> 
+<p>当左边事务想删除一条数据时，我们发现它卡在了哪里不让我删。但是我们右边还能查，没有因为查阻塞我，这说明在mysql里它认为有其他事务在访问这个表，让这个人先访问完，访问完了你在做删除操作。</p> 
+<p>目前因为左边等待锁超时了，让我们重启一个事务。没事我们再做一下看一下。</p> 
+<p><img src="https://images2.imgbox.com/7b/f6/DVSI1nWr_o.png" alt="在这里插入图片描述"></p> 
+<p>当我们把右边事务提交后把表锁释放掉，然后左边事务拿到锁就不被阻塞了可以跑了。</p> 
+<p><img src="https://images2.imgbox.com/86/42/RvbOpWjM_o.png" alt="在这里插入图片描述"></p> 
+<p>一个读写都会被加锁，那写写更不用说了。</p> 
+<p>所以当客户端A客户端B都以串行化去运行，select先持有锁然后才能去访问数据，如果你的客户端有对应的增删改操作那就会被放到mysql等待队列里，只有当这个读取事务结束了，剩下的事务才能跑。<br> <img src="https://images2.imgbox.com/9a/e3/bCJAL6h7_o.png" alt="在这里插入图片描述"><br> 总结：</p> 
+<ul><li>隔离性的四种隔离级别分别是读未提交、都提交、可重复读、串行化，其中隔离级别越严格，安全性越高，但数据库的并发性能也就越低，往往需要在两者之间找一个平衡点。具体看场景根据实际需求选择隔离级别。</li><li>不可重复读的重点是修改和删除：同样的条件，你读取过的数据，再次读取出来发现值不一样了，幻读的重点在于新增：同样的条件，第1次和第2次读出来的记录数不一样。其实个人感觉不可重复读和幻读是一样的都是因为查的时候不一样了，非得分就按前面的。</li><li>说明： mysql 默认的隔离级别是可重复读，一般情况下不要修改</li><li>一个begin和commit之间可能会存在几十或者成百上千的sql语句，所以事务也有长短事务这样的概念。短事务还好因为比较短所以出现交错并发跑概率会比较低一些，一旦事务都很长或者长短交叉在一起，一定是有很多事务在并发在跑的，并发在跑就可能出现事务间的影响。事务间互相影响，指的是事务在并行执行的时候，即都没有commit的时候，影响会比较大。</li></ul> 
+<table><thead><tr><th>隔离级别</th><th>脏读</th><th>不可重复读</th><th>幻读</th><th>加锁读</th></tr></thead><tbody><tr><td>读未提交（Read Uncommitted）</td><td>yes</td><td>yes</td><td>yes</td><td>不加锁</td></tr><tr><td>读提交（Read Committed）</td><td>no</td><td>yes</td><td>yes</td><td>不加锁</td></tr><tr><td>可重复读（Repeatable Read）</td><td>no</td><td>no</td><td>yes</td><td>不加锁</td></tr><tr><td>串行化（serializable）</td><td>no</td><td>no</td><td>no</td><td>加锁</td></tr></tbody></table> 
+<p><strong>一致性(Consistency)</strong></p> 
+<ul><li>事务执行的结果，必须使数据库从一个一致性状态，变到另一个一致性状态。当数据库只包含事务成功提交的结果时，数据库处于一致性状态。如果系统运行发生中断，某个事务尚未完成而被迫中断，而改未完成的事务对数据库所做的修改已被写入数据库，此时数据库就处于一种不正确（不一致）的状态。因此一致性是通过原子性来保证的。</li><li>其实一致性和用户的业务逻辑强相关，一般MySQL提供技术支持，但是一致性还是要用户业务逻辑做支撑，也就是，一致性，是由用户决定的。</li><li>而技术上，mysql通过用原子性、隔离性、持久性来保证最终目标 一致性。</li></ul> 
+<p>真正给用户感知到的就是事务有原子性、隔离性、持久性你随便用，只用begin commit把事务提交，就能保证你的数据在数据库里是一致的。从一个确定状态变成下一个确定状态。也就说这个事务你交给我，还没有跑但是就能告诉你，比如说转账，转账成功就一定能到对方，转账失败一定不影响账号原始的钱。让你使用我的时候，我的所有行为都是可以预测的。 这是mysql给我提供的技术方案。但是如果就是比如说是转账封成一个事务，中间就只有转移你的钱，就是不写给目标加钱，就把这样一条sql封装成事务，交给mysql。那就是出现一个人扣钱，另一个没加。你能说是数据库的问题吗？mysql只提供技术，由用户决定正确使用。所以<strong>一致性是由mysql和用户共同决定的</strong>！</p> 
+<p><strong>推荐阅读</strong></p> 
+<p><a href="https://www.jianshu.com/p/398d788e1083" rel="nofollow">如何实现事务的隔离性</a><br> <a href="https://tech.meituan.com/2014/08/20/innodb-lock.html" rel="nofollow">Innodb中的事务隔离级别和锁的关系</a><br> <a href="https://www.cnblogs.com/aspirant/p/9177978.html" rel="nofollow">Mysql 间隙锁原理，以及Repeatable Read隔离级别下可以防止幻读原理</a></p> 
+<p><strong>在RR级别的时候，多个事务的update，多个事务的insert,多个事务的delete，是否会有加锁?</strong><br> update，insert，delete之间是一定会有加锁的，但是select和这些操作是不冲突的。这就是通过读写锁(锁有行锁或者表锁)+MVCC完成隔离性。</p> 
+<p>其实目前最困惑的是RC和RR隔离级别，它怎么做到一个事务提交了，其他事务还看不到。数据不是只有一份吗，他改了我怎么看不到，这个原理是怎么样的？下篇博客见！</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/eeedc8e638f193c1fb56989fc61ba360/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">笔记本电脑安装属于自己的Llama 3 8B大模型和对话客户端</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e1fcec5708f86b851fde47665165ba99/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【算法专题--链表】反转链表II--高频面试题（图文详解，小白一看就会！！！）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>AIGC:语音克隆模型Bert-VITS2-2.3部署与实战 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/bc80c2acc9d4b4f82f82ad9ed357873a/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="AIGC:语音克隆模型Bert-VITS2-2.3部署与实战">
+  <meta property="og:description" content="1 VITS2模型 1.1 摘要 单阶段文本到语音模型最近被积极研究，其结果优于两阶段管道系统。以往的单阶段模型虽然取得了较大的进展，但在间歇性非自然性、计算效率、对音素转换依赖性强等方面仍有改进的空间。本文提出VITS2，一种单阶段的文本到语音模型，通过改进之前工作的几个方面，有效地合成了更自然的语音。本文提出了改进的结构和训练机制，所提出的方法在提高多说话人模型中语音特征的自然度、相似性以及训练和推理效率方面是有效的。证明了所提出方法可以显著减少以前工作中对音素转换的强依赖，允许完全端到端单阶段方法。
+论文地址：https://arxiv.org/pdf/2307.16430.pdf
+演示地址：https://vits-2.github.io/demo/
+VITS1讲解详见：https://mp.csdn.net/mp_blog/creation/editor/130904876
+1.2 介绍 最近，基于深度神经网络的文本到语音的发展取得了重大进展。基于深度神经网络的文本到语音转换是一种从输入文本生成相应原始波形的方法；它有几个有趣的特性，通常使文本到语音任务具有挑战性。通过对特征的快速回顾，可以发现文本到语音任务涉及到将不连续的文本特征转换为连续的波形。输入和输出具有数百倍的时间步长差异，它们之间的对齐必须非常精确才能合成高质量的语音音频。此外，输入文本中不存在的韵律和说话人特征需要自然地表达，文本输入可以有多种说话方式，这是一个一对多的问题。合成高质量语音具有挑战性的另一个因素是，人们在听音频时专注于单个组件；因此，即使构成整个音频的数十万个信号中只有一小部分是非自然的，人类也可以很容易地感知它们。效率是导致任务困难的另一个因素。合成的音频具有很高的时间分辨率，通常每秒包含超过20,000个数据，需要高效的采样方法。
+由于文本到语音的任务特点，解决方案也可以是复杂的。之前的工作通过将从输入文本生成波形的过程分为两个级联阶段来解决这些问题。一种流行的方法涉及从第一阶段的输入文本中生成中间语音表示，如梅尔语谱图或语言特征，然后以第二阶段的这些中间表示为条件生成原始波形。两级管道系统具有简化每个模型和便于训练的优点；然而，它们也有以下限制。
+错误从第一阶段传播到第二阶段。它不是利用模型内部学习到的表示，而是通过人类定义的特征(如梅尔语谱图或语言特征)进行中介。生成中间特征所需的计算量。最近，为了解决这些限制，直接从输入文本中生成波形的单阶段模型已被积极研究。单阶段模型不仅优于两阶段管道系统，而且显示了生成与人类几乎不可区分的高质量语音的能力。 虽然之前的工作使用单阶段方法取得了巨大的成功，但模型vits存在以下问题：间歇性不自然、时长预测器效率低、输入格式复杂以缓解对齐和时长建模的局限性(使用空白标记)、多说话人模型中说话人相似性不足、训练速度慢以及对音素转换的依赖性强。本文提供了解决这些问题的方法。本文提出一种通过对抗性学习训练的随机时长预测器，利用transformer块和说话人条件文本编码器改进的归一化流，以更好地对多个说话人特征进行建模。实验结果表明，所提出的方法提高了质量和效率。此外，通过使用规范化文本作为模型输入的实验表明，该方法减少了对音素转换的依赖。因此，该方法更接近于完全的端到端单阶段方法。
+1.3 模型 在本节中，我们描述了四个小节的改进：时长预测（duration prediction）、具有归一化流的增广变分自编码器（augmented variational autoencoder with normalizing flows）、对齐搜索（alignment search）和以说话人为条件的文本编码器（and speaker-conditioned text encoder）。本文提出一种使用对抗性学习来训练时长预测器的方法，以在训练和合成方面都具有较高的效率来合成自然语音。该模型本质上是使用上一项工作[4,17]中提出的单调对齐搜索(MAS)来学习对齐，并进一步建议进行修改以提高质量。提出了一种通过将transformer块引入到规范化流程中来提高自然性的方法，能在转换分布时捕获长期依赖。此外，本文还改进了多说话人模型中的说话人条件，以提高说话人相似度。
+1.3.1 基于时间步进条件判别的随机时长预测器 之前的工作表明，基于流的随机时长预测器比确定性方法更有效地提高了合成语音的自然度。结果很好;然而，基于流的方法需要相对更多的计算和一些复杂的技术。本文提出一种具有对抗性学习的随机时长预测器，以合成更自然的语音，在训练和合成方面的效率都比之前的工作更高。建议的持续时间预测器和鉴别器的概述如图1a所示。我们应用对抗性学习来训练时间预测器，使用与生成器相同的输入条件判别器来适当区分预测的时间。我们使用文本的隐藏表示htext和高斯噪声zd作为生成器G的输入；使用MAS获得的对数尺度的htext和持续时间(以d表示)或从持续时间预测器(以dˆ表示)中预测的htext和持续时间(以d表示)作为鉴别器d的输入。一般生成对抗网络的鉴别器被输入固定长度的输入，而预测每个输入token的持续时间，并且输入序列的长度随每个训练实例而变化。为正确区分可变长度的输入，本文提出一种时间逐步判别器，可区分所有token的每个预测持续时间。我们使用两种类型的损失;对抗学习的最小二乘损失函数和均方误差损失函数：
+提出的时长预测器和训练机制允许在较短的步骤中学习时长，并且时长预测器被单独训练作为最后的训练步骤，从而减少了训练的整体计算时间。
+1.3.2 带高斯噪声的单调对齐搜索 在之前的工作之后，我们将MAS引入到我们的模型中来学习对齐。该算法产生了在所有可能的单调对齐中具有最高概率的文本和音频之间的对齐，并训练模型以最大化其概率。该方法是有效的;然而，在搜索和优化特定的对齐之后，搜索其他更合适的对齐会受到限制。为了缓解这个问题，我们在计算的概率中添加了一个小的高斯噪声。这为模型提供了额外的机会来搜索其他对齐。我们只在训练开始时添加这种噪声，因为MAS使模型能够快速学习对齐。参考之前的工作[4]，该工作详细描述了算法，正向操作中所有可能位置的Q值都计算出最大对数似然。我们在操作中计算的Q值上添加了小的高斯噪声。
+其中i和j分别表示输入序列和后验序列上的特定位置，z表示来自标准化流的转换潜变量。是从标准正态分布中采样的噪声、P的标准差和从0.01开始并每步递减2×10^−6的噪声尺度的乘积。
+1.3.3 使用Transformer块的归一化流 之前的工作展示了用归一化流增强的变分自编码器合成高质量语音音频的能力。归一化流包含卷积块，卷积块是捕获相邻数据模式的有效结构，使模型能够合成高质量的语音。在转换分布时，捕捉长期依赖关系的能力至关重要，因为语音的每个部分都与不相邻的其他部分相关。虽然卷积块可以有效捕获相邻模式，但由于其感受野的限制，在捕获长期依赖关系方面存在不足。因此，我们在归一化流中添加了一个带有残差连接的小transformer块，以捕获长期依赖关系，如图1b所示。图2显示了实际的注意力得分图和卷积块的感受野。可以确定，transformer块在变换分布时在不同位置收集信息，这是感受野不可能做到的。
+1.3.4 说话人条件文本编码器 由于多说话人模型是根据说话人条件用单一模型合成多种特征的语音，表达每个说话人的个人语音特征是一个重要的质量因素，也是自然度的一个重要因素。已有工作表明，单阶段模型可以高质量地对多个说话人进行建模。考虑到说话人的特定发音和语调等特征会显著影响每个说话人的语音特征的表达，但输入文本中不包含这些特征，设计了一个以说话人信息为条件的文本编码器，通过在编码输入文本的同时学习这些特征来更好地模仿每个说话人的各种语音特征。我们将说话人向量设置在文本编码器的第三个transformer块上，如图1c所示。
+1.4 实验 我们在两个不同的数据集上进行了实验。使用LJ语音数据集[20]验证自然度的提升，使用VCTK数据集[21]验证模型是否能更好地再现说话人特征。LJ语音数据集由单个说话者的13100个短音频片段组成，总长度约为24小时。音频格式是16位PCM，采样率为22.05 kHz，我们使用它没有任何操作。我们将数据集随机分为训练集(12,500个样本)、验证集(100个样本)和测试集(500个样本)。
+VCTK数据集由109个具有不同口音的英语母语者发出的约44,000个短音频片段组成。音频剪辑的总长度约为44小时。音频格式为16位PCM，采样率为44.1 kHz。我们将采样率降低到22.05 kHz。我们将数据集随机分为训练集(43,470个样本)、验证集(100个样本)和测试集(500个样本)。采用80波段mel尺度谱图计算重建损失。与之前的工作[17]相比，我们使用相同的语谱图作为后验编码器的输入。快速傅里叶变换、窗口和跳数分别设置为1024、1024和256。
+我们使用音素序列和规范化文本作为模型的输入进行了实验。我们使用开源软件[22]将文本序列转换为国际音标序列，并将该序列输入文本编码器。与之前的工作[17]相比，我们没有使用空白标记。对于规范化文本的实验，我们使用开源软件[23]用简单的规则规范化输入文本，并将其提供给文本编码器。
+使用AdamW[24]优化器训练网络，β1 = 0.8， β2 = 0.99，权重衰减λ = 0.01。学习率衰减在每轮中以0.9991/8因子进行调度，初始学习率为2 × 10^−4。我们每一步为网络提供256个训练实例。继之前的工作[17]之后，应用带窗口的生成器训练。我们在四个NVIDIA V100 gpu上使用混合精度训练。生成波形的网络和持续时间预测器分别训练了800k和30k步。
+1.5 结果 1.5.1 自然度评估 为了验证所提模型能够合成自然语音，进行了众包平均意见得分(MOS)测试。在听了从测试集中随机选择的音频样本后，打分者对他们的自然程度进行了从1到5的5分评分。考虑到之前的工作[17]已经显示出与人工记录相似的质量，我们还进行了比较平均意见分数(CMOS)测试，该测试适合通过直接比较来评估高质量样本。评价者在听了从测试集中随机选择的音频样本后，对他们相对偏好的自然程度进行了评分，总分为7分，从3到3分不等评价者被允许对每个音频样本进行一次评估。对所有音频样本进行归一化处理，以避免幅度差异对得分的影响。我们使用官方实现和之前工作[17]的预训练权重作为比较模型。评价结果见表1和表2a。该方法与已有工作[17]的MOS值差为0.09,CMOS值和置信区间分别为0.201和±0.105。实验结果表明，该方法显著提高了合成语音的质量。此外，我们使用[18]方法对CMOS进行了评估，该方法在不同的结构和训练机制下表现出良好的性能。为了评估，我们使用官方实现和预训练权重生成样本。实验结果的CMOS和置信区间分别为0.176和±0.125，表明该方法明显优于传统方法。
+1.5.2 消融研究 为验证所提方法的有效性，进行了消融研究。为验证对抗学习训练的随机时间预测器的有效性，将其替换为具有相同结构的确定性时间预测器，并使用L2损失进行训练。确定性时间预测器的训练步骤与之前的工作[17]相同。为验证对齐搜索中使用的噪声调度的有效性，对模型进行无噪声训练。为了验证模型的有效性，在归一化流程中没有transformer模块的情况下对模型进行训练。评价结果如表1所示。确定性持续时间预测器、无噪声的对准搜索和无变压器块的归一化流的消融研究的MOS差值分别为0.14、0.15和0.06。由于不使用空白标记和线性语谱图，计算效率将得到提高，删除一些所提出的方法与之前的工作[17]相比，性能较低。实验结果表明，所提方法在提高图像质量方面是有效的。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-03-05T19:59:36+08:00">
+    <meta property="article:modified_time" content="2024-03-05T19:59:36+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">AIGC:语音克隆模型Bert-VITS2-2.3部署与实战</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2> 1 VITS2模型</h2> 
+<h3>1.1 摘要</h3> 
+<p>单阶段文本到语音模型最近被积极研究，其结果优于两阶段管道系统。以往的单阶段模型虽然取得了较大的进展，但在间歇性非自然性、计算效率、对音素转换依赖性强等方面仍有改进的空间。本文提出VITS2，一种单阶段的文本到语音模型，通过改进之前工作的几个方面，有效地合成了更自然的语音。本文提出了改进的结构和训练机制，所提出的方法在提高多说话人模型中语音特征的自然度、相似性以及训练和推理效率方面是有效的。证明了所提出方法可以显著减少以前工作中对音素转换的强依赖，允许完全端到端单阶段方法。</p> 
+<p>论文地址：<a href="https://arxiv.org/pdf/2307.16430.pdf" rel="nofollow" title="https://arxiv.org/pdf/2307.16430.pdf">https://arxiv.org/pdf/2307.16430.pdf</a></p> 
+<p>演示地址：<a href="https://vits-2.github.io/demo/" rel="nofollow" title="https://vits-2.github.io/demo/">https://vits-2.github.io/demo/</a></p> 
+<p>VITS1讲解详见：<a href="https://mp.csdn.net/mp_blog/creation/editor/130904876" title="https://mp.csdn.net/mp_blog/creation/editor/130904876">https://mp.csdn.net/mp_blog/creation/editor/130904876</a></p> 
+<h3>1.2 介绍</h3> 
+<p>最近，基于深度神经网络的文本到语音的发展取得了重大进展。基于深度神经网络的文本到语音转换是一种从输入文本生成相应原始波形的方法；它有几个有趣的特性，通常使文本到语音任务具有挑战性。通过对特征的快速回顾，可以发现文本到语音任务涉及到将不连续的文本特征转换为连续的波形。输入和输出具有数百倍的时间步长差异，它们之间的对齐必须非常精确才能合成高质量的语音音频。此外，输入文本中不存在的韵律和说话人特征需要自然地表达，文本输入可以有多种说话方式，这是一个一对多的问题。合成高质量语音具有挑战性的另一个因素是，人们在听音频时专注于单个组件；因此，即使构成整个音频的数十万个信号中只有一小部分是非自然的，人类也可以很容易地感知它们。效率是导致任务困难的另一个因素。合成的音频具有很高的时间分辨率，通常每秒包含超过20,000个数据，需要高效的采样方法。</p> 
+<p>由于文本到语音的任务特点，解决方案也可以是复杂的。之前的工作通过将从输入文本生成波形的过程分为两个级联阶段来解决这些问题。一种流行的方法涉及从第一阶段的输入文本中生成中间语音表示，如梅尔语谱图或语言特征，然后以第二阶段的这些中间表示为条件生成原始波形。两级管道系统具有简化每个模型和便于训练的优点；然而，它们也有以下限制。</p> 
+<ul><li>错误从第一阶段传播到第二阶段。</li><li>它不是利用模型内部学习到的表示，而是通过人类定义的特征(如梅尔语谱图或语言特征)进行中介。</li><li>生成中间特征所需的计算量。最近，为了解决这些限制，直接从输入文本中生成波形的单阶段模型已被积极研究。单阶段模型不仅优于两阶段管道系统，而且显示了生成与人类几乎不可区分的高质量语音的能力。</li></ul> 
+<p>虽然之前的工作使用单阶段方法取得了巨大的成功，但模型vits存在以下问题：间歇性不自然、时长预测器效率低、输入格式复杂以缓解对齐和时长建模的局限性(使用空白标记)、多说话人模型中说话人相似性不足、训练速度慢以及对音素转换的依赖性强。本文提供了解决这些问题的方法。本文提出一种通过对抗性学习训练的随机时长预测器，利用transformer块和说话人条件文本编码器改进的归一化流，以更好地对多个说话人特征进行建模。实验结果表明，所提出的方法提高了质量和效率。此外，通过使用规范化文本作为模型输入的实验表明，该方法减少了对音素转换的依赖。因此，该方法更接近于完全的端到端单阶段方法。</p> 
+<h3>1.3 模型</h3> 
+<p>在本节中，我们描述了四个小节的改进：时长预测（duration prediction）、具有归一化流的增广变分自编码器（augmented variational autoencoder with normalizing flows）、对齐搜索（alignment search）和以说话人为条件的文本编码器（and speaker-conditioned text encoder）。本文提出一种使用对抗性学习来训练时长预测器的方法，以在训练和合成方面都具有较高的效率来合成自然语音。该模型本质上是使用上一项工作[4,17]中提出的单调对齐搜索(MAS)来学习对齐，并进一步建议进行修改以提高质量。提出了一种通过将transformer块引入到规范化流程中来提高自然性的方法，能在转换分布时捕获长期依赖。此外，本文还改进了多说话人模型中的说话人条件，以提高说话人相似度。</p> 
+<p><img alt="" height="628" src="https://images2.imgbox.com/88/46/PlKLnTZP_o.png" width="1200"></p> 
+<h4>1.3.1 <a name="t3"></a>基于时间步进条件判别的随机时长预测器</h4> 
+<p>之前的工作表明，基于流的随机时长预测器比确定性方法更有效地提高了合成语音的自然度。结果很好;然而，基于流的方法需要相对更多的计算和一些复杂的技术。本文提出一种具有对抗性学习的随机时长预测器，以合成更自然的语音，在训练和合成方面的效率都比之前的工作更高。建议的持续时间预测器和鉴别器的概述如图1a所示。我们应用对抗性学习来训练时间预测器，使用与生成器相同的输入条件判别器来适当区分预测的时间。我们使用文本的隐藏表示htext和高斯噪声zd作为生成器G的输入；使用MAS获得的对数尺度的htext和持续时间(以d表示)或从持续时间预测器(以dˆ表示)中预测的htext和持续时间(以d表示)作为鉴别器d的输入。一般生成对抗网络的鉴别器被输入固定长度的输入，而预测每个输入token的持续时间，并且输入序列的长度随每个训练实例而变化。为正确区分可变长度的输入，本文提出一种时间逐步判别器，可区分所有token的每个预测持续时间。我们使用两种类型的损失;对抗学习的最小二乘损失函数和均方误差损失函数：</p> 
+<p class="img-center"><img alt="" height="126" src="https://images2.imgbox.com/9d/8a/NtVteYDJ_o.png" width="382"></p> 
+<p>提出的时长预测器和训练机制允许在较短的步骤中学习时长，并且时长预测器被单独训练作为最后的训练步骤，从而减少了训练的整体计算时间。</p> 
+<h4>1.3.2 带高斯噪声的单调对齐搜索</h4> 
+<p>在之前的工作之后，我们将MAS引入到我们的模型中来学习对齐。该算法产生了在所有可能的单调对齐中具有最高概率的文本和音频之间的对齐，并训练模型以最大化其概率。该方法是有效的;然而，在搜索和优化特定的对齐之后，搜索其他更合适的对齐会受到限制。为了缓解这个问题，我们在计算的概率中添加了一个小的高斯噪声。这为模型提供了额外的机会来搜索其他对齐。我们只在训练开始时添加这种噪声，因为MAS使模型能够快速学习对齐。参考之前的工作[4]，该工作详细描述了算法，正向操作中所有可能位置的Q值都计算出最大对数似然。我们在操作中计算的Q值上添加了小的高斯噪声。</p> 
+<p class="img-center"><img alt="" height="113" src="https://images2.imgbox.com/34/12/0PUExvnW_o.png" width="415"></p> 
+<p>其中i和j分别表示输入序列和后验序列上的特定位置，z表示来自标准化流的转换潜变量。是从标准正态分布中采样的噪声、P的标准差和从0.01开始并每步递减2×10^−6的噪声尺度的乘积。</p> 
+<h4><a name="t5"></a> 1.3.3 使用Transformer块的归一化流</h4> 
+<p>之前的工作展示了用归一化流增强的变分自编码器合成高质量语音音频的能力。归一化流包含卷积块，卷积块是捕获相邻数据模式的有效结构，使模型能够合成高质量的语音。在转换分布时，捕捉长期依赖关系的能力至关重要，因为语音的每个部分都与不相邻的其他部分相关。虽然卷积块可以有效捕获相邻模式，但由于其感受野的限制，在捕获长期依赖关系方面存在不足。因此，我们在归一化流中添加了一个带有残差连接的小transformer块，以捕获长期依赖关系，如图1b所示。图2显示了实际的注意力得分图和卷积块的感受野。可以确定，transformer块在变换分布时在不同位置收集信息，这是感受野不可能做到的。</p> 
+<p class="img-center"><img alt="" height="336" src="https://images2.imgbox.com/f6/4a/X6BXlVKi_o.png" width="419"></p> 
+<p> </p> 
+<h4> 1.3.4 说话人条件文本编码器</h4> 
+<p>由于多说话人模型是根据说话人条件用单一模型合成多种特征的语音，表达每个说话人的个人语音特征是一个重要的质量因素，也是自然度的一个重要因素。已有工作表明，单阶段模型可以高质量地对多个说话人进行建模。考虑到说话人的特定发音和语调等特征会显著影响每个说话人的语音特征的表达，但输入文本中不包含这些特征，设计了一个以说话人信息为条件的文本编码器，通过在编码输入文本的同时学习这些特征来更好地模仿每个说话人的各种语音特征。我们将说话人向量设置在文本编码器的第三个transformer块上，如图1c所示。</p> 
+<h3>1.4 实验</h3> 
+<p>我们在两个不同的数据集上进行了实验。使用LJ语音数据集[20]验证自然度的提升，使用VCTK数据集[21]验证模型是否能更好地再现说话人特征。LJ语音数据集由单个说话者的13100个短音频片段组成，总长度约为24小时。音频格式是16位PCM，采样率为22.05 kHz，我们使用它没有任何操作。我们将数据集随机分为训练集(12,500个样本)、验证集(100个样本)和测试集(500个样本)。</p> 
+<p>VCTK数据集由109个具有不同口音的英语母语者发出的约44,000个短音频片段组成。音频剪辑的总长度约为44小时。音频格式为16位PCM，采样率为44.1 kHz。我们将采样率降低到22.05 kHz。我们将数据集随机分为训练集(43,470个样本)、验证集(100个样本)和测试集(500个样本)。采用80波段mel尺度谱图计算重建损失。与之前的工作[17]相比，我们使用相同的语谱图作为后验编码器的输入。快速傅里叶变换、窗口和跳数分别设置为1024、1024和256。</p> 
+<p>我们使用音素序列和规范化文本作为模型的输入进行了实验。我们使用开源软件[22]将文本序列转换为国际音标序列，并将该序列输入文本编码器。与之前的工作[17]相比，我们没有使用空白标记。对于规范化文本的实验，我们使用开源软件[23]用简单的规则规范化输入文本，并将其提供给文本编码器。</p> 
+<p>使用AdamW[24]优化器训练网络，β1 = 0.8， β2 = 0.99，权重衰减λ = 0.01。学习率衰减在每轮中以0.9991/8因子进行调度，初始学习率为2 × 10^−4。我们每一步为网络提供256个训练实例。继之前的工作[17]之后，应用带窗口的生成器训练。我们在四个NVIDIA V100 gpu上使用混合精度训练。生成波形的网络和持续时间预测器分别训练了800k和30k步。</p> 
+<h3>1.5 结果</h3> 
+<h4>1.5.1 自然度评估</h4> 
+<p>为了验证所提模型能够合成自然语音，进行了众包平均意见得分(MOS)测试。在听了从测试集中随机选择的音频样本后，打分者对他们的自然程度进行了从1到5的5分评分。考虑到之前的工作[17]已经显示出与人工记录相似的质量，我们还进行了比较平均意见分数(CMOS)测试，该测试适合通过直接比较来评估高质量样本。评价者在听了从测试集中随机选择的音频样本后，对他们相对偏好的自然程度进行了评分，总分为7分，从3到3分不等评价者被允许对每个音频样本进行一次评估。对所有音频样本进行归一化处理，以避免幅度差异对得分的影响。我们使用官方实现和之前工作[17]的预训练权重作为比较模型。评价结果见表1和表2a。该方法与已有工作[17]的MOS值差为0.09,CMOS值和置信区间分别为0.201和±0.105。实验结果表明，该方法显著提高了合成语音的质量。此外，我们使用[18]方法对CMOS进行了评估，该方法在不同的结构和训练机制下表现出良好的性能。为了评估，我们使用官方实现和预训练权重生成样本。实验结果的CMOS和置信区间分别为0.176和±0.125，表明该方法明显优于传统方法。</p> 
+<h4>1.5.2 消融研究</h4> 
+<p>为验证所提方法的有效性，进行了消融研究。为验证对抗学习训练的随机时间预测器的有效性，将其替换为具有相同结构的确定性时间预测器，并使用L2损失进行训练。确定性时间预测器的训练步骤与之前的工作[17]相同。为验证对齐搜索中使用的噪声调度的有效性，对模型进行无噪声训练。为了验证模型的有效性，在归一化流程中没有transformer模块的情况下对模型进行训练。评价结果如表1所示。确定性持续时间预测器、无噪声的对准搜索和无变压器块的归一化流的消融研究的MOS差值分别为0.14、0.15和0.06。由于不使用空白标记和线性语谱图，计算效率将得到提高，删除一些所提出的方法与之前的工作[17]相比，性能较低。实验结果表明，所提方法在提高图像质量方面是有效的。</p> 
+<h4>1.5.3 说话人相似度评估</h4> 
+<p>为了确认多说话人模型中说话人相似度的提升，通过众包的方式进行了类似于之前工作的相似度MOS测试。在测试中，从测试集中随机采样的人类录制音频作为参考，评分者以1到5的五分制对参考音频和相应合成音频之间的相似性进行评分。如4.1节所述，允许评价者对每个音频样本进行一次评估，并对音频样本进行归一化。评价结果见表2b。VITS2的评分比[17]高0.2个MOS，表明该方法在多说话人建模时能够有效提高说话人相似度。</p> 
+<h4>1.5.4 减少对音素转换的依赖</h4> 
+<p>之前的工作[17,26]在单阶段方法中表现出良好的性能，但仍然对音素转换有很强的依赖性。因为规范化的文本并没有告知它的实际发音，这使得学习准确的发音具有挑战性。这是目前实现完全端到端单阶段语音合成的一个关键障碍。本文提出，该方法通过可懂度测试显著改善了这个问题。在使用谷歌的自动语音识别API转录测试集中的500个合成音频后，我们以真实文本为参考计算字符错误率(CER)。我们将以下四个模型的结果与真实值进行了比较:提出的模型使用音素序列，提出的模型使用规范化文本，之前的工作使用音素序列，以及之前的工作使用规范化文本。表3给出了对比，这证实了提出的模型不仅优于之前的工作，而且我们的模型在使用归一化文本时的性能与使用音素序列的模型相当。它展示了数据驱动的、完全端到端方法的可能性。</p> 
+<h4>1.5.5 综合和训练速度的比较</h4> 
+<p>我们将该模型的综合和训练速度与之前的工作进行了比较。我们测量了从LJ语音数据集中随机选择的500个句子，从输入序列中生成原始波形的整个过程的同步经过时间。我们使用单个NVIDIA V100 GPU，批处理大小为1。我们还在四块NVIDIA V100 gpu上测量并平均了五个epoch中每个步骤的训练计算经过的时间。表4显示了结果。由于该预测器比以往的工作更高效、可单独训练、输入序列更短，因此提高了训练和合成速度;性能提升分别为20.5%和22.7%。</p> 
+<p><img alt="" height="920" src="https://images2.imgbox.com/a3/24/HIwW3PQ6_o.png" width="1200"></p> 
+<h4>1.6 结论</h4> 
+<p>本文提出VITS2，一种单阶段的文本到语音模型，可以有效地合成更自然的语音。通过在时长预测器中引入对抗学习，提高了训练推理效率和自然度。将transformer块添加到规范化流中，以捕获在转换分布时的长期依赖关系。通过在对齐搜索中引入高斯噪声，提高了合成质量。对音素转换的依赖显著减少，这对实现完全端到端单阶段语音合成构成了挑战。测试结果也表明，整体可懂度得到了提升。通过实验、质量评估和计算速度测量，验证了所提方法的有效性。在语音合成领域仍然存在着各种必须解决的问题，我们希望我们的工作可以作为未来研究的基础。</p> 
+<h2>2 使用Bert-VITS2-2.3训练个性化语音</h2> 
+<h3>2.1 conda环境准备</h3> 
+<p>conda环境准备详见：<a href="https://mp.csdn.net/mp_blog/creation/editor/130813001" title="annoconda">annoconda</a></p> 
+<h3>2.2 运行环境构建</h3> 
+<pre><code>git clone https://github.com/v3ucn/Bert-vits2-V2.3.git
+cd Bert-VITS2-2.3
+
+conda create -n vits2 python=3.9
+conda activate vits2
+
+pip install torch==2.2.1 torchvision==0.17.1 torchaudio==2.2.1 --index-url https://download.pytorch.org/whl/cu118
+pip install -r requirements.txt
+
+pip install openai-whisper
+conda install ffmpeg</code></pre> 
+<h3 style="background-color:transparent;">2.3 预训练模型下载</h3> 
+<h4 style="background-color:transparent;">2.3.1 bert模型下载</h4> 
+<p>  </p> 
+<pre><code class="hljs">!wget -P slm/wavlm-base-plus/ https://huggingface.co/microsoft/wavlm-base-plus/resolve/main/pytorch_model.bin  
+!wget -P emotional/clap-htsat-fused/ https://huggingface.co/laion/clap-htsat-fused/resolve/main/pytorch_model.bin  
+!wget -P emotional/wav2vec2-large-robust-12-ft-emotion-msp-dim/ https://huggingface.co/audeering/wav2vec2-large-robust-12-ft-emotion-msp-dim/resolve/main/pytorch_model.bin  
+!wget -P bert/chinese-roberta-wwm-ext-large/ https://huggingface.co/hfl/chinese-roberta-wwm-ext-large/resolve/main/pytorch_model.bin  
+!wget -P bert/deberta-v2-large-japanese-char-wwm/ https://huggingface.co/ku-nlp/deberta-v2-large-japanese-char-wwm/blob/main/pytorch_model.bin  
+!wget -P bert/deberta-v3-large/ https://huggingface.co/microsoft/deberta-v3-large/resolve/main/pytorch_model.bin  
+!wget -P bert/deberta-v3-large/ https://huggingface.co/microsoft/deberta-v3-large/resolve/main/pytorch_model.generator.bin  
+!wget -P bert/deberta-v2-large-japanese/ https://huggingface.co/ku-nlp/deberta-v2-large-japanese/resolve/main/pytorch_model.bin</code></pre> 
+<p>通过命令查看下载的中文模型，显示如下：</p> 
+<pre><code>[root@localhost Bert-VITS2-2.3]# ll bert/chinese-roberta-wwm-ext-large/
+总用量 1276256
+-rw-r--r--. 1 root root          3 3月   4 19:26 added_tokens.json
+-rw-r--r--. 1 root root        690 3月   4 19:26 config.json
+-rw-r--r--. 1 root root 1306484351 3月   4 19:27 pytorch_model.bin
+-rw-r--r--. 1 root root       2063 3月   4 19:27 README.md
+-rw-r--r--. 1 root root        113 3月   4 19:27 special_tokens_map.json
+-rw-r--r--. 1 root root         20 3月   4 19:27 tokenizer_config.json
+-rw-r--r--. 1 root root     268962 3月   4 19:27 tokenizer.json
+-rw-r--r--. 1 root root     109540 3月   4 19:27 vocab.txt</code></pre> 
+<p>通过命令查看下载的英文模型，显示如下： </p> 
+<pre><code>[root@localhost Bert-VITS2-2.3]# ll bert/deberta-v3-large/
+总用量 855624
+-rw-r--r--. 1 root root       580 3月   4 19:29 config.json
+-rw-r--r--. 1 root root       560 3月   4 19:29 generator_config.json
+-rw-r--r--. 1 root root 873673253 3月   4 19:31 pytorch_model.bin
+-rw-r--r--. 1 root root      3263 3月   4 19:31 README.md
+-rw-r--r--. 1 root root   2464616 3月   4 19:31 spm.model
+-rw-r--r--. 1 root root        52 3月   4 19:31 tokenizer_config.json</code></pre> 
+<p>通过命令查看下载的日文模型，显示如下： </p> 
+<pre><code>[root@localhost Bert-VITS2-2.3]# ll bert/deberta-v2-large-japanese-char-wwm
+总用量 1287660
+-rw-r--r--. 1 root root        895 3月   4 19:27 config.json
+-rw-r--r--. 1 root root 1318456639 3月   4 19:29 pytorch_model.bin
+-rw-r--r--. 1 root root       3471 3月   4 19:29 README.md
+-rw-r--r--. 1 root root        125 3月   4 19:29 special_tokens_map.json
+-rw-r--r--. 1 root root        520 3月   4 19:29 tokenizer_config.json
+-rw-r--r--. 1 root root      88150 3月   4 19:29 vocab.txt</code></pre> 
+<p>测试bert模型：</p> 
+<pre><code>export PYTHONPATH=$PYTHONPATH:${cur_dir}
+python ./text/chinese_bert.py 
+python ./text/japanese_bert.py</code></pre> 
+<h4 style="background-color:transparent;">2.3.2 VITS2预训练模型</h4> 
+<pre><code class="hljs">!wget -P checkpoints/ https://huggingface.co/OedoSoldier/Bert-VITS2-2.3/resolve/main/DUR_0.pth  
+!wget -P checkpoints/ https://huggingface.co/OedoSoldier/Bert-VITS2-2.3/resolve/main/D_0.pth  
+!wget -P checkpoints/ https://huggingface.co/OedoSoldier/Bert-VITS2-2.3/resolve/main/G_0.pth  
+!wget -P checkpoints/ https://huggingface.co/OedoSoldier/Bert-VITS2-2.3/resolve/main/WD_0.pth</code></pre> 
+<p>下载完成后，命令查看显示如下：</p> 
+<pre><code>[root@localhost Bert-VITS2-2.3]# ll checkpoints/
+总用量 1262412
+-rw-r--r--. 1 root root 561078330 3月   4 19:32 D_0.pth
+-rw-r--r--. 1 root root  13943737 3月   4 19:31 DUR_0.pth
+-rw-r--r--. 1 root root 703575766 3月   4 19:39 G_0.pth
+-rw-r--r--. 1 root root  14098786 3月   4 19:48 WD_0.pth</code></pre> 
+<h3>2.4 数据预处理</h3> 
+<h4>2.4.1 长音频分割与自动识别</h4> 
+<pre><code>mkdir -p data
+mkdir -p data/long
+mkdir -p data/short
+mkdir -p data/long/zhang
+</code></pre> 
+<p>新建data目录，在data的目录下新建long的文件夹，存储长音频文件，在long下新建用户zhang的长音频，把长音频放在data/long/zhang目录下，如下所示：</p> 
+<pre><code>[root@localhost Bert-VITS2-2.3]# ll data/long/zhang
+总用量 7584
+-rw-r--r--. 1 root root 7764536 3月   5 14:38 zhang01.wav</code></pre> 
+<p>下载whisper模型，存储到~/.cache/whisper/目录下：</p> 
+<pre><code class="hljs">!wget -P ~/.cache/whisper/ https://openaipublic.azureedge.net/main/whisper/models/345ae4da62f9b3d59415adc60127b97c714f32e89e936602e85993674d08dcb1/medium.pt</code></pre> 
+<p>创建python文件</p> 
+<pre><code>vi split_long_audio.py</code></pre> 
+<pre><code>import os
+from pathlib import Path
+import librosa
+from scipy.io import wavfile
+import numpy as np
+import whisper
+
+
+def split_long_audio(model, filepaths, save_dir, person, out_sr=44100):
+    files = os.listdir(filepaths)
+    filepaths=[os.path.join(filepaths, i) for i in files]
+
+    for file_idx, filepath in enumerate(filepaths):
+
+        save_path = Path(save_dir)
+        save_path.mkdir(exist_ok=True, parents=True)
+
+        print(f"Transcribing file {file_idx}: '{filepath}' to segments...")
+        result = model.transcribe(filepath, word_timestamps=True, task="transcribe", beam_size=5, best_of=5)
+        segments = result['segments']
+
+        wav, sr = librosa.load(filepath, sr=None, offset=0, duration=None, mono=True)
+        wav, _ = librosa.effects.trim(wav, top_db=20)
+        peak = np.abs(wav).max()
+        if peak &gt; 1.0:
+            wav = 0.98 * wav / peak
+        wav2 = librosa.resample(wav, orig_sr=sr, target_sr=out_sr)
+        wav2 /= max(wav2.max(), -wav2.min())
+
+        for i, seg in enumerate(segments):
+            start_time = seg['start']
+            end_time = seg['end']
+            wav_seg = wav2[int(start_time * out_sr):int(end_time * out_sr)]
+            wav_seg_name = f"{person}_{i}.wav"
+            i += 1
+            out_fpath = save_path / wav_seg_name
+            wavfile.write(out_fpath, rate=out_sr, data=(wav_seg * np.iinfo(np.int16).max).astype(np.int16))
+
+
+# 使用whisper语音识别
+def transcribe_one(audio_path): 
+    audio = whisper.load_audio(audio_path)
+    audio = whisper.pad_or_trim(audio)
+    mel = whisper.log_mel_spectrogram(audio).to(model.device)
+    _, probs = model.detect_language(mel)
+    print(f"Detected language: {max(probs, key=probs.get)}")
+    lang = max(probs, key=probs.get)
+    options = whisper.DecodingOptions(beam_size=5)
+    result = whisper.decode(model, mel, options)
+
+    print(result.text)
+    return result.text
+
+
+if __name__ == '__main__':
+    whisper_size = "medium"
+    model = whisper.load_model(whisper_size)
+
+    persons = ['zhang']
+
+    for person in persons:
+        audio_path = f"./data/short/{person}"
+        if os.path.exists(audio_path):
+            for filename in os.listdir(audio_path):
+                file_path = os.path.join(audio_path, filename)
+                os.remove(file_path)
+        split_long_audio(model, f"./data/long/{person}", f"./data/short/{person}", person)
+        files = os.listdir(audio_path)
+        file_list_sorted = sorted(files, key=lambda x: int(os.path.splitext(x)[0].split('_')[1]))
+        filepaths = [os.path.join(audio_path, i) for i in file_list_sorted]
+        for file_idx, filepath in enumerate(filepaths):
+            text = transcribe_one(filepath)
+            with open(f"./data/short/{person}/{person}_{file_idx}.lab", 'w') as f:
+                f.write(text)</code></pre> 
+<p> 运行上面的文件</p> 
+<pre><code>python split_long_audio.py</code></pre> 
+<p>运行完成后，长音频被切割为短音频，存储在data/short目录下，如下所示</p> 
+<pre><code>[root@localhost Bert-VITS2-2.3]# ll data/short/zhang/
+总用量 9948
+-rw-r--r--. 1 root root     57 3月   5 19:06 zhang_0.lab
+-rw-r--r--. 1 root root 328150 3月   5 19:06 zhang_0.wav
+-rw-r--r--. 1 root root     15 3月   5 19:06 zhang_10.lab
+-rw-r--r--. 1 root root  97066 3月   5 19:06 zhang_10.wav
+-rw-r--r--. 1 root root     12 3月   5 19:06 zhang_11.lab
+-rw-r--r--. 1 root root 128816 3月   5 19:06 zhang_11.wav
+-rw-r--r--. 1 root root     33 3月   5 19:06 zhang_12.lab
+-rw-r--r--. 1 root root 209960 3月   5 19:06 zhang_12.wav
+-rw-r--r--. 1 root root     36 3月   5 19:06 zhang_13.lab
+-rw-r--r--. 1 root root 234656 3月   5 19:06 zhang_13.wav
+-rw-r--r--. 1 root root     27 3月   5 19:06 zhang_14.lab
+-rw-r--r--. 1 root root 202904 3月   5 19:06 zhang_14.wav
+-rw-r--r--. 1 root root    472 3月   5 19:06 zhang_15.lab
+-rw-r--r--. 1 root root 455154 3月   5 19:06 zhang_15.wav
+-rw-r--r--. 1 root root     43 3月   5 19:06 zhang_16.lab
+-rw-r--r--. 1 root root 400474 3月   5 19:06 zhang_16.wav
+-rw-r--r--. 1 root root     27 3月   5 19:06 zhang_17.lab
+-rw-r--r--. 1 root root 142928 3月   5 19:06 zhang_17.wav
+-rw-r--r--. 1 root root     30 3月   5 19:06 zhang_18.lab
+-rw-r--r--. 1 root root 179972 3月   5 19:06 zhang_18.wav
+-rw-r--r--. 1 root root      9 3月   5 19:06 zhang_19.lab
+-rw-r--r--. 1 root root  81188 3月   5 19:06 zhang_19.wav
+-rw-r--r--. 1 root root     37 3月   5 19:06 zhang_1.lab
+-rw-r--r--. 1 root root 255824 3月   5 19:06 zhang_1.wav
+-rw-r--r--. 1 root root     18 3月   5 19:06 zhang_20.lab
+-rw-r--r--. 1 root root 125288 3月   5 19:06 zhang_20.wav
+-rw-r--r--. 1 root root     21 3月   5 19:06 zhang_21.lab
+-rw-r--r--. 1 root root 171152 3月   5 19:06 zhang_21.wav
+-rw-r--r--. 1 root root     23 3月   5 19:06 zhang_22.lab
+-rw-r--r--. 1 root root 239948 3月   5 19:06 zhang_22.wav
+-rw-r--r--. 1 root root     39 3月   5 19:06 zhang_23.lab
+-rw-r--r--. 1 root root 229364 3月   5 19:06 zhang_23.wav
+-rw-r--r--. 1 root root     28 3月   5 19:06 zhang_24.lab
+-rw-r--r--. 1 root root 241712 3月   5 19:06 zhang_24.wav
+-rw-r--r--. 1 root root     27 3月   5 19:06 zhang_25.lab
+-rw-r--r--. 1 root root 201140 3月   5 19:06 zhang_25.wav
+-rw-r--r--. 1 root root     36 3月   5 19:06 zhang_26.lab
+-rw-r--r--. 1 root root 185264 3月   5 19:06 zhang_26.wav
+-rw-r--r--. 1 root root     12 3月   5 19:06 zhang_27.lab
+-rw-r--r--. 1 root root 183500 3月   5 19:06 zhang_27.wav
+-rw-r--r--. 1 root root     47 3月   5 19:06 zhang_28.lab
+-rw-r--r--. 1 root root 213488 3月   5 19:06 zhang_28.wav
+-rw-r--r--. 1 root root     21 3月   5 19:06 zhang_29.lab
+-rw-r--r--. 1 root root 119996 3月   5 19:06 zhang_29.wav
+-rw-r--r--. 1 root root     24 3月   5 19:06 zhang_2.lab
+-rw-r--r--. 1 root root 123524 3月   5 19:06 zhang_2.wav
+-rw-r--r--. 1 root root     27 3月   5 19:06 zhang_30.lab
+-rw-r--r--. 1 root root 185262 3月   5 19:06 zhang_30.wav
+-rw-r--r--. 1 root root     34 3月   5 19:06 zhang_31.lab
+-rw-r--r--. 1 root root 158806 3月   5 19:06 zhang_31.wav
+-rw-r--r--. 1 root root     24 3月   5 19:06 zhang_32.lab
+-rw-r--r--. 1 root root 139400 3月   5 19:06 zhang_32.wav
+-rw-r--r--. 1 root root     36 3月   5 19:06 zhang_33.lab
+-rw-r--r--. 1 root root 284048 3月   5 19:06 zhang_33.wav
+-rw-r--r--. 1 root root     33 3月   5 19:06 zhang_34.lab
+-rw-r--r--. 1 root root 187026 3月   5 19:06 zhang_34.wav
+-rw-r--r--. 1 root root     25 3月   5 19:06 zhang_35.lab
+-rw-r--r--. 1 root root 139402 3月   5 19:06 zhang_35.wav
+-rw-r--r--. 1 root root     20 3月   5 19:06 zhang_36.lab
+-rw-r--r--. 1 root root  88244 3月   5 19:06 zhang_36.wav
+-rw-r--r--. 1 root root     18 3月   5 19:06 zhang_37.lab
+-rw-r--r--. 1 root root 273464 3月   5 19:06 zhang_37.wav
+-rw-r--r--. 1 root root     24 3月   5 19:06 zhang_38.lab
+-rw-r--r--. 1 root root 213486 3月   5 19:06 zhang_38.wav
+-rw-r--r--. 1 root root     36 3月   5 19:06 zhang_39.lab
+-rw-r--r--. 1 root root 172918 3月   5 19:06 zhang_39.wav
+-rw-r--r--. 1 root root     24 3月   5 19:06 zhang_3.lab
+-rw-r--r--. 1 root root 164096 3月   5 19:06 zhang_3.wav
+-rw-r--r--. 1 root root      1 3月   5 19:06 zhang_40.lab
+-rw-r--r--. 1 root root  54728 3月   5 19:06 zhang_40.wav
+-rw-r--r--. 1 root root      9 3月   5 19:06 zhang_41.lab
+-rw-r--r--. 1 root root 107650 3月   5 19:06 zhang_41.wav
+-rw-r--r--. 1 root root     30 3月   5 19:06 zhang_42.lab
+-rw-r--r--. 1 root root 134108 3月   5 19:06 zhang_42.wav
+-rw-r--r--. 1 root root     18 3月   5 19:06 zhang_43.lab
+-rw-r--r--. 1 root root 225836 3月   5 19:06 zhang_43.wav
+-rw-r--r--. 1 root root      9 3月   5 19:06 zhang_44.lab
+-rw-r--r--. 1 root root 234656 3月   5 19:06 zhang_44.wav
+-rw-r--r--. 1 root root     39 3月   5 19:06 zhang_45.lab
+-rw-r--r--. 1 root root 206432 3月   5 19:06 zhang_45.wav
+-rw-r--r--. 1 root root     34 3月   5 19:06 zhang_46.lab
+-rw-r--r--. 1 root root 174680 3月   5 19:06 zhang_46.wav
+-rw-r--r--. 1 root root     21 3月   5 19:06 zhang_47.lab
+-rw-r--r--. 1 root root 104120 3月   5 19:06 zhang_47.wav
+-rw-r--r--. 1 root root     27 3月   5 19:06 zhang_48.lab
+-rw-r--r--. 1 root root  79424 3月   5 19:06 zhang_48.wav
+-rw-r--r--. 1 root root      6 3月   5 19:06 zhang_49.lab
+-rw-r--r--. 1 root root 118232 3月   5 19:06 zhang_49.wav
+-rw-r--r--. 1 root root     24 3月   5 19:06 zhang_4.lab
+-rw-r--r--. 1 root root 179972 3月   5 19:06 zhang_4.wav
+-rw-r--r--. 1 root root     28 3月   5 19:06 zhang_50.lab
+-rw-r--r--. 1 root root 329912 3月   5 19:06 zhang_50.wav
+-rw-r--r--. 1 root root     18 3月   5 19:06 zhang_51.lab
+-rw-r--r--. 1 root root 142928 3月   5 19:06 zhang_51.wav
+-rw-r--r--. 1 root root     21 3月   5 19:06 zhang_52.lab
+-rw-r--r--. 1 root root 104120 3月   5 19:06 zhang_52.wav
+-rw-r--r--. 1 root root      9 3月   5 19:06 zhang_53.lab
+-rw-r--r--. 1 root root 179972 3月   5 19:06 zhang_53.wav
+-rw-r--r--. 1 root root      9 3月   5 19:06 zhang_5.lab
+-rw-r--r--. 1 root root  95300 3月   5 19:06 zhang_5.wav
+-rw-r--r--. 1 root root     15 3月   5 19:06 zhang_6.lab
+-rw-r--r--. 1 root root  88244 3月   5 19:06 zhang_6.wav
+-rw-r--r--. 1 root root     45 3月   5 19:06 zhang_7.lab
+-rw-r--r--. 1 root root 217016 3月   5 19:06 zhang_7.wav
+-rw-r--r--. 1 root root     12 3月   5 19:06 zhang_8.lab
+-rw-r--r--. 1 root root  72368 3月   5 19:06 zhang_8.wav
+-rw-r--r--. 1 root root     31 3月   5 19:06 zhang_9.lab
+-rw-r--r--. 1 root root 243474 3月   5 19:06 zhang_9.wav</code></pre> 
+<h4>2.4.2 生成预处理文本</h4> 
+<pre><code>vi gen_filelist.py</code></pre> 
+<pre><code>import os
+
+out_file = f"filelists/full.txt"
+
+def process():
+    persons = ['zhang']
+    ch_language = 'ZH'
+
+    with open(out_file, 'w', encoding="Utf-8") as wf:        
+        for person in persons:
+            path = f"./data/short/{person}"
+            files = os.listdir(path)
+            for f in files:
+                if f.endswith(".lab"):
+                    with open(os.path.join(path, f), 'r', encoding="utf-8") as perFile:
+                        line = perFile.readline() 
+                        result = f"./data/short/{person}/{f.split('.')[0]}.wav|{person}|{ch_language}|{line}"
+                        wf.write(f"{result}\n")
+
+
+if __name__ == "__main__":
+    process()</code></pre> 
+<p> 运行文件</p> 
+<pre><code>python gen_filelist.py</code></pre> 
+<p>运行成功后，在filelists下生成txt文件，如下所示：</p> 
+<pre><code>[root@localhost Bert-VITS2-2.3]# ll filelists/
+总用量 1080
+-rw-r--r--. 1 root root 140641 3月   5 19:15 full.txt</code></pre> 
+<h4>2.4.3 调用文本预处理</h4> 
+<pre><code>python preprocess_text.py</code></pre> 
+<p>如出现nltk_data下载失败，解决方案：<a href="https://blog.csdn.net/lsb2002/article/details/134290627?spm=1001.2014.3001.5501" title="nltk_data下载失败问题解决">nltk_data下载失败问题解决</a></p> 
+<p>再次运行python preprocess_text.py，显示如下：</p> 
+<pre><code>已根据默认配置文件default_config.yml生成配置文件config.yml。请按该配置文件的说明进行配置后重新运行。
+如无特殊需求，请勿修改default_config.yml或备份该文件。</code></pre> 
+<p>更改根目录下config.yml配置文件，配置如下：</p> 
+<pre><code># 全局配置
+# 对于希望在同一时间使用多个配置文件的情况，例如两个GPU同时跑两个训练集：通过环境变量指定配置文件，不指定则默认为./config.yml
+
+# 拟提供通用路径配置，统一存放数据，避免数据放得很乱
+# 每个数据集与其对应的模型存放至统一路径下，后续所有的路径配置均为相对于datasetPath的路径
+# 不填或者填空则路径为相对于项目根目录的路径
+dataset_path: ""
+
+# 模型镜像源，默认huggingface，使用openi镜像源需指定openi_token
+mirror: ""
+openi_token: ""  # openi token
+
+# resample 音频重采样配置
+# 注意， “:” 后需要加空格
+resample:
+  # 目标重采样率
+  sampling_rate: 44100
+  # 音频文件输入路径，重采样会将该路径下所有.wav音频文件重采样
+  # 请填入相对于datasetPath的相对路径
+  in_dir: "data/short" # 相对于根目录的路径为 /datasetPath/in_dir
+  # 音频文件重采样后输出路径
+  out_dir: "data/short"
+
+
+# preprocess_text 数据集预处理相关配置
+# 注意， “:” 后需要加空格
+preprocess_text:
+  # 原始文本文件路径，文本格式应为{wav_path}|{speaker_name}|{language}|{text}。
+  transcription_path: "filelists/full.txt"
+  # 数据清洗后文本路径，可以不填。不填则将在原始文本目录生成
+  cleaned_path: ""
+  # 训练集路径
+  train_path: "filelists/train.list"
+  # 验证集路径
+  val_path: "filelists/val.list"
+  # 配置文件路径
+  config_path: "configs/config.json"
+  # 每个语言的验证集条数
+  val_per_lang: 4
+  # 验证集最大条数，多于的会被截断并放到训练集中
+  max_val_total: 12
+  # 是否进行数据清洗
+  clean: true
+
+
+# bert_gen 相关配置
+# 注意， “:” 后需要加空格
+bert_gen:
+  # 训练数据集配置文件路径
+  config_path: "configs/config.json"
+  # 并行数
+  num_processes: 4
+  # 使用设备：可选项 "cuda" 显卡推理，"cpu" cpu推理
+  # 该选项同时决定了get_bert_feature的默认设备
+  device: "cuda"
+  # 使用多卡推理
+  use_multi_device: false
+
+# emo_gen 相关配置
+# 注意， “:” 后需要加空格
+emo_gen:
+  # 训练数据集配置文件路径
+  config_path: "configs/config.json"
+  # 并行数
+  num_processes: 4
+  # 使用设备：可选项 "cuda" 显卡推理，"cpu" cpu推理
+  device: "cuda"
+  # 使用多卡推理
+  use_multi_device: false
+
+# train 训练配置
+# 注意， “:” 后需要加空格
+train_ms:
+  env:
+    MASTER_ADDR: "localhost"
+    MASTER_PORT: 10086
+    WORLD_SIZE: 1
+    LOCAL_RANK: 0
+    RANK: 0
+    # 可以填写任意名的环境变量
+    # THE_ENV_VAR_YOU_NEED_TO_USE: "1234567"
+  # 底模设置
+  base:
+    use_base_model: false
+    repo_id: "Stardust_minus/Bert-VITS2"
+    model_image: "Bert-VITS2_2.2-Clap底模" # openi网页的模型名
+  # 训练模型存储目录：与旧版本的区别，原先数据集是存放在logs/model_name下的，现在改为统一存放在Data/你的数据集/models下
+  model: "checkpoints"
+  # 配置文件路径
+  config_path: "configs/config.json"
+  # 训练使用的worker，不建议超过CPU核心数
+  num_workers: 16
+  # 关闭此项可以节约接近50%的磁盘空间，但是可能导致实际训练速度变慢和更高的CPU使用率。
+  spec_cache: True
+  # 保存的检查点数量，多于此数目的权重会被删除来节省空间。
+  keep_ckpts: 8
+
+
+# webui webui配置
+# 注意， “:” 后需要加空格
+webui:
+  # 推理设备
+  device: "cuda"
+  # 模型路径
+  model: "checkpoints/G_104000.pth"
+  # 配置文件路径
+  config_path: "configs/config.json"
+  # 端口号
+  port: 7860
+  # 是否公开部署，对外网开放
+  share: false
+  # 是否开启debug模式
+  debug: false
+  # 语种识别库，可选langid, fastlid
+  language_identification_library: "langid"
+
+
+# server-fastapi配置
+# 注意， “:” 后需要加空格
+# 注意，本配置下的所有配置均为相对于根目录的路径
+server:
+  # 端口号
+  port: 5000
+  # 模型默认使用设备：但是当前并没有实现这个配置。
+  device: "cuda"
+  # 需要加载的所有模型的配置，可以填多个模型，也可以不填模型，等网页成功后手动加载模型
+  # 不加载模型的配置格式：删除默认给的两个模型配置，给models赋值 [ ]，也就是空列表。参考模型2的speakers 即 models: [ ]
+  # 注意，所有模型都必须正确配置model与config的路径，空路径会导致加载错误。
+  # 也可以不填模型，等网页加载成功后手动填写models。
+  models:
+    - # 模型的路径
+      model: ""
+      # 模型config.json的路径
+      config: ""
+      # 模型使用设备，若填写则会覆盖默认配置
+      device: "cuda"
+      # 模型默认使用的语言
+      language: "ZH"
+      # 模型人物默认参数
+      # 不必填写所有人物，不填的使用默认值
+      # 暂时不用填写，当前尚未实现按人区分配置
+      speakers:
+        - speaker: "科比"
+          sdp_ratio: 0.2
+          noise_scale: 0.6
+          noise_scale_w: 0.8
+          length_scale: 1
+        - speaker: "五条悟"
+          sdp_ratio: 0.3
+          noise_scale: 0.7
+          noise_scale_w: 0.8
+          length_scale: 0.5
+        - speaker: "安倍晋三"
+          sdp_ratio: 0.2
+          noise_scale: 0.6
+          noise_scale_w: 0.8
+          length_scale: 1.2
+    - # 模型的路径
+      model: ""
+      # 模型config.json的路径
+      config: ""
+      # 模型使用设备，若填写则会覆盖默认配置
+      device: "cpu"
+      # 模型默认使用的语言
+      language: "JP"
+      # 模型人物默认参数
+      # 不必填写所有人物，不填的使用默认值
+      speakers: [ ] # 也可以不填
+
+# 百度翻译开放平台 api配置
+# api接入文档 https://api.fanyi.baidu.com/doc/21
+# 请不要在github等网站公开分享你的app id 与 key
+translate:
+  # 你的APPID
+  "app_key": ""
+  # 你的密钥
+  "secret_key": ""
+</code></pre> 
+<p> 运行该脚本后，filelists文件夹下会生成.clean等文件，如下所示</p> 
+<pre><code>[root@localhost Bert-VITS2-2.3]# ll filelists/
+总用量 1516
+-rw-r--r--. 1 root root 130606 3月   5 19:52 full.txt
+-rw-r--r--. 1 root root 466277 3月   5 19:55 full.txt.cleaned
+-rw-r--r--. 1 root root    119 3月   4 19:57 sample.list
+-rw-r--r--. 1 root root 464364 3月   5 19:55 train.list
+-rw-r--r--. 1 root root 474663 3月   4 19:57 train.txt
+-rw-r--r--. 1 root root   1913 3月   5 19:55 val.list
+-rw-r--r--. 1 root root   2724 3月   4 19:57 val.txt</code></pre> 
+<p></p> 
+<h4>2.4.4 重采样</h4> 
+<pre><code>python resample.py</code></pre> 
+<p>重采样后的音频文件会覆盖原来的文件。</p> 
+<h4>2.4.5 生成pt文件</h4> 
+<pre><code>python bert_gen.py</code></pre> 
+<p>运行完成后显示如下：</p> 
+<pre><code>[root@localhost Bert-VITS2-2.3]# python resample.py
+1170it [00:09, 117.80it/s]
+音频重采样完毕!
+(vits2) [root@localhost Bert-VITS2-2.3]# python bert_gen.py
+bert生成完毕!, 共有1111个bert.pt生成!
+(vits2) [root@localhost Bert-VITS2-2.3]# ll data/short/zhang/
+总用量 15824
+-rw-r--r--. 1 root root     57 3月   5 19:06 zhang_0.lab
+-rw-r--r--. 1 root root 328150 3月   5 19:56 zhang_0.wav
+-rw-r--r--. 1 root root     15 3月   5 19:06 zhang_10.lab
+-rw-r--r--. 1 root root  97066 3月   5 19:56 zhang_10.wav
+-rw-r--r--. 1 root root     12 3月   5 19:06 zhang_11.lab
+-rw-r--r--. 1 root root 128816 3月   5 19:56 zhang_11.wav
+-rw-r--r--. 1 root root     33 3月   5 19:06 zhang_12.lab
+-rw-r--r--. 1 root root 209960 3月   5 19:56 zhang_12.wav
+-rw-r--r--. 1 root root     36 3月   5 19:06 zhang_13.lab
+-rw-r--r--. 1 root root 234656 3月   5 19:56 zhang_13.wav
+-rw-r--r--. 1 root root     27 3月   5 19:06 zhang_14.lab
+-rw-r--r--. 1 root root 202904 3月   5 19:56 zhang_14.wav
+-rw-r--r--. 1 root root    472 3月   5 19:06 zhang_15.lab
+-rw-r--r--. 1 root root 455154 3月   5 19:56 zhang_15.wav
+-rw-r--r--. 1 root root     43 3月   5 19:06 zhang_16.lab
+-rw-r--r--. 1 root root 400474 3月   5 19:56 zhang_16.wav
+-rw-r--r--. 1 root root     27 3月   5 19:06 zhang_17.lab
+-rw-r--r--. 1 root root 142928 3月   5 19:56 zhang_17.wav
+-rw-r--r--. 1 root root     30 3月   5 19:06 zhang_18.lab
+-rw-r--r--. 1 root root 179972 3月   5 19:56 zhang_18.wav
+-rw-r--r--. 1 root root      9 3月   5 19:06 zhang_19.lab
+-rw-r--r--. 1 root root  81188 3月   5 19:56 zhang_19.wav
+-rw-r--r--. 1 root root     37 3月   5 19:06 zhang_1.lab
+-rw-r--r--. 1 root root 255824 3月   5 19:56 zhang_1.wav
+-rw-r--r--. 1 root root     18 3月   5 19:06 zhang_20.lab
+-rw-r--r--. 1 root root 125288 3月   5 19:56 zhang_20.wav
+-rw-r--r--. 1 root root     21 3月   5 19:06 zhang_21.lab
+-rw-r--r--. 1 root root 171152 3月   5 19:56 zhang_21.wav
+-rw-r--r--. 1 root root     23 3月   5 19:06 zhang_22.lab
+-rw-r--r--. 1 root root 239948 3月   5 19:56 zhang_22.wav
+-rw-r--r--. 1 root root     39 3月   5 19:06 zhang_23.lab
+-rw-r--r--. 1 root root 229364 3月   5 19:56 zhang_23.wav
+-rw-r--r--. 1 root root     28 3月   5 19:06 zhang_24.lab
+-rw-r--r--. 1 root root 241712 3月   5 19:56 zhang_24.wav
+-rw-r--r--. 1 root root     27 3月   5 19:06 zhang_25.lab
+-rw-r--r--. 1 root root 201140 3月   5 19:56 zhang_25.wav
+-rw-r--r--. 1 root root     36 3月   5 19:06 zhang_26.lab
+-rw-r--r--. 1 root root 185264 3月   5 19:56 zhang_26.wav
+-rw-r--r--. 1 root root     12 3月   5 19:06 zhang_27.lab
+-rw-r--r--. 1 root root 183500 3月   5 19:56 zhang_27.wav
+-rw-r--r--. 1 root root     47 3月   5 19:06 zhang_28.lab
+-rw-r--r--. 1 root root 213488 3月   5 19:56 zhang_28.wav
+-rw-r--r--. 1 root root     21 3月   5 19:06 zhang_29.lab
+-rw-r--r--. 1 root root 119996 3月   5 19:56 zhang_29.wav
+-rw-r--r--. 1 root root     24 3月   5 19:06 zhang_2.lab
+-rw-r--r--. 1 root root 123524 3月   5 19:56 zhang_2.wav
+-rw-r--r--. 1 root root     27 3月   5 19:06 zhang_30.lab
+-rw-r--r--. 1 root root 185262 3月   5 19:56 zhang_30.wav
+-rw-r--r--. 1 root root     34 3月   5 19:06 zhang_31.lab
+-rw-r--r--. 1 root root 158806 3月   5 19:56 zhang_31.wav
+-rw-r--r--. 1 root root     24 3月   5 19:06 zhang_32.lab
+-rw-r--r--. 1 root root 139400 3月   5 19:56 zhang_32.wav
+-rw-r--r--. 1 root root     36 3月   5 19:06 zhang_33.lab
+-rw-r--r--. 1 root root 284048 3月   5 19:56 zhang_33.wav
+-rw-r--r--. 1 root root     33 3月   5 19:06 zhang_34.lab
+-rw-r--r--. 1 root root 187026 3月   5 19:56 zhang_34.wav
+-rw-r--r--. 1 root root     25 3月   5 19:06 zhang_35.lab
+-rw-r--r--. 1 root root 139402 3月   5 19:56 zhang_35.wav
+-rw-r--r--. 1 root root     20 3月   5 19:06 zhang_36.lab
+-rw-r--r--. 1 root root  88244 3月   5 19:56 zhang_36.wav
+-rw-r--r--. 1 root root     18 3月   5 19:06 zhang_37.lab
+-rw-r--r--. 1 root root 273464 3月   5 19:56 zhang_37.wav
+-rw-r--r--. 1 root root     24 3月   5 19:06 zhang_38.lab
+-rw-r--r--. 1 root root 213486 3月   5 19:56 zhang_38.wav
+-rw-r--r--. 1 root root     36 3月   5 19:06 zhang_39.lab
+-rw-r--r--. 1 root root 172918 3月   5 19:56 zhang_39.wav
+-rw-r--r--. 1 root root     24 3月   5 19:06 zhang_3.lab
+-rw-r--r--. 1 root root 164096 3月   5 19:56 zhang_3.wav
+-rw-r--r--. 1 root root      1 3月   5 19:06 zhang_40.lab
+-rw-r--r--. 1 root root  54728 3月   5 19:56 zhang_40.wav
+-rw-r--r--. 1 root root      9 3月   5 19:06 zhang_41.lab
+-rw-r--r--. 1 root root 107650 3月   5 19:56 zhang_41.wav
+-rw-r--r--. 1 root root     30 3月   5 19:06 zhang_42.lab
+-rw-r--r--. 1 root root 134108 3月   5 19:56 zhang_42.wav
+-rw-r--r--. 1 root root     18 3月   5 19:06 zhang_43.lab
+-rw-r--r--. 1 root root 225836 3月   5 19:56 zhang_43.wav
+-rw-r--r--. 1 root root      9 3月   5 19:06 zhang_44.lab
+-rw-r--r--. 1 root root 234656 3月   5 19:56 zhang_44.wav
+-rw-r--r--. 1 root root     39 3月   5 19:06 zhang_45.lab
+-rw-r--r--. 1 root root 206432 3月   5 19:56 zhang_45.wav
+-rw-r--r--. 1 root root     34 3月   5 19:06 zhang_46.lab
+-rw-r--r--. 1 root root 174680 3月   5 19:56 zhang_46.wav
+-rw-r--r--. 1 root root     21 3月   5 19:06 zhang_47.lab
+-rw-r--r--. 1 root root 104120 3月   5 19:56 zhang_47.wav
+-rw-r--r--. 1 root root     27 3月   5 19:06 zhang_48.lab
+-rw-r--r--. 1 root root  79424 3月   5 19:56 zhang_48.wav
+-rw-r--r--. 1 root root      6 3月   5 19:06 zhang_49.lab
+-rw-r--r--. 1 root root 118232 3月   5 19:56 zhang_49.wav
+-rw-r--r--. 1 root root     24 3月   5 19:06 zhang_4.lab
+-rw-r--r--. 1 root root 179972 3月   5 19:56 zhang_4.wav
+-rw-r--r--. 1 root root     28 3月   5 19:06 zhang_50.lab
+-rw-r--r--. 1 root root 329912 3月   5 19:56 zhang_50.wav
+-rw-r--r--. 1 root root     18 3月   5 19:06 zhang_51.lab
+-rw-r--r--. 1 root root 142928 3月   5 19:56 zhang_51.wav
+-rw-r--r--. 1 root root     21 3月   5 19:06 zhang_52.lab
+-rw-r--r--. 1 root root 104120 3月   5 19:56 zhang_52.wav
+-rw-r--r--. 1 root root      9 3月   5 19:06 zhang_53.lab
+-rw-r--r--. 1 root root 179972 3月   5 19:56 zhang_53.wav
+-rw-r--r--. 1 root root      9 3月   5 19:06 zhang_5.lab
+-rw-r--r--. 1 root root  95300 3月   5 19:56 zhang_5.wav
+-rw-r--r--. 1 root root     15 3月   5 19:06 zhang_6.lab
+-rw-r--r--. 1 root root  88244 3月   5 19:56 zhang_6.wav
+-rw-r--r--. 1 root root     45 3月   5 19:06 zhang_7.lab
+-rw-r--r--. 1 root root 217016 3月   5 19:56 zhang_7.wav
+-rw-r--r--. 1 root root     12 3月   5 19:06 zhang_8.lab
+-rw-r--r--. 1 root root  72368 3月   5 19:56 zhang_8.wav
+-rw-r--r--. 1 root root     31 3月   5 19:06 zhang_9.lab
+-rw-r--r--. 1 root root 243474 3月   5 19:56 zhang_9.wav</code></pre> 
+<h3>2.5 模型训练</h3> 
+<p>开启模型训练：</p> 
+<pre><code>python train_ms.py</code></pre> 
+<p>出现如下界面，则模型训练开始执行了：</p> 
+<pre><code>python train_ms.py
+加载config中的配置localhost
+加载config中的配置10086
+加载config中的配置1
+加载config中的配置0
+加载config中的配置0
+加载环境变量 
+MASTER_ADDR: localhost,
+MASTER_PORT: 10086,
+WORLD_SIZE: 1,
+RANK: 0,
+LOCAL_RANK: 0
+03-05 19:58:50 INFO     | data_utils.py:62 | Init dataset...
+100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 1107/1107 [00:00&lt;00:00, 57873.02it/s]
+03-05 19:58:50 INFO     | data_utils.py:77 | skipped: 2, total: 1107
+03-05 19:58:50 INFO     | data_utils.py:62 | Init dataset...
+100%|█████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 4/4 [00:00&lt;00:00, 47934.90it/s]
+03-05 19:58:50 INFO     | data_utils.py:77 | skipped: 0, total: 4
+Using noise scaled MAS for VITS2
+Using duration discriminator for VITS2
+INFO:checkpoints:Loaded checkpoint 'checkpoints/DUR_0.pth' (iteration 0)
+INFO:checkpoints:Loaded checkpoint 'checkpoints/G_0.pth' (iteration 0)
+INFO:checkpoints:Loaded checkpoint 'checkpoints/D_0.pth' (iteration 0)
+******************检测到模型存在，epoch为 1，gloabl step为 0*********************
+INFO:checkpoints:Loaded checkpoint 'checkpoints/WD_0.pth' (iteration 0)
+Some weights of the model checkpoint at ./slm/wavlm-base-plus were not used when initializing WavLMModel: ['encoder.pos_conv_embed.conv.weight_g', 'encoder.pos_conv_embed.conv.weight_v']
+- This IS expected if you are initializing WavLMModel from the checkpoint of a model trained on another task or with another architecture (e.g. initializing a BertForSequenceClassification model from a BertForPreTraining model).
+- This IS NOT expected if you are initializing WavLMModel from the checkpoint of a model that you expect to be exactly identical (initializing a BertForSequenceClassification model from a BertForSequenceClassification model).
+Some weights of WavLMModel were not initialized from the model checkpoint at ./slm/wavlm-base-plus and are newly initialized: ['encoder.pos_conv_embed.conv.parametrizations.weight.original0', 'encoder.pos_conv_embed.conv.parametrizations.weight.original1']
+You should probably TRAIN this model on a down-stream task to be able to use it for predictions and inference.
+  0%|                                                                                                                                                                                                              | 0/126 [00:00&lt;?, ?it/s]INFO:checkpoints:Train Epoch: 0 [0%]</code></pre> 
+<h3>2.6 tensorboard可视化</h3> 
+<pre><code>python -m tensorboard.main --logdir=data/models --host=192.168.1.160</code></pre> 
+<p><img alt="" height="714" src="https://images2.imgbox.com/3e/45/Atz87jNj_o.png" width="1200"></p> 
+<p><img alt="" height="722" src="https://images2.imgbox.com/3e/18/K3OVaK8R_o.png" width="1200"></p> 
+<p><img alt="" height="597" src="https://images2.imgbox.com/c2/32/446XAmNR_o.png" width="1200"></p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e99b5e000c79bbed1a1b4756fdb2e353/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Uniapp 和Vue3 小程序 获取页面dom 方法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/dfe28bee7ae3758b8d505167d3511f38/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">This Python interpreter is in a conda environment, but the environment hasnot been activated.</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

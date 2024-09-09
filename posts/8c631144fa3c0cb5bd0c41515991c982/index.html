@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Golang内存管理——堆分配 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/8c631144fa3c0cb5bd0c41515991c982/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Golang内存管理——堆分配">
+  <meta property="og:description" content="go语言的内存自动分配和回收的，因此内存的使用流程大致为：获取内存——分配内存——回收内存——再分配内存。
+其中分配内存分为两方面，堆内存分配和栈内存分配，堆内存和栈内存是两种不同的分配方式，本篇文章主要是堆内存的分配方式。
+1. 自主内存管理 Go语言为了方便内存的自主管理，一开始启动的时候会向操作系统申请一大块连续的内存，后续的内存分配都是基于这一大块内存的。如果程序运行过程中，内存不足了，Go语言会再向操作系统进行内存的申请。
+为了高效的进行内存管理，Go语言将申请到的内存划分为三个区域，分别为spans、bitmap、arena。其中arena是堆区，GO语言将其划分为一个个8KB的page页，程序运行过程中的内存都是从arena堆区进行分配的。spans和bitmap是为了对arena堆区的高效管理而设置的。
+Go语言的三个内存区域 2. mspan 和 ClassID表 我们程序的运行，从使用的角度看，以对象为基本单位的。比如：函数是一个对象、goroutine是一个对象、slice是一个对象。因此，为了实现从对象到内存页之间的映射，Go语言引入了一个mspan结构体。mspan是内存管理的基本单位，每一个span包含一个或多个连续的页。为了满足小对象的分配，会将span中的一页划分为更小的粒度，而对于大对象比如超过页的大小，则会通过多页实现。每个span用于管理特定的class对象，根据对象的大小，span将一个或多个页拆分成多个块进行管理。
+mspan的结构体定义如下：位置 runtime:mheap.go 一些字段已经省略了
+type mspan struct { next *mspan // 链表后向指针，用于将span链接起来 prev *mspan // 链表前向指针，用于将span链接起来 startAddr uintptr // 起始地址，即所管理页的地址 npages uintptr // 该span中占用的page页数 //作用于GC,垃圾会有的时候会使用这三个字段 allocBits *gcBits //分配位图，每一位代表一个块是否已分配 gcmarkBits *gcBits pinnerBits *gcBits allocCount uint16 // 该Span中已经分配的对象数量 spanclass spanClass // 该Span的等级，一个特定的span中存储特定的ClassID大小的对象 elemsize uintptr // 块大小，该span中存储特定ClassID的大小 } Class等级列表如下:
+源码位置：runtime:sizeclasses.go
+划分如此多的Class等级的目的：
+尽可能地减少内存浪费降低从全局缓存中获取特定SpanClass锁的粒度 // class bytes/obj bytes/span objects tail waste max waste min align // 1 8 8192 1024 0 87.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-08-03T14:59:16+08:00">
+    <meta property="article:modified_time" content="2024-08-03T14:59:16+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Golang内存管理——堆分配</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>go语言的内存自动分配和回收的，因此内存的使用流程大致为：获取内存——分配内存——回收内存——再分配内存。</p> 
+<p>其中分配内存分为两方面，堆内存分配和栈内存分配，堆内存和栈内存是两种不同的分配方式，本篇文章主要是堆内存的分配方式。</p> 
+<h2>1. 自主内存管理</h2> 
+<p>Go语言为了方便内存的自主管理，一开始启动的时候会向操作系统申请一大块连续的内存，后续的内存分配都是基于这一大块内存的。如果程序运行过程中，内存不足了，Go语言会再向操作系统进行内存的申请。</p> 
+<p>为了高效的进行内存管理，Go语言将申请到的内存划分为三个区域，分别为spans、bitmap、arena。其中arena是堆区，GO语言将其划分为一个个8KB的page页，程序运行过程中的内存都是从arena堆区进行分配的。spans和bitmap是为了对arena堆区的高效管理而设置的。</p> 
+<figure class="image"> 
+ <img alt="" height="482" src="https://images2.imgbox.com/25/43/g73IDzJb_o.png" width="1018"> 
+ <figcaption>
+   Go语言的三个内存区域 
+ </figcaption> 
+</figure> 
+<h2>2. mspan 和 ClassID表</h2> 
+<p>我们程序的运行，从使用的角度看，以对象为基本单位的。比如：函数是一个对象、goroutine是一个对象、slice是一个对象。因此，为了实现从对象到内存页之间的映射，Go语言引入了一个mspan结构体。mspan是内存管理的基本单位，每一个span包含一个或多个连续的页。为了满足小对象的分配，会将span中的一页划分为更小的粒度，而对于大对象比如超过页的大小，则会通过多页实现。每个span用于管理特定的class对象，根据对象的大小，span将一个或多个页拆分成多个块进行管理。</p> 
+<p>mspan的结构体定义如下：位置 runtime:mheap.go 一些字段已经省略了</p> 
+<pre><code class="language-Go">type mspan struct {
+	next *mspan     // 链表后向指针，用于将span链接起来
+	prev *mspan     // 链表前向指针，用于将span链接起来
+	startAddr uintptr // 起始地址，即所管理页的地址
+	npages    uintptr // 该span中占用的page页数
+
+    //作用于GC,垃圾会有的时候会使用这三个字段
+	allocBits  *gcBits //分配位图，每一位代表一个块是否已分配
+	gcmarkBits *gcBits
+	pinnerBits *gcBits 
+
+	allocCount  uint16        // 该Span中已经分配的对象数量
+	spanclass   spanClass     // 该Span的等级，一个特定的span中存储特定的ClassID大小的对象
+	elemsize    uintptr       // 块大小，该span中存储特定ClassID的大小
+}
+</code></pre> 
+<p> Class等级列表如下:<br> 源码位置：runtime:sizeclasses.go</p> 
+<p>划分如此多的Class等级的目的：</p> 
+<ol><li>尽可能地减少内存浪费</li><li>降低从全局缓存中获取特定SpanClass锁的粒度</li></ol> 
+<pre><code class="language-Go">// class  bytes/obj  bytes/span  objects  tail waste  max waste  min align
+//     1          8        8192     1024           0     87.50%          8
+//     2         16        8192      512           0     43.75%         16
+//     3         24        8192      341           8     29.24%          8
+//     4         32        8192      256           0     21.88%         32
+//     5         48        8192      170          32     31.52%         16
+//     6         64        8192      128           0     23.44%         64
+//     7         80        8192      102          32     19.07%         16
+//     8         96        8192       85          32     15.95%         32
+//     9        112        8192       73          16     13.56%         16
+//    10        128        8192       64           0     11.72%        128
+//    11        144        8192       56         128     11.82%         16
+//    12        160        8192       51          32      9.73%         32
+//    13        176        8192       46          96      9.59%         16
+//    14        192        8192       42         128      9.25%         64
+//    15        208        8192       39          80      8.12%         16
+//    16        224        8192       36         128      8.15%         32
+//    17        240        8192       34          32      6.62%         16
+//    18        256        8192       32           0      5.86%        256
+//    19        288        8192       28         128     12.16%         32
+//    20        320        8192       25         192     11.80%         64
+//    21        352        8192       23          96      9.88%         32
+//    22        384        8192       21         128      9.51%        128
+//    23        416        8192       19         288     10.71%         32
+//    24        448        8192       18         128      8.37%         64
+//    25        480        8192       17          32      6.82%         32
+//    26        512        8192       16           0      6.05%        512
+//    27        576        8192       14         128     12.33%         64
+//    28        640        8192       12         512     15.48%        128
+//    29        704        8192       11         448     13.93%         64
+//    30        768        8192       10         512     13.94%        256
+//    31        896        8192        9         128     15.52%        128
+//    32       1024        8192        8           0     12.40%       1024
+//    33       1152        8192        7         128     12.41%        128
+//    34       1280        8192        6         512     15.55%        256
+//    35       1408       16384       11         896     14.00%        128
+//    36       1536        8192        5         512     14.00%        512
+//    37       1792       16384        9         256     15.57%        256
+//    38       2048        8192        4           0     12.45%       2048
+//    39       2304       16384        7         256     12.46%        256
+//    40       2688        8192        3         128     15.59%        128
+//    41       3072       24576        8           0     12.47%       1024
+//    42       3200       16384        5         384      6.22%        128
+//    43       3456       24576        7         384      8.83%        128
+//    44       4096        8192        2           0     15.60%       4096
+//    45       4864       24576        5         256     16.65%        256
+//    46       5376       16384        3         256     10.92%        256
+//    47       6144       24576        4           0     12.48%       2048
+//    48       6528       32768        5         128      6.23%        128
+//    49       6784       40960        6         256      4.36%        128
+//    50       6912       49152        7         768      3.37%        256
+//    51       8192        8192        1           0     15.61%       8192
+//    52       9472       57344        6         512     14.28%        256
+//    53       9728       49152        5         512      3.64%        512
+//    54      10240       40960        4           0      4.99%       2048
+//    55      10880       32768        3         128      6.24%        128
+//    56      12288       24576        2           0     11.45%       4096
+//    57      13568       40960        3         256      9.99%        256
+//    58      14336       57344        4           0      5.35%       2048
+//    59      16384       16384        1           0     12.49%       8192
+//    60      18432       73728        4           0     11.11%       2048
+//    61      19072       57344        3         128      3.57%        128
+//    62      20480       40960        2           0      6.87%       4096
+//    63      21760       65536        3         256      6.25%        256
+//    64      24576       24576        1           0     11.45%       8192
+//    65      27264       81920        3         128     10.00%        128
+//    66      28672       57344        2           0      4.91%       4096
+//    67      32768       32768        1           0     12.50%       8192</code></pre> 
+<h2>3. mcentral 和 mcache</h2> 
+<p>首先，我们申请内存是以goroutine为单位的（也可以说是线程），以线程为单位去获取对应的span。其次为了方便对span的管理，我们需要引入结构体来管理span。结构体就是mcentral。mcentral是一个全局的缓存，各线程需要内存的时候，从central中获取对应的span。为了避免多线程申请内存的时候，不断进行加锁。Go为每一个线程设置了一个本地缓存，也就是mcache。<strong>每一个线程需要内存的时候，优先从本地缓存mcache中获取对应的span,如果本地缓存中不存在对应的span,则会从全局队列mcentral中获取。</strong></p> 
+<p>mcache和mcentral的结构体定义如下：runtime:mcentral.go 和 runtime:mcache.go</p> 
+<pre><code class="language-Go">// 给定大小的空闲对象全局缓存,一个全局缓存存储特定ClassID的span
+type mcentral struct {
+	_         sys.NotInHeap
+	spanclass spanClass //存储的特定的classID的span
+
+	partial [2]spanSet // 还有空闲块的span列表
+	full    [2]spanSet // 无空闲块的span列表
+}
+
+
+
+// 每一个线程(在Go中,指的是每一个P)都有一个mcache小对象
+// 进行操作的时候，不需要锁，因为它是属于每个线程的
+type mcache struct {
+
+	alloc [2*68]*mspan // 本cache中被分配的跨度,索引是span对应的classID
+
+	stackcache [_NumStackOrders]stackfreelist //线程中执行栈的空闲span链表
+}
+
+</code></pre> 
+<p>以上源码的部分都经过了省略，字段展示的不全，想要深入了解的朋友，自行浏览。</p> 
+<p>从以上结构体的定义中，我们可以发现，mcache中有所有ClassID的span链表，而mcentral只管理特定ClassID的span。所以，在mcentral上层，应该还有一个结构体，去管理所有ClassID的mcentral,这个结构体就是mheap。</p> 
+<h2>4. mheap</h2> 
+<pre><code class="language-Go">// 分配堆
+type mheap struct {
+	lock mutex
+
+	/*allspans存储所有已创建的mspan的切片。每个mspan只出现一次
+	通常,allspans被mheap的锁保护，防止并发访问，并释放后台存储。*/
+	allspans []*mspan // all spans out there
+
+	// 所有的central列表
+	central [2*68]struct {
+		mcentral mcentral
+		pad      [(cpu.CacheLinePadSize - unsafe.Sizeof(mcentral{})%cpu.CacheLinePadSize) % cpu.CacheLinePadSize]byte
+	}
+}</code></pre> 
+<p>从上面的mheap结构体的定义，可以发现，mheap是顶级内存分配，通过管理各种类型的mcentral。实际上，Go语言就是通过mheap来管理arean堆区的所有内存的。</p> 
+<h2>5. <strong>申请size为n的</strong><strong>内存</strong><strong>，分配步骤如下：</strong></h2> 
+<p>为了提升内存分配的效率，当程序执行时可以从优先mcache,mcentral、mheap这三个地方获取内存。</p> 
+<p>1、对于小于小于等于32kb的内存，优先在mcache (无锁，效率最高) 获取,如果mcache 中没有空闲则从mcentral中获取（有锁，效率次之），mcentral中没有空闲的span,这时候从mheap 中获取（全局锁，效率最低），如果mheap 中也没有可用的span则向操作系统申请（发生系统调用，效率最差）。</p> 
+<p>2、对于大于32kb 则去mheap 获取，如果没有空闲span 则从系统申请。</p> 
+<h2>6. 总结</h2> 
+<p>内存分配是Go语言的基础，涉及的内容比较多，关联操作系统、用户程序、GC垃圾回收等部分，是一个大难点。目前这篇文章可能存在一些问题，如果可以发现，请指正交流</p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7662b5be5693dd0a2dee379d5383cb6a/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">抖音豆包大模型AI写作教程</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/bc8a13dba43de09076689036e023ec82/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Redis1</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

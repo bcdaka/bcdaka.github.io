@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Mysql间隙锁死锁避免最佳实践 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/74037a19dc54968b30b2cd3628d73f04/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Mysql间隙锁死锁避免最佳实践">
+  <meta property="og:description" content="最近写代码的时候听说，批量操作提高死锁的概率，但是心里又想，为什么没看到任何一款数据库相关的中间价禁止或者提醒批量操作？心里想肯定是因为一起其他操作的不当导致的死锁问题。进行了一些思考，希望可以帮助到大家
+Mysql死锁的根本原因 死锁诞生的四个必要条件，这个是理论的基础，这个就不讲了，看下最常见也是开发中最容易导致的死锁问题。
+很多大厂为了提高性能，会把RR隔离级别改为RC隔离级别，取消了间隙锁，提高性能的同时也大大避免了死锁的概率。
+而RR相比RC隔离级别，主要就是间隙锁这个玩意儿，解决当前读时（每次获取最新的数据，而不是快照）的幻读问题，当然并没有完全解决，这个自己去探究，和本文关系不大。
+1.为什么说高并发大厂改为RC隔离级别，速度就提高了，死锁概率也大大降低了？
+2.对于大多数公司，并没有极高的并发，就是采用RR隔离级别，应该怎么做，才能减少因间隙锁导致的死锁问题呢？
+到这里就有答案了：大多数mysql遇到的死锁都是因为RR隔离级别，需要通过间隙锁，解决幻读问题，开发人员又没充分的理解间隙锁何时会加，怎么避免不必要的加间隙锁，而导致的死锁问题；
+Mysql何时会加间隙锁？ 想要避免因间隙锁死锁导致的问题，首先，要弄清究竟什么时候会加间隙锁？
+对于delete 、 update、select xxx for update带有加锁性质的语句，会加间隙锁。至于怎么加？为什么加间隙锁就死锁了，听我慢慢讲。
+1.如果这些语句没走索引，网上我看很多文章都说，不走索引，就会加表锁。。。这纯属于瞎扯。
+这是因为加next-lock临键锁，没走索引，发生了全表扫描，整个表都加上了锁，整个表的间隙都加上了间隙锁，也就是整个表加了临键锁（间隙锁&#43;记录锁）
+2.如果走了索引：会因为这个情况加锁，而且死锁：（这是通用的间隙锁死锁原因）：
+间隙锁是并不是互斥的，事务1给一段范围加了间隙锁，事务2也可以给这段范围加间隙锁，互斥的是插入意向锁和间隙锁互斥，正常来说就是：事务1加了间隙锁，事务2插入的时候会生成一个插入意向锁，这样就避免了幻读问题。
+不正常的时候就是事务1加了间隙锁，事务2在同样的范围也加了间隙锁，进行操作的时候，两个事务就会死锁了，比如事务1插入，被事务2的间隙锁阻塞，事务2插入，被事务1的间隙锁插入。
+死锁例子：事务1执行加了间隙锁 事务2执行加了间隙锁
+事务1插入记录（阻塞）
+事务2插入记录（阻塞） 死锁发生了。
+这样的例子很多。
+比如：
+（1） 表的数据有 1。 2 3。
+事务1，删除4，加临键锁(3,正无穷] 事务2，删除5，加临键锁（3，正无穷]
+事务1。insert。 4（阻塞）
+事务1。insert。 4（阻塞）
+(2) 加锁读：1，2，3
+事务1。select 4 for update 加临键锁(3,正无穷] 事务2， select 5 for update 加临键锁(3,正无穷] 事务1。insert。 4（阻塞） 事务1。insert。 4（阻塞）
+(3)更新同上
+（4）（5）（6）
+这里只是间隙锁死锁，insert可以换成是其他操作，delete。update可以探究下是否会阻塞死锁。
+大致的加锁就是这样。
+可以看到上面的例子，大多是对于不存在的操作进行改变，不存在，就一定会加间隙锁。
+如何避免间隙锁死锁？ 暴力就是有大厂类似需求的，不用RR,就不会有间隙锁死锁。（不推荐，大多数公司用不了）
+通过上面的分析：
+避免死锁死锁有这些最佳实践
+1.删除、更新之前，先判断在不在，不在的数据，进行删除更新，虽然不会报错（返回0rows）但是。操作一定会加间隙锁。开发人员要避免这种情况
+2.尽量通过主键操作，先查出主键，再进行删、改操作，就只会加行锁，不会加间隙锁
+3.一定要保证这些加锁的语句走了索引，不走索引的话，会导致整个表加锁，整个表的间隙也加锁，是很多next-lock锁，而不是表锁！
+4.仅仅真的涉及幻读问题的时候，才让间隙锁去发挥他的作用，比如selet for update，语句需要的时候，大多数场景用不到间隙锁，就开发的时候避免掉这些间隙锁，也就是尽量遵循上面1 2 3逻辑。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-05T14:54:10+08:00">
+    <meta property="article:modified_time" content="2024-06-05T14:54:10+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Mysql间隙锁死锁避免最佳实践</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>最近写代码的时候听说，批量操作提高死锁的概率，但是心里又想，为什么没看到任何一款数据库相关的中间价禁止或者提醒批量操作？心里想肯定是因为一起其他操作的不当导致的死锁问题。进行了一些思考，希望可以帮助到大家</p> 
+<h2>Mysql死锁的根本原因</h2> 
+<p>死锁诞生的四个必要条件，这个是理论的基础，这个就不讲了，看下最常见也是开发中最容易导致的死锁问题。</p> 
+<p>很多大厂为了提高性能，会把RR隔离级别改为RC隔离级别，取消了间隙锁，提高性能的同时也大大避免了死锁的概率。</p> 
+<p>而RR相比RC隔离级别，主要就是间隙锁这个玩意儿，解决当前读时（每次获取最新的数据，而不是快照）的幻读问题，当然并没有完全解决，这个自己去探究，和本文关系不大。</p> 
+<p>1.为什么说高并发大厂改为RC隔离级别，速度就提高了，死锁概率也大大降低了？</p> 
+<p>2.对于大多数公司，并没有极高的并发，就是采用RR隔离级别，应该怎么做，才能减少因间隙锁导致的死锁问题呢？</p> 
+<p>到这里就有答案了：大多数mysql遇到的死锁都是因为RR隔离级别，需要通过间隙锁，解决幻读问题，开发人员又没充分的理解间隙锁何时会加，怎么避免不必要的加间隙锁，而导致的死锁问题；</p> 
+<h2>Mysql何时会加间隙锁？</h2> 
+<p>想要避免因间隙锁死锁导致的问题，首先，要弄清究竟什么时候会加间隙锁？</p> 
+<p>对于delete 、 update、select xxx for update带有加锁性质的语句，会加间隙锁。至于怎么加？为什么加间隙锁就死锁了，听我慢慢讲。</p> 
+<p>1.如果这些语句没走索引，网上我看很多文章都说，不走索引，就会加表锁。。。这纯属于瞎扯。</p> 
+<p>这是因为加next-lock临键锁，没走索引，发生了全表扫描，整个表都加上了锁，整个表的间隙都加上了间隙锁，也就是整个表加了临键锁（间隙锁+记录锁）</p> 
+<p>2.如果走了索引：会因为这个情况加锁，而且死锁：（这是通用的间隙锁死锁原因）：</p> 
+<p>间隙锁是并不是互斥的，事务1给一段范围加了间隙锁，事务2也可以给这段范围加间隙锁，互斥的是插入意向锁和间隙锁互斥，正常来说就是：事务1加了间隙锁，事务2插入的时候会生成一个插入意向锁，这样就避免了幻读问题。</p> 
+<p><strong>不正常的时候就是事务1加了间隙锁，事务2在同样的范围也加了间隙锁，进行操作的时候，两个事务就会死锁了，比如事务1插入，被事务2的间隙锁阻塞，事务2插入，被事务1的间隙锁插入。</strong></p> 
+<p>死锁例子：事务1执行加了间隙锁       </p> 
+<p>                                                        事务2执行加了间隙锁</p> 
+<p>                事务1插入记录（阻塞）</p> 
+<p>                                                         事务2插入记录（阻塞）   死锁发生了。</p> 
+<p></p> 
+<p>这样的例子很多。</p> 
+<p>比如：</p> 
+<p>（1） 表的数据有 1。 2   3。</p> 
+<p>        事务1，删除4，加临键锁(3,正无穷]       </p> 
+<p>                                                                        事务2，删除5，加临键锁（3，正无穷]</p> 
+<p>        事务1。insert。  4（阻塞）</p> 
+<p>                                                                        事务1。insert。  4（阻塞）</p> 
+<p>(2) 加锁读：1，2，3</p> 
+<p>        事务1。select 4 for update      加临键锁(3,正无穷] <br>                                                                              事务2，  select 5 for update  加临键锁(3,正无穷] </p> 
+<p>        事务1。insert。  4（阻塞）                                   事务1。insert。  4（阻塞）</p> 
+<p>(3)更新同上</p> 
+<p>（4）（5）（6）</p> 
+<p>这里只是间隙锁死锁，insert可以换成是其他操作，delete。update可以探究下是否会阻塞死锁。</p> 
+<p>大致的加锁就是这样。</p> 
+<p><strong>可以看到上面的例子，大多是对于不存在的操作进行改变，不存在，就一定会加间隙锁。</strong></p> 
+<h2>如何避免间隙锁死锁？</h2> 
+<p>暴力就是有大厂类似需求的，不用RR,就不会有间隙锁死锁。（不推荐，大多数公司用不了）</p> 
+<p>通过上面的分析：</p> 
+<p>避免死锁死锁有这些最佳实践</p> 
+<p>1.删除、更新之前，先判断在不在，不在的数据，进行删除更新，虽然不会报错（返回0rows）但是。操作一定会加间隙锁。开发人员要避免这种情况</p> 
+<p>2.尽量通过主键操作，先查出主键，再进行删、改操作，就只会加行锁，不会加间隙锁</p> 
+<p>3.一定要保证这些加锁的语句走了索引，不走索引的话，会导致整个表加锁，整个表的间隙也加锁，是很多next-lock锁，而不是表锁！</p> 
+<p>4.仅仅真的涉及幻读问题的时候，才让间隙锁去发挥他的作用，比如selet for update，语句需要的时候，大多数场景用不到间隙锁，就开发的时候避免掉这些间隙锁，也就是尽量遵循上面1 2 3逻辑。</p> 
+<p>还有就是尽量少量批量了，上面4条降低死锁，这一条就尽量让事务快速的执行完，减少多个事务并发，持有相同的间隙锁。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/c13285f0d42044ecbbe842768a0f58b2/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【经典算法】LeetCode 392 判断子序列(Java/C/Python3/Go实现含注释说明,Easy)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/0b022102646f243477ce51f657f950c1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">idea如何根据路径快速在项目中快速打卡该页面</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

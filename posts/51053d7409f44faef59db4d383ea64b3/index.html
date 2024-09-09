@@ -1,0 +1,942 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>ffmplay 源码解读 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/51053d7409f44faef59db4d383ea64b3/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="ffmplay 源码解读">
+  <meta property="og:description" content="stream_open 讲解 // 定义一个静态函数用于初始化并返回VideoState结构体指针，用于管理播放状态 static VideoState* stream_open(const char* filename, AVInputFormat* iformat) { VideoState* is; // 创建VideoState结构体指针 // 分配内存并初始化VideoState结构体，若分配失败则直接返回NULL is = av_mallocz(sizeof(VideoState)); if (!is) return NULL; // 复制输入文件名到VideoState结构体中，失败则跳转到fail标签释放资源 is-&gt;filename = av_strdup(filename);//这是FFmpeg提供的一个便捷函数，用于创建一个字符串的副本，并且自动管理内存分配。它的行为类似于C标准库中的 strdup 函数，但它是FFmpeg专为视频处理等多媒体应用设计的，可能在内部做了某些特定于库的优化或错误处理。该函数接受一个字符串指针作为参数，返回一个新的分配的内存空间中的字符串副本。如果内存分配失败，它将返回 NULL。 if (!is-&gt;filename) goto fail; // 设置输入格式和视频初始显示位置 is-&gt;iformat = iformat; is-&gt;ytop = 0; is-&gt;xleft = 0; // 初始化帧队列，分别为视频帧、字幕帧、音频样本队列，失败则跳转到fail if (frame_queue_init(&amp;is-&gt;pictq, &amp;is-&gt;videoq, VIDEO_PICTURE_QUEUE_SIZE, 1) &lt; 0) goto fail; if (frame_queue_init(&amp;is-&gt;subpq, &amp;is-&gt;subtitleq, SUBPICTURE_QUEUE_SIZE, 0) &lt; 0) goto fail; if (frame_queue_init(&amp;is-&gt;sampq, &amp;is-&gt;audioq, SAMPLE_QUEUE_SIZE, 1) &lt; 0) goto fail; // 初始化数据包队列，包括视频、音频、字幕数据包队列，任一失败则跳转到fail if (packet_queue_init(&amp;is-&gt;videoq) &lt; 0 || packet_queue_init(&amp;is-&gt;audioq) &lt; 0 || packet_queue_init(&amp;is-&gt;subtitleq) &lt; 0) goto fail; // 创建条件变量，用于线程同步，失败则记录错误并跳转到fail if (!">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-07T11:00:04+08:00">
+    <meta property="article:modified_time" content="2024-06-07T11:00:04+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">ffmplay 源码解读</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="stream_open__0"></a>stream_open 讲解</h3> 
+<pre><code class="prism language-c"><span class="token comment">// 定义一个静态函数用于初始化并返回VideoState结构体指针，用于管理播放状态</span>
+<span class="token keyword">static</span> VideoState<span class="token operator">*</span> <span class="token function">stream_open</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> filename<span class="token punctuation">,</span> AVInputFormat<span class="token operator">*</span> iformat<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	VideoState<span class="token operator">*</span> is<span class="token punctuation">;</span> <span class="token comment">// 创建VideoState结构体指针</span>
+
+	<span class="token comment">// 分配内存并初始化VideoState结构体，若分配失败则直接返回NULL</span>
+	is <span class="token operator">=</span> <span class="token function">av_mallocz</span><span class="token punctuation">(</span><span class="token keyword">sizeof</span><span class="token punctuation">(</span>VideoState<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>is<span class="token punctuation">)</span>
+		<span class="token keyword">return</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+
+	<span class="token comment">// 复制输入文件名到VideoState结构体中，失败则跳转到fail标签释放资源</span>
+	is<span class="token operator">-&gt;</span>filename <span class="token operator">=</span> <span class="token function">av_strdup</span><span class="token punctuation">(</span>filename<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//这是FFmpeg提供的一个便捷函数，用于创建一个字符串的副本，并且自动管理内存分配。它的行为类似于C标准库中的 strdup 函数，但它是FFmpeg专为视频处理等多媒体应用设计的，可能在内部做了某些特定于库的优化或错误处理。该函数接受一个字符串指针作为参数，返回一个新的分配的内存空间中的字符串副本。如果内存分配失败，它将返回 NULL。</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>is<span class="token operator">-&gt;</span>filename<span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+
+	<span class="token comment">// 设置输入格式和视频初始显示位置</span>
+	is<span class="token operator">-&gt;</span>iformat <span class="token operator">=</span> iformat<span class="token punctuation">;</span>
+	is<span class="token operator">-&gt;</span>ytop <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	is<span class="token operator">-&gt;</span>xleft <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+	<span class="token comment">// 初始化帧队列，分别为视频帧、字幕帧、音频样本队列，失败则跳转到fail</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">frame_queue_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>pictq<span class="token punctuation">,</span> <span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>videoq<span class="token punctuation">,</span> VIDEO_PICTURE_QUEUE_SIZE<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">frame_queue_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>subpq<span class="token punctuation">,</span> <span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>subtitleq<span class="token punctuation">,</span> SUBPICTURE_QUEUE_SIZE<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">frame_queue_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>sampq<span class="token punctuation">,</span> <span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>audioq<span class="token punctuation">,</span> SAMPLE_QUEUE_SIZE<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+
+	<span class="token comment">// 初始化数据包队列，包括视频、音频、字幕数据包队列，任一失败则跳转到fail</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">packet_queue_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>videoq<span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span> <span class="token operator">||</span>
+		<span class="token function">packet_queue_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>audioq<span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span> <span class="token operator">||</span>
+		<span class="token function">packet_queue_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>subtitleq<span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+		<span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+
+	<span class="token comment">// 创建条件变量，用于线程同步，失败则记录错误并跳转到fail</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>continue_read_thread <span class="token operator">=</span> <span class="token function">SDL_CreateCond</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_FATAL<span class="token punctuation">,</span> <span class="token string">"SDL_CreateCond(): %s\n"</span><span class="token punctuation">,</span> <span class="token function">SDL_GetError</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">// 初始化时钟，分别与视频、音频和外部时钟序列关联</span>
+	<span class="token function">init_clock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>vidclk<span class="token punctuation">,</span> <span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>videoq<span class="token punctuation">.</span>serial<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">init_clock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>audclk<span class="token punctuation">,</span> <span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>audioq<span class="token punctuation">.</span>serial<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token function">init_clock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>extclk<span class="token punctuation">,</span> <span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>extclk<span class="token punctuation">.</span>serial<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token comment">// 设置音频时钟序列初值，及音量处理逻辑</span>
+	is<span class="token operator">-&gt;</span>audio_clock_serial <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>startup_volume <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+		<span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_WARNING<span class="token punctuation">,</span> <span class="token string">"-volume=%d &lt; 0, setting to 0\n"</span><span class="token punctuation">,</span> startup_volume<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span>startup_volume <span class="token operator">&gt;</span> <span class="token number">100</span><span class="token punctuation">)</span>
+		<span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_WARNING<span class="token punctuation">,</span> <span class="token string">"-volume=%d &gt; 100, setting to 100\n"</span><span class="token punctuation">,</span> startup_volume<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	startup_volume <span class="token operator">=</span> <span class="token function">av_clip</span><span class="token punctuation">(</span>startup_volume<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">100</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	startup_volume <span class="token operator">=</span> <span class="token function">av_clip</span><span class="token punctuation">(</span>SDL_MIX_MAXVOLUME <span class="token operator">*</span> startup_volume <span class="token operator">/</span> <span class="token number">100</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> SDL_MIX_MAXVOLUME<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	is<span class="token operator">-&gt;</span>audio_volume <span class="token operator">=</span> startup_volume<span class="token punctuation">;</span>
+	is<span class="token operator">-&gt;</span>muted <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	is<span class="token operator">-&gt;</span>av_sync_type <span class="token operator">=</span> av_sync_type<span class="token punctuation">;</span>
+
+	<span class="token comment">// 创建读取线程，负责读取媒体数据，失败则记录错误并跳转到fail</span>
+	is<span class="token operator">-&gt;</span>read_tid <span class="token operator">=</span> <span class="token function">SDL_CreateThread</span><span class="token punctuation">(</span>read_thread<span class="token punctuation">,</span> <span class="token string">"read_thread"</span><span class="token punctuation">,</span> is<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>is<span class="token operator">-&gt;</span>read_tid<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_FATAL<span class="token punctuation">,</span> <span class="token string">"SDL_CreateThread(): %s\n"</span><span class="token punctuation">,</span> <span class="token function">SDL_GetError</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">// 若一切顺利，返回VideoState结构体指针</span>
+	<span class="token keyword">return</span> is<span class="token punctuation">;</span>
+
+fail<span class="token operator">:</span>
+	<span class="token comment">// 清理资源并返回NULL</span>
+	<span class="token function">stream_close</span><span class="token punctuation">(</span>is<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token keyword">return</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="frame_queue_init__75"></a>frame_queue_init 讲解</h3> 
+<pre><code class="prism language-c"><span class="token comment">/**
+ * 初始化帧队列结构体FrameQueue，包括线程同步对象和帧缓冲区的分配。
+ *
+ * @param f          FrameQueue结构体指针，待初始化的帧队列对象。
+ * @param pktq       PacketQueue结构体指针，关联的包队列，用于接收解码前的数据包。
+ * @param max_size   帧队列的最大容量。
+ * @param keep_last 是否保留队列中的最后一个帧，即使队列已满。
+ * @return 初始化成功返回0，失败返回负的AVERROR代码。
+ */</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">frame_queue_init</span><span class="token punctuation">(</span>FrameQueue<span class="token operator">*</span> f<span class="token punctuation">,</span> PacketQueue<span class="token operator">*</span> pktq<span class="token punctuation">,</span> <span class="token keyword">int</span> max_size<span class="token punctuation">,</span> <span class="token keyword">int</span> keep_last<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> i<span class="token punctuation">;</span> <span class="token comment">// 用于循环计数</span>
+
+    <span class="token comment">// 首先，使用memset清除f所指向的内存，确保所有字段初始化为0</span>
+    <span class="token function">memset</span><span class="token punctuation">(</span>f<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>FrameQueue<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 创建互斥锁，用于保护队列访问的线程安全</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token punctuation">(</span>f<span class="token operator">-&gt;</span>mutex <span class="token operator">=</span> <span class="token function">SDL_CreateMutex</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 如果创建失败，记录致命错误并返回ENOMEM</span>
+        <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_FATAL<span class="token punctuation">,</span> <span class="token string">"SDL_CreateMutex(): %s\n"</span><span class="token punctuation">,</span> <span class="token function">SDL_GetError</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token function">AVERROR</span><span class="token punctuation">(</span>ENOMEM<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 创建条件变量，用于线程间的同步，例如在队列为空时等待新帧的到来</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token punctuation">(</span>f<span class="token operator">-&gt;</span>cond <span class="token operator">=</span> <span class="token function">SDL_CreateCond</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_FATAL<span class="token punctuation">,</span> <span class="token string">"SDL_CreateCond(): %s\n"</span><span class="token punctuation">,</span> <span class="token function">SDL_GetError</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token function">AVERROR</span><span class="token punctuation">(</span>ENOMEM<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 设置队列的关联数据包队列、最大容量和是否保留最后一个帧的标志</span>
+    f<span class="token operator">-&gt;</span>pktq <span class="token operator">=</span> pktq<span class="token punctuation">;</span>
+    <span class="token comment">// 确保最大容量不超过预设的最大值FRAME_QUEUE_SIZE</span>
+    f<span class="token operator">-&gt;</span>max_size <span class="token operator">=</span> <span class="token function">FFMIN</span><span class="token punctuation">(</span>max_size<span class="token punctuation">,</span> FRAME_QUEUE_SIZE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    f<span class="token operator">-&gt;</span>keep_last <span class="token operator">=</span> <span class="token operator">!</span><span class="token operator">!</span>keep_last<span class="token punctuation">;</span> <span class="token comment">// 转换为布尔值，确保0或非0逻辑正确</span>
+
+    <span class="token comment">// 遍历至max_size，为队列中的每个槽位分配AVFrame结构体</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> f<span class="token operator">-&gt;</span>max_size<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 分配帧缓冲，用于存储解码后的视频或音频帧</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token punctuation">(</span>f<span class="token operator">-&gt;</span>queue<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span>frame <span class="token operator">=</span> <span class="token function">av_frame_alloc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 分配失败，返回ENOMEM错误</span>
+            <span class="token keyword">return</span> <span class="token function">AVERROR</span><span class="token punctuation">(</span>ENOMEM<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 所有初始化操作成功完成，返回0</span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="packet_queue_init__127"></a>packet_queue_init 讲解</h3> 
+<pre><code class="prism language-c"><span class="token comment">/**
+ * 初始化数据包队列处理结构体PacketQueue，包括创建必要的线程同步对象。
+ *
+ * @param q 指向PacketQueue结构体的指针，待初始化的数据包队列对象。
+ * @return 初始化成功返回0，失败返回负的AVERROR代码。
+ */</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">packet_queue_init</span><span class="token punctuation">(</span>PacketQueue<span class="token operator">*</span> q<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 使用memset函数清零q指向的内存区域，确保PacketQueue的所有成员初始化为0</span>
+    <span class="token function">memset</span><span class="token punctuation">(</span>q<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>PacketQueue<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 创建一个互斥锁(mutex)，用于保护队列的并发访问，确保线程安全</span>
+    q<span class="token operator">-&gt;</span>mutex <span class="token operator">=</span> <span class="token function">SDL_CreateMutex</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>q<span class="token operator">-&gt;</span>mutex<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 如果创建互斥锁失败，记录一个致命错误并返回ENOMEM错误码</span>
+        <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_FATAL<span class="token punctuation">,</span> <span class="token string">"SDL_CreateMutex(): %s\n"</span><span class="token punctuation">,</span> <span class="token function">SDL_GetError</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token function">AVERROR</span><span class="token punctuation">(</span>ENOMEM<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 创建一个条件变量(cond)，用于线程间的同步，例如在队列为空时挂起等待新数据包的到来</span>
+    q<span class="token operator">-&gt;</span>cond <span class="token operator">=</span> <span class="token function">SDL_CreateCond</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>q<span class="token operator">-&gt;</span>cond<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 如果创建条件变量失败，同样记录致命错误并返回ENOMEM</span>
+        <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_FATAL<span class="token punctuation">,</span> <span class="token string">"SDL_CreateCond(): %s\n"</span><span class="token punctuation">,</span> <span class="token function">SDL_GetError</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span> <span class="token function">AVERROR</span><span class="token punctuation">(</span>ENOMEM<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 初始化队列的abort_request标志为1，表明开始时没有请求中止操作</span>
+    <span class="token comment">// （这个标志通常会在队列的生命周期中用来请求停止队列的操作，如用户请求退出）</span>
+    q<span class="token operator">-&gt;</span>abort_request <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 成功完成所有初始化步骤，返回0</span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="read_thread__166"></a>read_thread 讲解</h3> 
+<pre><code class="prism language-c"><span class="token comment">/* 这个线程从磁盘或网络获取流数据 */</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">read_thread</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token operator">*</span> arg<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token comment">// 获取传入的参数，VideoState 结构体</span>
+    VideoState<span class="token operator">*</span> is <span class="token operator">=</span> arg<span class="token punctuation">;</span>
+    <span class="token comment">// AVFormatContext 结构体指针，用于存储媒体文件格式信息</span>
+    AVFormatContext<span class="token operator">*</span> ic <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> err<span class="token punctuation">,</span> i<span class="token punctuation">,</span> ret<span class="token punctuation">;</span>
+    <span class="token comment">// 存储流索引的数组，初始化为-1</span>
+    <span class="token keyword">int</span> st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_NB<span class="token punctuation">]</span><span class="token punctuation">;</span>
+    <span class="token comment">// AVPacket 用于存储解码前的数据包</span>
+    AVPacket pkt1<span class="token punctuation">,</span> <span class="token operator">*</span>pkt <span class="token operator">=</span> <span class="token operator">&amp;</span>pkt1<span class="token punctuation">;</span>
+    <span class="token class-name">int64_t</span> stream_start_time<span class="token punctuation">;</span>
+    <span class="token keyword">int</span> pkt_in_play_range <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    AVDictionaryEntry<span class="token operator">*</span> t<span class="token punctuation">;</span>
+    <span class="token comment">// SDL 互斥锁，用于线程同步</span>
+    SDL_mutex<span class="token operator">*</span> wait_mutex <span class="token operator">=</span> <span class="token function">SDL_CreateMutex</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">int</span> scan_all_pmts_set <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token class-name">int64_t</span> pkt_ts<span class="token punctuation">;</span>
+
+    <span class="token comment">// 如果无法创建互斥锁，记录错误并返回内存不足错误</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>wait_mutex<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_FATAL<span class="token punctuation">,</span> <span class="token string">"SDL_CreateMutex(): %s\n"</span><span class="token punctuation">,</span> <span class="token function">SDL_GetError</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        ret <span class="token operator">=</span> <span class="token function">AVERROR</span><span class="token punctuation">(</span>ENOMEM<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+  
+	<span class="token comment">// 清零 st_index 数组并将其值设为 -1。 st_index 数组通常用于存储流索引。</span>
+	<span class="token function">memset</span><span class="token punctuation">(</span>st_index<span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token keyword">sizeof</span><span class="token punctuation">(</span>st_index<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 初始化视频、音频和字幕流索引，分别将它们的最后使用和当前使用的流索引设置为 -1。</span>
+	is<span class="token operator">-&gt;</span>last_video_stream <span class="token operator">=</span> is<span class="token operator">-&gt;</span>video_stream <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+	is<span class="token operator">-&gt;</span>last_audio_stream <span class="token operator">=</span> is<span class="token operator">-&gt;</span>audio_stream <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+	is<span class="token operator">-&gt;</span>last_subtitle_stream <span class="token operator">=</span> is<span class="token operator">-&gt;</span>subtitle_stream <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+	
+	<span class="token comment">// 初始化 eof 标志，表示流未到达末尾。</span>
+	is<span class="token operator">-&gt;</span>eof <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+
+    <span class="token comment">// 分配 AVFormatContext 结构体</span>
+    ic <span class="token operator">=</span> <span class="token function">avformat_alloc_context</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>ic<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_FATAL<span class="token punctuation">,</span> <span class="token string">"Could not allocate context.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        ret <span class="token operator">=</span> <span class="token function">AVERROR</span><span class="token punctuation">(</span>ENOMEM<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// 设置中断回调函数</span>
+    ic<span class="token operator">-&gt;</span>interrupt_callback<span class="token punctuation">.</span>callback <span class="token operator">=</span> decode_interrupt_cb<span class="token punctuation">;</span>
+    ic<span class="token operator">-&gt;</span>interrupt_callback<span class="token punctuation">.</span>opaque <span class="token operator">=</span> is<span class="token punctuation">;</span>
+	<span class="token comment">/*
+	这行代码将 AVFormatContext 的 interrupt_callback 结构体中的 callback 成员设置为 decode_interrupt_cb 函数指针。
+	decode_interrupt_cb 是一个用户定义的回调函数，用于在特定条件下中断解码过程，例如用户请求停止解码或者出现某些错误条件。
+	这个回调函数的签名通常是 int (*callback)(void*)，返回值是 int 类型，参数是一个 void* 类型的指针。
+	ic-&gt;interrupt_callback.opaque = is;:
+	
+	这行代码将 AVFormatContext 的 interrupt_callback 结构体中的 opaque 成员设置为 is，通常是一个指向用户自定义数据结构的指针。
+	opaque 成员将作为参数传递给 decode_interrupt_cb 回调函数，允许回调函数访问特定的上下文数据（如当前的解码状态）。
+	*/</span>
+	
+    <span class="token comment">// 如果没有设置 scan_all_pmts 选项，则设置它</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">av_dict_get</span><span class="token punctuation">(</span>format_opts<span class="token punctuation">,</span> <span class="token string">"scan_all_pmts"</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">,</span> AV_DICT_MATCH_CASE<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">av_dict_set</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>format_opts<span class="token punctuation">,</span> <span class="token string">"scan_all_pmts"</span><span class="token punctuation">,</span> <span class="token string">"1"</span><span class="token punctuation">,</span> AV_DICT_DONT_OVERWRITE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        scan_all_pmts_set <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// 打开输入文件</span>
+    err <span class="token operator">=</span> <span class="token function">avformat_open_input</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>ic<span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>filename<span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>iformat<span class="token punctuation">,</span> <span class="token operator">&amp;</span>format_opts<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>err <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">print_error</span><span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>filename<span class="token punctuation">,</span> err<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        ret <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+        <span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// 如果设置了 scan_all_pmts 选项，则删除它</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>scan_all_pmts_set<span class="token punctuation">)</span>
+        <span class="token function">av_dict_set</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>format_opts<span class="token punctuation">,</span> <span class="token string">"scan_all_pmts"</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">,</span> AV_DICT_MATCH_CASE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 检查是否有未找到的选项</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>t <span class="token operator">=</span> <span class="token function">av_dict_get</span><span class="token punctuation">(</span>format_opts<span class="token punctuation">,</span> <span class="token string">""</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">,</span> AV_DICT_IGNORE_SUFFIX<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_ERROR<span class="token punctuation">,</span> <span class="token string">"Option %s not found.\n"</span><span class="token punctuation">,</span> t<span class="token operator">-&gt;</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        ret <span class="token operator">=</span> AVERROR_OPTION_NOT_FOUND<span class="token punctuation">;</span>
+        <span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    is<span class="token operator">-&gt;</span>ic <span class="token operator">=</span> ic<span class="token punctuation">;</span>
+
+    <span class="token comment">// 如果设置了 genpts 选项，则设置 AVFormatContext 的标志</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>genpts<span class="token punctuation">)</span>
+        ic<span class="token operator">-&gt;</span>flags <span class="token operator">|=</span> AVFMT_FLAG_GENPTS<span class="token punctuation">;</span>
+
+    <span class="token comment">// 注入全局侧数据</span>
+    <span class="token function">av_format_inject_global_side_data</span><span class="token punctuation">(</span>ic<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 如果设置了 find_stream_info 选项，查找流信息</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>find_stream_info<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        AVDictionary<span class="token operator">*</span><span class="token operator">*</span> opts <span class="token operator">=</span> <span class="token function">setup_find_stream_info_opts</span><span class="token punctuation">(</span>ic<span class="token punctuation">,</span> codec_opts<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">int</span> orig_nb_streams <span class="token operator">=</span> ic<span class="token operator">-&gt;</span>nb_streams<span class="token punctuation">;</span>
+
+        err <span class="token operator">=</span> <span class="token function">avformat_find_stream_info</span><span class="token punctuation">(</span>ic<span class="token punctuation">,</span> opts<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> orig_nb_streams<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+            <span class="token function">av_dict_free</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>opts<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">av_freep</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>opts<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>err <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_WARNING<span class="token punctuation">,</span>
+                <span class="token string">"%s: could not find codec parameters\n"</span><span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>filename<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            ret <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+            <span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+	<span class="token comment">/*
+	如果 find_stream_info 为真，则调用 setup_find_stream_info_opts 函数设置流信息查找选项，并返回一个 AVDictionary** 类型的指针数组 opts。
+	获取原始流数量 orig_nb_streams，即打开文件后的流数量。
+	调用 avformat_find_stream_info 函数查找流信息，并传入查找选项 opts。
+	在查找完成后，释放 opts 数组中每个元素对应的 AVDictionary 结构体，并释放 opts 数组本身。
+	如果查找失败（err &lt; 0），记录警告日志，并设置 ret 为 -1，然后跳转到 fail 标签处执行清理工作。
+	这段代码的作用是确保媒体文件的流信息被正确解析和初始化，以便后续的播放或处理操作能够正确进行。
+	*/</span>
+    <span class="token comment">// 如果存在 IO 上下文，重置 eof_reached 标志</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>ic<span class="token operator">-&gt;</span>pb<span class="token punctuation">)</span>
+        ic<span class="token operator">-&gt;</span>pb<span class="token operator">-&gt;</span>eof_reached <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> <span class="token comment">// FIXME hack, ffplay maybe should not use avio_feof() to test for the end</span>
+       <span class="token comment">//检查 ic 的输入上下文是否存在，如果存在，则将 eof_reached 标志设为 0。这个标志用于指示输入流是否已经读取到文件末尾，通过将其设为 0，可以重置该标志，以便后续重新读取文件时能够正确处理文件末尾的情况。</span>
+
+    <span class="token comment">// 根据文件格式标志设置 seek_by_bytes 选项</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>seek_by_bytes <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+        seek_by_bytes <span class="token operator">=</span> <span class="token operator">!</span><span class="token operator">!</span><span class="token punctuation">(</span>ic<span class="token operator">-&gt;</span>iformat<span class="token operator">-&gt;</span>flags <span class="token operator">&amp;</span> AVFMT_TS_DISCONT<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token function">strcmp</span><span class="token punctuation">(</span><span class="token string">"ogg"</span><span class="token punctuation">,</span> ic<span class="token operator">-&gt;</span>iformat<span class="token operator">-&gt;</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 设置最大帧持续时间</span>
+    is<span class="token operator">-&gt;</span>max_frame_duration <span class="token operator">=</span> <span class="token punctuation">(</span>ic<span class="token operator">-&gt;</span>iformat<span class="token operator">-&gt;</span>flags <span class="token operator">&amp;</span> AVFMT_TS_DISCONT<span class="token punctuation">)</span> <span class="token operator">?</span> <span class="token number">10.0</span> <span class="token operator">:</span> <span class="token number">3600.0</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 设置窗口标题</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>window_title <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>t <span class="token operator">=</span> <span class="token function">av_dict_get</span><span class="token punctuation">(</span>ic<span class="token operator">-&gt;</span>metadata<span class="token punctuation">,</span> <span class="token string">"title"</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        window_title <span class="token operator">=</span> <span class="token function">av_asprintf</span><span class="token punctuation">(</span><span class="token string">"%s - %s"</span><span class="token punctuation">,</span> t<span class="token operator">-&gt;</span>value<span class="token punctuation">,</span> input_filename<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 如果请求了定位，则执行它</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>start_time <span class="token operator">!=</span> AV_NOPTS_VALUE<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">int64_t</span> timestamp<span class="token punctuation">;</span>
+
+        timestamp <span class="token operator">=</span> start_time<span class="token punctuation">;</span>
+        <span class="token comment">// 添加流的开始时间</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>ic<span class="token operator">-&gt;</span>start_time <span class="token operator">!=</span> AV_NOPTS_VALUE<span class="token punctuation">)</span>
+            timestamp <span class="token operator">+=</span> ic<span class="token operator">-&gt;</span>start_time<span class="token punctuation">;</span>
+        ret <span class="token operator">=</span> <span class="token function">avformat_seek_file</span><span class="token punctuation">(</span>ic<span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">,</span> INT64_MIN<span class="token punctuation">,</span> timestamp<span class="token punctuation">,</span> INT64_MAX<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_WARNING<span class="token punctuation">,</span> <span class="token string">"%s: could not seek to position %0.3f\n"</span><span class="token punctuation">,</span>
+                is<span class="token operator">-&gt;</span>filename<span class="token punctuation">,</span> <span class="token punctuation">(</span><span class="token keyword">double</span><span class="token punctuation">)</span>timestamp <span class="token operator">/</span> AV_TIME_BASE<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 判断是否为实时流</span>
+    is<span class="token operator">-&gt;</span>realtime <span class="token operator">=</span> <span class="token function">is_realtime</span><span class="token punctuation">(</span>ic<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 如果需要显示状态，则打印流信息</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>show_status<span class="token punctuation">)</span>
+        <span class="token function">av_dump_format</span><span class="token punctuation">(</span>ic<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>filename<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 设置流丢弃策略，并选择最佳流</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> ic<span class="token operator">-&gt;</span>nb_streams<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        AVStream<span class="token operator">*</span> st <span class="token operator">=</span> ic<span class="token operator">-&gt;</span>streams<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">enum</span> <span class="token class-name">AVMediaType</span> type <span class="token operator">=</span> st<span class="token operator">-&gt;</span>codecpar<span class="token operator">-&gt;</span>codec_type<span class="token punctuation">;</span>
+        st<span class="token operator">-&gt;</span>discard <span class="token operator">=</span> AVDISCARD_ALL<span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>type <span class="token operator">&gt;=</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> wanted_stream_spec<span class="token punctuation">[</span>type<span class="token punctuation">]</span> <span class="token operator">&amp;&amp;</span> st_index<span class="token punctuation">[</span>type<span class="token punctuation">]</span> <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">avformat_match_stream_specifier</span><span class="token punctuation">(</span>ic<span class="token punctuation">,</span> st<span class="token punctuation">,</span> wanted_stream_spec<span class="token punctuation">[</span>type<span class="token punctuation">]</span><span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                st_index<span class="token punctuation">[</span>type<span class="token punctuation">]</span> <span class="token operator">=</span> i<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">/*
+    这段代码的目的是为了选择最佳的音频、视频和字幕流，以备后续使用。通过设置丢弃策略为 AVDISCARD_ALL，可以确保不会使用到不需要的流数据。最终，st_index 数组中记录了每种类型流的最佳索引，以便后续使用。
+    */</span>
+    
+    <span class="token keyword">for</span> <span class="token punctuation">(</span>i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> AVMEDIA_TYPE_NB<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>wanted_stream_spec<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">&amp;&amp;</span> st_index<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_ERROR<span class="token punctuation">,</span> <span class="token string">"Stream specifier %s does not match any %s stream\n"</span><span class="token punctuation">,</span> wanted_stream_spec<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token function">av_get_media_type_string</span><span class="token punctuation">(</span>i<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            st_index<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">=</span> INT_MAX<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 查找最佳流</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>video_disable<span class="token punctuation">)</span>
+        st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_VIDEO<span class="token punctuation">]</span> <span class="token operator">=</span>
+        <span class="token function">av_find_best_stream</span><span class="token punctuation">(</span>ic<span class="token punctuation">,</span> AVMEDIA_TYPE_VIDEO<span class="token punctuation">,</span>
+            st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_VIDEO<span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>audio_disable<span class="token punctuation">)</span>
+        st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_AUDIO<span class="token punctuation">]</span> <span class="token operator">=</span>
+        <span class="token function">av_find_best_stream</span><span class="token punctuation">(</span>ic<span class="token punctuation">,</span> AVMEDIA_TYPE_AUDIO<span class="token punctuation">,</span>
+            st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_AUDIO<span class="token punctuation">]</span><span class="token punctuation">,</span>
+            st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_VIDEO<span class="token punctuation">]</span><span class="token punctuation">,</span>
+            <span class="token constant">NULL</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>video_disable <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>subtitle_disable<span class="token punctuation">)</span>
+        st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_SUBTITLE<span class="token punctuation">]</span> <span class="token operator">=</span>
+        <span class="token function">av_find_best_stream</span><span class="token punctuation">(</span>ic<span class="token punctuation">,</span> AVMEDIA_TYPE_SUBTITLE<span class="token punctuation">,</span>
+            st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_SUBTITLE<span class="token punctuation">]</span><span class="token punctuation">,</span>
+            <span class="token punctuation">(</span>st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_AUDIO<span class="token punctuation">]</span> <span class="token operator">&gt;=</span> <span class="token number">0</span> <span class="token operator">?</span>
+                st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_AUDIO<span class="token punctuation">]</span> <span class="token operator">:</span>
+                st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_VIDEO<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+            <span class="token constant">NULL</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//这里的逻辑是，如果有音频流，则使用音频流的索引作为参考流，否则使用视频流的索引作为参考流。这样做是为了尽可能地选择与音频或视频流相关联的字幕流。</span>
+
+    <span class="token comment">// 设置显示模式</span>
+    is<span class="token operator">-&gt;</span>show_mode <span class="token operator">=</span> show_mode<span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_VIDEO<span class="token punctuation">]</span> <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        AVStream<span class="token operator">*</span> st <span class="token operator">=</span> ic<span class="token operator">-&gt;</span>streams<span class="token punctuation">[</span>st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_VIDEO<span class="token punctuation">]</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        AVCodecParameters<span class="token operator">*</span> codecpar <span class="token operator">=</span> st<span class="token operator">-&gt;</span>codecpar<span class="token punctuation">;</span>
+        AVRational sar <span class="token operator">=</span> <span class="token function">av_guess_sample_aspect_ratio</span><span class="token punctuation">(</span>ic<span class="token punctuation">,</span> st<span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//根据视频流的信息猜测采样宽高比。</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>codecpar<span class="token operator">-&gt;</span>width<span class="token punctuation">)</span>
+            <span class="token function">set_default_window_size</span><span class="token punctuation">(</span>codecpar<span class="token operator">-&gt;</span>width<span class="token punctuation">,</span> codecpar<span class="token operator">-&gt;</span>height<span class="token punctuation">,</span> sar<span class="token punctuation">)</span><span class="token punctuation">;</span><span class="token comment">//函数设置默认窗口大小，该函数用于设置视频显示窗口的宽度和高度，以及采样宽高比，以确保视频显示正确比例。</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 打开音频流</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_AUDIO<span class="token punctuation">]</span> <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">stream_component_open</span><span class="token punctuation">(</span>is<span class="token punctuation">,</span> st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_AUDIO<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 尝试打开视频流</span>
+    ret <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_VIDEO<span class="token punctuation">]</span> <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        ret <span class="token operator">=</span> <span class="token function">stream_component_open</span><span class="token punctuation">(</span>is<span class="token punctuation">,</span> st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_VIDEO<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>show_mode <span class="token operator">==</span> SHOW_MODE_NONE<span class="token punctuation">)</span>
+        is<span class="token operator">-&gt;</span>show_mode <span class="token operator">=</span> ret <span class="token operator">&gt;=</span> <span class="token number">0</span> <span class="token operator">?</span> SHOW_MODE_VIDEO <span class="token operator">:</span> SHOW_MODE_RDFT<span class="token punctuation">;</span>
+
+    <span class="token comment">// 打开字幕流</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_SUBTITLE<span class="token punctuation">]</span> <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">stream_component_open</span><span class="token punctuation">(</span>is<span class="token punctuation">,</span> st_index<span class="token punctuation">[</span>AVMEDIA_TYPE_SUBTITLE<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 如果音频和视频流都未打开，则记录错误并返回</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>video_stream <span class="token operator">&lt;</span> <span class="token number">0</span> <span class="token operator">&amp;&amp;</span> is<span class="token operator">-&gt;</span>audio_stream <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_FATAL<span class="token punctuation">,</span> <span class="token string">"Failed to open file '%s' or configure filtergraph\n"</span><span class="token punctuation">,</span>
+            is<span class="token operator">-&gt;</span>filename<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        ret <span class="token operator">=</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+        <span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 如果是实时流且未设置 infinite_buffer，则将其设为 1</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>realtime<span class="token punctuation">)</span>
+        infinite_buffer <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 读取数据包</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token punctuation">;</span><span class="token punctuation">;</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 检查是否需要退出</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>abort_request<span class="token punctuation">)</span>
+            <span class="token keyword">break</span><span class="token punctuation">;</span>
+        <span class="token comment">// 如果暂停请求已发出且未显示 EOF，则等待暂停</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>paused <span class="token operator">!=</span> is<span class="token operator">-&gt;</span>last_paused<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            is<span class="token operator">-&gt;</span>last_paused <span class="token operator">=</span> is<span class="token operator">-&gt;</span>paused<span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>paused<span class="token punctuation">)</span>
+                is<span class="token operator">-&gt;</span>read_pause_return <span class="token operator">=</span> <span class="token function">av_read_pause</span><span class="token punctuation">(</span>ic<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">else</span>
+                <span class="token function">av_read_play</span><span class="token punctuation">(</span>ic<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression">CONFIG_RTSP_DEMUXER <span class="token operator">||</span> CONFIG_MMSH_PROTOCOL</span></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>paused <span class="token operator">&amp;&amp;</span>
+            <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">strcmp</span><span class="token punctuation">(</span>ic<span class="token operator">-&gt;</span>iformat<span class="token operator">-&gt;</span>name<span class="token punctuation">,</span> <span class="token string">"rtsp"</span><span class="token punctuation">)</span> <span class="token operator">||</span>
+                <span class="token punctuation">(</span>ic<span class="token operator">-&gt;</span>pb <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span><span class="token function">strncmp</span><span class="token punctuation">(</span>input_filename<span class="token punctuation">,</span> <span class="token string">"mmsh:"</span><span class="token punctuation">,</span> <span class="token number">5</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">/* wait 10 ms to avoid trying to get another packet */</span>
+            <span class="token comment">/* XXX: horrible */</span>
+            <span class="token function">SDL_Delay</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+        <span class="token comment">// 如果发生 EOF 或流结束且队列中还有数据，则等待数据消费</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>eof<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>videoq<span class="token punctuation">.</span>size <span class="token operator">+</span> is<span class="token operator">-&gt;</span>audioq<span class="token punctuation">.</span>size <span class="token operator">+</span> is<span class="token operator">-&gt;</span>subtitleq<span class="token punctuation">.</span>size <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>loop <span class="token operator">!=</span> <span class="token number">1</span> <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span><span class="token operator">!</span>loop <span class="token operator">||</span> <span class="token operator">--</span>loop<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token function">stream_seek</span><span class="token punctuation">(</span>is<span class="token punctuation">,</span> start_time <span class="token operator">!=</span> AV_NOPTS_VALUE <span class="token operator">?</span> start_time <span class="token operator">:</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>autoexit<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    ret <span class="token operator">=</span> AVERROR_EOF<span class="token punctuation">;</span>
+                    <span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>eof<span class="token punctuation">)</span>
+                <span class="token function">SDL_CondWaitTimeout</span><span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>continue_read_thread<span class="token punctuation">,</span> wait_mutex<span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            is<span class="token operator">-&gt;</span>eof <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// 如果 seek 请求已发出，执行 seek 操作</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>seek_req<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">int64_t</span> seek_target <span class="token operator">=</span> is<span class="token operator">-&gt;</span>seek_pos<span class="token punctuation">;</span>
+            <span class="token class-name">int64_t</span> seek_min <span class="token operator">=</span> is<span class="token operator">-&gt;</span>seek_rel <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token operator">?</span> seek_target <span class="token operator">-</span> is<span class="token operator">-&gt;</span>seek_rel <span class="token operator">+</span> <span class="token number">2</span> <span class="token operator">:</span> INT64_MIN<span class="token punctuation">;</span>
+            <span class="token class-name">int64_t</span> seek_max <span class="token operator">=</span> is<span class="token operator">-&gt;</span>seek_rel <span class="token operator">&lt;</span> <span class="token number">0</span> <span class="token operator">?</span> seek_target <span class="token operator">-</span> is<span class="token operator">-&gt;</span>seek_rel <span class="token operator">-</span> <span class="token number">2</span> <span class="token operator">:</span> INT64_MAX<span class="token punctuation">;</span>
+            <span class="token comment">// 记录当前播放位置</span>
+            ret <span class="token operator">=</span> <span class="token function">avformat_seek_file</span><span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>ic<span class="token punctuation">,</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">,</span> seek_min<span class="token punctuation">,</span> seek_target<span class="token punctuation">,</span> seek_max<span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>seek_flags<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_ERROR<span class="token punctuation">,</span>
+                    <span class="token string">"%s: error while seeking\n"</span><span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>ic<span class="token operator">-&gt;</span>url<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">// 清空队列并重置解码器</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>audio_stream <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token function">packet_queue_flush</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>audioq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token function">packet_queue_put</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>audioq<span class="token punctuation">,</span> <span class="token operator">&amp;</span>flush_pkt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>subtitle_stream <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token function">packet_queue_flush</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>subtitleq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token function">packet_queue_put</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>subtitleq<span class="token punctuation">,</span> <span class="token operator">&amp;</span>flush_pkt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>video_stream <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token function">packet_queue_flush</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>videoq<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token function">packet_queue_put</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>videoq<span class="token punctuation">,</span> <span class="token operator">&amp;</span>flush_pkt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>seek_flags <span class="token operator">&amp;</span> AVSEEK_FLAG_BYTE<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token function">set_clock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>extclk<span class="token punctuation">,</span> NAN<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token function">set_clock</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>extclk<span class="token punctuation">,</span> seek_target <span class="token operator">/</span> <span class="token punctuation">(</span><span class="token keyword">double</span><span class="token punctuation">)</span>AV_TIME_BASE<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+            is<span class="token operator">-&gt;</span>seek_req <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+            is<span class="token operator">-&gt;</span>queue_attachments_req <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+            is<span class="token operator">-&gt;</span>eof <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+            <span class="token comment">// 重置暂停状态</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>paused<span class="token punctuation">)</span>
+                <span class="token function">step_to_next_frame</span><span class="token punctuation">(</span>is<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// 如果队列已满且流未结束，则等待数据消费</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">queue_full</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>videoq<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token function">queue_full</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>audioq<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token function">queue_full</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>subtitleq<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">/* wait 10 ms to avoid trying to get another packet */</span>
+            <span class="token function">SDL_CondWaitTimeout</span><span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>continue_read_thread<span class="token punctuation">,</span> wait_mutex<span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// 如果队列已满且 stream_end 则等待数据消费</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>audioq<span class="token punctuation">.</span>size <span class="token operator">+</span> is<span class="token operator">-&gt;</span>videoq<span class="token punctuation">.</span>size <span class="token operator">+</span> is<span class="token operator">-&gt;</span>subtitleq<span class="token punctuation">.</span>size <span class="token operator">&gt;=</span> MAX_QUEUE_SIZE <span class="token operator">||</span>
+            <span class="token punctuation">(</span><span class="token function">stream_has_enough_packets</span><span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>audio_st<span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>audio_stream<span class="token punctuation">,</span> <span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>audioq<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span>
+                <span class="token function">stream_has_enough_packets</span><span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>video_st<span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>video_stream<span class="token punctuation">,</span> <span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>videoq<span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span>
+                <span class="token function">stream_has_enough_packets</span><span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>subtitle_st<span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>subtitle_stream<span class="token punctuation">,</span> <span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>subtitleq<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">/* wait 10 ms to avoid trying to get another packet */</span>
+            <span class="token function">SDL_CondWaitTimeout</span><span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>continue_read_thread<span class="token punctuation">,</span> wait_mutex<span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">// 从输入文件读取数据包</span>
+        ret <span class="token operator">=</span> <span class="token function">av_read_frame</span><span class="token punctuation">(</span>ic<span class="token punctuation">,</span> pkt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>ret <span class="token operator">==</span> AVERROR_EOF <span class="token operator">||</span> <span class="token function">avio_feof</span><span class="token punctuation">(</span>ic<span class="token operator">-&gt;</span>pb<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>is<span class="token operator">-&gt;</span>eof<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>video_stream <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                    <span class="token function">packet_queue_put_nullpacket</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>videoq<span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>video_stream<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>audio_stream <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                    <span class="token function">packet_queue_put_nullpacket</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>audioq<span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>audio_stream<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>subtitle_stream <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                    <span class="token function">packet_queue_put_nullpacket</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>subtitleq<span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>subtitle_stream<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                is<span class="token operator">-&gt;</span>eof <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>ic<span class="token operator">-&gt;</span>pb <span class="token operator">&amp;&amp;</span> ic<span class="token operator">-&gt;</span>pb<span class="token operator">-&gt;</span>error<span class="token punctuation">)</span>
+                <span class="token keyword">break</span><span class="token punctuation">;</span>
+            <span class="token comment">/* wait 10 ms to avoid trying to get another packet */</span>
+            <span class="token function">SDL_CondWaitTimeout</span><span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>continue_read_thread<span class="token punctuation">,</span> wait_mutex<span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            is<span class="token operator">-&gt;</span>eof <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">// 如果是附件包且请求队列附件，则入队</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>pkt<span class="token operator">-&gt;</span>stream_index <span class="token operator">==</span> is<span class="token operator">-&gt;</span>audio_stream <span class="token operator">||</span>
+            pkt<span class="token operator">-&gt;</span>stream_index <span class="token operator">==</span> is<span class="token operator">-&gt;</span>video_stream <span class="token operator">||</span>
+            pkt<span class="token operator">-&gt;</span>stream_index <span class="token operator">==</span> is<span class="token operator">-&gt;</span>subtitle_stream<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">av_packet_make_refcounted</span><span class="token punctuation">(</span>pkt<span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+            <span class="token function">packet_queue_put</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>audioq<span class="token punctuation">,</span> pkt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token function">av_packet_unref</span><span class="token punctuation">(</span>pkt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+    ret <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+fail<span class="token operator">:</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>ic <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>is<span class="token operator">-&gt;</span>ic<span class="token punctuation">)</span>
+        <span class="token function">avformat_close_input</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>ic<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">!=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        SDL_Event event<span class="token punctuation">;</span>
+
+        event<span class="token punctuation">.</span>type <span class="token operator">=</span> FF_QUIT_EVENT<span class="token punctuation">;</span>
+        event<span class="token punctuation">.</span>user<span class="token punctuation">.</span>data1 <span class="token operator">=</span> is<span class="token punctuation">;</span>
+        <span class="token function">SDL_PushEvent</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>event<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token function">SDL_DestroyMutex</span><span class="token punctuation">(</span>wait_mutex<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<h3><a id="stream_component_open__552"></a>stream_component_open 讲解</h3> 
+<pre><code class="prism language-c"><span class="token comment">/* 开启指定流（音频、视频或字幕）。返回0表示成功，否则返回错误码 */</span>
+<span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">stream_component_open</span><span class="token punctuation">(</span>VideoState<span class="token operator">*</span> is<span class="token punctuation">,</span> <span class="token keyword">int</span> stream_index<span class="token punctuation">)</span>
+<span class="token punctuation">{<!-- --></span>
+    AVFormatContext<span class="token operator">*</span> ic <span class="token operator">=</span> is<span class="token operator">-&gt;</span>ic<span class="token punctuation">;</span> <span class="token comment">// 输入上下文指针</span>
+    AVCodecContext<span class="token operator">*</span> avctx<span class="token punctuation">;</span> <span class="token comment">// 编解码器上下文</span>
+    AVCodec<span class="token operator">*</span> codec<span class="token punctuation">;</span> <span class="token comment">// 编解码器</span>
+    <span class="token keyword">const</span> <span class="token keyword">char</span><span class="token operator">*</span> forced_codec_name <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span> <span class="token comment">// 强制使用的编解码器名字</span>
+    AVDictionary<span class="token operator">*</span> opts <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span> <span class="token comment">// 选项字典</span>
+    AVDictionaryEntry<span class="token operator">*</span> t <span class="token operator">=</span> <span class="token constant">NULL</span><span class="token punctuation">;</span> <span class="token comment">// 用于遍历字典条目的指针</span>
+    <span class="token keyword">int</span> sample_rate<span class="token punctuation">,</span> nb_channels<span class="token punctuation">;</span> <span class="token comment">// 采样率和通道数</span>
+    <span class="token class-name">int64_t</span> channel_layout<span class="token punctuation">;</span> <span class="token comment">// 通道布局</span>
+    <span class="token keyword">int</span> ret <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> <span class="token comment">// 返回值</span>
+    <span class="token keyword">int</span> stream_lowres <span class="token operator">=</span> lowres<span class="token punctuation">;</span> <span class="token comment">// 低分辨率设置</span>
+
+    <span class="token comment">// 检查流索引有效性</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>stream_index <span class="token operator">&lt;</span> <span class="token number">0</span> <span class="token operator">||</span> stream_index <span class="token operator">&gt;=</span> ic<span class="token operator">-&gt;</span>nb_streams<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 分配并初始化编解码器上下文</span>
+    avctx <span class="token operator">=</span> <span class="token function">avcodec_alloc_context3</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>avctx<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token function">AVERROR</span><span class="token punctuation">(</span>ENOMEM<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 将流的编解码参数复制到编解码器上下文中</span>
+    ret <span class="token operator">=</span> <span class="token function">avcodec_parameters_to_context</span><span class="token punctuation">(</span>avctx<span class="token punctuation">,</span> ic<span class="token operator">-&gt;</span>streams<span class="token punctuation">[</span>stream_index<span class="token punctuation">]</span><span class="token operator">-&gt;</span>codecpar<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+        <span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+    avctx<span class="token operator">-&gt;</span>pkt_timebase <span class="token operator">=</span> ic<span class="token operator">-&gt;</span>streams<span class="token punctuation">[</span>stream_index<span class="token punctuation">]</span><span class="token operator">-&gt;</span>time_base<span class="token punctuation">;</span> <span class="token comment">// 设置时间基</span>
+
+    <span class="token comment">// 查找解码器</span>
+    codec <span class="token operator">=</span> <span class="token function">avcodec_find_decoder</span><span class="token punctuation">(</span>avctx<span class="token operator">-&gt;</span>codec_id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 根据流类型选择强制解码器</span>
+    <span class="token keyword">switch</span> <span class="token punctuation">(</span>avctx<span class="token operator">-&gt;</span>codec_type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">case</span> AVMEDIA_TYPE_AUDIO<span class="token operator">:</span> is<span class="token operator">-&gt;</span>last_audio_stream <span class="token operator">=</span> stream_index<span class="token punctuation">;</span> forced_codec_name <span class="token operator">=</span> audio_codec_name<span class="token punctuation">;</span> <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> AVMEDIA_TYPE_SUBTITLE<span class="token operator">:</span> is<span class="token operator">-&gt;</span>last_subtitle_stream <span class="token operator">=</span> stream_index<span class="token punctuation">;</span> forced_codec_name <span class="token operator">=</span> subtitle_codec_name<span class="token punctuation">;</span> <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> AVMEDIA_TYPE_VIDEO<span class="token operator">:</span> is<span class="token operator">-&gt;</span>last_video_stream <span class="token operator">=</span> stream_index<span class="token punctuation">;</span> forced_codec_name <span class="token operator">=</span> video_codec_name<span class="token punctuation">;</span> <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// 如果设置了强制解码器名，则使用该解码器</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>forced_codec_name<span class="token punctuation">)</span>
+        codec <span class="token operator">=</span> <span class="token function">avcodec_find_decoder_by_name</span><span class="token punctuation">(</span>forced_codec_name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>codec<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 找不到解码器，打印错误并返回</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>forced_codec_name<span class="token punctuation">)</span>
+            <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_WARNING<span class="token punctuation">,</span> <span class="token string">"找不到指定名字的解码器: '%s'\n"</span><span class="token punctuation">,</span> forced_codec_name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">else</span>
+            <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_WARNING<span class="token punctuation">,</span> <span class="token string">"找不到解码器: %s\n"</span><span class="token punctuation">,</span> <span class="token function">avcodec_get_name</span><span class="token punctuation">(</span>avctx<span class="token operator">-&gt;</span>codec_id<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        ret <span class="token operator">=</span> <span class="token function">AVERROR</span><span class="token punctuation">(</span>EINVAL<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 设置编解码器ID</span>
+    avctx<span class="token operator">-&gt;</span>codec_id <span class="token operator">=</span> codec<span class="token operator">-&gt;</span>id<span class="token punctuation">;</span>
+    <span class="token comment">// 限制低分辨率设置不超过解码器支持的最大值</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>stream_lowres <span class="token operator">&gt;</span> codec<span class="token operator">-&gt;</span>max_lowres<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">av_log</span><span class="token punctuation">(</span>avctx<span class="token punctuation">,</span> AV_LOG_WARNING<span class="token punctuation">,</span> <span class="token string">"解码器支持的最大低分辨率是 %d\n"</span><span class="token punctuation">,</span> codec<span class="token operator">-&gt;</span>max_lowres<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        stream_lowres <span class="token operator">=</span> codec<span class="token operator">-&gt;</span>max_lowres<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    avctx<span class="token operator">-&gt;</span>lowres <span class="token operator">=</span> stream_lowres<span class="token punctuation">;</span>
+
+    <span class="token comment">// 快速解码标志</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>fast<span class="token punctuation">)</span>
+        avctx<span class="token operator">-&gt;</span>flags2 <span class="token operator">|=</span> AV_CODEC_FLAG2_FAST<span class="token punctuation">;</span>
+
+    <span class="token comment">// 应用编解码器选项</span>
+    opts <span class="token operator">=</span> <span class="token function">filter_codec_opts</span><span class="token punctuation">(</span>codec_opts<span class="token punctuation">,</span> avctx<span class="token operator">-&gt;</span>codec_id<span class="token punctuation">,</span> ic<span class="token punctuation">,</span> ic<span class="token operator">-&gt;</span>streams<span class="token punctuation">[</span>stream_index<span class="token punctuation">]</span><span class="token punctuation">,</span> codec<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 添加线程选项（如果没有设置则自动）</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">av_dict_get</span><span class="token punctuation">(</span>opts<span class="token punctuation">,</span> <span class="token string">"threads"</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token function">av_dict_set</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>opts<span class="token punctuation">,</span> <span class="token string">"threads"</span><span class="token punctuation">,</span> <span class="token string">"auto"</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 设置低分辨率选项</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>stream_lowres<span class="token punctuation">)</span>
+        <span class="token function">av_dict_set_int</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>opts<span class="token punctuation">,</span> <span class="token string">"lowres"</span><span class="token punctuation">,</span> stream_lowres<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 参考帧计数选项</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>avctx<span class="token operator">-&gt;</span>codec_type <span class="token operator">==</span> AVMEDIA_TYPE_VIDEO <span class="token operator">||</span> avctx<span class="token operator">-&gt;</span>codec_type <span class="token operator">==</span> AVMEDIA_TYPE_AUDIO<span class="token punctuation">)</span>
+        <span class="token function">av_dict_set</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>opts<span class="token punctuation">,</span> <span class="token string">"refcounted_frames"</span><span class="token punctuation">,</span> <span class="token string">"1"</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 打开解码器</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>ret <span class="token operator">=</span> <span class="token function">avcodec_open2</span><span class="token punctuation">(</span>avctx<span class="token punctuation">,</span> codec<span class="token punctuation">,</span> <span class="token operator">&amp;</span>opts<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// 检查是否有未使用的选项</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>t <span class="token operator">=</span> <span class="token function">av_dict_get</span><span class="token punctuation">(</span>opts<span class="token punctuation">,</span> <span class="token string">""</span><span class="token punctuation">,</span> <span class="token constant">NULL</span><span class="token punctuation">,</span> AV_DICT_IGNORE_SUFFIX<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token function">av_log</span><span class="token punctuation">(</span><span class="token constant">NULL</span><span class="token punctuation">,</span> AV_LOG_ERROR<span class="token punctuation">,</span> <span class="token string">"未找到选项 %s\n"</span><span class="token punctuation">,</span> t<span class="token operator">-&gt;</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        ret <span class="token operator">=</span> AVERROR_OPTION_NOT_FOUND<span class="token punctuation">;</span>
+        <span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 重置EOF标志</span>
+    is<span class="token operator">-&gt;</span>eof <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+    <span class="token comment">// 设置默认丢弃模式</span>
+    ic<span class="token operator">-&gt;</span>streams<span class="token punctuation">[</span>stream_index<span class="token punctuation">]</span><span class="token operator">-&gt;</span>discard <span class="token operator">=</span> AVDISCARD_DEFAULT<span class="token punctuation">;</span>
+
+<span class="token keyword">switch</span> <span class="token punctuation">(</span>avctx<span class="token operator">-&gt;</span>codec_type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">case</span> AVMEDIA_TYPE_AUDIO<span class="token operator">:</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">if</span> <span class="token expression">CONFIG_AVFILTER</span></span>
+        <span class="token punctuation">{<!-- --></span>
+            AVFilterContext<span class="token operator">*</span> sink<span class="token punctuation">;</span>
+
+            <span class="token comment">// 配置音频过滤源参数，根据编解码器上下文设置采样率、通道数、通道布局和样本格式</span>
+            is<span class="token operator">-&gt;</span>audio_filter_src<span class="token punctuation">.</span>freq <span class="token operator">=</span> avctx<span class="token operator">-&gt;</span>sample_rate<span class="token punctuation">;</span>
+            is<span class="token operator">-&gt;</span>audio_filter_src<span class="token punctuation">.</span>channels <span class="token operator">=</span> avctx<span class="token operator">-&gt;</span>channels<span class="token punctuation">;</span>
+            is<span class="token operator">-&gt;</span>audio_filter_src<span class="token punctuation">.</span>channel_layout <span class="token operator">=</span> <span class="token function">get_valid_channel_layout</span><span class="token punctuation">(</span>avctx<span class="token operator">-&gt;</span>channel_layout<span class="token punctuation">,</span> avctx<span class="token operator">-&gt;</span>channels<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            is<span class="token operator">-&gt;</span>audio_filter_src<span class="token punctuation">.</span>fmt <span class="token operator">=</span> avctx<span class="token operator">-&gt;</span>sample_fmt<span class="token punctuation">;</span>
+
+            <span class="token comment">// 配置音频过滤器，若失败则跳转到错误处理</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>ret <span class="token operator">=</span> <span class="token function">configure_audio_filters</span><span class="token punctuation">(</span>is<span class="token punctuation">,</span> afilters<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                <span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+
+            <span class="token comment">// 获取过滤后的sink（输出）参数：采样率、通道数、通道布局</span>
+            sink <span class="token operator">=</span> is<span class="token operator">-&gt;</span>out_audio_filter<span class="token punctuation">;</span>
+            sample_rate <span class="token operator">=</span> <span class="token function">av_buffersink_get_sample_rate</span><span class="token punctuation">(</span>sink<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            nb_channels <span class="token operator">=</span> <span class="token function">av_buffersink_get_channels</span><span class="token punctuation">(</span>sink<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            channel_layout <span class="token operator">=</span> <span class="token function">av_buffersink_get_channel_layout</span><span class="token punctuation">(</span>sink<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">else</span></span>
+            <span class="token comment">// 如果没有配置音频过滤器支持，直接使用编解码器的原始参数</span>
+            sample_rate <span class="token operator">=</span> avctx<span class="token operator">-&gt;</span>sample_rate<span class="token punctuation">;</span>
+            nb_channels <span class="token operator">=</span> avctx<span class="token operator">-&gt;</span>channels<span class="token punctuation">;</span>
+            channel_layout <span class="token operator">=</span> avctx<span class="token operator">-&gt;</span>channel_layout<span class="token punctuation">;</span>
+<span class="token macro property"><span class="token directive-hash">#</span><span class="token directive keyword">endif</span></span>
+
+        <span class="token comment">// 准备音频输出：根据获取的参数初始化音频输出目标格式，失败则跳转到错误处理</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>ret <span class="token operator">=</span> <span class="token function">audio_open</span><span class="token punctuation">(</span>is<span class="token punctuation">,</span> channel_layout<span class="token punctuation">,</span> nb_channels<span class="token punctuation">,</span> sample_rate<span class="token punctuation">,</span> <span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>audio_tgt<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+            <span class="token keyword">goto</span> fail<span class="token punctuation">;</span>
+
+        <span class="token comment">// 设置硬件音频缓冲区大小、源缓冲区指针、缓冲区大小和缓冲区索引初始值</span>
+        is<span class="token operator">-&gt;</span>audio_hw_buf_size <span class="token operator">=</span> ret<span class="token punctuation">;</span>
+        is<span class="token operator">-&gt;</span>audio_src <span class="token operator">=</span> is<span class="token operator">-&gt;</span>audio_tgt<span class="token punctuation">;</span>
+        is<span class="token operator">-&gt;</span>audio_buf_size <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        is<span class="token operator">-&gt;</span>audio_buf_index <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 初始化音频差异平均滤波器系数和计数器，用于音频同步调整</span>
+        is<span class="token operator">-&gt;</span>audio_diff_avg_coef <span class="token operator">=</span> <span class="token function">exp</span><span class="token punctuation">(</span><span class="token function">log</span><span class="token punctuation">(</span><span class="token number">0.01</span><span class="token punctuation">)</span> <span class="token operator">/</span> AUDIO_DIFF_AVG_NB<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        is<span class="token operator">-&gt;</span>audio_diff_avg_count <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token comment">// 定义音频同步修正阈值，基于硬件缓冲区大小和目标格式的时间基</span>
+        is<span class="token operator">-&gt;</span>audio_diff_threshold <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token keyword">double</span><span class="token punctuation">)</span><span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>audio_hw_buf_size<span class="token punctuation">)</span> <span class="token operator">/</span> is<span class="token operator">-&gt;</span>audio_tgt<span class="token punctuation">.</span>bytes_per_sec<span class="token punctuation">;</span>
+
+        <span class="token comment">// 设置音频流索引和流对象</span>
+        is<span class="token operator">-&gt;</span>audio_stream <span class="token operator">=</span> stream_index<span class="token punctuation">;</span>
+        is<span class="token operator">-&gt;</span>audio_st <span class="token operator">=</span> ic<span class="token operator">-&gt;</span>streams<span class="token punctuation">[</span>stream_index<span class="token punctuation">]</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 初始化音频解码器上下文，绑定音频队列，并指定读取线程的继续函数</span>
+        <span class="token function">decoder_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>auddec<span class="token punctuation">,</span> avctx<span class="token punctuation">,</span> <span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>audioq<span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>continue_read_thread<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// 如果输入格式不允许搜索且不支持随机访问，则设置解码器的起始PTS</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>is<span class="token operator">-&gt;</span>ic<span class="token operator">-&gt;</span>iformat<span class="token operator">-&gt;</span>flags <span class="token operator">&amp;</span> <span class="token punctuation">(</span>AVFMT_NOBINSEARCH <span class="token operator">|</span> AVFMT_NOGENSEARCH <span class="token operator">|</span> AVFMT_NO_BYTE_SEEK<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>is<span class="token operator">-&gt;</span>ic<span class="token operator">-&gt;</span>iformat<span class="token operator">-&gt;</span>read_seek<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            is<span class="token operator">-&gt;</span>auddec<span class="token punctuation">.</span>start_pts <span class="token operator">=</span> is<span class="token operator">-&gt;</span>audio_st<span class="token operator">-&gt;</span>start_time<span class="token punctuation">;</span>
+            is<span class="token operator">-&gt;</span>auddec<span class="token punctuation">.</span>start_pts_tb <span class="token operator">=</span> is<span class="token operator">-&gt;</span>audio_st<span class="token operator">-&gt;</span>time_base<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// 启动音频解码线程，若失败则跳转到错误处理</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>ret <span class="token operator">=</span> <span class="token function">decoder_start</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>auddec<span class="token punctuation">,</span> audio_thread<span class="token punctuation">,</span> <span class="token string">"audio_decoder"</span><span class="token punctuation">,</span> is<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+            <span class="token keyword">goto</span> out<span class="token punctuation">;</span>
+
+        <span class="token comment">// 恢复音频设备播放</span>
+        <span class="token function">SDL_PauseAudioDevice</span><span class="token punctuation">(</span>audio_dev<span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> AVMEDIA_TYPE_VIDEO<span class="token operator">:</span>
+        <span class="token comment">// 视频流处理：设置视频流索引和流对象，初始化视频解码器上下文并启动解码线程</span>
+        is<span class="token operator">-&gt;</span>video_stream <span class="token operator">=</span> stream_index<span class="token punctuation">;</span>
+        is<span class="token operator">-&gt;</span>video_st <span class="token operator">=</span> ic<span class="token operator">-&gt;</span>streams<span class="token punctuation">[</span>stream_index<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token function">decoder_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>viddec<span class="token punctuation">,</span> avctx<span class="token punctuation">,</span> <span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>videoq<span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>continue_read_thread<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>ret <span class="token operator">=</span> <span class="token function">decoder_start</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>viddec<span class="token punctuation">,</span> video_thread<span class="token punctuation">,</span> <span class="token string">"video_decoder"</span><span class="token punctuation">,</span> is<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+            <span class="token keyword">goto</span> out<span class="token punctuation">;</span>
+        <span class="token comment">// 标记需要队列附件请求</span>
+        is<span class="token operator">-&gt;</span>queue_attachments_req <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+        <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token keyword">case</span> AVMEDIA_TYPE_SUBTITLE<span class="token operator">:</span>
+        <span class="token comment">// 字幕流处理：设置字幕流索引和流对象，初始化字幕解码器上下文并启动解码线程</span>
+        is<span class="token operator">-&gt;</span>subtitle_stream <span class="token operator">=</span> stream_index<span class="token punctuation">;</span>
+        is<span class="token operator">-&gt;</span>subtitle_st <span class="token operator">=</span> ic<span class="token operator">-&gt;</span>streams<span class="token punctuation">[</span>stream_index<span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token function">decoder_init</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>subdec<span class="token punctuation">,</span> avctx<span class="token punctuation">,</span> <span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>subtitleq<span class="token punctuation">,</span> is<span class="token operator">-&gt;</span>continue_read_thread<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>ret <span class="token operator">=</span> <span class="token function">decoder_start</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>is<span class="token operator">-&gt;</span>subdec<span class="token punctuation">,</span> subtitle_thread<span class="token punctuation">,</span> <span class="token string">"subtitle_decoder"</span><span class="token punctuation">,</span> is<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+            <span class="token keyword">goto</span> out<span class="token punctuation">;</span>
+        <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token keyword">default</span><span class="token operator">:</span>
+        <span class="token comment">// 不支持的流类型，直接跳过</span>
+        <span class="token keyword">break</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 错误处理和清理</span>
+fail<span class="token operator">:</span>
+    <span class="token function">avcodec_free_context</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>avctx<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">av_dict_free</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>opts<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">return</span> ret<span class="token punctuation">;</span> <span class="token comment">// 返回结果</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<pre><code class="prism language-c"><span class="token keyword">static</span> <span class="token keyword">int</span> <span class="token function">decoder_decode_frame</span><span class="token punctuation">(</span>Decoder<span class="token operator">*</span> d<span class="token punctuation">,</span> AVFrame<span class="token operator">*</span> frame<span class="token punctuation">,</span> AVSubtitle<span class="token operator">*</span> sub<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">int</span> ret <span class="token operator">=</span> <span class="token function">AVERROR</span><span class="token punctuation">(</span>EAGAIN<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 初始化返回值为EAGAIN，表示没有可用帧或需要再次尝试</span>
+
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token punctuation">;</span><span class="token punctuation">;</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// 无限循环直到解码成功或遇到错误</span>
+        AVPacket pkt<span class="token punctuation">;</span> <span class="token comment">// AVPacket 结构体用于存储视频/音频数据包</span>
+
+        <span class="token comment">// 检查队列序列号是否与当前解码器序列号匹配</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>queue<span class="token operator">-&gt;</span>serial <span class="token operator">==</span> d<span class="token operator">-&gt;</span>pkt_serial<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">do</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">// 检查是否请求了中止解码</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>queue<span class="token operator">-&gt;</span>abort_request<span class="token punctuation">)</span>
+                    <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+
+                <span class="token comment">// 根据编解码器类型处理视频或音频帧</span>
+                <span class="token keyword">switch</span> <span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>avctx<span class="token operator">-&gt;</span>codec_type<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">case</span> AVMEDIA_TYPE_VIDEO<span class="token operator">:</span>
+                    <span class="token comment">// 尝试从解码器接收视频帧</span>
+                    ret <span class="token operator">=</span> <span class="token function">avcodec_receive_frame</span><span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>avctx<span class="token punctuation">,</span> frame<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// 成功解码</span>
+                        <span class="token comment">// 根据配置调整帧的PTS（显示时间戳）</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span>decoder_reorder_pts <span class="token operator">==</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span> frame<span class="token operator">-&gt;</span>pts <span class="token operator">=</span> frame<span class="token operator">-&gt;</span>best_effort_timestamp<span class="token punctuation">;</span>
+                        <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>decoder_reorder_pts<span class="token punctuation">)</span> frame<span class="token operator">-&gt;</span>pts <span class="token operator">=</span> frame<span class="token operator">-&gt;</span>pkt_dts<span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                    <span class="token keyword">break</span><span class="token punctuation">;</span>
+                <span class="token keyword">case</span> AVMEDIA_TYPE_AUDIO<span class="token operator">:</span>
+                    <span class="token comment">// 尝试从解码器接收音频帧</span>
+                    ret <span class="token operator">=</span> <span class="token function">avcodec_receive_frame</span><span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>avctx<span class="token punctuation">,</span> frame<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        <span class="token comment">// 调整音频帧的时间戳到正确的时基</span>
+                        AVRational tb <span class="token operator">=</span> <span class="token punctuation">(</span>AVRational<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span><span class="token number">1</span><span class="token punctuation">,</span> frame<span class="token operator">-&gt;</span>sample_rate<span class="token punctuation">}</span><span class="token punctuation">;</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span>frame<span class="token operator">-&gt;</span>pts <span class="token operator">!=</span> AV_NOPTS_VALUE<span class="token punctuation">)</span>
+                            frame<span class="token operator">-&gt;</span>pts <span class="token operator">=</span> <span class="token function">av_rescale_q</span><span class="token punctuation">(</span>frame<span class="token operator">-&gt;</span>pts<span class="token punctuation">,</span> d<span class="token operator">-&gt;</span>avctx<span class="token operator">-&gt;</span>pkt_timebase<span class="token punctuation">,</span> tb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">else</span> <span class="token keyword">if</span> <span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>next_pts <span class="token operator">!=</span> AV_NOPTS_VALUE<span class="token punctuation">)</span>
+                            frame<span class="token operator">-&gt;</span>pts <span class="token operator">=</span> <span class="token function">av_rescale_q</span><span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>next_pts<span class="token punctuation">,</span> d<span class="token operator">-&gt;</span>next_pts_tb<span class="token punctuation">,</span> tb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                        <span class="token keyword">if</span> <span class="token punctuation">(</span>frame<span class="token operator">-&gt;</span>pts <span class="token operator">!=</span> AV_NOPTS_VALUE<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                            <span class="token comment">// 更新下一帧的PTS和时间基</span>
+                            d<span class="token operator">-&gt;</span>next_pts <span class="token operator">=</span> frame<span class="token operator">-&gt;</span>pts <span class="token operator">+</span> frame<span class="token operator">-&gt;</span>nb_samples<span class="token punctuation">;</span>
+                            d<span class="token operator">-&gt;</span>next_pts_tb <span class="token operator">=</span> tb<span class="token punctuation">;</span>
+                        <span class="token punctuation">}</span>
+                    <span class="token punctuation">}</span>
+                    <span class="token punctuation">}</span>
+                    <span class="token keyword">break</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+
+                <span class="token comment">// 处理解码器返回的状态</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">==</span> AVERROR_EOF<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// 遇到文件结束</span>
+                    d<span class="token operator">-&gt;</span>finished <span class="token operator">=</span> d<span class="token operator">-&gt;</span>pkt_serial<span class="token punctuation">;</span>
+                    <span class="token function">avcodec_flush_buffers</span><span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>avctx<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 清理解码器缓存</span>
+                    <span class="token keyword">return</span> <span class="token number">0</span><span class="token punctuation">;</span> <span class="token comment">// 正常结束</span>
+                <span class="token punctuation">}</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">&gt;=</span> <span class="token number">0</span><span class="token punctuation">)</span> <span class="token comment">// 成功解码一帧</span>
+                    <span class="token keyword">return</span> <span class="token number">1</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">while</span> <span class="token punctuation">(</span>ret <span class="token operator">!=</span> <span class="token function">AVERROR</span><span class="token punctuation">(</span>EAGAIN<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 若解码器还需要更多数据则继续</span>
+        <span class="token punctuation">}</span>
+
+        <span class="token comment">// 当前队列无匹配的序列号或需要新数据包时</span>
+        <span class="token keyword">do</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 队列空时通知其他线程可以填充数据</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>queue<span class="token operator">-&gt;</span>nb_packets <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                <span class="token function">SDL_CondSignal</span><span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>empty_queue_cond<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token comment">// 使用待处理的数据包</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>packet_pending<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">av_packet_move_ref</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>pkt<span class="token punctuation">,</span> <span class="token operator">&amp;</span>d<span class="token operator">-&gt;</span>pkt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                d<span class="token operator">-&gt;</span>packet_pending <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token comment">// 从队列获取新的数据包</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">packet_queue_get</span><span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>queue<span class="token punctuation">,</span> <span class="token operator">&amp;</span>pkt<span class="token punctuation">,</span> <span class="token number">1</span><span class="token punctuation">,</span> <span class="token operator">&amp;</span>d<span class="token operator">-&gt;</span>pkt_serial<span class="token punctuation">)</span> <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span>
+                    <span class="token keyword">return</span> <span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span> <span class="token keyword">while</span> <span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>queue<span class="token operator">-&gt;</span>serial <span class="token operator">!=</span> d<span class="token operator">-&gt;</span>pkt_serial<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 确保序列号匹配</span>
+
+        <span class="token comment">// 处理数据包</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>pkt<span class="token punctuation">.</span>data <span class="token operator">==</span> flush_pkt<span class="token punctuation">.</span>data<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span> <span class="token comment">// 刷新包</span>
+            <span class="token function">avcodec_flush_buffers</span><span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>avctx<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 清理解码器状态</span>
+            d<span class="token operator">-&gt;</span>finished <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> <span class="token comment">// 重置结束标记</span>
+            d<span class="token operator">-&gt;</span>next_pts <span class="token operator">=</span> d<span class="token operator">-&gt;</span>start_pts<span class="token punctuation">;</span> <span class="token comment">// 重置PTS</span>
+            d<span class="token operator">-&gt;</span>next_pts_tb <span class="token operator">=</span> d<span class="token operator">-&gt;</span>start_pts_tb<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// 字幕处理</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>avctx<span class="token operator">-&gt;</span>codec_type <span class="token operator">==</span> AVMEDIA_TYPE_SUBTITLE<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">int</span> got_frame <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+                ret <span class="token operator">=</span> <span class="token function">avcodec_decode_subtitle2</span><span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>avctx<span class="token punctuation">,</span> sub<span class="token punctuation">,</span> <span class="token operator">&amp;</span>got_frame<span class="token punctuation">,</span> <span class="token operator">&amp;</span>pkt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span>ret <span class="token operator">&lt;</span> <span class="token number">0</span><span class="token punctuation">)</span> ret <span class="token operator">=</span> <span class="token function">AVERROR</span><span class="token punctuation">(</span>EAGAIN<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token keyword">if</span> <span class="token punctuation">(</span>got_frame <span class="token operator">&amp;&amp;</span> <span class="token operator">!</span>pkt<span class="token punctuation">.</span>data<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                        d<span class="token operator">-&gt;</span>packet_pending <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+                        <span class="token function">av_packet_move_ref</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>d<span class="token operator">-&gt;</span>pkt<span class="token punctuation">,</span> <span class="token operator">&amp;</span>pkt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    <span class="token punctuation">}</span>
+                    ret <span class="token operator">=</span> got_frame <span class="token operator">?</span> <span class="token number">0</span> <span class="token operator">:</span> <span class="token punctuation">(</span>pkt<span class="token punctuation">.</span>data <span class="token operator">?</span> <span class="token function">AVERROR</span><span class="token punctuation">(</span>EAGAIN<span class="token punctuation">)</span> <span class="token operator">:</span> AVERROR_EOF<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token comment">// 非字幕的常规处理</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">avcodec_send_packet</span><span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>avctx<span class="token punctuation">,</span> <span class="token operator">&amp;</span>pkt<span class="token punctuation">)</span> <span class="token operator">==</span> <span class="token function">AVERROR</span><span class="token punctuation">(</span>EAGAIN<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    <span class="token function">av_log</span><span class="token punctuation">(</span>d<span class="token operator">-&gt;</span>avctx<span class="token punctuation">,</span> AV_LOG_ERROR<span class="token punctuation">,</span> <span class="token string">"Receive_frame and send_packet both returned EAGAIN, which is an API violation.\n"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                    d<span class="token operator">-&gt;</span>packet_pending <span class="token operator">=</span> <span class="token number">1</span><span class="token punctuation">;</span>
+                    <span class="token function">av_packet_move_ref</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>d<span class="token operator">-&gt;</span>pkt<span class="token punctuation">,</span> <span class="token operator">&amp;</span>pkt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+            <span class="token punctuation">}</span>
+            <span class="token function">av_packet_unref</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>pkt<span class="token punctuation">)</span><span class="token punctuation">;</span> <span class="token comment">// 释放pkt引用</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/f481e58b42d46b6ebd0e41eede6e89ea/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">基于Spark的电商推荐系统（高分毕设）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/53604d0f518ecf1eb6ad32fa8d0d9959/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">2024年四川省国家大学科技园申报条件对象和支持政策</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Redis解决缓存一致性问题 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/45277b45df8cd2bb7050f2e90e255f0e/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Redis解决缓存一致性问题">
+  <meta property="og:description" content="文章目录 ☃️概述☃️数据库和缓存不一致采用什么方案☃️代码实现☃️其他 ☃️概述 由于我们的 缓存的数据源来自于数据库, 而数据库的 数据是会发生变化的, 因此,如果当数据库中 数据发生变化,而缓存却没有同步, 此时就会有 一致性问题存在, 其后果是:
+用户使用缓存中的过时数据,就会产生类似多线程数据安全问题,从而影响业务,产品口碑等;怎么解决呢？有如下几种方案
+人工编码方式：缓存调用者在更新完数据库后再去更新缓存，也称之为双写方案
+由系统本身完成：数据库与缓存的问题交由系统本身去处理
+调用者只操作缓存：其他线程去异步处理数据库，实现最终一致
+☃️数据库和缓存不一致采用什么方案 综合考虑使用方案一，但是方案一调用者如何处理呢？这里有几个问题
+操作缓存和数据库时有三个问题需要考虑：
+如果采用第一个方案，那么假设我们每次操作数据库后，都操作缓存，但是中间如果没有人查询，那么这个更新动作实际上只有最后一次生效，中间的更新动作意义并不大，我们可以把缓存删除，等待再次查询时，将缓存中的数据加载出来
+删除缓存还是更新缓存？
+更新缓存：每次更新数据库都更新缓存，无效写操作较多删除缓存：更新数据库时让缓存失效，查询时再更新缓存 如何保证缓存与数据库的操作的同时成功或失败？
+单体系统，将缓存与数据库操作放在一个事务分布式系统，利用TCC等分布式事务方案 应该具体操作缓存还是操作数据库，我们应当是先操作数据库，再删除缓存，原因在于，如果你选择第一种方案，在两个线程并发来访问时，假设线程1先来，他先把缓存删了，此时线程2过来，他查询缓存数据并不存在，此时他写入缓存，当他写入缓存后，线程1再执行更新动作时，实际上写入的就是旧的数据，新的数据被旧数据覆盖了。
+先操作缓存还是先操作数据库？ 先删除缓存，再操作数据库先操作数据库，再删除缓存 ☃️代码实现 根据id查询数据时，如果缓存未命中，则查询数据库，将数据库结果写入缓存，并设置超时时间
+根据id修改数据时，先修改数据库，再删除缓存
+@Transactionl public Result update(){ //	执行更新逻辑 //	删除缓存 } ☃️其他 要保证数据库和Redis缓存之间的一致性，可以采用以下策略：
+缓存-旁路（Cache-Aside，Lazy Loading）：在这种方式中，应用程序首先检查缓存中是否存在所需数据。如果缓存中存在数据，则直接返回给应用程序。如果缓存中不存在数据，则从数据库中获取，然后将数据存储到缓存中以备后续请求使用。为了保持一致性，当数据库中的数据更新时，你需要显式地使缓存中对应的数据失效或更新，可以在数据库更新后立即删除或更新缓存中的数据。
+读写-通过（Read-Through，Write-Through）：在这种模式下，应用程序同时向数据库和缓存读写数据。当数据库中的数据更新时，缓存中的数据也会同时更新。同样，当从缓存中读取数据时，如果不存在，就从数据库中获取，然后再存储到缓存中。这确保了数据库和缓存的数据保持一致。
+写入-通过（Write-Through）：类似于读写-通过，但在这种方法中，当数据写入数据库时，也会立即写入缓存。然而，读取操作仍然是从缓存中进行。这有助于减少缓存未命中的次数。
+缓存失效（Cache Invalidation）：不是在每次数据库更新时都更新缓存，你可以选择使受影响的数据缓存失效。这意味着从缓存中删除过期的数据，这样下一次读取操作将从数据库中获取最新的数据。缓存失效可以通过应用程序中的触发器或事件来实现，它们检测数据库中的更改，然后通知缓存使相应的数据失效。
+生存时间（Time-To-Live，TTL）：你可以为缓存的数据设置过期时间。这样即使数据库发生了更新，缓存也会在一定时间后过期，然后重新从数据库获取新鲜数据。
+通过采用这些策略中的一种或多种组合，你可以在应用程序中保持数据库和Redis缓存之间的一致性。每种方法都有其复杂性、性能和一致性保证方面的权衡，所以选择最适合你应用需求的策略即可。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-28T14:45:00+08:00">
+    <meta property="article:modified_time" content="2024-05-28T14:45:00+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Redis解决缓存一致性问题</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_12" rel="nofollow">☃️概述</a></li><li><a href="#_27" rel="nofollow">☃️数据库和缓存不一致采用什么方案</a></li><li><a href="#_58" rel="nofollow">☃️代码实现</a></li><li><a href="#_76" rel="nofollow">☃️其他</a></li></ul> 
+</div> 
+<br> 
+<br> 
+<p></p> 
+<p><img src="https://images2.imgbox.com/73/28/T3sgULAG_o.gif" alt="在这里插入图片描述"><br> <br></p> 
+<p><img src="https://images2.imgbox.com/70/3e/ON1VNu7b_o.jpg" alt="在这里插入图片描述"></p> 
+<br> 
+<h2><a id="_12"></a>☃️概述</h2> 
+<p>由于我们的 <strong>缓存的数据源来自于数据库</strong>, 而数据库的 <strong>数据是会发生变化的</strong>, 因此,如果当数据库中 <strong>数据发生变化,而缓存却没有同步</strong>, 此时就会有 <strong>一致性问题存在</strong>, 其后果是:</p> 
+<p>用户使用缓存中的过时数据,就会产生类似多线程数据安全问题,从而影响业务,产品口碑等;怎么解决呢？有如下几种方案</p> 
+<p><mark>人工编码方式</mark>：缓存调用者在更新完数据库后再去更新缓存，也称之为双写方案</p> 
+<p><mark>由系统本身完成</mark>：数据库与缓存的问题交由系统本身去处理</p> 
+<p><mark>调用者只操作缓存</mark>：其他线程去异步处理数据库，实现最终一致</p> 
+<br> 
+<h2><a id="_27"></a>☃️数据库和缓存不一致采用什么方案</h2> 
+<p>综合考虑使用方案一，但是方案一调用者如何处理呢？这里有几个问题</p> 
+<p>操作缓存和数据库时有三个问题需要考虑：</p> 
+<p>如果采用第一个方案，那么假设我们每次操作数据库后，都操作缓存，但是中间如果没有人查询，那么这个更新动作实际上只有最后一次生效，中间的更新动作意义并不大，我们可以把缓存删除，等待再次查询时，将缓存中的数据加载出来</p> 
+<ul><li> <p>删除缓存还是更新缓存？</p> 
+  <ul><li>更新缓存：每次更新数据库都更新缓存，无效写操作较多</li><li>删除缓存：更新数据库时让缓存失效，查询时再更新缓存</li></ul> </li><li> <p>如何保证缓存与数据库的操作的同时成功或失败？</p> 
+  <ul><li>单体系统，将缓存与数据库操作放在一个事务</li><li>分布式系统，利用TCC等分布式事务方案</li></ul> </li></ul> 
+<p>应该具体操作缓存还是操作数据库，我们应当是先操作数据库，再删除缓存，原因在于，如果你选择第一种方案，在两个线程并发来访问时，假设线程1先来，他先把缓存删了，此时线程2过来，他查询缓存数据并不存在，此时他写入缓存，当他写入缓存后，线程1再执行更新动作时，实际上写入的就是旧的数据，新的数据被旧数据覆盖了。</p> 
+<ul><li>先操作缓存还是先操作数据库？ 
+  <ul><li>先删除缓存，再操作数据库</li><li>先操作数据库，再删除缓存</li></ul> </li></ul> 
+<p><img src="https://images2.imgbox.com/83/47/ZZ2ZkExl_o.png" alt="在这里插入图片描述"></p> 
+<br> 
+<h2><a id="_58"></a>☃️代码实现</h2> 
+<p>根据id查询数据时，如果缓存未命中，则查询数据库，将数据库结果写入缓存，并设置超时时间</p> 
+<p>根据id修改数据时，先修改数据库，再删除缓存</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Transactionl</span>
+<span class="token keyword">public</span> <span class="token class-name">Result</span> <span class="token function">update</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+<span class="token comment">//	执行更新逻辑</span>
+
+
+<span class="token comment">//	删除缓存</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<br> 
+<h2><a id="_76"></a>☃️其他</h2> 
+<p>要保证数据库和Redis缓存之间的一致性，可以采用以下策略：</p> 
+<ul><li> <p>缓存-旁路（Cache-Aside，Lazy Loading）：在这种方式中，应用程序首先检查缓存中是否存在所需数据。如果缓存中存在数据，则直接返回给应用程序。如果缓存中不存在数据，则从数据库中获取，然后将数据存储到缓存中以备后续请求使用。为了保持一致性，当数据库中的数据更新时，你需要显式地使缓存中对应的数据失效或更新，可以在数据库更新后立即删除或更新缓存中的数据。</p> </li><li> <p>读写-通过（Read-Through，Write-Through）：在这种模式下，应用程序同时向数据库和缓存读写数据。当数据库中的数据更新时，缓存中的数据也会同时更新。同样，当从缓存中读取数据时，如果不存在，就从数据库中获取，然后再存储到缓存中。这确保了数据库和缓存的数据保持一致。</p> </li><li> <p>写入-通过（Write-Through）：类似于读写-通过，但在这种方法中，当数据写入数据库时，也会立即写入缓存。然而，读取操作仍然是从缓存中进行。这有助于减少缓存未命中的次数。</p> </li><li> <p>缓存失效（Cache Invalidation）：不是在每次数据库更新时都更新缓存，你可以选择使受影响的数据缓存失效。这意味着从缓存中删除过期的数据，这样下一次读取操作将从数据库中获取最新的数据。缓存失效可以通过应用程序中的触发器或事件来实现，它们检测数据库中的更改，然后通知缓存使相应的数据失效。</p> </li><li> <p>生存时间（Time-To-Live，TTL）：你可以为缓存的数据设置过期时间。这样即使数据库发生了更新，缓存也会在一定时间后过期，然后重新从数据库获取新鲜数据。</p> </li></ul> 
+<p>通过采用这些策略中的一种或多种组合，你可以在应用程序中保持数据库和Redis缓存之间的一致性。每种方法都有其复杂性、性能和一致性保证方面的权衡，所以选择最适合你应用需求的策略即可。</p> 
+<p><img src="https://images2.imgbox.com/4c/9b/GvPVUakN_o.gif" alt="在这里插入图片描述"></p> 
+<br> 
+<br>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/21ad83f6034080d0494b029a58cb2882/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">使用selenium打开浏览器之后，有浏览器内部的提示设置默认浏览器等，怎么屏蔽或关闭这些提示</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/1709d8da3e9c9884cc9a51a726e30c05/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Flink CDC - Postgres</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

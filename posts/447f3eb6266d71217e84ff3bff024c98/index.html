@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Linux内核中的锁 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/447f3eb6266d71217e84ff3bff024c98/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Linux内核中的锁">
+  <meta property="og:description" content="不同的锁，作用对象是不一样的，也就是作用域不一样
+下面分别是作用于临界区、CPU、内存、cache 的各种锁的归纳：
+补充：cache是一种缓存，包含硬件缓存（CPU缓存）以及软件缓存（网页缓存，数据缓存）
+补充：临界区用于描述一段只能被单个线程或进程在同一时间访问的代码区域。通常，这些代码区域涉及对共享资源的访问
+临界区 -&gt; semaphore信号量、Mutex互斥锁、rw-lock读写锁、preempt抢占
+CPU -&gt; atomic原子变量、spinlock自旋锁
+内存 -&gt; RCU 、Memory Barrier
+cache -&gt; Per-CPU
+一、atomic原子变量/spinlock自旋锁 — —CPU 既然是锁CPU，那就都是针对多核处理器或多CPU处理器。单核的话，只有发生中断会使任务被抢占，那么可以进入临界区之前先关中断，但是对多核CPU光关中断就不够了，因为对当前CPU关了中断只能使得当前CPU不会运行其它要进入临界区的程序，但其它CPU还是可能执行进入临界区的程序。
+(1) atomic原子变量：
+所谓原子操作, 就是该操作绝不会在执行完毕前被任何其他任务或事件打断, 也就说, 它是最小的执行单位, 不可能有比它更小的执行单位, 因此这里的原子实际是使用了物理学里的物质微粒的概念。原子操作需要硬件的支持, 因此是架构相关的, 其 API 和原子类型的定义都定义在内核源码树的 include/asm/atomic.h 文件中, 它们都使用汇编语言实现, 因为 C 语言并不能实现这样的操作。原子操作主要用于实现资源计数, 很多引用计数 (refcnt) 就是通过原子操作实现的。
+(2) spinlock自旋锁：
+当一个线程在获取锁的时候，如果锁已经被其它线程获取，那么该线程将循环等待，然后不断的判断锁是否能够被成功获取
+#include &lt;linux/spinlock.h&gt; // 定义自旋锁 spinlock_t my_lock; void my_function(void) { spin_lock(&amp;my_lock); // 访问共享资源的操作 spin_unlock(&amp;my_lock); } ps:针对上述进行一些重要问题的阐述，如下所示
+互斥锁中，要是当前线程没拿到锁，就会出让CPU；而自旋锁中，要是当前线程没有拿到锁，当前线程在CPU上忙等待直到锁可用，这是为了保证响应速度更快。但是这种线程多了，那意味着多个CPU核都在忙等待，使得系统性能下降。
+因此一定不能自旋太久，所以用户态编程里用自旋锁保护临界区的话，这个临界区一定要尽可能小，锁的粒度得尽可能小。
+为什么自旋锁的响应速度会比互斥锁更快？
+我觉得主要还是作用域的问题 spinlock 主要针对CPU 互斥锁针对作用域 前者直接CPU操作 后者需要内核协助 在小林coding中说到，自旋锁是通过 CPU 提供的 CAS 函数（Compare And Swap），在「用户态」完成加锁和解锁操作，不会主动产生线程上下文切换，所以相比互斥锁来说，会快一些，开销也小一些。 而互斥锁则不是，前面说互斥锁加锁失败，线程会出让CPU，这个过程其实是由内核来完成线程切换的，因此加锁失败时，1）首先从用户态切换至内核态，内核会把线程的状态从「运行」状态设置为「睡眠」状态，然后把 CPU 切换给其他线程运行；2）当互斥锁可用时，之前「睡眠」状态的线程会变为「就绪」状态（要进入就绪队列了），之后内核会在合适的时间，把 CPU 切换给该线程运行。 然后返回用户态。这个过程中，不仅有用户态到内核态的切换开销，还有两次线程上下文切换的开销。 线程的上下文切换主要是线程栈、寄存器、线程局部变量等。 而自旋锁在当前线程获取锁失败时不会进行线程的切换，而是一直循环等待直到获取锁成功。因此，自旋锁不会切换至内核态，也没有线程切换开销。 所以如果这个锁被占有的时间很短，或者说各个线程对临界区是快进快出，那么用自旋锁是开销最小的！ 自旋锁的缺点前面也说了，就是如果自旋久了或者自旋的线程数量多了，CPU的利用率就下降了，因为上面执行的每个线程都在忙等待— —占用了CPU但什么事都没做。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-15T19:01:31+08:00">
+    <meta property="article:modified_time" content="2024-06-15T19:01:31+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Linux内核中的锁</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>不同的锁，作用对象是不一样的，也就是作用域不一样<br><strong>下面分别是作用于<code>临界区</code>、<code>CPU</code>、<code>内存</code>、<code>cache</code> 的各种锁的归纳：</strong><br> 补充：cache是一种缓存，包含硬件缓存（CPU缓存）以及软件缓存（网页缓存，数据缓存）<br> 补充：临界区用于描述<strong>一段只能被单个线程或进程在同一时间访问的代码区域</strong>。通常，这些代码区域涉及对共享资源的访问<br><strong>临界区 -&gt; semaphore信号量、Mutex互斥锁、rw-lock读写锁、preempt抢占<br> CPU -&gt; atomic原子变量、spinlock自旋锁<br> 内存 -&gt; RCU 、Memory Barrier<br> cache -&gt; Per-CPU</strong></p> 
+<h5>一、atomic原子变量/spinlock自旋锁 — —CPU</h5> 
+<p>既然是<strong>锁CPU</strong>，<strong>那就都是针对多核处理器或多CPU处理器</strong>。单核的话，只有发生中断会使任务被抢占，那么可以进入临界区之前先关中断，但是对多核CPU光关中断就不够了，因为对当前CPU关了中断只能使得当前CPU不会运行其它要进入临界区的程序，但其它CPU还是可能执行进入临界区的程序。</p> 
+<p><strong>(1) atomic原子变量：<br> 所谓原子操作, 就是该操作绝不会在执行完毕前被任何其他任务或事件打断</strong>, 也就说, <strong>它是最小的执行单位, 不可能有比它更小的执行单位</strong>, 因此这里的原子实际是使用了物理学里的物质微粒的概念。原子操作需要<strong>硬件的支持</strong>, 因此是架构相关的, 其 API 和原子类型的定义都定义在内核源码树的 include/asm/atomic.h 文件中, <strong>它们都使用汇编语言实现, 因为 C 语言并不能实现这样的操作。原子操作主要用于实现资源计数, 很多引用计数 (refcnt) 就是通过原子操作实现的。<br> (2) spinlock自旋锁：</strong><br> 当一个线程在获取锁的时候，如果锁已经被其它线程获取，那么该线程将<strong>循环等待</strong>，<strong>然后不断的判断锁是否能够被成功获取</strong></p> 
+<pre><code class="language-cpp">#include &lt;linux/spinlock.h&gt;
+// 定义自旋锁
+spinlock_t my_lock;
+void my_function(void)
+{
+    spin_lock(&amp;my_lock);
+    // 访问共享资源的操作
+    spin_unlock(&amp;my_lock);
+}</code></pre> 
+<p>ps:针对上述进行一些重要问题的阐述，如下所示</p> 
+<p><u>互斥锁中，要是当前线程没拿到锁，就会出让CPU；而自旋锁中，要是当前线程没有拿到锁，当前线程在CPU上忙等待直到锁可用</u>，这是为了保证响应速度更快。<u>但是这种线程多了，那意味着多个CPU核都在忙等待，使得系统性能下降。</u></p> 
+<p><u>因此一定不能自旋太久</u>，所以用户态编程里用自旋锁保护临界区的话，这个临界区一定要尽可能小，锁的粒度得尽可能小。</p> 
+<p>为什么自旋锁的响应速度会比互斥锁更快？</p> 
+<p><strong>我觉得主要还是作用域的问题 spinlock 主要针对CPU 互斥锁针对作用域 前者直接CPU操作 后者需要内核协助</strong> 在小林coding中说到，<strong>自旋锁是通过 CPU</strong> 提供的 CAS 函数（Compare And Swap），在「用户态」完成加锁和解锁操作，<strong>不会主动产生线程上下文切换</strong>，所以相比互斥锁来说，<strong>会快一些，开销也小一些</strong>。 而互斥锁则不是，前面说互斥锁加锁失败，线程会出让CPU，<strong>这个过程其实是由内核来完成线程切换的</strong>，因此加锁失败时，1）首先从用户态切换至内核态，内核会把线程的状态从「运行」状态设置为「睡眠」状态，然后把 CPU 切换给其他线程运行；2）当互斥锁可用时，之前「睡眠」状态的线程会变为「就绪」状态（要进入就绪队列了），之后内核会在合适的时间，把 CPU 切换给该线程运行。 然后返回用户态。<strong>这个过程中，不仅有用户态到内核态的切换开销，还有两次线程上下文切换的开销。</strong> 线程的上下文切换主要是线程栈、寄存器、线程局部变量等。 <strong>而自旋锁在当前线程获取锁失败时不会进行线程的切换，而是一直循环等待直到获取锁成功。因此，自旋锁不会切换至内核态，也没有线程切换开销。</strong> 所以如果这个锁被占有的时间很短，或者说各个线程对临界区是快进快出，那么用自旋锁是开销最小的！ 自旋锁的缺点前面也说了，就是如果自旋久了或者自旋的线程数量多了，CPU的利用率就下降了，因为上面执行的每个线程都在忙等待— —占用了CPU但什么事都没做。</p> 
+<p></p> 
+<h5>二、信号量/互斥锁 读写锁/抢占 — —临界区</h5> 
+<p><strong>(1) semaphore信号量</strong></p> 
+<p><u>其实跟FreeRTOS的信号量很像很像！！但是RTOS得信号量是队列的变种，而linux下的信号量是利用spinlock的保护</u></p> 
+<p>信号量（信号灯）本质是一个计数器，是描述临界区中可用资源数目的计数器。</p> 
+<p>信号量进行多线程通信编程的时候，往往初始化信号量为0，然后用两个函数做线程间同步： sem_wait()：<strong>等待信号量</strong>，如果信号量的值大于0,将信号量的值减1,立即返回。 如果信号量的值为0,则线程阻塞。 sem_post()：<strong>释放资源</strong>，信号量+1 ，相当于unlock，这样执行了sem_wait()的线程就不阻塞了。</p> 
+<p><strong>要注意：信号量本身也是个共享资源，它的++操作（释放资源）和--操作（获取资源）也需要保护。其实就是用的自旋锁保护的。如果有中断的话，会把中断保存到eflags寄存器，待操作完成，就去该寄存器上读取，然后执行中断。</strong></p> 
+<p></p> 
+<p><strong>(2) Mutex互斥锁</strong></p> 
+<p><u>互斥锁中，要是当前线程没拿到锁，就会出让CPU；而自旋锁中，要是当前线程没有拿到锁，当前线程在CPU上忙等待直到锁可用</u></p> 
+<p>信号量的话表示可用资源的数量，是允许多个进程/线程在临界区的。但是互斥锁不是，<strong>它的目的就是<code>只让一个线程</code>进入临界区</strong>，其余线程没拿到锁，就只能阻塞等待。线程互斥的进入临界区，这就是互斥锁名字由来。</p> 
+<p>另外提一下std::timed_mutex睡眠锁，它和互斥锁的区别是： 互斥锁中，没拿到锁的线程就一直阻塞等待，而睡眠锁则是设置一定的睡眠时间比如2s，线程睡眠2s，如果过了之后还没拿到锁，那就放弃拿锁（可以输出获取锁失败），如果拿到了，那就继续做事。比如 用成员函数try_lock_for()</p> 
+<pre><code class="language-cpp">std::timed_mutex g_mutex;
+//先睡2s再去抢锁
+if(g_mutex.try_lock_for(std::chrono::seconds(2)))){
+	// do something
+}
+else{
+	// 没抢到
+	std::cout&lt;&lt;"获取锁失败";
+}</code></pre> 
+<p><strong>(3) rw-lock读写锁</strong></p> 
+<p>用于读操作比写操作更频繁的场景，<code>让读和写分开加锁</code>，这样可以减小锁的粒度，提高程序的性能。 它允许多个线程同时读取共享资源，但只允许一个线程写入共享资源。这可以提高并发性能，因为读操作通常比写操作频繁得多。读写锁这种就属于高阶锁了，它的实现就可以用自旋锁。</p> 
+<p></p> 
+<p><strong>(4) preempt抢占</strong></p> 
+<p>抢占必须涉及<strong>进程</strong>上下文的切换，而中断则是涉及<strong>中断</strong>上下文的切换。 内核从2.6开始就支持内核抢占，之前的内核不支持抢占，只要进程在占用CPU且时间片没用完，除非有中断，否则它就能一直占用CPU； <strong>抢占的情况：</strong> 比如某个优先级高的任务（进程），因为需要等待资源，就主动让出CPU（又或者因为中断被打断了），然后低优先级的任务先占用CPU，当资源到了，内核就让该优先级高的任务抢占那个正在CPU上跑的任务。也就是说，当前的优先级低的进程跑着跑着，时间片没用完，也没发生中断，但是自己被踢掉了。 为了支持内核抢占，内核引入了preempt_count字段，该计数初始值为0，每当使用锁时+1，释放锁时-1。当preempt_count为0时，表示内核可以安全的抢占，大于0时，则禁止内核抢占</p> 
+<p>Per-CPU— —作用于cache per-cpu变量用于解决各个CPU里L2 cache和内存间的数据不一致性。</p> 
+<p></p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/786f36d071a2669b18df1347a2ef48af/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">BBS (CUTE): 1.0.2</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f51dbe8bf07152cb27cad9670b64f149/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Spark RDD与算子详解:案例解析(第3天）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

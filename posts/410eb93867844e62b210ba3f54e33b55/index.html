@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>眼见不一定为实之MySQL中的不可见字符 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/410eb93867844e62b210ba3f54e33b55/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="眼见不一定为实之MySQL中的不可见字符">
+  <meta property="og:description" content="目录
+前言
+一、问题的由来
+1、需求背景
+2、数据表结构
+二、定位问题
+1、初步的问题
+2、编码是否有问题
+3、依然回到字符本身
+三、深入字符本身
+1、回归本质
+2、数据库解决之道
+3、代码层解决
+四、总结
+前言 在开始今天的博客内容之前，正在看博客的您先来看看以下这两条sql，如果您刚好还有MySQL的环境。不妨先猜测一下它输出的内容，然后看看是否有什么区别？第一条sql如下：
+select length(&#39;G30L3B01&#39;) as l1; 接着再来看另一条sql，sql脚本如下：
+select length(&#39;G30L3﻿B01&#39;) as l2; 各位不妨猜测一下，上面两条sql语句的执行结果l1和l2分别是多少？是不是在你的预料之中。 这里不卖关子了，相信执行过sql的朋友一定看到了结果。没有数据库客户端的朋友来看我的执行结果。在给出结果之前，首先把基础环境介绍一下。这里的服务器用的的个人的Windows 7 专业版开发机，数据库服务用的是MySQL5.7，打开的查询服务窗口所在的数据库编码是UTF-8。
+上面这个结果有没有超出你的预想，这两个字符串“看”起来似乎是一模一样的。这里的“看”我打了引号，至于原因，后面会讲到。本文即以上述场景为例，讲解在MySQL中，为什么会有这种“看”起来一致，但实际上不一样的问题，通过现象找本质，通过一步一步的排查，找到问题的根源，最后在寻根溯源后，找解决的办法；从应用代码编程的角度和底层数据库的角度来解决上述问题。如果您现在也遇到了这种“看”起来不正常的值，不妨一起交流一下。
+一、问题的由来 首先依然要介绍一下上述问题的出现场景，以便于其它的朋友在此情此景下，有更大的印象。因此本节首先将对问题的场景进行详细的描述。这里打算从两个方面讲述，第一个方面是讲述需求背景，即在什么情况下作这个事。第二个是讲述数据背景，把相关的表设计也说明一下。
+1、需求背景 事情发生的背景是这样的，客户要求我们做一个功能，他们会提供一个数据的Excel模板，然后我们需要将这些数据批量导入到数据库中。这个需求咋一看起来，是一个非常简单的需求啊。读取Excel的依赖库，一大把。解析Excel的数据，然后批量插入到数据库中，对于MybatisPlus或者其它的ORM工具都是非常简单的事。当时我们选择的是阿里巴巴开源的读取Excel的组件。感兴趣的朋友可以自己上github搜索一下。然后也基于组件也已经将Excel没个表格都读取到了内存中，然后调用MP的批量插入方法，意外的是在进行批量插入的时候数据库报错了。下面还是将数据库的表先做一个介绍。
+2、数据表结构 为了实现将数据导入到数据库中，根据面向对象的原则，我们将Excel表格中的每个单元格都设计成了一个字段，然后对字段的数据类型进行了设计，同时包括数据长度。其中有一个项是输入数据的编码，然后用户是有编码规则的，每一个数据都有一个对应的编码规则。我们简单的看了他们的编码规则，得知其长度大致为8位，因此我们在数据库中设计成了varchar(8)；这么设计其实是中规中矩的，非常合理。然而在上面的批量入库过程中就一直报对应的这个字段too long。这个异常看起来很奇怪，因为我们人工去“看”的时候，这个字符串的长度确实是8。于是陷入了沉思。
+二、定位问题 既然在开发过程当中出现了问题，那么如何解决问题呢？在解决问题之前，首先要定位问题，只有正确的定位问题，才能对症下药，问题才能迎刃而解。因此本节将重点讲解怎么定位问题。
+1、初步的问题 当看到上面问题的时候，第一感觉是懵的，刚开始都有点不敢相信自己的眼睛。因为肉眼根本“看”不出来这个字符串居然不是8位。最开始怀疑的是在字符串的前后可能存在空格，因此导致了其长度超出了8位。为此我们将数据进行去空，使用sql进行去空如下：
+SELECT length(&#39;G30L3B01&#39;) AS VisibleLength, length(replace(&#39;G30L3﻿B01&#39;, &#39;​&#39;, &#39;&#39;)) AS CleanLength; 然后发现还是不对，经过替换后其长度还是11，说明还是超长了。 2、编码是否有问题 在进行空字符过滤之后还是没有解决问题。于是换了一个方向，想着有没有可能是字符集的问题。其实大家可以看看UTF-8的字符集规范，字符集虽然会有一定的影响，但是这里存储的都是英文和数字，其长度均是标准的1，因此不存在字符的问题。问题一下子没有了方向，不知道往哪个方面去排查。
+3、依然回到字符本身 在第一次尝试了空字符替换无果，又排除了字符编码的问题后，再一次将目光投入到字符本身。这一次的想法是，虽然空字符本文替换后，长度还是11，但是这并不说明其内容一定是空格。有没有什么其它的东西在捣乱呢。有时候找问题就是这样，反反复复。
+三、深入字符本身 上面从几个方面分析了可能存在的问题，尤其是第三点，我们从最开的字符又回到了起点。那么这次采用什么分析思路呢？本小节深入道来。
+1、回归本质 为了来看看这个数据到底是什么？我们将字符串转为十六进制的字符串，通过比较原始字符串来看看区别。在MySQL中可以使用HEX(str)实现转换。相关的转换SQL如下所示：
+SELECT HEX(&#39;G30L3B01&#39;) AS hex_representation,HEX(&#39;G30L3﻿B01&#39;) as n2; hex_representation	n2 4733304C33423031	4733304C33EFBBBF423031 不知道眼尖的你发现了问题没有，上面这条SQL执行完之后发现，其目标字符串似乎不一样啊。后面的字符串，也就是有问题的字符串其长度真的超长了。下面仔细对比这两个字符串。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-20T21:02:49+08:00">
+    <meta property="article:modified_time" content="2024-06-20T21:02:49+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">眼见不一定为实之MySQL中的不可见字符</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3><a id="AI_0"></a></h3> 
+<p id="main-toc"><strong>目录</strong></p> 
+<p id="-toc" style="margin-left:40px;"></p> 
+<p id="%E5%89%8D%E8%A8%80-toc" style="margin-left:40px;"><a href="#%E5%89%8D%E8%A8%80" rel="nofollow">前言</a></p> 
+<p id="%E4%B8%80%E3%80%81%E9%97%AE%E9%A2%98%E7%9A%84%E7%94%B1%E6%9D%A5-toc" style="margin-left:0px;"><a href="#%E4%B8%80%E3%80%81%E9%97%AE%E9%A2%98%E7%9A%84%E7%94%B1%E6%9D%A5" rel="nofollow">一、问题的由来</a></p> 
+<p id="1%E3%80%81%E9%9C%80%E6%B1%82%E8%83%8C%E6%99%AF-toc" style="margin-left:40px;"><a href="#1%E3%80%81%E9%9C%80%E6%B1%82%E8%83%8C%E6%99%AF" rel="nofollow">1、需求背景</a></p> 
+<p id="2%E3%80%81%E6%95%B0%E6%8D%AE%E8%A1%A8%E7%BB%93%E6%9E%84-toc" style="margin-left:40px;"><a href="#2%E3%80%81%E6%95%B0%E6%8D%AE%E8%A1%A8%E7%BB%93%E6%9E%84" rel="nofollow">2、数据表结构</a></p> 
+<p id="%E4%BA%8C%E3%80%81%E5%AE%9A%E4%BD%8D%E9%97%AE%E9%A2%98-toc" style="margin-left:0px;"><a href="#%E4%BA%8C%E3%80%81%E5%AE%9A%E4%BD%8D%E9%97%AE%E9%A2%98" rel="nofollow">二、定位问题</a></p> 
+<p id="1%E3%80%81%E5%88%9D%E6%AD%A5%E7%9A%84%E9%97%AE%E9%A2%98-toc" style="margin-left:40px;"><a href="#1%E3%80%81%E5%88%9D%E6%AD%A5%E7%9A%84%E9%97%AE%E9%A2%98" rel="nofollow">1、初步的问题</a></p> 
+<p id="2%E3%80%81%E7%BC%96%E7%A0%81%E6%98%AF%E5%90%A6%E6%9C%89%E9%97%AE%E9%A2%98-toc" style="margin-left:40px;"><a href="#2%E3%80%81%E7%BC%96%E7%A0%81%E6%98%AF%E5%90%A6%E6%9C%89%E9%97%AE%E9%A2%98" rel="nofollow">2、编码是否有问题</a></p> 
+<p id="3%E3%80%81%E4%BE%9D%E7%84%B6%E5%9B%9E%E5%88%B0%E5%AD%97%E7%AC%A6%E6%9C%AC%E8%BA%AB-toc" style="margin-left:40px;"><a href="#3%E3%80%81%E4%BE%9D%E7%84%B6%E5%9B%9E%E5%88%B0%E5%AD%97%E7%AC%A6%E6%9C%AC%E8%BA%AB" rel="nofollow">3、依然回到字符本身</a></p> 
+<p id="%E4%B8%89%E3%80%81%E6%B7%B1%E5%85%A5%E5%AD%97%E7%AC%A6%E6%9C%AC%E8%BA%AB-toc" style="margin-left:0px;"><a href="#%E4%B8%89%E3%80%81%E6%B7%B1%E5%85%A5%E5%AD%97%E7%AC%A6%E6%9C%AC%E8%BA%AB" rel="nofollow">三、深入字符本身</a></p> 
+<p id="1%E3%80%81%E5%9B%9E%E5%BD%92%E6%9C%AC%E8%B4%A8-toc" style="margin-left:40px;"><a href="#1%E3%80%81%E5%9B%9E%E5%BD%92%E6%9C%AC%E8%B4%A8" rel="nofollow">1、回归本质</a></p> 
+<p id="2%E3%80%81%E6%95%B0%E6%8D%AE%E5%BA%93%E8%A7%A3%E5%86%B3%E4%B9%8B%E9%81%93-toc" style="margin-left:40px;"><a href="#2%E3%80%81%E6%95%B0%E6%8D%AE%E5%BA%93%E8%A7%A3%E5%86%B3%E4%B9%8B%E9%81%93" rel="nofollow">2、数据库解决之道</a></p> 
+<p id="3%E3%80%81%E4%BB%A3%E7%A0%81%E5%B1%82%E8%A7%A3%E5%86%B3-toc" style="margin-left:40px;"><a href="#3%E3%80%81%E4%BB%A3%E7%A0%81%E5%B1%82%E8%A7%A3%E5%86%B3" rel="nofollow">3、代码层解决</a></p> 
+<p id="%E5%9B%9B%E3%80%81%E6%80%BB%E7%BB%93-toc" style="margin-left:0px;"><a href="#%E5%9B%9B%E3%80%81%E6%80%BB%E7%BB%93" rel="nofollow">四、总结</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h3 id="%E5%89%8D%E8%A8%80">前言</h3> 
+<p>        在开始今天的博客内容之前，正在看博客的您先来看看以下这两条sql，如果您刚好还有MySQL的环境。不妨先猜测一下它输出的内容，然后看看是否有什么区别？第一条sql如下：</p> 
+<pre><code class="language-sql">select length('G30L3B01') as l1;</code></pre> 
+<p>        接着再来看另一条sql，sql脚本如下：</p> 
+<pre><code class="language-sql">select length('G30L3﻿B01') as l2;</code></pre> 
+<p>        各位不妨猜测一下，上面两条sql语句的执行结果l1和l2分别是多少？是不是在你的预料之中。 这里不卖关子了，相信执行过sql的朋友一定看到了结果。没有数据库客户端的朋友来看我的执行结果。在给出结果之前，首先把基础环境介绍一下。这里的服务器用的的个人的Windows 7 专业版开发机，数据库服务用的是MySQL5.7，打开的查询服务窗口所在的数据库编码是UTF-8。</p> 
+<p class="img-center"><img alt="" height="198" src="https://images2.imgbox.com/d0/e5/luYaoDHT_o.png" width="641"></p> 
+<p>         上面这个结果有没有超出你的预想，这两个字符串“看”起来似乎是一模一样的。这里的“看”我打了引号，至于原因，后面会讲到。本文即以上述场景为例，讲解在MySQL中，为什么会有这种“看”起来一致，但实际上不一样的问题，通过现象找本质，通过一步一步的排查，找到问题的根源，最后在寻根溯源后，找解决的办法；从应用代码编程的角度和底层数据库的角度来解决上述问题。如果您现在也遇到了这种“看”起来不正常的值，不妨一起交流一下。</p> 
+<h2 id="%E4%B8%80%E3%80%81%E9%97%AE%E9%A2%98%E7%9A%84%E7%94%B1%E6%9D%A5">一、问题的由来</h2> 
+<p>        首先依然要介绍一下上述问题的出现场景，以便于其它的朋友在此情此景下，有更大的印象。因此本节首先将对问题的场景进行详细的描述。这里打算从两个方面讲述，第一个方面是讲述需求背景，即在什么情况下作这个事。第二个是讲述数据背景，把相关的表设计也说明一下。</p> 
+<h3 id="1%E3%80%81%E9%9C%80%E6%B1%82%E8%83%8C%E6%99%AF">1、需求背景</h3> 
+<p>        事情发生的背景是这样的，客户要求我们做一个功能，他们会提供一个数据的Excel模板，然后我们需要将这些数据批量导入到数据库中。这个需求咋一看起来，是一个非常简单的需求啊。读取Excel的依赖库，一大把。解析Excel的数据，然后批量插入到数据库中，对于MybatisPlus或者其它的ORM工具都是非常简单的事。当时我们选择的是阿里巴巴开源的读取Excel的组件。感兴趣的朋友可以自己上github搜索一下。然后也基于组件也已经将Excel没个表格都读取到了内存中，然后调用MP的批量插入方法，意外的是在进行批量插入的时候数据库报错了。下面还是将数据库的表先做一个介绍。</p> 
+<h3 id="2%E3%80%81%E6%95%B0%E6%8D%AE%E8%A1%A8%E7%BB%93%E6%9E%84">2、数据表结构</h3> 
+<p>        为了实现将数据导入到数据库中，根据面向对象的原则，我们将Excel表格中的每个单元格都设计成了一个字段，然后对字段的数据类型进行了设计，同时包括数据长度。其中有一个项是输入数据的编码，然后用户是有编码规则的，每一个数据都有一个对应的编码规则。我们简单的看了他们的编码规则，得知其长度大致为8位，因此我们在数据库中设计成了varchar(8)；这么设计其实是中规中矩的，非常合理。然而在上面的批量入库过程中就一直报对应的这个字段too long。这个异常看起来很奇怪，因为我们人工去“看”的时候，这个字符串的长度确实是8。于是陷入了沉思。</p> 
+<h2 id="%E4%BA%8C%E3%80%81%E5%AE%9A%E4%BD%8D%E9%97%AE%E9%A2%98">二、定位问题</h2> 
+<p>        既然在开发过程当中出现了问题，那么如何解决问题呢？在解决问题之前，首先要定位问题，只有正确的定位问题，才能对症下药，问题才能迎刃而解。因此本节将重点讲解怎么定位问题。</p> 
+<h3 id="1%E3%80%81%E5%88%9D%E6%AD%A5%E7%9A%84%E9%97%AE%E9%A2%98">1、初步的问题</h3> 
+<p>        当看到上面问题的时候，第一感觉是懵的，刚开始都有点不敢相信自己的眼睛。因为肉眼根本“看”不出来这个字符串居然不是8位。最开始怀疑的是在字符串的前后可能存在空格，因此导致了其长度超出了8位。为此我们将数据进行去空，使用sql进行去空如下：</p> 
+<pre><code class="language-sql">
+SELECT length('G30L3B01') AS VisibleLength,
+       length(replace('G30L3﻿B01', '​', '')) AS CleanLength;</code></pre> 
+<p class="img-center"><img alt="" height="193" src="https://images2.imgbox.com/23/87/5rpoq3y0_o.png" width="652"></p> 
+<p>        然后发现还是不对，经过替换后其长度还是11，说明还是超长了。 </p> 
+<h3 id="2%E3%80%81%E7%BC%96%E7%A0%81%E6%98%AF%E5%90%A6%E6%9C%89%E9%97%AE%E9%A2%98">2、编码是否有问题</h3> 
+<p>        在进行空字符过滤之后还是没有解决问题。于是换了一个方向，想着有没有可能是字符集的问题。其实大家可以看看UTF-8的字符集规范，字符集虽然会有一定的影响，但是这里存储的都是英文和数字，其长度均是标准的1，因此不存在字符的问题。问题一下子没有了方向，不知道往哪个方面去排查。</p> 
+<h3 id="3%E3%80%81%E4%BE%9D%E7%84%B6%E5%9B%9E%E5%88%B0%E5%AD%97%E7%AC%A6%E6%9C%AC%E8%BA%AB">3、依然回到字符本身</h3> 
+<p>        在第一次尝试了空字符替换无果，又排除了字符编码的问题后，再一次将目光投入到字符本身。这一次的想法是，虽然空字符本文替换后，长度还是11，但是这并不说明其内容一定是空格。有没有什么其它的东西在捣乱呢。有时候找问题就是这样，反反复复。</p> 
+<h2 id="%E4%B8%89%E3%80%81%E6%B7%B1%E5%85%A5%E5%AD%97%E7%AC%A6%E6%9C%AC%E8%BA%AB">三、深入字符本身</h2> 
+<p>        上面从几个方面分析了可能存在的问题，尤其是第三点，我们从最开的字符又回到了起点。那么这次采用什么分析思路呢？本小节深入道来。</p> 
+<h3 id="1%E3%80%81%E5%9B%9E%E5%BD%92%E6%9C%AC%E8%B4%A8">1、回归本质</h3> 
+<p>        为了来看看这个数据到底是什么？我们将字符串转为十六进制的字符串，通过比较原始字符串来看看区别。在MySQL中可以使用HEX(str)实现转换。相关的转换SQL如下所示：</p> 
+<pre><code class="language-sql">SELECT HEX('G30L3B01') AS hex_representation,HEX('G30L3﻿B01') as n2;
+
+hex_representation	n2
+4733304C33423031	4733304C33EFBBBF423031</code></pre> 
+<p>        不知道眼尖的你发现了问题没有，上面这条SQL执行完之后发现，其目标字符串似乎不一样啊。后面的字符串，也就是有问题的字符串其长度真的超长了。下面仔细对比这两个字符串。</p> 
+<pre><code class="language-sql">4733304C33        423031	
+4733304C33 EFBBBF 423031</code></pre> 
+<p>        为了方便展示，我把相同的部分进行对比，我们发现，前面的字符经过十六进制的转换后，一共16个字节，8位。是符合我们的预期的，而下面的十六进制字符则多了6字节，一共22字节，记11位。这也就是为什么这两个字符串不一样的原因。那么这个多出来的EFBBBF又是什么呢？由于这是转成了十六进制的表示，我们需要将其转为十进制。将十六进制转十进制，如果不想计算的朋友可以在网页中直接搜索：</p> 
+<p class="img-center"><img alt="" height="187" src="https://images2.imgbox.com/9d/26/aZZHFpMy_o.png" width="392"></p> 
+<p>         当然你也可以在MySQL中进行进制转换，转换方法如下：</p> 
+<pre><code class="language-sql">-- CONVERT(CONV('EFBBBF', 16, 10), UNSIGNED) 是在mysql中实现将16进制转10进制数据
+select length(char(15711167)),hex(char(15711167)),CONVERT(CONV('EFBBBF', 16, 10), UNSIGNED);</code></pre> 
+<p>        执行之后，可以看到：</p> 
+<pre><code class="language-java">length(char(15711167))	hex(char(15711167))	CONVERT(CONV('EFBBBF', 16, 10), UNSIGNED)
+3	EFBBBF	15711167</code></pre> 
+<p>        到这里，为什么两个“看”起来一模一样的字符串，实际上不一样呢？根源就在这里，在字符串的中间位置插入了不可见字符。就是这不可见字符EFBBBF导致我们做数据插入时报too long。</p> 
+<h3 id="2%E3%80%81%E6%95%B0%E6%8D%AE%E5%BA%93%E8%A7%A3%E5%86%B3%E4%B9%8B%E9%81%93">2、数据库解决之道</h3> 
+<p>        在明确了以上的问题所在之后，我们就可以根据实际情况来进行调整。只要将这种不可见字符替换掉即可。实现的方式也很简单，sql如下：</p> 
+<pre><code class="language-sql">select length(REPLACE('G30L3﻿B01', CHAR(15711167),''))  t;
+
+t
+8</code></pre> 
+<p>        通过replace函数就实现了不可见字符EFBBBF的去除，这样再调用Insert语句，就不会报too long的问题。</p> 
+<h3 id="3%E3%80%81%E4%BB%A3%E7%A0%81%E5%B1%82%E8%A7%A3%E5%86%B3">3、代码层解决</h3> 
+<p>        除了在数据库层来解决问题，还可以在什么地方解决呢？在编码层解决是否可行。答案是肯定的。下面我们来详细介绍一下代码层的处理办法，以java语言为例。其实原理是一样的，都是要将不可见字符进行替换掉。</p> 
+<pre><code class="language-java">/*
+* 字节数组转16进制字符串
+*/
+public static String bytesToHexString(byte[] bArr) {
+	if (bArr == null) {
+		return null;
+	}
+	StringBuffer sb = new StringBuffer(bArr.length);
+	String sTmp;
+	for (int i = 0; i &lt; bArr.length; i++) {
+		sTmp = Integer.toHexString(0xFF &amp; bArr[i]);
+		if (sTmp.length() &lt; 2)
+			sb.append(0);
+		sb.append(sTmp);
+	}
+	return sb.toString();
+}
+
+// 转化十六进制编码为字符串
+public static String toStringHex(String s) {
+	byte[] baKeyword = new byte[s.length() / 2];
+	try {
+		for (int i = 0; i &lt; baKeyword.length; i++) {
+	baKeyword[i] = (byte) (0xff &amp; Integer.parseInt(s.substring(i * 2, i * 2 + 2), 16));
+		}
+		s = new String(baKeyword, "utf-8");// UTF-16le:Not
+	} catch (Exception e1) {
+			e1.printStackTrace();
+	}
+	return s;
+}
+</code></pre> 
+<p>        下面给出测试代码，您可以实际测试以下结果，看是否与我的预期一样：</p> 
+<pre><code class="language-java">public static void main(String[] args) {
+		System.out.println("G8014Z03".substring(0, 2));
+		System.out.println(bytesToHexString("G30L3﻿B01".getBytes()).toUpperCase()); // 长
+		System.out.println(bytesToHexString("G30L3B01".getBytes()).toUpperCase()); // 短
+		System.out.println("G30L3﻿B01".length()); // 长
+		System.out.println("G30L3B01".length()); // 短
+		System.out.println("进制转换======================================================");
+		System.out.println(toStringHex("4733304C33423031"));
+		System.out.println(toStringHex("4733304C33423031").length());
+		System.out.println(toStringHex("4733304C33EFBBBF423031"));
+		System.out.println(toStringHex("4733304C33EFBBBF423031").length());
+		System.out.println("================================================");
+		System.out.println(toStringHex("4733304C33EFBBBF423031".replaceAll("EFBBBF", "")));
+		System.out.println(toStringHex("4733304C33EFBBBF423031".replaceAll("EFBBBF", "")).length());
+		
+		System.out.println("G30L3﻿B01".equals("G30L3B01"));
+		
+		System.out.println(toStringHex("4733304C33EFBBBF423031".replaceAll("EFBBBF", "")).equals("G30L3B01"));
+	}</code></pre> 
+<p>        在代码中使用上述代码也可以实现目标字符的替换，将不可见字符进行替换掉。欢迎在实践中进行测试使用。</p> 
+<h2 id="%E5%9B%9B%E3%80%81%E6%80%BB%E7%BB%93">四、总结</h2> 
+<p>        以上就是本文的主要内容，本文以数据库中不可见字符处理为例，讲解在MySQL中，为什么会有这种“看”起来一致，但实际上不一样的问题，通过现象找本质，通过一步一步的排查，找到问题的根源，最后在寻根溯源后，找到解决的办法；从应用代码编程的角度和底层数据库的角度来解决上述问题。</p> 
+<p>        使用建议，如果您也有这方面的问题，尤其是从Excel或者其它的模板中导入数据的，很有可能会遇到这个问题。如果碰到看起来一致，但实际内容不一样的情况，可以试试看是不是碰到了不可见字符，本文即分享了一种在MySQL中的不可见字符的解决方案，同时分享了使用JAVA语言进行上述问题的解决。本文行文仓促，难免有不足之处，欢迎各位专家朋友在评论区批评指正，不慎感激。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2b7fa3e0bbbd1c7e075d28d9cff181d6/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C语言中的可变参数函数（如printf）是如何实现的。</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f59ff77e0f230227397029a1d04c31b3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">微软Edge浏览器与WebRTC：实现下一代网络通信</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

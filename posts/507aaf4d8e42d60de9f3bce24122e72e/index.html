@@ -1,0 +1,437 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>万字详解Kafka并附带go操作Kafka - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/507aaf4d8e42d60de9f3bce24122e72e/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="万字详解Kafka并附带go操作Kafka">
+  <meta property="og:description" content="本文主要学习https://blog.csdn.net/cao1315020626/article/details/112590786?ops_request_misc=%257B%2522request%255Fid%2522%253A%2522171886470616800197016195%2522%252C%2522scm%2522%253A%252220140713.130102334…%2522%257D&amp;request_id=171886470616800197016195&amp;biz_id=0&amp;utm_medium=distribute.pc_search_result.none-task-blog-2alltop_positive~default-1-112590786-null-null.142v100pc_search_result_base3&amp;utm_term=Kafka&amp;spm=1018.2226.3001.4187
+基于上文加上上文博主没讲到的地方和自己的一些理解
+1 Kafka基本概念 Kafka是一种消息队列，同样具有消息队列的好处
+解耦合
+耦合的状态表示当你实现某个功能的时候，是直接接入当前接口，而利用消息队列，可以将相应的消息发送到消息队列，这样的话，如果接口出了问题，将不会影响到当前的功能。
+异步处理
+异步处理替代了之前的同步处理，异步处理不需要让流程走完就返回结果，可以将消息发送到消息队列中，然后返回结果，剩下让其他业务处理接口从消息队列中拉取消费处理即可。
+流量削峰
+高流量的时候，使用消息队列作为中间件可以将流量的高峰保存在消息队列中，从而防止了系统的高请求，减轻服务器的请求处理压力。
+1.1 Kafka消费模式 主要有两种一对一和一对多，一般来说，都是用一对多模式（至少我目前没用过一对一）
+一对一模式：
+生产者将消息发送到生产队列，消费者进行消费，消费完毕后该消息删除，整个生产消费过程是非阻塞的，类似与我们go中有缓冲区的channel
+一对多模式：
+一个生产者对应多个消费者，生产者将消息生产到生产队列的Topic中，消费者订阅某一个或者多个Topic进行消费，消费后并不会删除消息，默认保存一段时间，具体消费方式设计到分区等，后面会说。
+1.2Kafka基础架构 Producer：消息生产者，向Kafka中发布消息的角色。
+Consumer：消息消费者，即从Kafka中拉取消息消费的客户端。
+Consumer Group：消费者组，消费者组则是一组中存在多个消费者，消费者消费Broker中当前Topic的不同分区中的消息，消费者组之间互不影响，所有的消费者都属于某个消费者组，即消费者组是逻辑上的一个订阅者。某一个分区中的消息只能够一个消费者组中的一个消费者所消费
+Broker：经纪人，一台Kafka服务器就是一个Broker，一个集群由多个Broker组成，一个Broker可以容纳多个Topic。
+Topic：主题，可以理解为一个队列，生产者和消费者都是面向一个Topic
+Partition：分区，为了实现扩展性，一个非常大的Topic可以分布到多个Broker上，一个Topic可以分为多个Partition，每个Partition是一个有序的队列(分区有序，不能保证全局有序)，一个分区只能被同一个消费者组中的一个消费者消费，这确保了每条消息只能被消费者组中的一个消费者处理。不同消费者组中的消费者可以独立消费不同的分区，但一个分区只能被同一消费者组中的一个消费者消费。
+Replica：副本Replication，为保证集群中某个节点发生故障，节点上的Partition数据不丢失，Kafka可以正常的工作，Kafka提供了副本机制，一个Topic的每个分区有若干个副本，一个Leader和多个Follower
+Leader：每个分区多个副本的主角色，生产者发送数据的对象，以及消费者消费数据的对象都是Leader。
+Follower：每个分区多个副本的从角色，实时的从Leader中同步数据，保持和Leader数据的同步，Leader发生故障的时候，某个Follower会成为新的Leader。
+Offset：Kafka的分区中的每一个消息的位置都由offset来表示
+1.3 Kafka工作流程 Kafka中，Topic可以视为一个逻辑地址，实际上topic是分布到多个partition上的，partition通常有一个log文件，消息一般是直接新加到log文件的末端，消费者每次消费都会更新offset，以便清楚自己下次消费的位置，所以一个topic通常对应多个partition，然后一个partition通常对应一个log（有可能分裂）
+1.4 Kafka的文件存储（这个用到的比较少） Kafka中一般是一个topic对应多个partition，一个partition对应多个segment，一个segment对应两个文件，一个index，一个log，log就是用来存储我们的消息的，index是用于大量数据情况下快速定位的
+.index文件存储的消息的offset&#43;真实的起始偏移量。.log中存放的是真实的数据。
+1.5 Kafka生产者分区 分区的原因
+1.方便在集群中扩展：每个partition通过调整以适应它所在的机器，而一个Topic又可以有多个partition组成，因此整个集群可以适应适合的数据
+2。可以提高并发：以Partition为单位进行读写。类似于多路。
+分区的原则
+1.指明partition（这里的指明是指第几个分区）的情况下，直接将指明的值作为partition的值
+2.没有指明partition的情况下，但是存在值key，此时将key的hash值与topic的partition总数进行取余得到partition值
+3.值与partition均无的情况下，第一次调用时随机生成一个整数，后面每次调用在这个整数上自增，将这个值与topic可用的partition总数取余得到partition值，即round-robin算法。
+1.6 Kafka的ack机制 为了确保数据能落盘，producer发送消息后，需要收到相应leader的ack，收到后再进行下一轮发送
+1.61 何时发送ack leader发送ack一般是有两种方式，一种是半数follower同步完成，还有一种是全部follower同步完成，Kafka采用的是第二种，主要是因为网络对Kafka影响较小，所以等一半还是等全部差距不大。
+关于故障处理一般是通过维护一个isr，如果leader发现某一follower长时间未回应，则将其提出isr，如果leader掉线，则再isr中重新选举
+1.62 三种ack ack 0 ： producer不需要等到leader的ack直接进行下一轮发送，速度非常快，但存在数据丢失的风险
+ack 1 ： producer仅需要等待leader的ack，可能会出现follower未同步消息的情况
+ack -1 ： producer需要等到leader和follower的ack，可能会出现数据重复的情况
+1.63 数据一致性 LEO ： 每个副本的最后一个offset（即最后一个消息）">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-26T14:35:58+08:00">
+    <meta property="article:modified_time" content="2024-06-26T14:35:58+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">万字详解Kafka并附带go操作Kafka</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>本文主要学习https://blog.csdn.net/cao1315020626/article/details/112590786?ops_request_misc=%257B%2522request%255Fid%2522%253A%2522171886470616800197016195%2522%252C%2522scm%2522%253A%252220140713.130102334…%2522%257D&amp;request_id=171886470616800197016195&amp;biz_id=0&amp;utm_medium=distribute.pc_search_result.none-task-blog-2<sub>all</sub>top_positive~default-1-112590786-null-null.142<sup>v100</sup>pc_search_result_base3&amp;utm_term=Kafka&amp;spm=1018.2226.3001.4187<br> 基于上文加上上文博主没讲到的地方和自己的一些理解</p> 
+<h2><a id="1_Kafka_3"></a>1 Kafka基本概念</h2> 
+<p>Kafka是一种消息队列，同样具有消息队列的好处<br> 解耦合</p> 
+<p>耦合的状态表示当你实现某个功能的时候，是直接接入当前接口，而利用消息队列，可以将相应的消息发送到消息队列，这样的话，如果接口出了问题，将不会影响到当前的功能。</p> 
+<p>异步处理</p> 
+<p>异步处理替代了之前的同步处理，异步处理不需要让流程走完就返回结果，可以将消息发送到消息队列中，然后返回结果，剩下让其他业务处理接口从消息队列中拉取消费处理即可。<br> 流量削峰</p> 
+<p>高流量的时候，使用消息队列作为中间件可以将流量的高峰保存在消息队列中，从而防止了系统的高请求，减轻服务器的请求处理压力。</p> 
+<h3><a id="11_Kafka_15"></a>1.1 Kafka消费模式</h3> 
+<p>主要有两种一对一和一对多，一般来说，都是用一对多模式（至少我目前没用过一对一）<br> 一对一模式：<br> 生产者将消息发送到生产队列，消费者进行消费，消费完毕后该消息删除，整个生产消费过程是非阻塞的，类似与我们go中有缓冲区的channel</p> 
+<p>一对多模式：<br> 一个生产者对应多个消费者，生产者将消息生产到生产队列的Topic中，消费者订阅某一个或者多个Topic进行消费，消费后并不会删除消息，默认保存一段时间，具体消费方式设计到分区等，后面会说。</p> 
+<h3><a id="12Kafka_23"></a>1.2Kafka基础架构</h3> 
+<p>Producer：消息生产者，向Kafka中发布消息的角色。<br> Consumer：消息消费者，即从Kafka中拉取消息消费的客户端。<br> Consumer Group：消费者组，消费者组则是一组中存在多个消费者，消费者消费Broker中当前Topic的不同分区中的消息，消费者组之间互不影响，所有的消费者都属于某个消费者组，即消费者组是逻辑上的一个订阅者。某一个分区中的消息只能够一个消费者组中的一个消费者所消费<br> Broker：经纪人，一台Kafka服务器就是一个Broker，一个集群由多个Broker组成，一个Broker可以容纳多个Topic。<br> Topic：主题，可以理解为一个队列，生产者和消费者都是面向一个Topic<br> Partition：分区，为了实现扩展性，一个非常大的Topic可以分布到多个Broker上，一个Topic可以分为多个Partition，每个Partition是一个有序的队列(分区有序，不能保证全局有序)，一个分区只能被同一个消费者组中的一个消费者消费，这确保了每条消息只能被消费者组中的一个消费者处理。不同消费者组中的消费者可以独立消费不同的分区，但一个分区只能被同一消费者组中的一个消费者消费。<br> Replica：副本Replication，为保证集群中某个节点发生故障，节点上的Partition数据不丢失，Kafka可以正常的工作，Kafka提供了副本机制，一个Topic的每个分区有若干个副本，一个Leader和多个Follower<br> Leader：每个分区多个副本的主角色，生产者发送数据的对象，以及消费者消费数据的对象都是Leader。<br> Follower：每个分区多个副本的从角色，实时的从Leader中同步数据，保持和Leader数据的同步，Leader发生故障的时候，某个Follower会成为新的Leader。<br> Offset：Kafka的分区中的每一个消息的位置都由offset来表示</p> 
+<h3><a id="13_Kafka_35"></a>1.3 Kafka工作流程</h3> 
+<p>Kafka中，Topic可以视为一个逻辑地址，实际上topic是分布到多个partition上的，partition通常有一个log文件，消息一般是直接新加到log文件的末端，消费者每次消费都会更新offset，以便清楚自己下次消费的位置，所以一个topic通常对应多个partition，然后一个partition通常对应一个log（有可能分裂）</p> 
+<h3><a id="14_Kafka_38"></a>1.4 Kafka的文件存储（这个用到的比较少）</h3> 
+<p>Kafka中一般是一个topic对应多个partition，一个partition对应多个segment，一个segment对应两个文件，一个index，一个log，log就是用来存储我们的消息的，index是用于大量数据情况下快速定位的<br> .index文件存储的消息的offset+真实的起始偏移量。.log中存放的是真实的数据。</p> 
+<h3><a id="15_Kafka_43"></a>1.5 Kafka生产者分区</h3> 
+<p><strong>分区的原因</strong></p> 
+<p>1.方便在集群中扩展：每个partition通过调整以适应它所在的机器，而一个Topic又可以有多个partition组成，因此整个集群可以适应适合的数据<br> 2。可以提高并发：以Partition为单位进行读写。类似于多路。<br> <strong>分区的原则</strong></p> 
+<p>1.指明partition（这里的指明是指第几个分区）的情况下，直接将指明的值作为partition的值<br> 2.没有指明partition的情况下，但是存在值key，此时将key的hash值与topic的partition总数进行取余得到partition值<br> 3.值与partition均无的情况下，第一次调用时随机生成一个整数，后面每次调用在这个整数上自增，将这个值与topic可用的partition总数取余得到partition值，即round-robin算法。</p> 
+<h3><a id="16_Kafkaack_55"></a>1.6 Kafka的ack机制</h3> 
+<p>为了确保数据能落盘，producer发送消息后，需要收到相应leader的ack，收到后再进行<strong>下一轮</strong>发送</p> 
+<h4><a id="161_ack_57"></a>1.61 何时发送ack</h4> 
+<p>leader发送ack一般是有两种方式，一种是半数follower同步完成，还有一种是全部follower同步完成，Kafka采用的是第二种，主要是因为网络对Kafka影响较小，所以等一半还是等全部差距不大。</p> 
+<p>关于故障处理一般是通过维护一个isr，如果leader发现某一follower长时间未回应，则将其提出isr，如果leader掉线，则再isr中重新选举</p> 
+<h4><a id="162_ack_62"></a>1.62 三种ack</h4> 
+<p><strong>ack 0</strong> ： producer不需要等到leader的ack直接进行下一轮发送，速度非常快，但存在数据丢失的风险<br> <strong>ack 1</strong> ： producer仅需要等待leader的ack，可能会出现follower未同步消息的情况<br> <strong>ack -1</strong> ： producer需要等到leader和follower的ack，可能会出现数据重复的情况</p> 
+<h4><a id="163__68"></a>1.63 数据一致性</h4> 
+<p><strong>LEO</strong> ： 每个副本的最后一个offset（即最后一个消息）<br> <strong>HW</strong> ： 消费者能见到的最小的LEO，即isr中最小的LEO</p> 
+<p><strong>leader故障</strong> ： 会从isr中重新选取一个leader，follower截掉HW以上的数据，开始和leader同步数据<br> <strong>follower故障</strong> ： 暂时踢出isr队列，恢复后戒掉HW以上的数据，开始和leader同步</p> 
+<h2><a id="2__77"></a>2 消费者分区</h2> 
+<p><strong>consumer采用pull拉的方式来从broker中读取数据。<br> push推的模式很难适应消费速率不同的消费者，因为消息发送率是由broker决定的，它的目标是尽可能以最快的速度传递消息，但是这样容易造成consumer来不及处理消息，典型的表现就是拒绝服务以及网络拥塞。而pull方式则可以让consumer根据自己的消费处理能力以适当的速度消费消息。</strong></p> 
+<h3><a id="21__81"></a>2.1 分配模式</h3> 
+<p>一个consumer group中有多个consumer，一个topic有多个partition，所以必然会涉及到partition的分配问题，即确定那个partition由那个consumer消费的问题。</p> 
+<p>Kafka的两种分配策略：</p> 
+<p><strong>round-robin循环<br> range<br> Round-Robin</strong></p> 
+<p>主要采用轮询的方式分配所有的分区，该策略主要实现的步骤：</p> 
+<p>假设存在三个topic：t0/t1/t2，分别拥有1/2/3个分区，共有6个分区，分别为t0-0/t1-0/t1-1/t2-0/t2-1/t2-2，这里假设我们有三个Consumer，C0、C1、C2，订阅情况为C0：t0，C1：t0、t1，C2：t0/t1/t2。</p> 
+<p>此时round-robin采取的分配方式，则是按照分区的字典对分区和消费者进行排序，然后对分区进行循环遍历，遇到自己订阅的则消费，否则向下轮询下一个消费者。即按照分区轮询消费者，继而消息被消费。</p> 
+<p>分区在循环遍历消费者，自己被当前消费者订阅，则消息与消费者共同向下（消息被消费），否则消费者向下消息继续遍历（消息没有被消费）。轮询的方式会导致每个Consumer所承载的分区数量不一致，从而导致各个Consumer压力不均。上面的C2因为订阅的比较多，导致承受的压力也相对较大。</p> 
+<p><strong>Range</strong></p> 
+<p>Range的重分配策略，首先计算各个Consumer将会承载的分区数量，然后将指定数量的分区分配给该Consumer。假设存在两个Consumer，C0和C1，两个Topic，t0和t1，这两个Topic分别都有三个分区，那么总共的分区有6个，t0-0，t0-1，t0-2，t1-0，t1-1，t1-2。分配方式如下：</p> 
+<p>range按照topic一次进行分配，即消费者遍历topic，t0，含有三个分区，同时有两个订阅了该topic的消费者，将这些分区和消费者按照字典序排列。<br> 按照平均分配的方式计算每个Consumer会得到多少个分区，如果没有除尽，多出来的分区则按照字典序挨个分配给消费者。按照此方式以此分配每一个topic给订阅的消费者，最后完成topic分区的分配。</p> 
+<p>按照range的方式进行分配，本质上是以此遍历每个topic，然后将这些topic按照其订阅的consumer数进行平均分配，多出来的则按照consumer的字典序挨个分配，这种方式会导致在前面的consumer得到更多的分区，导致各个consumer的压力不均衡。</p> 
+<h3><a id="22_offset_111"></a>2.2 消费者offset存储</h3> 
+<p>由于Consumer在消费过程中可能会出现断电宕机等故障，Consumer恢复以后，需要从故障前的位置继续消费，所以Consumer需要实时记录自己消费到了那个offset，以便故障恢复后继续消费。</p> 
+<h2><a id="3_Kafka_115"></a>3 Kafka高吞吐低延迟如何实现的</h2> 
+<p><strong>Kafka使用磁盘顺序读写来提升性能</strong><br> 顺序读写和随机读写性能对比：<br> 顺序读随机读顺序写随机写机械硬盘84.0MB/s0.033MB/s (512字节)79.0MB/s0.083MB/s (512字节)固态硬盘220.7MB/s5.296MB/s(512字节)77.2MB/s10.203MB/s(512字节)<br> 从数据可以看出磁盘的顺序读写速度远高于随机读写的速度，这是因为传统的磁头探针结构，随机读写时需要频繁寻道，也就需要磁头和探针频繁的转动，而机械结构的磁头和探针的位置调整是十分费时的，这就严重影响到硬盘的寻址速度，进而影响到随机写入速度。<br> Kafka的message是不断追加到本地磁盘文件末尾的，而不是随机的写入，这使得Kafka写入吞吐量得到了显著提升 。每一个Partition其实都是一个文件 ，收到消息后Kafka会把数据插入到文件末尾。</p> 
+<p><strong>2.页缓存（pageCache）</strong><br> PageCache是系统级别的缓存，它把尽可能多的空闲内存当作磁盘缓存使用来进一步提高IO效率；<br> PageCache同时可以避免在JVM内部缓存数据，避免不必要的GC、以及内存空间占用。对于In-Process Cache，如果Kafka重启，它会失效，而操作系统管理的PageCache依然可以继续使用。</p> 
+<p>producer把消息发到broker后，数据并不是直接落入磁盘的，而是先进入PageCache。PageCache中的数据会被内核中的处理线程采用同步或异步的方式定期刷盘至磁盘。<br> Consumer消费消息时，会先从PageCache获取消息，获取不到才回去磁盘读取，并且会预读出一些相邻的块放入PageCache，以方便下一次读取。<br> 如果Kafka producer的生产速率与consumer的消费速率相差不大，那么几乎只靠对broker PageCache的读写就能完成整个生产和消费过程，磁盘访问非常少</p> 
+<p><strong>3.零拷贝</strong><br> 正常过程：</p> 
+<p>操作系统将数据从磁盘上读入到内核空间的读缓冲区中</p> 
+<p>应用程序（也就是Kafka）从内核空间的读缓冲区将数据拷贝到用户空间的缓冲区中</p> 
+<p>应用程序将数据从用户空间的缓冲区再写回到内核空间的socket缓冲区中</p> 
+<p>操作系统将socket缓冲区中的数据拷贝到NIC缓冲区中，然后通过网络发送给客户端</p> 
+<p>在这个过程中，可以发现， 数据从磁盘到最终发出去，要经历4次拷贝，而在这四次拷贝过程中， 有两次拷贝是浪费的。<br> 1.从内核空间拷贝到用户空间；<br> 2.从用户空间再次拷贝到内核空间；<br> 除此之外，由于用户空间和内核空间的切换，会带来Cpu上下文切换，对于Cpu的性能也会造成影响；<br> 零拷贝省略了数据在内核空间和用户空间之间的重复穿梭；用户态和内核态切换时产生中断，耗时；</p> 
+<p><strong>4.分区分段索引</strong><br> Kafka的message是按topic分类存储的，topic中的数据又是按照一个一个的partition即分区存储到不同broker节点。每个partition对应了操作系统上的一个文件夹，partition实际上又是按照segment分段存储的。符合分布式系统分区分桶的设计思想。<br> 通过这种分区分段的设计，Kafka的message消息实际上是分布式存储在一个一个小的segment中的，每次文件操作也是直接操作的segment。为了进一步的查询优化，Kafka又默认为分段后的数据文件建立了索引文件，就是文件系统上的.index文件。这种分区分段+索引的设计，不仅提升了数据读取的效率，同时也提高了数据操作的并行度。</p> 
+<p><strong>5.批量处理</strong><br> kafka发送消息不是一条一条发送的，而是批量发送，很大的提高了发送消息的吞吐量。<br> 假设发送一条消息的时间是1ms，而此时的吞吐量就是1000TPS。但是假如我们将消息批量发送，1000条消息需要10ms，而此时的吞吐量就达到了1000*100TPS。而且这样也很大程度的减少了请求Broker的次数，提升了总体的效率。</p> 
+<h2><a id="4__156"></a>4 事务</h2> 
+<h3><a id="41__157"></a>4.1 消费者事务</h3> 
+<p>为了按跨分区跨会话的事务，需要引入一个全局唯一的Transaction ID（TID），消费者的PID会和TID绑定<br> 还会有一个TC，将每一个事务信息写入一个Topic中，这样即使消费者断电，也可以继续从上次消费的地方继续消费</p> 
+<h3><a id="42__162"></a>4.2 生产者事务</h3> 
+<p>暂时无法保证</p> 
+<h2><a id="5_goKafka_167"></a>5 go操作Kafka</h2> 
+<p>下面代码主要学习www.liwenzhou.com<br> <code>go get github.com/segmentio/kafka-go</code><br> 首先安装依赖<br> <strong>发送消息</strong></p> 
+<pre><code class="prism language-go"><span class="token comment">// writeByConn 基于Conn发送消息</span>
+<span class="token keyword">func</span> <span class="token function">writeByConn</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	topic <span class="token operator">:=</span> <span class="token string">"my-topic"</span>
+	partition <span class="token operator">:=</span> <span class="token number">0</span>
+
+	<span class="token comment">// 连接至Kafka集群的Leader节点</span>
+	conn<span class="token punctuation">,</span> err <span class="token operator">:=</span> kafka<span class="token punctuation">.</span><span class="token function">DialLeader</span><span class="token punctuation">(</span>context<span class="token punctuation">.</span><span class="token function">Background</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">"tcp"</span><span class="token punctuation">,</span> <span class="token string">"localhost:9092"</span><span class="token punctuation">,</span> topic<span class="token punctuation">,</span> partition<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Fatal</span><span class="token punctuation">(</span><span class="token string">"failed to dial leader:"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">// 设置发送消息的超时时间</span>
+	conn<span class="token punctuation">.</span><span class="token function">SetWriteDeadline</span><span class="token punctuation">(</span>time<span class="token punctuation">.</span><span class="token function">Now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">Add</span><span class="token punctuation">(</span><span class="token number">10</span> <span class="token operator">*</span> time<span class="token punctuation">.</span>Second<span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+	<span class="token comment">// 发送消息</span>
+	<span class="token boolean">_</span><span class="token punctuation">,</span> err <span class="token operator">=</span> conn<span class="token punctuation">.</span><span class="token function">WriteMessages</span><span class="token punctuation">(</span>
+		kafka<span class="token punctuation">.</span>Message<span class="token punctuation">{<!-- --></span>Value<span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token function">byte</span><span class="token punctuation">(</span><span class="token string">"one!"</span><span class="token punctuation">)</span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+		kafka<span class="token punctuation">.</span>Message<span class="token punctuation">{<!-- --></span>Value<span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token function">byte</span><span class="token punctuation">(</span><span class="token string">"two!"</span><span class="token punctuation">)</span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+		kafka<span class="token punctuation">.</span>Message<span class="token punctuation">{<!-- --></span>Value<span class="token punctuation">:</span> <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token function">byte</span><span class="token punctuation">(</span><span class="token string">"three!"</span><span class="token punctuation">)</span><span class="token punctuation">}</span><span class="token punctuation">,</span>
+	<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Fatal</span><span class="token punctuation">(</span><span class="token string">"failed to write messages:"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">// 关闭连接</span>
+	<span class="token keyword">if</span> err <span class="token operator">:=</span> conn<span class="token punctuation">.</span><span class="token function">Close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Fatal</span><span class="token punctuation">(</span><span class="token string">"failed to close writer:"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre> 
+<p><strong>消费消息</strong></p> 
+<pre><code class="prism language-go"><span class="token comment">// readByConn 连接至kafka后接收消息</span>
+<span class="token keyword">func</span> <span class="token function">readByConn</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// 指定要连接的topic和partition</span>
+	topic <span class="token operator">:=</span> <span class="token string">"my-topic"</span>
+	partition <span class="token operator">:=</span> <span class="token number">0</span>
+
+	<span class="token comment">// 连接至Kafka的leader节点</span>
+	conn<span class="token punctuation">,</span> err <span class="token operator">:=</span> kafka<span class="token punctuation">.</span><span class="token function">DialLeader</span><span class="token punctuation">(</span>context<span class="token punctuation">.</span><span class="token function">Background</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token string">"tcp"</span><span class="token punctuation">,</span> <span class="token string">"localhost:9092"</span><span class="token punctuation">,</span> topic<span class="token punctuation">,</span> partition<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Fatal</span><span class="token punctuation">(</span><span class="token string">"failed to dial leader:"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">// 设置读取超时时间</span>
+	conn<span class="token punctuation">.</span><span class="token function">SetReadDeadline</span><span class="token punctuation">(</span>time<span class="token punctuation">.</span><span class="token function">Now</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">Add</span><span class="token punctuation">(</span><span class="token number">10</span> <span class="token operator">*</span> time<span class="token punctuation">.</span>Second<span class="token punctuation">)</span><span class="token punctuation">)</span>
+	<span class="token comment">// 读取一批消息，得到的batch是一系列消息的迭代器</span>
+	batch <span class="token operator">:=</span> conn<span class="token punctuation">.</span><span class="token function">ReadBatch</span><span class="token punctuation">(</span><span class="token number">10e3</span><span class="token punctuation">,</span> <span class="token number">1e6</span><span class="token punctuation">)</span> <span class="token comment">// fetch 10KB min, 1MB max</span>
+
+	<span class="token comment">// 遍历读取消息</span>
+	b <span class="token operator">:=</span> <span class="token function">make</span><span class="token punctuation">(</span><span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token builtin">byte</span><span class="token punctuation">,</span> <span class="token number">10e3</span><span class="token punctuation">)</span> <span class="token comment">// 10KB max per message</span>
+	<span class="token keyword">for</span> <span class="token punctuation">{<!-- --></span>
+		n<span class="token punctuation">,</span> err <span class="token operator">:=</span> batch<span class="token punctuation">.</span><span class="token function">Read</span><span class="token punctuation">(</span>b<span class="token punctuation">)</span>
+		<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">break</span>
+		<span class="token punctuation">}</span>
+		fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token function">string</span><span class="token punctuation">(</span>b<span class="token punctuation">[</span><span class="token punctuation">:</span>n<span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">// 关闭batch</span>
+	<span class="token keyword">if</span> err <span class="token operator">:=</span> batch<span class="token punctuation">.</span><span class="token function">Close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Fatal</span><span class="token punctuation">(</span><span class="token string">"failed to close batch:"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">// 关闭连接</span>
+	<span class="token keyword">if</span> err <span class="token operator">:=</span> conn<span class="token punctuation">.</span><span class="token function">Close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Fatal</span><span class="token punctuation">(</span><span class="token string">"failed to close connection:"</span><span class="token punctuation">,</span> err<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+
+</code></pre> 
+<p><strong>创建Topic</strong></p> 
+<pre><code class="prism language-go"><span class="token comment">// createTopicByConn 创建topic</span>
+<span class="token keyword">func</span> <span class="token function">createTopicByConn</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// 指定要创建的topic名称</span>
+	topic <span class="token operator">:=</span> <span class="token string">"my-topic"</span>
+
+	<span class="token comment">// 连接至任意kafka节点</span>
+	conn<span class="token punctuation">,</span> err <span class="token operator">:=</span> kafka<span class="token punctuation">.</span><span class="token function">Dial</span><span class="token punctuation">(</span><span class="token string">"tcp"</span><span class="token punctuation">,</span> <span class="token string">"localhost:9092"</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">panic</span><span class="token punctuation">(</span>err<span class="token punctuation">.</span><span class="token function">Error</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">defer</span> conn<span class="token punctuation">.</span><span class="token function">Close</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+	<span class="token comment">// 获取当前控制节点信息</span>
+	controller<span class="token punctuation">,</span> err <span class="token operator">:=</span> conn<span class="token punctuation">.</span><span class="token function">Controller</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">panic</span><span class="token punctuation">(</span>err<span class="token punctuation">.</span><span class="token function">Error</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">var</span> controllerConn <span class="token operator">*</span>kafka<span class="token punctuation">.</span>Conn
+	<span class="token comment">// 连接至leader节点</span>
+	controllerConn<span class="token punctuation">,</span> err <span class="token operator">=</span> kafka<span class="token punctuation">.</span><span class="token function">Dial</span><span class="token punctuation">(</span><span class="token string">"tcp"</span><span class="token punctuation">,</span> net<span class="token punctuation">.</span><span class="token function">JoinHostPort</span><span class="token punctuation">(</span>controller<span class="token punctuation">.</span>Host<span class="token punctuation">,</span> strconv<span class="token punctuation">.</span><span class="token function">Itoa</span><span class="token punctuation">(</span>controller<span class="token punctuation">.</span>Port<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">panic</span><span class="token punctuation">(</span>err<span class="token punctuation">.</span><span class="token function">Error</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">defer</span> controllerConn<span class="token punctuation">.</span><span class="token function">Close</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+	topicConfigs <span class="token operator">:=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span>kafka<span class="token punctuation">.</span>TopicConfig<span class="token punctuation">{<!-- --></span>
+		<span class="token punctuation">{<!-- --></span>
+			Topic<span class="token punctuation">:</span>             topic<span class="token punctuation">,</span>
+			NumPartitions<span class="token punctuation">:</span>     <span class="token number">1</span><span class="token punctuation">,</span>
+			ReplicationFactor<span class="token punctuation">:</span> <span class="token number">1</span><span class="token punctuation">,</span>
+		<span class="token punctuation">}</span><span class="token punctuation">,</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token comment">// 创建topic</span>
+	err <span class="token operator">=</span> controllerConn<span class="token punctuation">.</span><span class="token function">CreateTopics</span><span class="token punctuation">(</span>topicConfigs<span class="token operator">...</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token function">panic</span><span class="token punctuation">(</span>err<span class="token punctuation">.</span><span class="token function">Error</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+
+</code></pre> 
+<p><strong>获取Topic列表</strong></p> 
+<pre><code class="prism language-go">conn<span class="token punctuation">,</span> err <span class="token operator">:=</span> kafka<span class="token punctuation">.</span><span class="token function">Dial</span><span class="token punctuation">(</span><span class="token string">"tcp"</span><span class="token punctuation">,</span> <span class="token string">"localhost:9092"</span><span class="token punctuation">)</span>
+<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">panic</span><span class="token punctuation">(</span>err<span class="token punctuation">.</span><span class="token function">Error</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">defer</span> conn<span class="token punctuation">.</span><span class="token function">Close</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+partitions<span class="token punctuation">,</span> err <span class="token operator">:=</span> conn<span class="token punctuation">.</span><span class="token function">ReadPartitions</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token function">panic</span><span class="token punctuation">(</span>err<span class="token punctuation">.</span><span class="token function">Error</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+m <span class="token operator">:=</span> <span class="token keyword">map</span><span class="token punctuation">[</span><span class="token builtin">string</span><span class="token punctuation">]</span><span class="token keyword">struct</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+<span class="token comment">// 遍历所有分区取topic</span>
+<span class="token keyword">for</span> <span class="token boolean">_</span><span class="token punctuation">,</span> p <span class="token operator">:=</span> <span class="token keyword">range</span> partitions <span class="token punctuation">{<!-- --></span>
+    m<span class="token punctuation">[</span>p<span class="token punctuation">.</span>Topic<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token keyword">struct</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+<span class="token keyword">for</span> k <span class="token operator">:=</span> <span class="token keyword">range</span> m <span class="token punctuation">{<!-- --></span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span>k<span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+
+</code></pre> 
+<h2><a id="6_Kafkaredis_316"></a>6 Kafka结合redis实现分布式锁</h2> 
+<h3><a id="61_Redis_317"></a>6.1 使用Redis实现分布式锁：</h3> 
+<p>在Redis中使用SET命令来尝试获取锁，在设置过程中可以添加过期时间以防止死锁。<br> 使用SET命令的NX（只在键不存在时设置）选项，确保只有一个客户端能够成功设置锁。<br> 释放锁时，使用DEL命令删除锁。</p> 
+<h3><a id="62_Kafka_322"></a>6.2 使用Kafka实现锁的分发：</h3> 
+<p>当一个客户端成功获取锁时，向一个专门的Kafka主题发送消息，表示锁已经被获取。<br> 其他客户端订阅该主题以获取锁状态。</p> 
+<h3><a id="63_RedisKafka_326"></a>6.3 结合Redis和Kafka：</h3> 
+<p>当客户端成功获取锁后，在Redis中设置锁，并通过Kafka发送获取锁的消息。<br> 其他客户端在收到获取锁的消息后，尝试获取锁时首先检查Redis中的锁状态。</p> 
+<p>代码示例</p> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+	<span class="token string">"fmt"</span>
+	<span class="token string">"github.com/Shopify/sarama"</span>
+	<span class="token string">"github.com/go-redis/redis"</span>
+	<span class="token string">"log"</span>
+	<span class="token string">"time"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">var</span> <span class="token punctuation">(</span>
+	redisClient <span class="token operator">*</span>redis<span class="token punctuation">.</span>Client
+	kafkaBrokers <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token punctuation">]</span><span class="token builtin">string</span><span class="token punctuation">{<!-- --></span><span class="token string">"localhost:9092"</span><span class="token punctuation">}</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">func</span> <span class="token function">init</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	redisClient <span class="token operator">=</span> redis<span class="token punctuation">.</span><span class="token function">NewClient</span><span class="token punctuation">(</span><span class="token operator">&amp;</span>redis<span class="token punctuation">.</span>Options<span class="token punctuation">{<!-- --></span>
+		Addr<span class="token punctuation">:</span> <span class="token string">"localhost:6379"</span><span class="token punctuation">,</span>
+		Password<span class="token punctuation">:</span> <span class="token string">""</span><span class="token punctuation">,</span>
+		DB<span class="token punctuation">:</span> <span class="token number">0</span><span class="token punctuation">,</span>
+	<span class="token punctuation">}</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">acquireLock</span><span class="token punctuation">(</span>lockKey <span class="token builtin">string</span><span class="token punctuation">)</span> <span class="token builtin">bool</span> <span class="token punctuation">{<!-- --></span>
+	result<span class="token punctuation">,</span> err <span class="token operator">:=</span> redisClient<span class="token punctuation">.</span><span class="token function">SetNX</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">,</span> <span class="token string">"locked"</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token operator">*</span>time<span class="token punctuation">.</span>Second<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">Result</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Fatal</span><span class="token punctuation">(</span>err<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">return</span> result
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">releaseLock</span><span class="token punctuation">(</span>lockKey <span class="token builtin">string</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	err <span class="token operator">:=</span> redisClient<span class="token punctuation">.</span><span class="token function">Del</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">Err</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Fatal</span><span class="token punctuation">(</span>err<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	config <span class="token operator">:=</span> sarama<span class="token punctuation">.</span><span class="token function">NewConfig</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	config<span class="token punctuation">.</span>Producer<span class="token punctuation">.</span>RequiredAcks <span class="token operator">=</span> sarama<span class="token punctuation">.</span>WaitForLocal
+	config<span class="token punctuation">.</span>Producer<span class="token punctuation">.</span>Return<span class="token punctuation">.</span>Successes <span class="token operator">=</span> <span class="token boolean">true</span>
+
+	producer<span class="token punctuation">,</span> err <span class="token operator">:=</span> sarama<span class="token punctuation">.</span><span class="token function">NewSyncProducer</span><span class="token punctuation">(</span>kafkaBrokers<span class="token punctuation">,</span> config<span class="token punctuation">)</span>
+	<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+		log<span class="token punctuation">.</span><span class="token function">Fatal</span><span class="token punctuation">(</span>err<span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+	<span class="token keyword">defer</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> err <span class="token operator">:=</span> producer<span class="token punctuation">.</span><span class="token function">Close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+			log<span class="token punctuation">.</span><span class="token function">Fatal</span><span class="token punctuation">(</span>err<span class="token punctuation">)</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+	lockKey <span class="token operator">:=</span> <span class="token string">"my_lock_key"</span>
+
+	<span class="token keyword">if</span> <span class="token function">acquireLock</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">defer</span> <span class="token function">releaseLock</span><span class="token punctuation">(</span>lockKey<span class="token punctuation">)</span>
+
+		<span class="token comment">// 发送获取锁消息到Kafka</span>
+		message <span class="token operator">:=</span> <span class="token operator">&amp;</span>sarama<span class="token punctuation">.</span>ProducerMessage<span class="token punctuation">{<!-- --></span>
+			Topic<span class="token punctuation">:</span> <span class="token string">"lock_topic"</span><span class="token punctuation">,</span>
+			Value<span class="token punctuation">:</span> sarama<span class="token punctuation">.</span><span class="token function">StringEncoder</span><span class="token punctuation">(</span><span class="token string">"Lock acquired for key: "</span> <span class="token operator">+</span> lockKey<span class="token punctuation">)</span><span class="token punctuation">,</span>
+		<span class="token punctuation">}</span>
+		<span class="token boolean">_</span><span class="token punctuation">,</span> <span class="token boolean">_</span><span class="token punctuation">,</span> err <span class="token operator">:=</span> producer<span class="token punctuation">.</span><span class="token function">SendMessage</span><span class="token punctuation">(</span>message<span class="token punctuation">)</span>
+		<span class="token keyword">if</span> err <span class="token operator">!=</span> <span class="token boolean">nil</span> <span class="token punctuation">{<!-- --></span>
+			log<span class="token punctuation">.</span><span class="token function">Fatal</span><span class="token punctuation">(</span>err<span class="token punctuation">)</span>
+		<span class="token punctuation">}</span>
+
+		<span class="token comment">// 处理业务逻辑</span>
+		fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"Lock acquired. Performing critical section operations..."</span><span class="token punctuation">)</span>
+		time<span class="token punctuation">.</span><span class="token function">Sleep</span><span class="token punctuation">(</span><span class="token number">5</span> <span class="token operator">*</span> time<span class="token punctuation">.</span>Second<span class="token punctuation">)</span>
+		fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"Critical section operations completed."</span><span class="token punctuation">)</span>
+	<span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+		fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"Failed to acquire lock. Another process may be holding the lock."</span><span class="token punctuation">)</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+</code></pre>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ae687a2cd4c9182995c4e980c01dd626/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">秋招Java后端开发冲刺——非关系型数据库篇（MongoDB）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/701d71d728f3cd7cf7f8b0b630c574dd/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">高效安全的IPXProxy代理服务：摆脱免费代理的烦恼</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

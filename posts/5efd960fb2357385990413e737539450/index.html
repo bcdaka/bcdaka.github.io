@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Unity 接入HybridCLR的点点滴滴，亲测三平台（PC、Android、WebGL）妥妥的。-问题分享 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/5efd960fb2357385990413e737539450/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Unity 接入HybridCLR的点点滴滴，亲测三平台（PC、Android、WebGL）妥妥的。-问题分享">
+  <meta property="og:description" content="一入热更深似海啊，没有热更是真恼火啊，干啥啥不方便，动不动就得重新发包；说实在的，也是工作之余研究这个，在原有框架基础上接入这个热更，既要保持原有功能，还要支持热更，实实在在、断断续续搞了这么久，终于是接入并测通了，这一路是坎坎坷坷，下面把走过的弯弯绕绕记录下，希望对后来想接入的小伙伴有帮助吧。
+其实之前早就有动热更新的心，无奈现在没做游戏了，项目这块基本都是定制开发，所以这块一直搁置，不过之前有考虑过lua和xlua也看过ILRuntime，但是一直耿耿于怀，要用另外一种语言去搞，而且咱又是一直干C#的，而且这几个实现机制都是需要一个独立的vm，编译完在解释一套，而且有的还不能直接使用，需要特殊处理，看着看着就没心思搞了；这时看到了HybridCLR，说实话，一开始看到的是huatuo，这俩其实到后来了解到是一个东西，看了几天，发现这个的实现机制从根本上解决了独立vm的问题，具体的HybridCLR官网说的更清楚，使用了AOT &#43; Interpreter混合运行方式，HybridCLR使得il2cpp变成一个全功能的runtime，原生（即通过System.Reflection.Assembly.Load）支持动态加载dll，这个就是亮点，在实现热更的路上，它占了绝对的分量。
+看到这里的，默认你已经在接入HybridCLR的路上了，而且已经接入，遇到问题了，如果是还没接入的，可以查看Unity 热更新 之 huatuo（HybridCLR) 和 Unity 热更新 HybridCLR 对接到项目中 了解和接入。
+这里使用的Unity版本是 2021.3.6f1 ， HybridCLR是 v2.3.0 ， il2cpp_plus版本是v2021-2.2.0一切准备就绪后，开始坎坷之路吧，Lz这里主要测试的平台有PC、Android、WebGL，感觉最明显的就是WebGL限制是真多，所以在这里爬坑也是绞尽脑汁了。
+所有常见的问题HybridCLR常见错误（这里是链接，可以跳过去看）里其实也都有，只是有的指出了方向，但具体怎么解决人家也没细细说明，必经错误千奇百怪，遇到了至少人家有个指引方向，剩下的就得靠自己慢慢爬了。
+别的不多说了，进入主题。
+问题：项目已经进入热更新，可以使用，但是想进一步使用热更新，热更项目中原有的dll。 正常接入后，打包出来没问题，然后有要求，比如项目之前就有已经引用的dll或则框架要求，把已经统一的功能封装出去，最终形成dll在项目中引用使用，不管什么原因，你想实现已经引用的外部dll的热更新。
+在HybridCLR中，是有这块的功能的，
+这里需要配置外部搜索dll路径和需要热更dll的名称，注意：这里的设置一定是同时设置，这样热更新才能找到需要热更的dll在哪里，而且外部搜索dll路径是以Assets为父级（根目录）去找的，这里Lz直接放在了项目内，如果你放在项目外，就要填写项目外地址了。
+确定配置完成后，真正的问题就从此开始了。
+1.报错：Building Library/Bee/artifacts/xxxx failed with output: Fatalerror in Unitiy CIL Linker Mono.Cecil.AssemblyResolutionException: Failed to resolve assembly:&#39;xxx&#39;
+这里Lz经历完爬坑后，总结先说下，他这里的配置，是将你选择的dll，在发布时，做了过滤，也就是不会打包到包中（AOT），也就意味着，你的AOT代码中，如果有对他们的引用，将会报错（Building Library/Bee/artifacts/xxxx failed with output: Fatalerror in Unitiy CIL Linker Mono.Cecil.AssemblyResolutionException: Failed to resolve assembly:&#39;xxx&#39;），或者你的AOT中没有引用，但是你外部热更的dll中有引用，同样会报这个错，根本原因是，热更（HybridCLR）把你要外部热更的dll过滤掉了（相当于删除），所以在打包时找不到引用，你说能不报错吗？这里爬坑了好久，希望对你有帮助，一定要冷静分析你要热更的dll中有没有其他地方在引用（如果是AOT那就必须分离掉那块功能，如果是外部dll，要么一起加入热更，要么把那块功能分离掉）。这个错误部分平台，都适用。
+2.报错：WebGL平台打包时遇到 undefine symbol: send file 之类的错误
+这个就纯属WebGL平台限制问题，一般主要是本地读取的一些问题，比如File操作，这里LZ建议都是用加载（UntyWebRequest）的方式（那个平台都适用，不会有问题），只是在这要注意的是，不同平台在使用网络加载的时候，要加入平台前缀，不然会加载失败 提示错误：Cannotconnect to destination host等（比如Android要加jar:file:// PC要加file://）">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-04-08T18:01:16+08:00">
+    <meta property="article:modified_time" content="2024-04-08T18:01:16+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Unity 接入HybridCLR的点点滴滴，亲测三平台（PC、Android、WebGL）妥妥的。-问题分享</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p style="text-align:center;">        <img alt="" src="https://images2.imgbox.com/0a/77/tGXJHlYM_o.png"></p> 
+<p>一入热更深似海啊，没有热更是真恼火啊，干啥啥不方便，动不动就得重新发包；说实在的，也是工作之余研究这个，在原有框架基础上接入这个热更，既要保持原有功能，还要支持热更，实实在在、断断续续搞了这么久，终于是接入并测通了，这一路是坎坎坷坷，下面把走过的弯弯绕绕记录下，希望对后来想接入的小伙伴有帮助吧。</p> 
+<p>        其实之前早就有动热更新的心，无奈现在没做游戏了，项目这块基本都是定制开发，所以这块一直搁置，不过之前有考虑过lua和xlua也看过ILRuntime，但是一直耿耿于怀，要用另外一种语言去搞，而且咱又是一直干C#的，而且这几个实现机制都是需要一个独立的vm，编译完在解释一套，而且有的还不能直接使用，需要特殊处理，看着看着就没心思搞了；这时看到了HybridCLR，说实话，一开始看到的是huatuo，这俩其实到后来了解到是一个东西，看了几天，发现这个的实现机制从根本上解决了独立vm的问题，具体的<a class="link-info" href="https://hybridclr.doc.code-philosophy.com/docs/intro" rel="nofollow" title="HybridCLR官网">HybridCLR官网</a>说的更清楚，使用了<code>AOT + Interpreter</code>混合运行方式，HybridCLR使得il2cpp变成一个全功能的runtime，原生（即通过System.Reflection.Assembly.Load）支持动态加载dll，这个就是亮点，在实现热更的路上，它占了绝对的分量。</p> 
+<p>        看到这里的，默认你已经在接入HybridCLR的路上了，而且已经接入，遇到问题了，如果是还没接入的，可以查看<a class="link-info" href="https://blog.csdn.net/u013774978/article/details/130353939?spm=1001.2014.3001.5502" title="Unity 热更新 之 huatuo（HybridCLR)">Unity 热更新 之 huatuo（HybridCLR)</a> 和 <a class="link-info" href="https://blog.csdn.net/u013774978/article/details/130536339?spm=1001.2014.3001.5502" title="Unity 热更新 HybridCLR 对接到项目中">Unity 热更新 HybridCLR 对接到项目中</a> 了解和接入。</p> 
+<p>        这里使用的Unity版本是 2021.3.6f1 ， HybridCLR是 v2.3.0 ， il2cpp_plus版本是v2021-2.2.0一切准备就绪后，开始坎坷之路吧，Lz这里主要测试的平台有PC、Android、WebGL，感觉最明显的就是WebGL限制是真多，所以在这里爬坑也是绞尽脑汁了。</p> 
+<p>        所有常见的问题<a class="link-info" href="https://hybridclr.doc.code-philosophy.com/docs/help/commonerrors" rel="nofollow" title="HybridCLR常见错误">HybridCLR常见错误</a>（这里是链接，可以跳过去看）里其实也都有，只是有的指出了方向，但具体怎么解决人家也没细细说明，必经错误千奇百怪，遇到了至少人家有个指引方向，剩下的就得靠自己慢慢爬了。</p> 
+<p>        别的不多说了，进入主题。</p> 
+<h2>        <strong>问题：项目已经进入热更新，可以使用，但是想进一步使用热更新，热更项目中原有的dll。</strong></h2> 
+<p>        正常接入后，打包出来没问题，然后有要求，比如项目之前就有已经引用的dll或则框架要求，把已经统一的功能封装出去，最终形成dll在项目中引用使用，不管什么原因，你想实现已经引用的外部dll的热更新。</p> 
+<p>        在HybridCLR中，是有这块的功能的，<img alt="" src="https://images2.imgbox.com/64/81/fqtfkJkX_o.jpg"></p> 
+<p> 这里需要配置外部搜索dll路径和需要热更dll的名称，<span style="color:#ff9900;">注意：这里的设置一定是同时设置，这样热更新才能找到需要热更的dll在哪里，而且外部搜索dll路径是以Assets为父级（根目录）去找的，这里Lz直接放在了项目内，如果你放在项目外，就要填写项目外地址了。</span></p> 
+<p> 确定配置完成后，真正的问题就从此开始了。</p> 
+<p><strong>1.报错：Building Library/Bee/artifacts/xxxx failed with output: Fatalerror in Unitiy CIL Linker Mono.Cecil.AssemblyResolutionException: Failed to resolve assembly:'xxx'</strong></p> 
+<p>这里Lz经历完爬坑后，总结先说下，他这里的配置，是将你选择的dll，在发布时，做了过滤，也就是不会打包到包中（AOT），也就意味着，你的AOT代码中，如果有对他们的引用，将会报错（Building Library/Bee/artifacts/xxxx failed with output: Fatalerror in Unitiy CIL Linker Mono.Cecil.AssemblyResolutionException: Failed to resolve assembly:'xxx'），或者你的AOT中没有引用，但是你外部热更的dll中有引用，同样会报这个错，根本原因是，热更（HybridCLR）把你要外部热更的dll过滤掉了（相当于删除），所以在打包时找不到引用，你说能不报错吗？这里爬坑了好久，希望对你有帮助，一定要冷静分析你要热更的dll中有没有其他地方在引用（如果是AOT那就必须分离掉那块功能，如果是外部dll，要么一起加入热更，要么把那块功能分离掉）。这个错误部分平台，都适用。</p> 
+<p><strong>2.报错：WebGL平台打包时遇到 undefine symbol: send file 之类的错误</strong></p> 
+<p>这个就纯属WebGL平台限制问题，一般主要是本地读取的一些问题，比如File操作，这里LZ建议都是用加载（UntyWebRequest）的方式（那个平台都适用，不会有问题），只是在这要注意的是，不同平台在使用网络加载的时候，要加入平台前缀，不然会加载失败 提示错误：Cannotconnect to destination host等（比如Android要加jar:file://   PC要加file://）</p> 
+<p><strong>3.注意一点,WebGL平台必须使用il2cpp的全局安装，</strong>这块官网说的比较明确，而且处理方法也很详细可以按照流程操作.如果还不懂的可以直接看官网这个错误：打包WebGL平台出现 <code>build.js: undefined symbol: RuntimeApi_LoadMetadataForAOTAssembly (referenced by top-level compiled C/C++ code)的解决办法。</code></p> 
+<p><strong><code>4.运行时，报错资源挂在的脚本丢失了ScriptMissing</code></strong></p> 
+<p>排除了你版本的问题，最大的可能就是你的热更新程序集没有加载，或者你在加载使用时，程序集还没有加载，要看下逻辑是不是有问题。</p> 
+<p><strong>5.运行时，遇到Unity: TypeLoadException: Could not load type 'XxxType' from assembly 'yyyAssembly'</strong></p> 
+<p>一般正常操作，.net必须使用.net4.x，然后最有可能的就是你程序集加载的顺序的问题呢，比如，如果A依赖于B，那你应该先加载B，再加载A，你加载顺序反了也会报这个错，毕竟代码的执行顺序都懂的，有依赖关系，一定是先加载被依赖的。</p> 
+<p><strong>6.运行时，报错couldn't be loaded because it has not been added to the build settings or the AssetBundle has not been loaded. 或者 couldn’t be loaded because it has not been added to the build settings. </strong></p> 
+<p>是因为在加载场景时，没有找到对应的场景文件，第一种时把场景文件打包为ab包加载，第二种则是把场景加入到BuildSetting中，两者看起来都能明白，但是在实际操作时，遇到问题时，肯定首先查过了，这两种都是不在问题发生范围内，那究竟时什么原因呢。其实第二种情况比较好理解，如果你不想热更你的场景，那就把场景直接拖入的的BuildSetting中，打包出来，正常切换场景是没问题的，但是，既然做了热更，你肯定不想这么做，那唯一的办法就是把场景打成ab包，但是打成ab包后，在Editor模式下加载没问题，发布出来了，就找不到场景了，（仅个人推测啊，在Editor模式下，加载可以不区分大小写，但是发布出来以后，是区分大小写的，这点注意下，就是你ab包的名称和场景名称要统一），有个加载方式是加载ab包后，有个ab.GetAllScenePaths()[0];可以读到场景文件的整个路径，在加载场景时，传入这个整个路径是不会出现问题的，而且可以加载成功，（这里lz遇到了，名称一摸一样，但是就是加载不出来，提示not been load，因为一般的做法要么根据id加载，要么跟据场景名称加载，特殊情况，开始要读完整路径加载），这个问题到这里就完结了，希望你这么操作也能加载成功。</p> 
+<p><strong>7. 找不到引用库 resolve AOT dll:{assemblyName} 失败! 请确保主工程已经引用了该dll并且正确生成了裁剪后的AOT dll。更多请参阅常见错误文档。</strong></p> 
+<p>如果你是hbyridclr v3.3.0，那么你在执行HybridCLR-》Generat下载Aot或者Bridge时，就是生成aot和建立桥接的时候，汇报这个错误，时因为hybridclr找不到你配置的外部热更新dll，按照官网指示，lz这里主工程里有引用，正常build也是可以的，但就是报这个，一番跟踪源码，才知道他是在aot时，通过dnlib的刷新项目内的程序集（assembly），找到了你的外部引用dll，但是在处理</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/74/f7/ZLdAazkJ_o.png"></p> 
+<p>asseblyPathResolver时， 并没有把我们的dll在aot时，放到他能处理的aot目录（HybridCLRData\AssembliesPostIl2CppStrip\StandaloneWindows64），StandaloneWindows64是对应平台的目录，会有Android、WebGL等，这里需要把报错的dll手动给让复制到这个目录下，就ok了 。</p> 
+<p>修改源码，实现自动拷贝</p> 
+<p>需要修改HybridCLR.Editor.Commands下的StripAOTDllCommand.cs</p> 
+<p>第一步，添加方法CopyIDEDllAotAssemblies（）</p> 
+<pre><code class="language-cs">/// &lt;summary&gt;
+        /// 拷贝自定义 热更新下的dll到 hybridclr可识别的aot目录下
+        /// &lt;/summary&gt;
+        private static void CopyIDEDllAotAssemblies(BuildTarget target)
+        {
+            var externalDirs = HybridCLRSettings.Instance.externalHotUpdateAssembliyDirs;
+            var dstPath = SettingsUtil.GetAssembliesPostIl2CppStripDir(target);
+            List&lt;string&gt; allHotUpdateDllNames = SettingsUtil.HotUpdateAssemblyNamesExcludePreserved;
+
+            foreach (var dir in externalDirs)
+            {
+                DirectoryInfo root = new DirectoryInfo(dir);
+                FileInfo[] files = root.GetFiles("*.dll");
+                foreach (var fp in files)
+                {
+                    string fileouExt  = Path.GetFileNameWithoutExtension(fp.FullName);
+                    string file = fp.Name;
+                    if (allHotUpdateDllNames.Contains(fileouExt))
+                    {
+                        Debug.Log($"[CopyIDEDllAotAssemblies] 过滤热更新assembly:{file}");
+                        continue;
+                    }
+                    Debug.Log($"[CopyIDEDllAotAssemblies] copy strip dll :{fp.FullName} ===&gt;&gt;&gt; :{dstPath}/{file}");
+                    File.Copy($"{fp.FullName}", $"{dstPath}/{file}", true);
+                }
+            }
+        }</code></pre> 
+<p>第二步，在 GenerateStripedAOTDlls（）方法中，添加该方法的引用</p> 
+<pre><code class="language-cs">public static void GenerateStripedAOTDlls()
+        {
+            GenerateStripedAOTDlls(EditorUserBuildSettings.activeBuildTarget, EditorUserBuildSettings.selectedBuildTargetGroup);
+            CopyIDEDllAotAssemblies(EditorUserBuildSettings.activeBuildTarget);
+        }</code></pre> 
+<p><strong>8. FileNotFoundException: Could not find file 'xxx/HybridCLRData\HotUpdateDlls\StandaloneWindows64\xxx.dll'.</strong></p> 
+<p>这块是hybridclr处理aot代码库逻辑问题，目前（lz从v2.3.0 到 3.3.0），一直遇到这个问题，就是在hybridclr配置过的程序集，他会处理，但是如果你是想更新原本项目中已有的dll，并不是项目开发中创建的程序集，就会遇到这个问题，hybridclr是没有记录这些外部热更新dll逻辑的，虽然他们在设置界面里留了配置外部更新dll的位置，但是在拷贝到aot目录或者hotfix目录时，没有相应逻辑的.</p> 
+<p>如果你是hybridclr v2.3.0，而且你想热更项目原有的应用dll，在配置了外部热更新dll后，hybridclr并没有把你配置的热更新dll放到他们能识别的热更新dll目录下，导致你在过滤热更新后，找不到你外部的dll，这里lz翻源码，添加了逻辑，拷贝到他们能识别的目录下</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/c7/56/aEGcOwy7_o.png"></p> 
+<p>修改源码，拷贝我们外部引用的dll到他们可识别的目录下：</p> 
+<p>第一步：修改HybridCLR.Editor.Link下的Analyzer.cs</p> 
+<p>添加方法</p> 
+<pre><code class="language-cs">public void CopyHotAssemblyToHotDllDir(List&lt;string&gt; rootAssemblies)
+        {
+            using (var assCollector = new AssemblyCache(_resolver))
+            {
+                var gs = HybridCLRSettings.Instance;
+                foreach (string rootAss in rootAssemblies)
+                {
+                    string dnAssPath = assCollector.GetAssemblyPath(rootAss);
+                    if (gs.hotUpdateAssemblies != null &amp;&amp; gs.hotUpdateAssemblies.Length&gt; 0)
+                    {
+                        foreach (string hotupaName in gs.hotUpdateAssemblies)
+                        {
+                            if(hotupaName == rootAss)
+                            {
+                                Debug.Log($"热更新中找到了外部dll：{hotupaName} path:{dnAssPath}");
+                                string srcPath = dnAssPath;
+                                string tarPath = $"{SettingsUtil.GetHotUpdateDllsOutputDirByTarget(EditorUserBuildSettings.activeBuildTarget)}/{hotupaName}.dll";
+                                File.Copy(srcPath, tarPath, true);
+                            }
+                        }
+                    }
+                }
+                assCollector.Dispose();
+            }
+</code></pre> 
+<p> 第二步，修改HybridCLR.Editor.Meta下的AssemblyCache.cs</p> 
+<p>添加方法</p> 
+<pre><code class="language-cs">public string GetAssemblyPath(string assembName)
+{
+     return _assemblyPathResolver.ResolveAssembly(assembName, true);
+}</code></pre> 
+<p>第三步，修改HybridCLR.Editor.Commands下的LinkGeneratorCommand.cs</p> 
+<p>在 GenerateLinkXml方法中 添加一句代码analyzer.CopyHotAssemblyToHotDllDir(hotfixAssemblies);</p> 
+<pre><code class="language-cs">public static void GenerateLinkXml(BuildTarget target)
+        {
+            var ls = SettingsUtil.HybridCLRSettings;
+
+            List&lt;string&gt; hotfixAssemblies = SettingsUtil.HotUpdateAssemblyNamesExcludePreserved;
+
+            var analyzer = new Analyzer(MetaUtil.CreateHotUpdateAndAOTAssemblyResolver(target, hotfixAssemblies));
+            var refTypes = analyzer.CollectRefs(hotfixAssemblies);
+            analyzer.CopyHotAssemblyToHotDllDir(hotfixAssemblies);
+
+            Debug.Log($"[LinkGeneratorCommand] hotfix assembly count:{hotfixAssemblies.Count}, ref type count:{refTypes.Count} output:{Application.dataPath}/{ls.outputLinkFile}");
+            var linkXmlWriter = new LinkXmlWriter();
+            linkXmlWriter.Write($"{Application.dataPath}/{ls.outputLinkFile}", refTypes);
+            AssetDatabase.Refresh();
+        }</code></pre> 
+<p>到此ok了，我们外部的dll就可被识别到了，执行一键拷贝时就不会报错了。</p> 
+<p></p> 
+<h4><strong>9.WebGL平台报错：Could not produce class With ID 81.</strong></h4> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/04/ae/ZBY5etun_o.png"></p> 
+<p>在PlayerSetting中，要取消勾选 Strip Engine Code <img alt="" src="https://images2.imgbox.com/8e/cd/ZhHOiekp_o.png"></p> 
+<p> </p> 
+<h4><strong>10.如果在开发中，代码量越来越大，执行一次</strong>HybridCLR/Generate/All，特别耗时间的话，有个优化编译dll（这里只针对你热更的dll-程序集）的方法。</h4> 
+<p>不用每次因为小改动，就执行All，换成执行其中几个就可以，如下几个：</p> 
+<p>先执行HybridCLR/Generate/LinkXml，收集和刷新一下你的linkxml；</p> 
+<p>在执行HybridCLR/Generate/Il2cppDef，编译热更新dll；</p> 
+<p>最后执行一下HybridCLR/Generate/MethodBridge，生成桥接函数；</p> 
+<p>这样，在你的\HybridCLRData\HotUpdateDlls，下就有了编译好的热更新dll了。</p> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e5bd47983d1121608794367d8f34bee5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">小程序自建平台开发票保存到微信卡包（java篇）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/26dd60b3e4d325babc1e28250102cbe2/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">大数据-kafka学习笔记_error while fetching metadata with correlation id</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

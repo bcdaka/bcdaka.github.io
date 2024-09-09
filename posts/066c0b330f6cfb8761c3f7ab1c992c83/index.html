@@ -1,0 +1,887 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>手撸 串口交互命令行 及 AT应用层协议解析框架 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/066c0b330f6cfb8761c3f7ab1c992c83/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="手撸 串口交互命令行 及 AT应用层协议解析框架">
+  <meta property="og:description" content="在嵌入式系统开发中，命令行接口（CLI）和AT命令解析是常见的需求。CLI提供了方便的调试接口，而AT命令则常用于模块间的通信控制。本文将介绍如何手动实现一个串口交互的命令行及AT应用层协议解析框架，适用于FreeRTOS系统。
+流程图：
+这个回调函数 HAL_UART_RxCpltCallback 是用于处理 UART（通用异步收发传输器）接收到的数据。在接收数据的过程中会首先对接收到的字符进行判断，并且判断接收缓冲区是否还有空间，如果已满，则调用 ProcessReceivedFrame 处理数据，并在每次接受满之后重启UART中断。
+void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) { // 用于检查当前触发中断的 UART 实例是否是我们期望处理的那个实例 xPort。 if (huart-&gt;Instance == xPort.Instance) { // 如果这是接收到的第一个字节，清空接收缓冲区 if (rx_index == 0) { //如果当前接收到的数据是本次接收的第一个字节（rx_index 为 0）， //则将接收缓冲区清空。 memset(rx_buffer, &#39;\0&#39;, xPort_RX_BUFFER_SIZE); } // 如果接收到回车符 &#39;\r&#39;，目前没有处理逻辑 if (received_char == &#39;\r&#39;) // || cRxedChar == &#39;\r&#39; { // 这里可以添加处理回车符的逻辑 } // 如果接收到换行符 &#39;\n&#39; else if (received_char == &#39;\n&#39;) // || cRxedChar == &#39;\r&#39; { if (rx_index !">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-05T10:58:23+08:00">
+    <meta property="article:modified_time" content="2024-06-05T10:58:23+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">手撸 串口交互命令行 及 AT应用层协议解析框架</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>        在嵌入式系统开发中，命令行接口（CLI）和AT命令解析是常见的需求。CLI提供了方便的调试接口，而AT命令则常用于模块间的通信控制。本文将介绍如何手动实现一个串口交互的命令行及AT应用层协议解析框架，适用于FreeRTOS系统。</p> 
+<p>流程图：</p> 
+<p class="img-center"><img alt="" height="1200" src="https://images2.imgbox.com/25/4a/7wTRPucJ_o.png" width="498"></p> 
+<p>        这个回调函数 <code>HAL_UART_RxCpltCallback</code> 是用于处理 UART（通用异步收发传输器）接收到的数据。在接收数据的过程中会首先对接收到的字符进行判断，并且判断接收缓冲区是否还有空间，如果已满，则调用 <code>ProcessReceivedFrame</code> 处理数据，并在每次接受满之后重启UART中断。</p> 
+<pre><code class="language-cpp">void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart)
+{
+    // 用于检查当前触发中断的 UART 实例是否是我们期望处理的那个实例 xPort。
+    if (huart-&gt;Instance == xPort.Instance)
+    {
+        // 如果这是接收到的第一个字节，清空接收缓冲区
+        if (rx_index == 0)
+        {
+            //如果当前接收到的数据是本次接收的第一个字节（rx_index 为 0），
+            //则将接收缓冲区清空。
+            memset(rx_buffer, '\0', xPort_RX_BUFFER_SIZE);
+        }
+
+        // 如果接收到回车符 '\r'，目前没有处理逻辑
+        if (received_char == '\r') // || cRxedChar == '\r'
+        {
+            // 这里可以添加处理回车符的逻辑
+        }
+        // 如果接收到换行符 '\n'
+        else if (received_char == '\n') // || cRxedChar == '\r'
+        {
+            if (rx_index != 0)
+            {
+                // 处理接收到的一帧数据
+                // 在此处添加处理逻辑，例如将数据复制到另一个缓冲区或进行解析
+                ProcessReceivedFrame(rx_buffer, &amp;rx_index);
+            }
+        }
+        else
+        {
+            // 将接收到的字符存储到接收缓冲区
+            rx_buffer[rx_index++] = (char)received_char;
+
+            // 检查接收缓冲区是否已满
+            if (rx_index &gt;= xPort_RX_BUFFER_SIZE)
+            {
+                // 处理接收到的一帧数据
+                ProcessReceivedFrame(rx_buffer, &amp;rx_index);
+            }
+        }
+
+        // 重新启动 UART 接收中断，以接收下一个字节
+        HAL_UART_Receive_IT(&amp;xPort, &amp;received_char, 1);
+    }
+}
+</code></pre> 
+<p>        结合之前对 <code>HAL_UART_RxCpltCallback</code> 函数的理解，现在我们详细解释如何通过<code>ProcessReceivedFrame</code> 函数处理接收到的数据：</p> 
+<p>        首先通过 <code>osPoolAlloc</code> 从内存池中分配内存，以存储接收到的数据，接着使用 <code>memset</code> 函数将分配的内存初始化为零。然后将当前帧数据的长度存储到 <code>message-&gt;len</code> 中，并使用 <code>strncpy</code> 函数将缓冲区的数据拷贝到 <code>message-&gt;buff</code> 中，最后将拷贝的数据放入消息队列中，等待处理。重置缓冲区长度指针 <code>plength</code> 为 0，表示缓冲区已处理完毕。使用 <code>memset</code> 函数将缓冲区清空，以准备接收新的数据。</p> 
+<pre><code class="language-cpp">void ProcessReceivedFrame(char *buffer, uint8_t* plength)
+{
+    // // 处理接收到的一帧数据
+    // // 例如，打印接收到的数据
+    // buffer[length - 2] = '\0'; // 替换 "\r\n" 为字符串终止符
+    // printf("Received frame: %s\n", buffer);
+    // osMessagePut(uartQueueHandle, (uint32_t)buffer, osWaitForever);
+
+    USART_Msg_Def *message;
+    message = (USART_Msg_Def *)osPoolAlloc(uartmsgPoolHandle); // 申请内存
+    //osPoolAlloc There is dirt in this memory pool
+    memset(message-&gt;buff, '\0', xPort_RX_BUFFER_SIZE);
+    message-&gt;len = *plength;
+    strncpy(message-&gt;buff, buffer, message-&gt;len);                     // 数据拷贝
+    osMessagePut(uartQueueHandle, (uint32_t)message, osWaitForever); // 写入队列
+    *plength = 0;
+    memset(buffer, '\0', xPort_RX_BUFFER_SIZE);
+}
+</code></pre> 
+<p><code>vUARTCommandConsoleStart</code> 函数通过以下步骤来启动 UART 命令控制台任务：</p> 
+<ul><li>注册 CLI 命令：调用 <code>vRegisterSampleCLICommands</code> 函数，注册一些示例 CLI 命令，这些命令将在命令控制台任务中使用。</li><li>创建一个互斥量 <code>xTxMutex</code>，用于保护对 UART 发送操作的访问，确保线程安全。使用 <code>configASSERT</code> 确保互斥量创建成功。如果创建失败，程序将进入断言。</li><li>使用 <code>xTaskCreate</code> 创建一个新的任务，该任务将实现 UART 命令控制台。</li><li>启动 UART 接收功能，以便命令控制台可以接收来自 UART 的数据。</li></ul> 
+<pre><code class="language-cpp">void vUARTCommandConsoleStart(void)
+{
+    uint16_t usStackSize = 512;
+    UBaseType_t uxPriority = 0;
+
+    // 注册示例 CLI 命令
+    vRegisterSampleCLICommands();
+
+    // 创建用于访问 UART Tx 的信号量（互斥量）
+    xTxMutex = xSemaphoreCreateMutex();
+    configASSERT(xTxMutex);
+
+    // 创建处理命令控制台的任务
+    xTaskCreate(prvUARTCommandConsoleTask, // 实现命令控制台的任务函数
+                "CLI",                     // 任务名称，用于调试
+                usStackSize,               // 分配给任务的堆栈大小
+                NULL,                      // 任务参数，这里未使用，传递 NULL
+                uxPriority,                // 任务优先级
+                NULL);                     // 任务句柄，这里未使用，传递 NULL
+
+    // 启动 UART 接收
+    StartUARTReception();
+}
+</code></pre> 
+<p> <code>prvUARTCommandConsoleTask</code> 函数是一个 FreeRTOS 任务，用于处理 UART 命令控制台。这个任务从消息队列中读取接收到的 UART 数据，并将其传递给命令解释器进行处理。</p> 
+<pre><code class="language-cpp">static void prvUARTCommandConsoleTask(void *pvParameters)
+{
+    char *pcOutputString;
+    BaseType_t xReturned;
+
+    (void)pvParameters;
+
+    /* Obtain the address of the output buffer. Note there is no mutual
+    exclusion on this buffer as it is assumed only one command console interface
+    will be used at any one time. */
+    pcOutputString = FreeRTOS_CLIGetOutputBuffer();
+
+    /* Send the welcome message. */
+    vSerialPutString(pcWelcomeMessage, (uint16_t)strlen((char*)pcWelcomeMessage));
+    
+    for (;;)
+    {
+        osEvent eEventTmp;
+        USART_Msg_Def *message;
+        
+        // 等待从消息队列中接收消息
+        eEventTmp = osMessageGet(uartQueueHandle, 0);
+        if (eEventTmp.status == osEventMessage)
+        {
+            // 处理接收到的数据帧
+            message = (USART_Msg_Def *)eEventTmp.value.p;
+
+            char cInputString[cmdMAX_INPUT_SIZE];
+            memcpy(cInputString, message-&gt;buff, cmdMAX_INPUT_SIZE);
+            int8_t cInputLen = message-&gt;len;
+            
+            osPoolFree(uartmsgPoolHandle, message); // 释放内存
+            
+#if debug
+            char tmp[50];
+            sprintf(tmp, "len=%d,strlen=%d\n", cInputLen, strlen(cInputString));
+            HAL_UART_Transmit(&amp;xPort, (const uint8_t *)tmp, strlen(tmp), portMAX_DELAY);
+#endif
+            if (xSemaphoreTake(xTxMutex, cmdMAX_MUTEX_WAIT) == pdPASS)
+            {
+                vSerialPutString(cInputString, cInputLen);
+                
+                vSerialPutString(pcNewLine, (uint16_t)strlen((char*)pcNewLine));
+
+                do
+                {
+                    /* Get the next output string from the command interpreter. */
+                    xReturned = FreeRTOS_CLIProcessCommand(cInputString, pcOutputString, configCOMMAND_INT_MAX_OUTPUT_SIZE);
+
+                    /* Write the generated string to the UART. */
+                    vSerialPutString(pcOutputString, (uint16_t)strlen((char*)pcOutputString));
+
+                } while (xReturned != pdFALSE);
+
+                vSerialPutString("\r\n&gt;", 3);
+                memset(cInputString, 0x00, cmdMAX_INPUT_SIZE);
+                
+                /* Must ensure to give the mutex back. */
+                xSemaphoreGive(xTxMutex);
+            }
+        }
+        osDelay(1);
+    }
+}
+</code></pre> 
+<p>这个任务实现了一个简单的 UART 命令控制台，通过消息队列接收 UART 输入数据，使用命令解释器处理输入命令，并将结果输出到 UART。任务使用互斥量确保对 UART 发送操作的线程安全。通过这种方式，系统可以处理并执行来自 UART 的命令，同时确保并发访问的安全性。</p> 
+<p> </p> 
+<p>下面这段代码注册了两个CLI（命令行接口）命令：<code>Echo</code> 和 <code>AT</code>。</p> 
+<pre><code class="language-cpp">/* FreeRTOS includes. */
+#include "FreeRTOS.h"
+#include "task.h"
+
+/* Standard includes. */
+#include &lt;stdint.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+#include &lt;string.h&gt;
+
+/* FreeRTOS+CLI includes. */
+#include "FreeRTOS_CLI.h"
+
+#include "CLI.h"
+
+static BaseType_t prvATCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
+static const CLI_Command_Definition_t xATCommand =
+	{
+		"AT",
+		"\r\nATcmd:\r\n +RST +MODE=0/1 +M=1/2,0~180\r\n",
+		prvATCommand, /* The function to run. */
+		0			  /* The user can enter any number of commands. */
+};
+static BaseType_t prvATCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString)
+{
+	BaseType_t xReturn;
+	char *p = pcCommandString+2;
+
+	ATcmdAnalyse(p);
+
+	strncat(pcWriteBuffer, "\r\nOK", strlen("\r\nOK"));
+	// strncpy( pcWriteBuffer, "what can i say, man!!!\r\n", xWriteBufferLen );
+	xReturn = pdFALSE;
+	return xReturn;
+}
+
+/*-----------------------------------------------------------*/
+
+/*
+ * Implements the task-stats command.
+ */
+static BaseType_t prvParameterEchoCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
+
+/* Structure that defines the "echo_parameters" command line command.  This
+takes a variable number of parameters that the command simply echos back one at
+a time. */
+static const CLI_Command_Definition_t xParameterEcho =
+	{
+		"Echo",
+		"\r\nEcho &lt;...&gt;:\r\n Take variable number of parameters, echos each in turn\r\n",
+		prvParameterEchoCommand, /* The function to run. */
+		-1						 /* The user can enter any number of commands. */
+};
+
+static BaseType_t prvParameterEchoCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString)
+{
+	const char *pcParameter;
+	BaseType_t xParameterStringLength, xReturn;
+	static UBaseType_t uxParameterNumber = 0;
+
+	/* Remove compile time warnings about unused parameters, and check the
+	write buffer is not NULL.  NOTE - for simplicity, this example assumes the
+	write buffer length is adequate, so does not check for buffer overflows. */
+	(void)pcCommandString;
+	(void)xWriteBufferLen;
+	configASSERT(pcWriteBuffer);
+
+	if (uxParameterNumber == 0)
+	{
+		/* The first time the function is called after the command has been
+		entered just a header string is returned. */
+		sprintf(pcWriteBuffer, "The parameters were:\r\n");
+
+		/* Next time the function is called the first parameter will be echoed
+		back. */
+		uxParameterNumber = 1U;
+
+		/* There is more data to be returned as no parameters have been echoed
+		back yet. */
+		xReturn = pdPASS;
+	}
+	else
+	{
+		/* Obtain the parameter string. */
+		pcParameter = FreeRTOS_CLIGetParameter(
+			pcCommandString,		/* The command string itself. */
+			uxParameterNumber,		/* Return the next parameter. */
+			&amp;xParameterStringLength /* Store the parameter string length. */
+		);
+
+		if (pcParameter != NULL)
+		{
+			/* Return the parameter string. */
+			memset(pcWriteBuffer, 0x00, xWriteBufferLen);
+			sprintf(pcWriteBuffer, "%d: ", (int)uxParameterNumber);
+			strncat(pcWriteBuffer, (char *)pcParameter, (size_t)xParameterStringLength);
+			strncat(pcWriteBuffer, "\r\n", strlen("\r\n"));
+
+			/* There might be more parameters to return after this one. */
+			xReturn = pdTRUE;
+			uxParameterNumber++;
+		}
+		else
+		{
+			/* No more parameters were found.  Make sure the write buffer does
+			not contain a valid string. */
+			pcWriteBuffer[0] = 0x00;
+
+			/* No more data to return. */
+			xReturn = pdFALSE;
+
+			/* Start over the next time this command is executed. */
+			uxParameterNumber = 0;
+		}
+	}
+
+	return xReturn;
+}
+/*-----------------------------------------------------------*/
+
+void vRegisterSampleCLICommands(void)
+{
+	/* Register all the command line commands defined immediately above. */
+	FreeRTOS_CLIRegisterCommand(&amp;xParameterEcho);
+	FreeRTOS_CLIRegisterCommand(&amp;xATCommand);
+
+}
+</code></pre> 
+<p>1. AT 命令</p> 
+<pre><code class="language-cpp">static BaseType_t prvATCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
+static const CLI_Command_Definition_t xATCommand =
+{
+    "AT",
+    "\r\nATcmd:\r\n +RST +MODE=0/1 +M=1/2,0~180\r\n",
+    prvATCommand, /* The function to run. */
+    0              /* The user can enter any number of commands. */
+};
+</code></pre> 
+<ul><li><code>xATCommand</code> 是一个 <code>CLI_Command_Definition_t</code> 结构体，定义了一个名为 <code>AT</code> 的命令。</li><li>第一个参数是命令名称 <code>"AT"</code>。</li><li>第二个参数是该命令的帮助信息，用于显示在命令行上。</li><li>第三个参数是该命令的处理函数 <code>prvATCommand</code>。</li><li>第四个参数表示用户可以输入任意数量的该命令。</li></ul> 
+<p>2. AT 命令处理函数</p> 
+<pre><code class="language-cpp">static BaseType_t prvATCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString)
+{
+    BaseType_t xReturn;
+    char *p = pcCommandString[2];
+
+    ATcmdAnalyse(p);
+
+    strncat(pcWriteBuffer, "\r\nOK", strlen("\r\nOK"));
+    xReturn = pdFALSE;
+    return xReturn;
+}
+</code></pre> 
+<ul><li><code>prvATCommand</code> 是处理 <code>AT</code> 命令的函数。</li><li>它接收三个参数：<code>pcWriteBuffer</code>（写缓冲区），<code>xWriteBufferLen</code>（写缓冲区长度）和 <code>pcCommandString</code>（命令字符串）。</li><li>函数将命令字符串的第三个字符传递给 <code>ATcmdAnalyse</code> 函数进行分析处理。</li><li>处理完毕后，将字符串 <code>"\r\nOK"</code> 追加到写缓冲区中，并返回 <code>pdFALSE</code>。</li></ul> 
+<p> 3. Echo 命令</p> 
+<pre><code class="language-cpp">static BaseType_t prvParameterEchoCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
+
+static const CLI_Command_Definition_t xParameterEcho =
+{
+    "Echo",
+    "\r\nEcho &lt;...&gt;:\r\n Take variable number of parameters, echos each in turn\r\n",
+    prvParameterEchoCommand, /* The function to run. */
+    -1                        /* The user can enter any number of commands. */
+};
+</code></pre> 
+<ul><li><code>xParameterEcho</code> 是一个 <code>CLI_Command_Definition_t</code> 结构体，定义了一个名为 <code>Echo</code> 的命令。</li><li>第一个参数是命令名称 <code>"Echo"</code>。</li><li>第二个参数是该命令的帮助信息，用于显示在命令行上。</li><li>第三个参数是该命令的处理函数 <code>prvParameterEchoCommand</code>。</li><li>第四个参数表示用户可以输入任意数量的该命令。</li></ul> 
+<p>4. Echo 命令处理函数 </p> 
+<pre><code class="language-cpp">static BaseType_t prvParameterEchoCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString)
+{
+    const char *pcParameter;
+    BaseType_t xParameterStringLength, xReturn;
+    static UBaseType_t uxParameterNumber = 0;
+
+    // 省略部分代码...
+
+    return xReturn;
+}
+</code></pre> 
+<ul><li><code>prvParameterEchoCommand</code> 是处理 <code>Echo</code> 命令的函数。</li><li>它接收三个参数：<code>pcWriteBuffer</code>（写缓冲区），<code>xWriteBufferLen</code>（写缓冲区长度）和 <code>pcCommandString</code>（命令字符串）。</li><li>函数通过调用 <code>FreeRTOS_CLIGetParameter</code> 逐个获取命令参数，并将其逐个写入写缓冲区中。</li><li>如果没有更多参数，返回 <code>pdFALSE</code>。</li></ul> 
+<p>5. 注册命令函数</p> 
+<pre><code class="language-cpp">void vRegisterSampleCLICommands(void)
+{
+    FreeRTOS_CLIRegisterCommand(&amp;xParameterEcho);
+    FreeRTOS_CLIRegisterCommand(&amp;xATCommand);
+}
+</code></pre> 
+<ul><li><code>vRegisterSampleCLICommands</code> 函数用于注册以上定义的两个命令。</li><li>调用 <code>FreeRTOS_CLIRegisterCommand</code> 函数注册 <code>Echo</code> 和 <code>AT</code> 命令。</li></ul> 
+<p>这些命令通过 FreeRTOS 的 CLI 模块注册，可以在命令行界面中使用。</p> 
+<p>这段代码实现了一个简单的命令行接口（CLI），允许通过注册命令的方式来扩展功能。主要包括命令注册、命令处理和帮助命令的实现。</p> 
+<pre><code class="language-cpp">/* Standard includes. */
+#include &lt;string.h&gt;
+#include &lt;stdint.h&gt;
+
+/* FreeRTOS includes. */
+#include "FreeRTOS.h"
+#include "task.h"
+
+/* Utils includes. */
+#include "FreeRTOS_CLI.h"
+
+typedef struct xCOMMAND_INPUT_LIST
+{
+	const CLI_Command_Definition_t *pxCommandLineDefinition;
+	struct xCOMMAND_INPUT_LIST *pxNext;
+} CLI_Definition_List_Item_t;
+
+/*
+ * The callback function that is executed when "help" is entered.  This is the
+ * only default command that is always present.
+ */
+static BaseType_t prvHelpCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString);
+
+/*
+ * Return the number of parameters that follow the command name.
+ */
+static int8_t prvGetNumberOfParameters(const char *pcCommandString);
+
+/* The definition of the "help" command.  This command is always at the front
+of the list of registered commands. */
+static const CLI_Command_Definition_t xHelpCommand =
+	{
+		"Help",
+		"\r\nHelp:\r\n Lists all the registered commands\r\n",
+		prvHelpCommand,
+		0};
+
+/* The definition of the list of commands.  Commands that are registered are
+added to this list. */
+static CLI_Definition_List_Item_t xRegisteredCommands =
+	{
+		&amp;xHelpCommand, /* The first command in the list is always the help command, defined in this file. */
+		NULL		   /* The next pointer is initialised to NULL, as there are no other registered commands yet. */
+};
+
+/* A buffer into which command outputs can be written is declared here, rather
+than in the command console implementation, to allow multiple command consoles
+to share the same buffer.  For example, an application may allow access to the
+command interpreter by UART and by Ethernet.  Sharing a buffer is done purely
+to save RAM.  Note, however, that the command console itself is not re-entrant,
+so only one command interpreter interface can be used at any one time.  For that
+reason, no attempt at providing mutual exclusion to the cOutputBuffer array is
+attempted.
+
+configAPPLICATION_PROVIDES_cOutputBuffer is provided to allow the application
+writer to provide their own cOutputBuffer declaration in cases where the
+buffer needs to be placed at a fixed address (rather than by the linker). */
+static char cOutputBuffer[configCOMMAND_INT_MAX_OUTPUT_SIZE];
+
+/*-----------------------------------------------------------*/
+
+BaseType_t FreeRTOS_CLIRegisterCommand(const CLI_Command_Definition_t *const pxCommandToRegister)
+{
+	static CLI_Definition_List_Item_t *pxLastCommandInList = &amp;xRegisteredCommands;
+	CLI_Definition_List_Item_t *pxNewListItem;
+	BaseType_t xReturn = pdFAIL;
+
+	/* Check the parameter is not NULL. */
+	configASSERT(pxCommandToRegister);
+
+	/* Create a new list item that will reference the command being registered. */
+	pxNewListItem = (CLI_Definition_List_Item_t *)pvPortMalloc(sizeof(CLI_Definition_List_Item_t));
+	configASSERT(pxNewListItem);
+
+	if (pxNewListItem != NULL)
+	{
+		taskENTER_CRITICAL();
+		{
+			/* Reference the command being registered from the newly created
+			list item. */
+			pxNewListItem-&gt;pxCommandLineDefinition = pxCommandToRegister;
+
+			/* The new list item will get added to the end of the list, so
+			pxNext has nowhere to point. */
+			pxNewListItem-&gt;pxNext = NULL;
+
+			/* Add the newly created list item to the end of the already existing
+			list. */
+			pxLastCommandInList-&gt;pxNext = pxNewListItem;
+
+			/* Set the end of list marker to the new list item. */
+			pxLastCommandInList = pxNewListItem;
+		}
+		taskEXIT_CRITICAL();
+
+		xReturn = pdPASS;
+	}
+
+	return xReturn;
+}
+/*-----------------------------------------------------------*/
+
+BaseType_t FreeRTOS_CLIProcessCommand(const char *const pcCommandInput, char *pcWriteBuffer, size_t xWriteBufferLen)
+{
+	static const CLI_Definition_List_Item_t *pxCommand = NULL;
+	BaseType_t xReturn = pdTRUE;
+	const char *pcRegisteredCommandString;
+	size_t xCommandStringLength;
+
+	/* Note:  This function is not re-entrant.  It must not be called from more
+	thank one task. */
+
+	if (pxCommand == NULL)
+	{
+		/* Search for the command string in the list of registered commands. */
+		for (pxCommand = &amp;xRegisteredCommands; pxCommand != NULL; pxCommand = pxCommand-&gt;pxNext)
+		{
+			pcRegisteredCommandString = pxCommand-&gt;pxCommandLineDefinition-&gt;pcCommand;
+			xCommandStringLength = strlen(pcRegisteredCommandString);
+
+			/* To ensure the string lengths match exactly, so as not to pick up
+			a sub-string of a longer command, check the byte after the expected
+			end of the string is either the end of the string or a space before
+			a parameter. */
+			if ((pcCommandInput[xCommandStringLength] == ' ') || (pcCommandInput[xCommandStringLength] == 0x00))
+			{
+				if (strncmp(pcCommandInput, pcRegisteredCommandString, xCommandStringLength) == 0)
+				{
+					/* The command has been found.  Check it has the expected
+					number of parameters.  If cExpectedNumberOfParameters is -1,
+					then there could be a variable number of parameters and no
+					check is made. */
+					if (pxCommand-&gt;pxCommandLineDefinition-&gt;cExpectedNumberOfParameters &gt;= 0)
+					{
+						if (prvGetNumberOfParameters(pcCommandInput) != pxCommand-&gt;pxCommandLineDefinition-&gt;cExpectedNumberOfParameters)
+						{
+							xReturn = pdFALSE;
+						}
+					}
+
+					break;
+				}
+			}
+			else if ((strncmp("AT", pcRegisteredCommandString, 2) == 0) &amp;&amp; (strncmp("AT", pcCommandInput, 2) == 0))
+			{
+				break;
+			}
+		}
+	}
+
+	if ((pxCommand != NULL) &amp;&amp; (xReturn == pdFALSE))
+	{
+		/* The command was found, but the number of parameters with the command
+		was incorrect. */
+		strncpy(pcWriteBuffer, "error cmd para(s).  Enter \"Help\".\r\n\r\n", xWriteBufferLen);
+		pxCommand = NULL;
+	}
+	else if (pxCommand != NULL)
+	{
+		/* Call the callback function that is registered to this command. */
+		xReturn = pxCommand-&gt;pxCommandLineDefinition-&gt;pxCommandInterpreter(pcWriteBuffer, xWriteBufferLen, pcCommandInput);
+
+		/* If xReturn is pdFALSE, then no further strings will be returned
+		after this one, and	pxCommand can be reset to NULL ready to search
+		for the next entered command. */
+		if (xReturn == pdFALSE)
+		{
+			pxCommand = NULL;
+		}
+	}
+	else
+	{
+		/* pxCommand was NULL, the command was not found. */
+		strncpy(pcWriteBuffer, "Command not recognised.  Enter 'help' to view a list of available commands.\r\n\r\n", xWriteBufferLen);
+		xReturn = pdFALSE;
+	}
+
+	return xReturn;
+}
+/*-----------------------------------------------------------*/
+
+char *FreeRTOS_CLIGetOutputBuffer(void)
+{
+	return cOutputBuffer;
+}
+/*-----------------------------------------------------------*/
+
+const char *FreeRTOS_CLIGetParameter(const char *pcCommandString, UBaseType_t uxWantedParameter, BaseType_t *pxParameterStringLength)
+{
+	UBaseType_t uxParametersFound = 0;
+	const char *pcReturn = NULL;
+
+	*pxParameterStringLength = 0;
+
+	while (uxParametersFound &lt; uxWantedParameter)
+	{
+		/* Index the character pointer past the current word.  If this is the start
+		of the command string then the first word is the command itself. */
+		while (((*pcCommandString) != 0x00) &amp;&amp; ((*pcCommandString) != ' '))
+		{
+			pcCommandString++;
+		}
+
+		/* Find the start of the next string. */
+		while (((*pcCommandString) != 0x00) &amp;&amp; ((*pcCommandString) == ' '))
+		{
+			pcCommandString++;
+		}
+
+		/* Was a string found? */
+		if (*pcCommandString != 0x00)
+		{
+			/* Is this the start of the required parameter? */
+			uxParametersFound++;
+
+			if (uxParametersFound == uxWantedParameter)
+			{
+				/* How long is the parameter? */
+				pcReturn = pcCommandString;
+				while (((*pcCommandString) != 0x00) &amp;&amp; ((*pcCommandString) != ' '))
+				{
+					(*pxParameterStringLength)++;
+					pcCommandString++;
+				}
+
+				if (*pxParameterStringLength == 0)
+				{
+					pcReturn = NULL;
+				}
+
+				break;
+			}
+		}
+		else
+		{
+			break;
+		}
+	}
+
+	return pcReturn;
+}
+/*-----------------------------------------------------------*/
+
+static BaseType_t prvHelpCommand(char *pcWriteBuffer, size_t xWriteBufferLen, const char *pcCommandString)
+{
+	static const CLI_Definition_List_Item_t *pxCommand = NULL;
+	BaseType_t xReturn;
+
+	(void)pcCommandString;
+
+	if (pxCommand == NULL)
+	{
+		/* Reset the pxCommand pointer back to the start of the list. */
+		pxCommand = &amp;xRegisteredCommands;
+	}
+
+	/* Return the next command help string, before moving the pointer on to
+	the next command in the list. */
+	strncpy(pcWriteBuffer, pxCommand-&gt;pxCommandLineDefinition-&gt;pcHelpString, xWriteBufferLen);
+	pxCommand = pxCommand-&gt;pxNext;
+
+	if (pxCommand == NULL)
+	{
+		/* There are no more commands in the list, so there will be no more
+		strings to return after this one and pdFALSE should be returned. */
+		xReturn = pdFALSE;
+	}
+	else
+	{
+		xReturn = pdTRUE;
+	}
+
+	return xReturn;
+}
+/*-----------------------------------------------------------*/
+
+static int8_t prvGetNumberOfParameters(const char *pcCommandString)
+{
+	int8_t cParameters = 0;
+	BaseType_t xLastCharacterWasSpace = pdFALSE;
+
+	/* Count the number of space delimited words in pcCommandString. */
+	while (*pcCommandString != 0x00)
+	{
+		if ((*pcCommandString) == ' ')
+		{
+			if (xLastCharacterWasSpace != pdTRUE)
+			{
+				cParameters++;
+				xLastCharacterWasSpace = pdTRUE;
+			}
+		}
+		else
+		{
+			xLastCharacterWasSpace = pdFALSE;
+		}
+
+		pcCommandString++;
+	}
+
+	/* If the command string ended with spaces, then there will have been too
+	many parameters counted. */
+	if (xLastCharacterWasSpace == pdTRUE)
+	{
+		cParameters--;
+	}
+
+	/* The value returned is one less than the number of space delimited words,
+	as the first word should be the command itself. */
+	return cParameters;
+}
+</code></pre> 
+<ul><li> <p><strong>注册命令</strong></p> <p>调用 <code>FreeRTOS_CLIRegisterCommand</code> 函数注册新的命令。这个函数会将新的命令节点添加到链表末尾。</p> </li><li> <p><strong>处理命令</strong></p> <p>调用 <code>FreeRTOS_CLIProcessCommand</code> 函数处理输入的命令字符串。这个函数会遍历注册的命令链表，找到匹配的命令，并调用相应的回调函数处理。</p> </li><li> <p><strong>帮助命令</strong></p> <p>当输入 <code>Help</code> 命令时，<code>prvHelpCommand</code> 回调函数会被调用，输出所有注册命令的帮助信息。</p> </li></ul> 
+<p> </p> 
+<p>这段代码实现了一个简单的 AT 指令解析器。</p> 
+<pre><code class="language-cpp">#include "CLI.h"
+#include "string.h"
+// "\r\nATcmd:\r\n +RST +MODE=0/1 +M=1/2,0~180\r\n",
+typedef enum
+{
+    AT = 0,
+    MODE,
+    M,
+    RST,
+    /**将指令添加到上面**/
+    MAXCMDNUM
+} ATCommand;
+
+typedef enum 
+{
+	ATERROR = 0, 
+	ATSUCCESS ,
+	ATERRORCODE1,
+}ATStatus;
+
+typedef ATStatus (*pFuncCallback)(char *str);
+
+typedef struct
+{
+    ATCommand ATCommandName;
+    char *ATStr;                    // 发送的AT指令
+    pFuncCallback ATCallback; // AT指令接收完成，指令处理回调函数
+} ATCommandConfig;
+
+ATStatus MODE_Callback(char *str);
+ATStatus M_Callback(char *str);
+ATStatus RST_Callback(char *str);
+
+static const ATCommandConfig ATCommandList[] =
+    {
+        {MODE, "MODE", MODE_Callback},
+        {M, "M", M_Callback},
+        {RST, "RST", RST_Callback},
+        NULL,
+};
+
+static void ATcmdGetRun(pATcmd, pATcmdLen, pATvalue)
+{
+    ATCommandConfig *pxCommand;
+    const char *pcRegisteredCommandString;
+    for (pxCommand = &amp;ATCommandList[0]; pxCommand != NULL; pxCommand++)
+    {
+        pcRegisteredCommandString = pxCommand-&gt;ATStr;
+        if (strncmp(pATcmd, pcRegisteredCommandString, pATcmdLen) == 0)
+        {
+            pxCommand-&gt;ATCallback(pATvalue);
+        }
+    }
+}
+
+void ATcmdAnalyse(char *pATcmd)
+{
+    if ('+' == pATcmd[0])
+    {
+        pATcmd++;
+        char *pATvalue;
+        uint8_t pATcmdLen = 0; // ATcmd lenth
+        pATvalue = strstr(pATcmd, "=");
+        if (pATvalue)
+        {
+            pATcmdLen = pATvalue - pATcmd; // ATcmd lenth
+            pATvalue++;
+        }
+        else
+        {
+            pATvalue = NULL;
+            pATcmdLen = strlen(pATcmd);
+        }
+        ATcmdGetRun(pATcmd, pATcmdLen, pATvalue);
+    }
+}
+
+
+/*--------------------------------------------------
+In fact, the last step callback function of 
+the at instruction cannot directly control the hardware. 
+There should be a third intermediate layer SDK
+--------------------------------------------------*/
+ATStatus MODE_Callback(char *str)
+{
+    //挂起舵机的任务
+}
+ATStatus M_Callback(char *str)
+{
+    //Sg90MotorCtl(舵机1/2  , 舵机角度) 
+    //控制舵机运行到具体角度
+    //内部需要对舵机能够转动的最大角度进行限位
+}
+ATStatus RST_Callback(char *str)
+{
+    //重启 mcu
+}
+</code></pre> 
+<p>让我们逐步解释它的功能和结构：</p> 
+<ol><li> <p><strong>枚举类型定义：</strong></p> 
+  <ul><li><code>ATCommand</code> 枚举定义了一组 AT 指令的名称，包括 <code>AT</code>、<code>MODE</code>、<code>M</code> 和 <code>RST</code>，以及一个特殊的枚举 <code>MAXCMDNUM</code>，用于表示指令数量上限。</li></ul></li><li> <p><strong>AT 状态枚举：</strong></p> 
+  <ul><li><code>ATStatus</code> 枚举定义了一组 AT 操作的状态，包括成功、失败以及可能的其他错误码。</li></ul></li><li> <p><strong>函数指针定义：</strong></p> 
+  <ul><li><code>pFuncCallback</code> 是一个函数指针类型，指向一个接受 <code>char*</code> 参数并返回 <code>ATStatus</code> 类型的函数。</li></ul></li><li> <p><strong>AT 指令配置结构体：</strong></p> 
+  <ul><li><code>ATCommandConfig</code> 结构体定义了一个 AT 指令的配置，包括指令名称、发送的指令字符串以及指令完成时的回调函数。</li></ul></li><li> <p><strong>AT 指令配置列表：</strong></p> 
+  <ul><li><code>ATCommandList</code> 是一个数组，存储了所有 AT 指令的配置信息，包括指令名称、发送的指令字符串和回调函数。列表以 <code>NULL</code> 结尾。</li></ul></li><li> <p><strong>AT 指令解析函数：</strong></p> 
+  <ul><li><code>ATcmdAnalyse</code> 函数用于解析接收到的 AT 指令。它接收一个指向 AT 指令字符串的指针，并根据指令名称调用相应的回调函数。</li></ul></li><li> <p><strong>AT 指令回调函数：</strong></p> 
+  <ul><li><code>MODE_Callback</code>、<code>M_Callback</code> 和 <code>RST_Callback</code> 是对应于不同指令的回调函数，用于执行具体的操作。这些函数会根据指令参数进行不同的处理。</li></ul></li><li> <p><strong>AT 指令执行函数：</strong></p> 
+  <ul><li><code>ATcmdGetRun</code> 函数根据接收到的 AT 指令名称，在配置列表中查找对应的配置，并调用相应的回调函数执行操作。</li></ul></li></ol> 
+<p> </p> 
+<p> </p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a1362c11c9ecffedfae892378719f592/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">实验二、网络属性设置《计算机网络》</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/fec733230b8210af0c5b1d0c58c407a6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">游泳预约报名小程序开发源码案例模板之前端功能介绍</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

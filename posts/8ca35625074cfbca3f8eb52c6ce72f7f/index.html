@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>使用Anomalib项目的padim无监督算法 进行自制工业缺陷数据集的模型训练和ONNX部署（一）——模型训练篇 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/8ca35625074cfbca3f8eb52c6ce72f7f/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="使用Anomalib项目的padim无监督算法 进行自制工业缺陷数据集的模型训练和ONNX部署（一）——模型训练篇">
+  <meta property="og:description" content="目录
+前言 一、无监督学习缺陷检测 Anomalib介绍
+二、Anomalib代码结构
+三、任务描述和模型训练推理
+四、总结与展望
+前言 本文专注于padim算法在自制数据集上的训练过程，博主水平有限，对神经网络模型秉持能用就行的态度，所以文中不涉及网络结构和论文细节的解读，想看这些的同学请另寻资料哈~
+一、无监督学习缺陷检测 Anomalib介绍 组里最近给的新任务，对金属材质表面的各种缺陷进行检测。之前使用的是有监督的yolov5网络，标数据集着实痛苦无比。而且工业缺陷数据有一个比较显著的特征：样本不平衡。绝大部分采集得到的工业数据都是没有缺陷的，这样一来，正样本的数据在模型训练中根本没有起到作用，负样本又太少，很难训练得到有效的模型。使用有监督学习的方法还有一个问题：负样本的出现是十分偶然的，可能在数据集中根本没有出现某一类型的负样本，如此训练得到的模型很有可能翻车，所以只能另寻他法。
+查阅资料，发现无监督的算法更适合工业缺陷检测的场景。无监督算法只使用正样本进行训练，网络经过大量的正样本学习，在遇到负样本时，就会知道负样本和正样本“长得不一样”，然后输出和原图尺寸相同的一张概率分布图，来表示某处是异常区域的概率大小。
+无监督学习方法虽好，但作为伸手党应该去哪里要代码呢？个人感觉最好的地方就是Anomalib，它使用Python实现，资料完备易懂，目前仍然在更新。链接如下：GitHub - openvinotoolkit/anomalib: An anomaly detection library comprising state-of-the-art algorithms and features such as experiment management, hyper-parameter optimization, and edge inference.https://github.com/openvinotoolkit/anomalib
+看到英文名字就可以知道：这是一个异常检测（Abnormal）的库（library），里面的内容的确十分丰富，集成了十余种近年来准确率较高的缺陷（异常）检测算法，基本都是无监督学习的方法，诸如padim算法、fastflow算法等。
+找到这个宝库，我们下一步需要探索它的代码结构和用法。
+二、Anomalib代码结构 我在本地使用Pycharm编程，新建项目后Anomalib的代码结构如下：
+若想理清楚该项目的代码结构，方便后面的训练和部署，需要一点点进行分析。其中，比较重要的几个部分是：
+1. anomalib文件夹：事实上本文件夹就是该团队发布的库的源码，我们同样可以通过pip install的方法来进行安装，
+1.1 该文件夹下的models子文件夹包含了十余种缺陷检测的算法，可供读者任意调用；
+1.2 pre_processing和post_processing子文件夹分别是预处理和后处理功能，最终显示推理结果就使用了post_processing下的visualizer。
+1.3 deploy文件夹中的inferencers则是各种推理器，想要使用pytorch的读者可以关注torch_inferencer，想要使用onnx推理的读者则应该使用openvino_inferencer。
+2. datasets文件夹：顾名思义，该文件夹中应该存放待训练的数据集，如工业数据集MVTec，或者我们自制的数据集。
+3. results文件夹：该文件夹存放的是训练和推理的结果，只有在完成了训练或推理任务后才会出现。
+4. tools文件夹：该文件夹中的inference子文件夹存放了一系列推理代码，它们分别调用了anomalib.deploy中的不同inferencer（推理器）。该文件夹下的train.py是训练模型的入口。
+总结：我们后面需要使用tools/train.py进行模型训练，使用tools/inference中的某个推理代码进行模型推理预测。有了以上预备知识，我们终于可以开始模型的训练了。
+三、任务描述和模型训练推理 若读者只想在pycharm中看一个算法的效果，那么按照官方的示例，使用train.py训练后再使用lightning_inference.py进行推理即可，在新出现的result文件夹中便可以看到推理结果，十分方便，此处不予赘述。
+但对于包括我在内，后续需要在其他平台部署的读者，我们需要训练自己的数据集并得到onnx模型，这样就需要对config.yaml文件进行修改，方法如下：
+首先依然按照官方的方案，看Readme中训练Custom Dataset的方法：
+这里我们使用的是padim算法，于是我们将anomalib/models/padim/config.yaml的dataset部分按以上部分修改后在终端运行以下训练命令：
+python tools/train.py --model padim --config anomalib/models/padim/config.yaml 但会报错：找不到“normalization”等属性，此时不要着急，之前的config.yaml中实际上这些属性都是在的，这里官方竟然没有写进来，可能是疏忽了，我把自己的config.yaml的datasets部分放在这里，读者可以按照自己的自制数据集的路径进行改写，需要添加和注意的地方我都做了注释：
+dataset: name: tube # 数据集的名字，如MVTec等，这个不重要 format: folder path: .">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2023-06-02T17:25:21+08:00">
+    <meta property="article:modified_time" content="2023-06-02T17:25:21+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">使用Anomalib项目的padim无监督算法 进行自制工业缺陷数据集的模型训练和ONNX部署（一）——模型训练篇</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="-toc" style="margin-left:0px;"></p> 
+<p id="%E5%89%8D%E8%A8%80%C2%A0-toc" style="margin-left:0px;"><a href="#%E5%89%8D%E8%A8%80%C2%A0" rel="nofollow">前言 </a></p> 
+<p id="%E4%B8%80%E3%80%81%E6%97%A0%E7%9B%91%E7%9D%A3%E5%AD%A6%E4%B9%A0%E7%BC%BA%E9%99%B7%E6%A3%80%E6%B5%8B%20Anomalib%E4%BB%8B%E7%BB%8D-toc" style="margin-left:0px;"><a href="#%E4%B8%80%E3%80%81%E6%97%A0%E7%9B%91%E7%9D%A3%E5%AD%A6%E4%B9%A0%E7%BC%BA%E9%99%B7%E6%A3%80%E6%B5%8B%20Anomalib%E4%BB%8B%E7%BB%8D" rel="nofollow">一、无监督学习缺陷检测 Anomalib介绍</a></p> 
+<p id="%E4%BA%8C%E3%80%81Anomalib%E4%BB%A3%E7%A0%81%E7%BB%93%E6%9E%84-toc" style="margin-left:0px;"><a href="#%E4%BA%8C%E3%80%81Anomalib%E4%BB%A3%E7%A0%81%E7%BB%93%E6%9E%84" rel="nofollow">二、Anomalib代码结构</a></p> 
+<p id="%E4%B8%89%E3%80%81%E4%BB%BB%E5%8A%A1%E6%8F%8F%E8%BF%B0%E5%92%8C%E6%A8%A1%E5%9E%8B%E8%AE%AD%E7%BB%83%E6%8E%A8%E7%90%86-toc" style="margin-left:0px;"><a href="#%E4%B8%89%E3%80%81%E4%BB%BB%E5%8A%A1%E6%8F%8F%E8%BF%B0%E5%92%8C%E6%A8%A1%E5%9E%8B%E8%AE%AD%E7%BB%83%E6%8E%A8%E7%90%86" rel="nofollow">三、任务描述和模型训练推理</a></p> 
+<p id="%E5%9B%9B%E3%80%81%E6%80%BB%E7%BB%93%E4%B8%8E%E5%B1%95%E6%9C%9B-toc" style="margin-left:0px;"><a href="#%E5%9B%9B%E3%80%81%E6%80%BB%E7%BB%93%E4%B8%8E%E5%B1%95%E6%9C%9B" rel="nofollow">四、总结与展望</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h2 id="%E5%89%8D%E8%A8%80%C2%A0">前言 </h2> 
+<p>        本文专注于padim算法在自制数据集上的训练过程，博主水平有限，对神经网络模型秉持能用就行的态度，所以文中不涉及网络结构和论文细节的解读，想看这些的同学请另寻资料哈~</p> 
+<h2 id="%E4%B8%80%E3%80%81%E6%97%A0%E7%9B%91%E7%9D%A3%E5%AD%A6%E4%B9%A0%E7%BC%BA%E9%99%B7%E6%A3%80%E6%B5%8B%20Anomalib%E4%BB%8B%E7%BB%8D">一、无监督学习缺陷检测 Anomalib介绍</h2> 
+<p>        组里最近给的新任务，对金属材质表面的各种缺陷进行检测。之前使用的是有监督的yolov5网络，标数据集着实痛苦无比。而且工业缺陷数据有一个比较显著的特征：<strong>样本不平衡</strong>。绝大部分采集得到的工业数据都是没有缺陷的，这样一来，正样本的数据在模型训练中根本没有起到作用，负样本又太少，很难训练得到有效的模型。使用有监督学习的方法还有一个问题：负样本的出现是十分偶然的，可能在数据集中根本没有出现某一类型的负样本，如此训练得到的模型很有可能翻车，所以只能另寻他法。</p> 
+<p>        查阅资料，发现无监督的算法更适合工业缺陷检测的场景。无监督算法只使用正样本进行训练，网络经过大量的正样本学习，在遇到负样本时，就会知道负样本和正样本“长得不一样”，然后输出和原图尺寸相同的一张概率分布图，来表示某处是异常区域的概率大小。</p> 
+<p>        无监督学习方法虽好，但作为伸手党应该去哪里要代码呢？个人感觉最好的地方就是<strong>Anomalib</strong>，它使用<strong>Python</strong>实现，资料完备易懂，目前仍然在更新。链接如下：<a class="has-card" href="https://github.com/openvinotoolkit/anomalib" title="GitHub - openvinotoolkit/anomalib: An anomaly detection library comprising state-of-the-art algorithms and features such as experiment management, hyper-parameter optimization, and edge inference."><span class="link-card-box"><span class="link-title">GitHub - openvinotoolkit/anomalib: An anomaly detection library comprising state-of-the-art algorithms and features such as experiment management, hyper-parameter optimization, and edge inference.</span><span class="link-link"><img alt="" class="link-link-icon" src="https://images2.imgbox.com/c8/f8/t6Z2cPGk_o.png">https://github.com/openvinotoolkit/anomalib</span></span></a></p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/fb/a8/Md1q831X_o.jpg"></p> 
+<p>        看到英文名字就可以知道：这是一个异常检测（Abnormal）的库（library），里面的内容的确十分丰富，集成了<strong>十余种</strong>近年来准确率较高的缺陷（异常）检测算法，基本都是无监督学习的方法，诸如padim算法、fastflow算法等。</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/6f/af/MZmYgz77_o.jpg"></p> 
+<p>        找到这个宝库，我们下一步需要探索它的代码结构和用法。</p> 
+<h2 id="%E4%BA%8C%E3%80%81Anomalib%E4%BB%A3%E7%A0%81%E7%BB%93%E6%9E%84">二、Anomalib代码结构</h2> 
+<p>        我在本地使用Pycharm编程，新建项目后Anomalib的代码结构如下：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/95/82/LzF6zgsH_o.jpg"></p> 
+<p>        若想理清楚该项目的代码结构，方便后面的训练和部署，需要一点点进行分析。其中，比较重要的几个部分是：</p> 
+<p><strong>1. anomalib文件夹：</strong>事实上本文件夹就是该团队发布的库的源码，我们同样可以通过pip install的方法来进行安装，</p> 
+<p>        1.1 该文件夹下的<em>models</em>子文件夹包含了十余种缺陷检测的算法，可供读者任意调用；</p> 
+<p>        1.2<em><strong> </strong>pre_processing</em>和<em>post_processing</em>子文件夹分别是预处理和后处理功能，最终显示推理结果就使用了<em>post_processing</em>下的<em>visualizer</em>。</p> 
+<p>        1.3<strong> </strong><em>deploy</em>文件夹中的<em>inferencers</em>则是各种推理器，想要使用pytorch的读者可以关注<em>torch_inferencer</em>，想要使用onnx推理的读者则应该使用<em>openvino_inferencer</em>。</p> 
+<p><strong>2. datasets文件夹：</strong>顾名思义，该文件夹中应该存放待训练的数据集，如工业数据集MVTec，或者我们自制的数据集。</p> 
+<p><strong>3. results文件夹：</strong>该文件夹存放的是训练和推理的结果，只有在完成了训练或推理任务后才会出现。</p> 
+<p><strong>4. tools文件夹：</strong>该文件夹中的<em>inference</em>子文件夹存放了一系列推理代码，它们分别调用了<em>anomalib.deploy</em>中的不同inferencer（推理器）。该文件夹下的<strong>train.py</strong>是训练模型的入口。</p> 
+<p>        总结：我们后面需要使用<strong>tools/train.py进行模型训练</strong>，使用<strong>tools/inference中的某个推理代码进行模型推理预测</strong>。有了以上预备知识，我们终于可以开始模型的训练了。</p> 
+<h2 id="%E4%B8%89%E3%80%81%E4%BB%BB%E5%8A%A1%E6%8F%8F%E8%BF%B0%E5%92%8C%E6%A8%A1%E5%9E%8B%E8%AE%AD%E7%BB%83%E6%8E%A8%E7%90%86">三、任务描述和模型训练推理</h2> 
+<p>        若读者只想在pycharm中看一个算法的效果，那么按照官方的示例，使用train.py训练后再使用lightning_inference.py进行推理即可，在新出现的result文件夹中便可以看到推理结果，十分方便，此处不予赘述。</p> 
+<p>        但对于包括我在内，后续需要在其他平台部署的读者，我们需要训练自己的数据集并得到<strong>onnx模型</strong>，这样就需要对config.yaml文件进行修改，方法如下：</p> 
+<p>        首先依然按照官方的方案，看Readme中训练<em>Custom Dataset</em>的方法：</p> 
+<p><img alt="" src="https://images2.imgbox.com/45/5e/yKpvCS7k_o.jpg">        这里我们使用的是padim算法，于是我们将anomalib/models/padim/config.yaml的dataset部分按以上部分修改后在终端运行以下训练命令：</p> 
+<pre><code class="language-bash">python tools/train.py --model padim --config anomalib/models/padim/config.yaml
+</code></pre> 
+<p>        但会报错：找不到“normalization”等属性，此时不要着急，之前的config.yaml中实际上这些属性都是在的，这里官方竟然没有写进来，可能是疏忽了，我把自己的config.yaml的datasets部分放在这里，读者可以按照自己的自制数据集的路径进行改写，需要添加和注意的地方我都做了注释：</p> 
+<pre><code class="language-python">dataset:
+  name: tube               # 数据集的名字，如MVTec等，这个不重要
+  format: folder
+  path: ./datasets/img_192 # 自制数据集路径
+  normal_dir: normal       # 自制数据集正样本子文件夹
+  abnormal_dir: abnormal   # 自制数据集负样本子文件夹
+  mask_dir: null           # 二值掩膜路径，自制数据集一般没有，填null
+  normal_test_dir: null # name of the folder containing normal test images.
+  task: classification # classification or segmentation
+  extensions: null
+  normalization: imagenet  # 此处添加imagenet
+  split_ratio: 0.2 # ratio of the normal images that will be used to create a test split
+  image_size: 256
+  train_batch_size: 32
+  test_batch_size: 32
+  num_workers: 8
+  transform_config:
+    train: null
+    val: null
+  test_split_mode: from_dir # 此处添加
+  test_split_ratio: 0.2
+  val_split_mode: same_as_test
+  val_split_ratio: 0.5
+  create_validation_set: true
+  tiling:
+    apply: false
+    tile_size: null
+    stride: null
+    remove_border_count: 0
+    use_random_tiling: False
+    random_tile_count: 16</code></pre> 
+<p>        需要特别注意的是：由于我们使用自制数据集，往往没有ground truth的二值化掩膜（mask），所以这里需要将task字段设置为<strong>classification</strong>而不是segmentation。接着将metrics部分的pixel部分删掉，否则会报错。<strong>原因是没有提供二值化掩膜，无法计算基于像素的测试准确度</strong>，只保留image部分。修改如下：</p> 
+<pre><code class="language-python">metrics:
+  image:
+    - F1Score
+    - AUROC
+#  pixel:
+#    - F1Score
+#    - AUROC
+  threshold:
+    method: adaptive #options: [adaptive, manual]
+    manual_image: null
+    manual_pixel: null</code></pre> 
+<p>        我们还需要onnx模型，这里需要在config.yaml中的optimization部分加入onnx字段：</p> 
+<pre><code class="language-python">optimization:
+  export_mode: onnx # options: torch, onnx, openvino</code></pre> 
+<p>        至此，我们就可以再次运行训练命令，开始训练了：</p> 
+<pre><code class="language-bash">python tools/train.py --model padim --config anomalib/models/padim/config.yaml
+</code></pre> 
+<p>        padim算法的论文我并没有研读，但似乎其训练过程只需要一轮， 训练完成后，在results文件夹中可以看到如下结构：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/d1/94/9Z5cgxkd_o.jpg"></p> 
+<p>         tube是博主本人数据集的名字，下面的images文件夹中有对正样本和负样本图片的测试结果，以概率热图的形式给出；weights文件夹中有pytorch-lightning的模型和我们所需的onnx模型，以及包含了训练数据集信息的metadata.json（对于部署十分重要，下一篇再说）。</p> 
+<p>        做完以上步骤，我们得到了onnx模型，但在部署之前，还是看一下转换后的模型有没有精度损失，在终端输入以下命令：</p> 
+<pre><code class="language-bash"> python tools/inference/openvino_inference.py --weights results/padim/tube/run/weights/onnx/model.onnx --metadata results/padim/tube/run/weights/onnx/meta_data.json  --input datasets/img_192/abnormal/cam0_17_04_54.jpg  --output results/padim/tube/run/images --config src/anomalib/models/padim/config.yaml
+</code></pre> 
+<p>        得到以下推理结果：</p> 
+<p style="text-align:center;"><img alt="" src="https://images2.imgbox.com/9c/eb/ACYplAP2_o.jpg"></p> 
+<p>         效果不错，在工业缺陷检测这方面，终于可以和yolov5说拜拜了~</p> 
+<h2 id="%E5%9B%9B%E3%80%81%E6%80%BB%E7%BB%93%E4%B8%8E%E5%B1%95%E6%9C%9B">四、总结与展望</h2> 
+<p>        我们使用padim算法在自制工业数据集上获得了良好的检测效果，通过训练得到了onnx模型；在这个过程中，最需要注意的就是配置文件config.yaml的修改，要按照官网教程、本博客和自己数据集的路径进行配置和修改，防止出错。</p> 
+<p>        在得到了onnx模型后，我们想要脱离开庞大繁杂的Anomalib项目和环境，完成自己的软件算法部署，但图像数据在送入onnx模型之前需要什么预处理步骤？模型输入输出分别是什么？输出的数据需要怎样的后处理？怎么画出Anomalib中十分简洁明了的热图呢？这些都是需要我们解决的问题。</p> 
+<p>        下一篇博客我们将继续从Anomalib的代码结构和流程进行分析，使用onnxruntime引擎完成onnx在C++中的部署，实现算法的落地。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/03cf9ba5f98a5d3c5b7b76a0185606d8/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">数据库课程设计——订餐系统（PowerBuilder&#43;SQL Sever）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/a323c0d1333b90190a48150e3b2943b5/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Spark&#43;Kafka构建实时分析Dashboard案例</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

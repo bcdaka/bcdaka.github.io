@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>HC-SR04超声波测距模块使用方法和例程(STM32) - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/dd4e9fac0ec35058fd05970e84f23fb1/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="HC-SR04超声波测距模块使用方法和例程(STM32)">
+  <meta property="og:description" content="基于STM32和HC-SR04模块实现超声波测距功能
+最近在学STM32做个简单的应用实践一下，顺便水一篇文章。
+本文用的单片机是STM32F103C8T6，超声波测距模块是HC-SR04，显示测距结果用的是0.96寸OLED屏模块。
+效果展示 下图中小于10cm时的显示结果有点问题，代码已修复并更新
+修复后的结果：
+视频演示：https://www.bilibili.com/video/BV1Sg411Z7ex/
+基于STM32和HC-SR04模块实现超声波测距功能
+HC-SR04硬件概述 HC-SR04超声波距离传感器的核心是两个超声波传感器。一个用作发射器，将电信号转换为40 KHz超声波脉冲。接收器监听发射的脉冲。如果接收到它们，它将产生一个输出脉冲，其宽度可用于确定脉冲传播的距离。就是如此简单！
+该传感器体积小，易于在任何机器人项目中使用，并提供2厘米至400厘米（约1英寸至13英尺）之间出色的非接触范围检测，精度为3mm。
+Operating Voltage工作电压直流5VOperating Current工作电流15毫安Operating Frequency运行频率40K赫兹Max Range最大范围4mMin Range最小范围2厘米Ranging Accuracy测距精度3毫米Measuring Angle测量角度15度Trigger Input Signal触发输入信号10µS TTL脉冲Dimension尺寸45 x 20 x 15毫米 HC-SR04超声波传感器引脚 让我们看一下它的引脚排列。
+VCC 是HC-SR04超声波距离传感器的电源，我们连接了5V的供电。
+Trig (Trigger） 引脚用于触发超声波脉冲，下面例程中用的GPIOB5，所以连接STM32的GPIOB5。
+Echo 回声当接收到反射信号时，引脚产生一个脉冲。脉冲的长度与检测发射信号所需的时间成正比，下面例程中用的GPIOB6，所以连接STM32的GPIOB6。
+GND 应该连接到STM32的地。
+HC-SR0如何工作？ 当持续时间至少为10 µS（10微秒）的脉冲施加到触发引脚时，一切就开始了。响应于此，传感器以40 KHz发射八个脉冲的声音脉冲。这种8脉冲模式使设备的“超声特征”变得独一无二，从而使接收器能够将发射模式与环境超声噪声区分开。
+八个超声波脉冲通过空气传播，远离发射器。同时，回声引脚变为高电平，开始形成回声信号的开始。
+如果这些脉冲没有被反射回来，则回波信号将在38毫秒（38毫秒）后超时并返回低电平。因此38 ms的脉冲表示在传感器范围内没有阻塞。
+如果这些脉冲被反射回去，则在收到信号后，Echo引脚就会变低。这会产生一个脉冲，其宽度在150 µS至25 mS之间变化，具体取决于接收信号所花费时间。
+HC-SR04的时序图如下：
+然后，将接收到的脉冲的宽度用于计算到反射物体的距离。这可以通过我们在初中学到的简单的距离-速度-时间方程来解决。
+距离=速度x时间
+接线 将HC-SR04和0.96寸OLED屏连接到STM32。
+HC-SR04STM32VCC5VTrigGPIO PB5EchoGPIO PB6GndGnd OLEDSTM32VCC3.3VGNDGNDSCLGPIO PB12SDAGPIO PB13 温度对距离测量的影响 尽管HC-SR04对于我们的大多数项目来说都相当准确，例如入侵者检测或接近警报；但是有时候您可能想设计一种要在户外或在异常炎热或寒冷的环境中使用的设备。在这种情况下，您可能要考虑到空气中的声速随温度，气压和湿度而变化的事实。
+由于声音因素进入HC-SR04距离计算的速度，因此可能会影响我们的读数。如果已知温度（°C）和湿度，请考虑以下公式：
+声速 m/s = 331.4 &#43;（0.606 * 温度）&#43;（0.0124 * 湿度）">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2022-07-28T22:25:54+08:00">
+    <meta property="article:modified_time" content="2022-07-28T22:25:54+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">HC-SR04超声波测距模块使用方法和例程(STM32)</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-dracula">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p><strong>基于STM32和HC-SR04模块实现超声波测距功能</strong></p> 
+<p>最近在学STM32做个简单的应用实践一下，顺便水一篇文章。</p> 
+<p>本文用的单片机是STM32F103C8T6，超声波测距模块是HC-SR04，显示测距结果用的是0.96寸OLED屏模块。</p> 
+<h3><a id="_6"></a>效果展示</h3> 
+<p>下图中小于10cm时的显示结果有点问题，代码已修复并更新</p> 
+<p><img src="https://images2.imgbox.com/7d/ce/J1WHlBSj_o.jpg" alt=""></p> 
+<p>修复后的结果：</p> 
+<p><img src="https://images2.imgbox.com/19/61/7yDnf3lt_o.jpg" alt=""></p> 
+<p>视频演示：<a href="https://www.bilibili.com/video/BV1Sg411Z7ex/" rel="nofollow">https://www.bilibili.com/video/BV1Sg411Z7ex/</a></p> 
+<p></p> 
+<div class="csdn-video-box"> 
+ <iframe id="IpP9ddnB-1659018266149" frameborder="0" src="https://player.bilibili.com/player.html?aid=513760872" allowfullscreen="true" data-mediaembed="bilibili"></iframe> 
+ <p>基于STM32和HC-SR04模块实现超声波测距功能</p> 
+</div> 
+<p></p> 
+<h3><a id="HCSR04_21"></a>HC-SR04硬件概述</h3> 
+<p>HC-SR04超声波距离传感器的核心是两个<a href="https://link.zhihu.com/?target=https%3A//en.wikipedia.org/wiki/Ultrasonic_transducer" rel="nofollow">超声波传感器</a>。一个用作发射器，将电信号转换为40 KHz超声波脉冲。接收器监听发射的脉冲。如果接收到它们，它将产生一个输出脉冲，其宽度可用于确定脉冲传播的距离。就是如此简单！</p> 
+<p>该传感器体积小，易于在任何机器人项目中使用，并提供2厘米至400厘米（约1英寸至13英尺）之间出色的非接触范围检测，精度为3mm。</p> 
+<table><thead><tr><th align="left">Operating Voltage工作电压</th><th>直流5V</th></tr></thead><tbody><tr><td align="left">Operating Current工作电流</td><td>15毫安</td></tr><tr><td align="left">Operating Frequency运行频率</td><td>40K赫兹</td></tr><tr><td align="left">Max Range最大范围</td><td>4m</td></tr><tr><td align="left">Min Range最小范围</td><td>2厘米</td></tr><tr><td align="left">Ranging Accuracy测距精度</td><td>3毫米</td></tr><tr><td align="left">Measuring Angle测量角度</td><td>15度</td></tr><tr><td align="left">Trigger Input Signal触发输入信号</td><td>10µS TTL脉冲</td></tr><tr><td align="left">Dimension尺寸</td><td>45 x 20 x 15毫米</td></tr></tbody></table> 
+<p><img src="https://images2.imgbox.com/f2/37/Vh076Ttk_o.png" alt=""></p> 
+<h3><a id="HCSR04_40"></a>HC-SR04超声波传感器引脚</h3> 
+<p><img src="https://images2.imgbox.com/63/38/vGtMARFT_o.png" alt=""></p> 
+<p>让我们看一下它的引脚排列。</p> 
+<p><em><strong>VCC</strong></em> 是HC-SR04超声波距离传感器的电源，我们连接了5V的供电。</p> 
+<p><em><strong>Trig</strong></em> (Trigger） 引脚用于触发超声波脉冲，下面例程中用的GPIOB5，所以连接STM32的GPIOB5。</p> 
+<p><em><strong>Echo</strong></em> 回声当接收到反射信号时，引脚产生一个脉冲。脉冲的长度与检测发射信号所需的时间成正比，下面例程中用的GPIOB6，所以连接STM32的GPIOB6。</p> 
+<p><em><strong>GND</strong></em> 应该连接到STM32的地。</p> 
+<h3><a id="HCSR0_54"></a>HC-SR0如何工作？</h3> 
+<p>当持续时间至少为10 µS（10微秒）的脉冲施加到触发引脚时，一切就开始了。响应于此，传感器以40 KHz发射八个脉冲的声音脉冲。这种8脉冲模式使设备的“超声特征”变得独一无二，从而使接收器能够将发射模式与环境超声噪声区分开。</p> 
+<p>八个超声波脉冲通过空气传播，远离发射器。同时，回声引脚变为高电平，开始形成回声信号的开始。</p> 
+<p>如果这些脉冲没有被反射回来，则回波信号将在38毫秒（38毫秒）后超时并返回低电平。因此38 ms的脉冲表示在传感器范围内没有阻塞。</p> 
+<p><img src="https://images2.imgbox.com/e2/19/VfP8JiDg_o.gif" alt=""></p> 
+<p>如果这些脉冲被反射回去，则在收到信号后，Echo引脚就会变低。这会产生一个脉冲，其宽度在150 µS至25 mS之间变化，具体取决于接收信号所花费时间。</p> 
+<p><img src="https://images2.imgbox.com/58/fa/hnywuVov_o.gif" alt=""></p> 
+<p>HC-SR04的时序图如下：</p> 
+<p><img src="https://images2.imgbox.com/97/52/jEjKgfcd_o.png" alt=""></p> 
+<p>然后，将接收到的脉冲的宽度用于计算到反射物体的距离。这可以通过我们在初中学到的简单的距离-速度-时间方程来解决。</p> 
+<p>距离=速度x时间</p> 
+<h3><a id="_76"></a>接线</h3> 
+<p>将HC-SR04和0.96寸OLED屏连接到STM32。</p> 
+<table><thead><tr><th>HC-SR04</th><th>STM32</th></tr></thead><tbody><tr><td>VCC</td><td>5V</td></tr><tr><td>Trig</td><td>GPIO PB5</td></tr><tr><td>Echo</td><td>GPIO PB6</td></tr><tr><td>Gnd</td><td>Gnd</td></tr></tbody></table> 
+<table><thead><tr><th>OLED</th><th>STM32</th></tr></thead><tbody><tr><td>VCC</td><td>3.3V</td></tr><tr><td>GND</td><td>GND</td></tr><tr><td>SCL</td><td>GPIO PB12</td></tr><tr><td>SDA</td><td>GPIO PB13</td></tr></tbody></table> 
+<h3><a id="_94"></a>温度对距离测量的影响</h3> 
+<p>尽管HC-SR04对于我们的大多数项目来说都相当准确，例如入侵者检测或接近警报；但是有时候您可能想设计一种要在户外或在异常炎热或寒冷的环境中使用的设备。在这种情况下，您可能要考虑到空气中的声速随温度，气压和湿度而变化的事实。</p> 
+<p>由于声音因素进入HC-SR04距离计算的速度，因此可能会影响我们的读数。如果已知温度（°C）和湿度，请考虑以下公式：</p> 
+<p>声速 m/s = 331.4 +（0.606 * 温度）+（0.0124 * 湿度）</p> 
+<h3><a id="_102"></a>购买地址</h3> 
+<p>本文所用到的模块购买地址如下：</p> 
+<p>STM32F103C8T6开发板：<a href="https://s.click.taobao.com/t?e=m%3D2%26s%3DrHfYs17TYmAcQipKwQzePOeEDrYVVa64K7Vc7tFgwiHjf2vlNIV67tUpwn8G8apbP5bxJy%2F%2Fu7h%2FmzaS0s2vXCsmIF0UHtujBkxkgN7jKg%2BiJaQjFxYBevWfPAv4x3d%2FlntEOsmn00zkzhiaLWZJIMCNLL2XMlINlCBtWxxBO4TpF06RTpfTYskYGID97gCycSpj5qSCmbA%3D&amp;scm=null&amp;pvid=null&amp;app_pvid=59590_33.44.62.158_685_1658904862243&amp;ptl=floorId%3A17741&amp;originalFloorId%3A17741&amp;app_pvid%3A59590_33.44.62.158_685_1658904862243&amp;union_lens=lensId%3APUB%401658904806%400b13f43a_0ae7_1823e6e8440_4780%40023scy6xOJwv8fLizqyxG9V6" rel="nofollow">https://s.click.taobao.com/8SoQMVu</a><br> ST-LINK V2仿真器：<a href="https://s.click.taobao.com/t?e=m%3D2%26s%3DM%2BvzpxQPFX4cQipKwQzePOeEDrYVVa64K7Vc7tFgwiHjf2vlNIV67o0XP3SeNaQPLzKPa%2Ff2nu9%2FmzaS0s2vXCsmIF0UHtujBkxkgN7jKg%2BiJaQjFxYBevWfPAv4x3d%2FlntEOsmn00zkzhiaLWZJIMCNLL2XMlINlCBtWxxBO4RlNHEq%2BGcPC8xIiotAYRzscSpj5qSCmbA%3D&amp;scm=null&amp;pvid=null&amp;app_pvid=59590_33.5.81.219_685_1658905033917&amp;ptl=floorId%3A17741&amp;originalFloorId%3A17741&amp;app_pvid%3A59590_33.5.81.219_685_1658905033917&amp;union_lens=lensId%3APUB%401658904931%402132b6c1_0a9a_1823e706e32_4e26%40023Osf4kFjZ2htbbPpWAFEAv" rel="nofollow">https://s.click.taobao.com/FEuPMVu</a><br> HC-SR04模块：<a href="https://s.click.taobao.com/t?e=m%3D2%26s%3DnEZJbUeQJ8McQipKwQzePOeEDrYVVa64LKpWJ%2Bin0XLjf2vlNIV67lafFoBmps2M%2Bx%2FKLma%2BVNl%2FmzaS0s2vXCsmIF0UHtujBkxkgN7jKg%2BiJaQjFxYBevWfPAv4x3d%2FlntEOsmn00zkzhiaLWZJIKo%2FQzBeLPrUc4xD6mPokU78MpLSe9HClMYMXU3NNCg%2F&amp;scm=null&amp;pvid=null&amp;app_pvid=59590_33.8.16.216_684_1658905157314&amp;ptl=floorId%3A17741&amp;originalFloorId%3A17741&amp;app_pvid%3A59590_33.8.16.216_684_1658905157314&amp;union_lens=lensId%3APUB%401658905127%40212782fc_0950_1823e736a56_3c35%400249f0IFrX3aJ9BN8Z6A2K5t" rel="nofollow">https://s.click.taobao.com/Ing88Vu</a><br> 0.96寸OLED模块：<a href="https://s.click.taobao.com/t?e=m%3D2%26s%3DEddyhdxt1ggcQipKwQzePOeEDrYVVa64LKpWJ%2Bin0XLjf2vlNIV67nDKjt43N7BpWiFs%2FjHb%2Bch%2FmzaS0s2vXCsmIF0UHtujBkxkgN7jKg%2BiJaQjFxYBevWfPAv4x3d%2FlntEOsmn00zkzhiaLWZJIKo%2FQzBeLPrUwnqtpvx36vhxbMKNudoqKcYMXU3NNCg%2F&amp;scm=null&amp;pvid=null&amp;app_pvid=59590_33.5.132.238_682_1658905213369&amp;ptl=floorId%3A17741&amp;originalFloorId%3A17741&amp;app_pvid%3A59590_33.5.132.238_682_1658905213369&amp;union_lens=lensId%3APUB%401658905196%40213ff4ee_094c_1823e74765c_3d14%40022g2mcZnntGQ0LA4IAuDKm4" rel="nofollow">https://s.click.taobao.com/o4fPMVu</a><br> 面包板：<a href="https://s.click.taobao.com/t?e=m%3D2%26s%3D3o5yt%2BtIjVAcQipKwQzePOeEDrYVVa64LKpWJ%2Bin0XLjf2vlNIV67nDKjt43N7BpNGaA%2Fv7qa0R%2FmzaS0s2vXCsmIF0UHtujBkxkgN7jKg%2BiJaQjFxYBevWfPAv4x3d%2FlntEOsmn00zkzhiaLWZJIKo%2FQzBeLPrUzMCzqa8MSFjdsHncFg6X88YMXU3NNCg%2F&amp;scm=null&amp;pvid=null&amp;app_pvid=59590_33.8.56.199_668_1658905290874&amp;ptl=floorId%3A17741&amp;originalFloorId%3A17741&amp;app_pvid%3A59590_33.8.56.199_668_1658905290874&amp;union_lens=lensId%3APUB%401658905281%402127873a_0aa1_1823e75c3f8_6593%40025ROgDZoAsJZskfQh2cYNli" rel="nofollow">https://s.click.taobao.com/dBjPMVu</a><br> 面包板专用跳线：<a href="https://s.click.taobao.com/t?e=m%3D2%26s%3DXIJEb%2BVljrUcQipKwQzePOeEDrYVVa64LKpWJ%2Bin0XLjf2vlNIV67iTUwIfE3e6lAMg8lLLxypp%2FmzaS0s2vXCsmIF0UHtujBkxkgN7jKg%2BiJaQjFxYBevWfPAv4x3d%2FlntEOsmn00zkzhiaLWZJIJReZhsjSt%2F7sVpABkI4fxXtK9uzDDyI%2F1EsGBpbm51r&amp;scm=null&amp;pvid=null&amp;app_pvid=59590_33.5.110.147_722_1658905335827&amp;ptl=floorId%3A17741&amp;originalFloorId%3A17741&amp;app_pvid%3A59590_33.5.110.147_722_1658905335827&amp;union_lens=lensId%3APUB%401658905322%40213ef198_0acf_1823e766369_accd%400260KwE4Z4IXytXLFlwvCUZT" rel="nofollow">https://s.click.taobao.com/7eG88Vu</a></p> 
+<h3><a id="_113"></a>程序</h3> 
+<p>我是用的的ST标准库写的程序，文章中放出主要的程序，完整的工程文件请点下面链接下载。</p> 
+<p>完整工程文件下载：<a href="https://url.zeruns.tech/HCSR04" rel="nofollow">https://url.zeruns.tech/HCSR04</a></p> 
+<p>提取码：d9xr</p> 
+<p><strong>main.c</strong></p> 
+<pre><code class="prism language-c++">#include "stm32f10x.h"                  // Device header
+#include "Delay.h"
+#include "OLED.h"
+#include "Timer.h"
+#include "HCSR04.h"
+
+uint64_t numlen(uint64_t num)//计算数字的长度
+{
+    uint64_t len = 1;        // 初始长度为1
+    for(; num &gt; 9; ++len)    // 判断num是否大于9，否则长度+1
+        num /= 10;	         // 使用除法进行运算，直到num小于1
+    return len;              // 返回长度的值
+}
+
+int main(void)
+{	
+	OLED_Init();		//初始化OLED屏
+	Timer_Init();		//初始化定时器
+	HC_SR04_Init();		//初始化超声波测距模块
+	
+	OLED_ShowString(1, 1, "Distance:");		//OLED屏输出字符串
+	
+	while (1)
+	{
+		int Distance_mm=sonar_mm();			//获取距离测量结果，单位毫米（mm）		
+		int Distance_m=Distance_mm/1000;	//转换为米（m）为单位，将整数部分放入Distance_m
+		int Distance_m_p=Distance_mm%1000;	//转换为米（m）为单位，将小数部分放入Distance_m_p
+		OLED_Clear_Part(2,1,16);			//将OLDE屏第2行清屏
+		OLED_ShowNum(2, 1,Distance_m,numlen(Distance_m));	//显示测量结果的整数部分
+		OLED_ShowChar(2, 1+numlen(Distance_m), '.');		//显示小数点
+		if(Distance_m_p&lt;100){								//判断是否小于100毫米
+			OLED_ShowChar(2, 1+numlen(Distance_m)+1,'0');								//因为单位是米，所以小于10cm时要加0
+			OLED_ShowNum(2, 1+numlen(Distance_m)+2,Distance_m_p,numlen(Distance_m_p));	//显示测量结果的小数部分
+			OLED_ShowChar(2, 1+numlen(Distance_m)+2+numlen(Distance_m_p), 'm');			//显示单位
+		}else																			// https://blog.zeruns.tech
+		{
+			OLED_ShowNum(2, 1+numlen(Distance_m)+1,Distance_m_p,numlen(Distance_m_p));	//显示测量结果的小数部分
+			OLED_ShowChar(2, 1+numlen(Distance_m)+1+numlen(Distance_m_p), 'm');			//显示单位
+		}
+		OLED_Clear_Part(3,1,16);			//将OLDE屏第3行清屏
+		OLED_ShowNum(3, 1,Distance_mm,numlen(Distance_mm));		//显示单位为毫米的距离结果
+		OLED_ShowString(3, 1 + numlen(Distance_mm), "mm");
+		Delay_ms(300);						//延时300毫秒
+		
+	}
+}
+</code></pre> 
+<p><strong>Timer.c</strong></p> 
+<pre><code class="prism language-c++">#include "stm32f10x.h"                  // Device header
+//blog.zeruns.tech
+void Timer_Init(void)
+{
+	RCC_APB1PeriphClockCmd(RCC_APB1Periph_TIM3, ENABLE);		//启用TIM3时钟
+
+	TIM_InternalClockConfig(TIM3);								//设置TIM3使用内部时钟
+	
+	TIM_TimeBaseInitTypeDef TIM_TimeBaseInitStructure;			//定义结构体，配置定时器
+	TIM_TimeBaseInitStructure.TIM_ClockDivision = TIM_CKD_DIV1;	//设置1分频（不分频）
+	TIM_TimeBaseInitStructure.TIM_CounterMode = TIM_CounterMode_Up;	//设置计数模式为向上计数
+	TIM_TimeBaseInitStructure.TIM_Period = 10 - 1;			//设置最大计数值，达到最大值触发更新事件，因为从0开始计数，所以计数10次是10-1,每10微秒触发一次
+	TIM_TimeBaseInitStructure.TIM_Prescaler = 72 - 1;			//设置时钟预分频，72-1就是每 时钟频率(72Mhz)/72=1000000 个时钟周期计数器加1,每1微秒+1
+	TIM_TimeBaseInitStructure.TIM_RepetitionCounter = 0;		//重复计数器（高级定时器才有，所以设置0）
+	TIM_TimeBaseInit(TIM3, &amp;TIM_TimeBaseInitStructure);			//初始化TIM3定时器
+	
+	TIM_ClearFlag(TIM3, TIM_FLAG_Update);			//清除更新中断标志位
+	TIM_ITConfig(TIM3, TIM_IT_Update, ENABLE);		//开启更新中断
+	
+	NVIC_PriorityGroupConfig(NVIC_PriorityGroup_2);				//设置中断优先级分组
+	
+	NVIC_InitTypeDef NVIC_InitStructure;						//定义结构体，配置中断优先级
+	NVIC_InitStructure.NVIC_IRQChannel = TIM3_IRQn;				//指定中断通道
+	NVIC_InitStructure.NVIC_IRQChannelCmd = ENABLE;				//中断使能
+	NVIC_InitStructure.NVIC_IRQChannelPreemptionPriority = 2;	//设置抢占优先级
+	NVIC_InitStructure.NVIC_IRQChannelSubPriority = 2;			//设置响应优先级
+	NVIC_Init(&amp;NVIC_InitStructure);								// https://blog.zeruns.tech
+	
+	TIM_Cmd(TIM3, ENABLE);							//开启定时器
+}
+
+/*
+void TIM3_IRQHandler(void)			//更新中断函数
+{
+	if (TIM_GetITStatus(TIM3, TIM_IT_Update) == SET)		//获取TIM3定时器的更新中断标志位
+	{
+		
+		TIM_ClearITPendingBit(TIM3, TIM_IT_Update);			//清除更新中断标志位
+	}
+}*/
+</code></pre> 
+<p><strong>Timer.h</strong></p> 
+<pre><code class="prism language-c++">#ifndef __TIMER_H
+#define __TIMER_H
+
+void Timer_Init(void);
+
+#endif
+</code></pre> 
+<p><strong>HCSR04.c</strong></p> 
+<pre><code class="prism language-c++">#include "stm32f10x.h"
+#include "Delay.h"
+
+/*
+我的博客：blog.zeruns.tech
+具体使用说明请到我博客看
+*/
+
+
+#define Echo GPIO_Pin_6		//HC-SR04模块的Echo脚接GPIOB6
+#define Trig GPIO_Pin_5		//HC-SR04模块的Trig脚接GPIOB5
+
+uint64_t time=0;			//声明变量，用来计时
+uint64_t time_end=0;		//声明变量，存储回波信号时间
+
+void HC_SR04_Init(void)
+{
+	RCC_APB2PeriphClockCmd(RCC_APB2Periph_GPIOB,ENABLE);	//启用GPIOB的外设时钟	
+	GPIO_InitTypeDef GPIO_InitStructure;					//定义结构体
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_Out_PP;		//设置GPIO口为推挽输出
+	GPIO_InitStructure.GPIO_Pin = Trig;						//设置GPIO口5
+	GPIO_InitStructure.GPIO_Speed = GPIO_Speed_50MHz;		//设置GPIO口速度50Mhz
+	GPIO_Init(GPIOB,&amp;GPIO_InitStructure);					//初始化GPIOB
+	
+	GPIO_InitStructure.GPIO_Mode = GPIO_Mode_IPD;			//设置GPIO口为下拉输入模式
+	GPIO_InitStructure.GPIO_Pin = Echo;						//设置GPIO口6
+	GPIO_Init(GPIOB,&amp;GPIO_InitStructure);					//初始化GPIOB
+	GPIO_WriteBit(GPIOB,GPIO_Pin_5,0);						//输出低电平
+	Delay_us(15);											//延时15微秒
+}
+
+int16_t sonar_mm(void)									//测距并返回单位为毫米的距离结果
+{
+	uint32_t Distance,Distance_mm = 0;
+	GPIO_WriteBit(GPIOB,Trig,1);						//输出高电平
+	Delay_us(15);										//延时15微秒
+	GPIO_WriteBit(GPIOB,Trig,0);						//输出低电平
+	while(GPIO_ReadInputDataBit(GPIOB,Echo)==0);		//等待低电平结束
+	time=0;												//计时清零
+	while(GPIO_ReadInputDataBit(GPIOB,Echo)==1);		//等待高电平结束
+	time_end=time;										//记录结束时的时间
+	if(time_end/100&lt;38)									//判断是否小于38毫秒，大于38毫秒的就是超时，直接调到下面返回0
+	{
+		Distance=(time_end*346)/2;						//计算距离，25°C空气中的音速为346m/s
+		Distance_mm=Distance/100;						//因为上面的time_end的单位是10微秒，所以要得出单位为毫米的距离结果，还得除以100
+	}
+	return Distance_mm;									//返回测距结果
+}
+
+float sonar(void)										//测距并返回单位为米的距离结果
+{
+	uint32_t Distance,Distance_mm = 0;
+	float Distance_m=0;
+	GPIO_WriteBit(GPIOB,Trig,1);					//输出高电平
+	Delay_us(15);
+	GPIO_WriteBit(GPIOB,Trig,0);					//输出低电平
+	while(GPIO_ReadInputDataBit(GPIOB,Echo)==0);
+	time=0;
+	while(GPIO_ReadInputDataBit(GPIOB,Echo)==1);
+	time_end=time;
+	if(time_end/100&lt;38)
+	{
+		Distance=(time_end*346)/2;
+		Distance_mm=Distance/100;
+		Distance_m=Distance_mm/1000;
+	}
+	return Distance_m;
+}
+
+void TIM3_IRQHandler(void)			//更新中断函数，用来计时，每10微秒变量time加1
+{
+	if (TIM_GetITStatus(TIM3, TIM_IT_Update) == SET)		//获取TIM3定时器的更新中断标志位
+	{
+		time++;
+		TIM_ClearITPendingBit(TIM3, TIM_IT_Update);			//清除更新中断标志位
+	}
+}
+</code></pre> 
+<p><strong>HCSR04.h</strong></p> 
+<pre><code class="prism language-c++">#ifndef __HCSR04_H
+#define __HCSR04_H
+
+void HC_SR04_Init(void);
+int16_t sonar_mm(void);
+float sonar(void);
+
+#endif
+</code></pre> 
+<h3><a id="_323"></a>推荐阅读</h3> 
+<ul><li><strong>高性价比和便宜的VPS/云服务器推荐：<a href="https://blog.zeruns.tech/archives/383.html" rel="nofollow">https://blog.zeruns.tech/archives/383.html</a></strong></li><li>ESP8266开发环境搭建及项目演示：<a href="https://blog.zeruns.tech/archives/526.html" rel="nofollow">https://blog.zeruns.tech/archives/526.html</a></li><li>Arduino读取DHT11,DHT22,SHTC3温湿度数据：<a href="https://blog.zeruns.tech/archives/527.html" rel="nofollow">https://blog.zeruns.tech/archives/527.html</a></li><li>学生专属优惠权益大全，教育优惠：<a href="https://blog.zeruns.tech/archives/557.html" rel="nofollow">https://blog.zeruns.tech/archives/557.html</a></li><li>怎样搭建个人博客：<a href="https://blog.zeruns.tech/archives/218.html" rel="nofollow">https://blog.zeruns.tech/archives/218.html</a></li><li>使用NPS搭建内网穿透服务器，带Web面板：<a href="https://blog.zeruns.tech/archives/660.html" rel="nofollow">https://blog.zeruns.tech/archives/660.html</a></li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/83714a40e27ee69facbd263c4319f43e/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Vue3实战教程（快速入门）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/abba7d2c28c7cd474ad99946c372d3a1/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">python数据预处理</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

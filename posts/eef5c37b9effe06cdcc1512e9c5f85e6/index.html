@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>贝壳找房基于Flink&#43;Paimon进行全量数据实时分组排序的实践 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/eef5c37b9effe06cdcc1512e9c5f85e6/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="贝壳找房基于Flink&#43;Paimon进行全量数据实时分组排序的实践">
+  <meta property="og:description" content="摘要：本文投稿自贝壳家装数仓团队，在结合家装业务场景下所探索出的一种基于 Flink&#43;Paimon 的排序方案。这种方案可以在实时环境对全量数据进行准确的分组排序，同时减少对内存资源的消耗。在这一方案中，引入了“事件时间分段”的概念，以避免 Flink State 中冗余数据对排序结果的干扰，在保证排序结果准确性的同时，减少了对内存的消耗。并且基于数据湖组件 Paimon 的聚合模型和 Audit Log 数据在数据湖内构建了拉链表，为排序结果提供了灵活的历史数据基础。内容主要分为以下四个部分：
+背景现有的实时分组排序的一些做法及其特点Flink&#43;Paimon进行全量数据实时分组排序总结与展望 一、背景 家装家居业务，作为贝壳“一体三翼”战略的重要组成部分，在房屋回归居住属性的大背景下，正在迅猛发展。在过去的2023年中，家装家居业务合同额为133亿元，可比口径同比增长93%；净收入取得74%的可比口径同比增幅，达到109亿元。其中，北京和杭州的合同额突破20亿，上海全年合同额超10亿，合同额超过5亿的城市共有6个。此外，家装家居业务在更多城市跑出正循环，全年有11个城市实现运营利润为正。
+在家装业务中，随着设计师对客户需求和期望的逐步了解和把握，一个装修项目往往会产生多份合同。在合同签订的过程中，业务上期望通过合同的顺序、内容、金额等信息实时匹配相应的风控和运营策略，以实现智能额度、动态尾款等等功能，为客户提供更加优质的服务体验。要实现这些功能，就需要对全量合同数据进行分组排序。然而，在实时场景中，这是一个不小的挑战。为了解决这个问题，我们进行了一系列的探索和尝试。
+二、现有的实时分组排序的一些做法及其特点 首先，结合以往的经验，我们梳理了现有在实时链路中进行分组排序的方法。
+第一种方法是基于Flink引擎自带的排序能力进行分组排序。该方法实现简单，逻辑直观，但是比较依赖内存资源。随着数据量的增长，排序任务所需要的内存资源会不断增加，这会给本就紧张的内存资源带来更大的压力。
+第二种方法是基于离线处理结果和实时处理结果的融合计算分组排序。这种方法可以在一定程度上缓解内存压力，并且复用已有的离线计算结果。然而，同时维护并迭代离线和实时两套数据链路，会带来不小的运维压力。
+第三种方法则是通过Redis、Hbase等NoSQL组件来存储和累计实时排序结果。这种占用内存少，不依赖批处理结果。然而，由于无法提供类似事务的ACID保证，存在数据脏读，进而伴随一定程度的统计误差。
+通过上诉分析可以看到，在实时链路中，现有的分组排序方案在处理全量数据时，很难同时兼顾内存资源、数据链路和数据准确性三个方面。
+三、Flink&#43;Paimon进行全量数据实时分组排序 在实时数据的处理中，我们希望在需要保证数据时效性的前提下，避免依赖额外的批处理逻辑，同时减少对内存的消耗。
+以Paimon为代表的数据湖组件的兴起为我们提供了全新的思路。它具备强大的数据存储和加工能力，并且能够顺滑地与Flink引擎配合，进一步扩大了Flink生态的实时处理领域的领先优势。
+接下来，我们将详细介绍基于Flink&#43;Paimon进行全量数据实时排序的新方式。整体思路可以概括为两个核心步骤：第一步，利用Flink引擎接收增量流入的数据，依托其State在内存中对数据进行排序，并将排序结果存储到数据湖中；第二步，从数据湖中读取历史时点的累计结果，结合第一步得到的内存排序结果一起计算得出最终的准确结果。
+这两个步骤循环配合，互为起止，形成了一个完整的数据处理流程。为了方便表述说明，在介绍第一步的时候，我们假设第二步所产出的数据已经就绪。而在介绍第二步的时候，我们将展开讲解究竟如何产出了第一步所依赖的数据。
+3.1基于历史数据的实时分组排序 在不引入额外的批处理逻辑，并且不把全量数据保留在内存中的前提下，想要实现分组排序，需要解决两个问题。其一，需要引入其他组件暂存结果，并且需要保证Flink引擎对于暂存结果的写入和读取不能同时针对同一条记录，否则会造成脏读；其二，未及时过期的Flink State数据与暂存结果之间不能出现重叠，否则会造成双算，导致结果偏高。
+我们借鉴了Flink引擎中的滚动窗口思路，引入一个“事件时间分段”的概念，将实时数据根据事件时间分段，以得到准确的分组排序结果。
+接下来，我们举个例子来具体说明数据的处理过程。现在假设一个项目A，它在历史上已经签约过两份合同，分别为C1和C2，它们的签约时间对应为T1和T2。实时数据中新流入一条合同签约记录C3，对应的时间为T3。将事件时间进行取整处理后，我们得到它们分别归属于起点为TG1和TG2的两个时间分段内。
+SQL代码可以参考如下样例：
+select project_id -- 项目id ,contract_id -- 合同id ,sign_time -- 签约时间 ,FROM_UNIXTIME(UNIX_TIMESTAMP(sign_time,&#39;yyyy-MM-dd HH:mm:ss&#39;)/(24*60*60)*(24*60*60) ,&#39;yyyy-MM-dd HH:mm:ss&#39; ) as event_time_group_start_point -- 事件时间分段起点 from default_catalog.default_database.mysql_project_contract_table -- 项目合同信息 接下来，在Flink SQL的排序代码中，将项目id和事件时间段的起点一同作为分组主键，对数据按照事件时间的进行排序。SQL代码可以参考如下样例：
+insert into paimon_catalog.paimon_db.dwd_project_contract_memory_result_table -- 实时数据排序结果 ​ select project_id -- 项目id ,contract_id -- 合同id ,sign_time -- 签约时间 ,event_time ,event_time_group_start_point -- 事件时间分段起点` ,DENSE_RANK() over (PARTITION BY project_id ,event_time_group_start_point ORDER BY event_time asc) as mem_rn -- 实时数据排序结果 from paimon_catalog.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-25T16:45:58+08:00">
+    <meta property="article:modified_time" content="2024-06-25T16:45:58+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">贝壳找房基于Flink&#43;Paimon进行全量数据实时分组排序的实践</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <p><strong>摘要</strong>：本文投稿自贝壳家装数仓团队，在结合家装业务场景下所探索出的一种基于 Flink+Paimon 的排序方案。这种方案可以在实时环境对全量数据进行准确的分组排序，同时减少对内存资源的消耗。在这一方案中，引入了“事件时间分段”的概念，以避免 Flink State 中冗余数据对排序结果的干扰，在保证排序结果准确性的同时，减少了对内存的消耗。并且基于数据湖组件 Paimon 的聚合模型和 Audit Log 数据在数据湖内构建了拉链表，为排序结果提供了灵活的历史数据基础。内容主要分为以下四个部分：</p> 
+ <ol><li>背景</li><li>现有的实时分组排序的一些做法及其特点</li><li>Flink+Paimon进行全量数据实时分组排序</li><li>总结与展望</li></ol> 
+</blockquote> 
+<h3><a id="_11"></a>一、<strong>背景</strong></h3> 
+<p>家装家居业务，作为贝壳“一体三翼”战略的重要组成部分，在房屋回归居住属性的大背景下，正在迅猛发展。在过去的2023年中，家装家居业务合同额为133亿元，可比口径同比增长93%；净收入取得74%的可比口径同比增幅，达到109亿元。其中，北京和杭州的合同额突破20亿，上海全年合同额超10亿，合同额超过5亿的城市共有6个。此外，家装家居业务在更多城市跑出正循环，全年有11个城市实现运营利润为正。</p> 
+<p>在家装业务中，随着设计师对客户需求和期望的逐步了解和把握，一个装修项目往往会产生多份合同。在合同签订的过程中，业务上期望通过合同的顺序、内容、金额等信息实时匹配相应的风控和运营策略，以实现智能额度、动态尾款等等功能，为客户提供更加优质的服务体验。要实现这些功能，就需要对全量合同数据进行分组排序。然而，在实时场景中，这是一个不小的挑战。为了解决这个问题，我们进行了一系列的探索和尝试。</p> 
+<h3><a id="_17"></a><strong>二、现有的实时分组排序的一些做法及其特点</strong></h3> 
+<p>首先，结合以往的经验，我们梳理了现有在实时链路中进行分组排序的方法。</p> 
+<p>第一种方法是基于Flink引擎自带的排序能力进行分组排序。该方法实现简单，逻辑直观，但是比较依赖内存资源。随着数据量的增长，排序任务所需要的内存资源会不断增加，这会给本就紧张的内存资源带来更大的压力。</p> 
+<p>第二种方法是基于离线处理结果和实时处理结果的融合计算分组排序。这种方法可以在一定程度上缓解内存压力，并且复用已有的离线计算结果。然而，同时维护并迭代离线和实时两套数据链路，会带来不小的运维压力。</p> 
+<p>第三种方法则是通过Redis、Hbase等NoSQL组件来存储和累计实时排序结果。这种占用内存少，不依赖批处理结果。然而，由于无法提供类似事务的ACID保证，存在数据脏读，进而伴随一定程度的统计误差。</p> 
+<p>通过上诉分析可以看到，在实时链路中，现有的分组排序方案在处理全量数据时，很难同时兼顾内存资源、数据链路和数据准确性三个方面。</p> 
+<p><img src="https://images2.imgbox.com/19/5f/CjdwFGMR_o.png" alt=""></p> 
+<h3><a id="FlinkPaimon_31"></a><strong>三、Flink+Paimon进行全量数据实时分组排序</strong></h3> 
+<p>在实时数据的处理中，我们希望在需要保证数据时效性的前提下，避免依赖额外的批处理逻辑，同时减少对内存的消耗。</p> 
+<p>以Paimon为代表的数据湖组件的兴起为我们提供了全新的思路。它具备强大的数据存储和加工能力，并且能够顺滑地与Flink引擎配合，进一步扩大了Flink生态的实时处理领域的领先优势。</p> 
+<p>接下来，我们将详细介绍基于Flink+Paimon进行全量数据实时排序的新方式。整体思路可以概括为两个核心步骤：第一步，利用Flink引擎接收增量流入的数据，依托其State在内存中对数据进行排序，并将排序结果存储到数据湖中；第二步，从数据湖中读取历史时点的累计结果，结合第一步得到的内存排序结果一起计算得出最终的准确结果。</p> 
+<p>这两个步骤循环配合，互为起止，形成了一个完整的数据处理流程。为了方便表述说明，在介绍第一步的时候，我们假设第二步所产出的数据已经就绪。而在介绍第二步的时候，我们将展开讲解究竟如何产出了第一步所依赖的数据。</p> 
+<h4><a id="31_41"></a><strong>3.1基于历史数据的实时分组排序</strong></h4> 
+<p>在不引入额外的批处理逻辑，并且不把全量数据保留在内存中的前提下，想要实现分组排序，需要解决两个问题。其一，需要引入其他组件暂存结果，并且需要保证Flink引擎对于暂存结果的写入和读取不能同时针对同一条记录，否则会造成脏读；其二，未及时过期的Flink State数据与暂存结果之间不能出现重叠，否则会造成双算，导致结果偏高。</p> 
+<p>我们借鉴了Flink引擎中的滚动窗口思路，引入一个“事件时间分段”的概念，将实时数据根据事件时间分段，以得到准确的分组排序结果。</p> 
+<p>接下来，我们举个例子来具体说明数据的处理过程。现在假设一个项目A，它在历史上已经签约过两份合同，分别为C1和C2，它们的签约时间对应为T1和T2。实时数据中新流入一条合同签约记录C3，对应的时间为T3。将事件时间进行取整处理后，我们得到它们分别归属于起点为TG1和TG2的两个时间分段内。</p> 
+<p><img src="https://images2.imgbox.com/92/dd/j7YS7ReT_o.png" alt=""></p> 
+<p>SQL代码可以参考如下样例：</p> 
+<pre><code class="prism language-js">select project_id  <span class="token operator">--</span> 项目id
+    <span class="token punctuation">,</span>contract_id <span class="token operator">--</span> 合同id
+    <span class="token punctuation">,</span>sign_time  <span class="token operator">--</span> 签约时间
+    <span class="token punctuation">,</span><span class="token constant">FROM_UNIXTIME</span><span class="token punctuation">(</span><span class="token constant">UNIX_TIMESTAMP</span><span class="token punctuation">(</span>sign_time<span class="token punctuation">,</span><span class="token string">'yyyy-MM-dd HH:mm:ss'</span><span class="token punctuation">)</span><span class="token operator">/</span><span class="token punctuation">(</span><span class="token number">24</span><span class="token operator">*</span><span class="token number">60</span><span class="token operator">*</span><span class="token number">60</span><span class="token punctuation">)</span><span class="token operator">*</span><span class="token punctuation">(</span><span class="token number">24</span><span class="token operator">*</span><span class="token number">60</span><span class="token operator">*</span><span class="token number">60</span><span class="token punctuation">)</span>
+           <span class="token punctuation">,</span><span class="token string">'yyyy-MM-dd HH:mm:ss'</span>
+           <span class="token punctuation">)</span> <span class="token keyword">as</span> event_time_group_start_point <span class="token operator">--</span> 事件时间分段起点
+ from default_catalog<span class="token punctuation">.</span>default_database<span class="token punctuation">.</span>mysql_project_contract_table <span class="token operator">--</span> 项目合同信息
+</code></pre> 
+<p>接下来，在Flink SQL的排序代码中，将项目id和事件时间段的起点一同作为分组主键，对数据按照事件时间的进行排序。SQL代码可以参考如下样例：</p> 
+<pre><code class="prism language-js">insert into paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span>dwd_project_contract_memory_result_table <span class="token operator">--</span> 实时数据排序结果
+​
+select project_id  <span class="token operator">--</span> 项目id      
+    <span class="token punctuation">,</span>contract_id <span class="token operator">--</span> 合同id  
+    <span class="token punctuation">,</span>sign_time  <span class="token operator">--</span> 签约时间         
+    <span class="token punctuation">,</span>event_time       
+    <span class="token punctuation">,</span>event_time_group_start_point <span class="token operator">--</span> 事件时间分段起点<span class="token template-string"><span class="token template-punctuation string">`</span><span class="token string">
+    ,DENSE_RANK() over (PARTITION BY project_id ,event_time_group_start_point ORDER BY event_time asc) as mem_rn -- 实时数据排序结果
+ from paimon_catalog.paimon_db.dwd_project_contract_table -- 项目合同信息</span><span class="token template-punctuation string">`</span></span>
+</code></pre> 
+<p>然后，我们需要根据每个事件时间分段的起点，找到对应的累计结果快照。累计结果快照代表了截至某个时点，各个装修项目已签约的合同数。（累计结果快照具体的实现方式将在3.2详细展开。）</p> 
+<p><img src="https://images2.imgbox.com/4b/35/gvQ3gMiW_o.png" alt=""></p> 
+<p>读取到的累计结果快照代表截止各分段起点的历史结果，而实时排序结果则代表了自各分段起点起之后的增量结果。将这两个结果相加，我们就得到了准确的排序结果。</p> 
+<p>这个方法中，读入的累计结果是之前时刻的快照，它已经是既定事实，不会再被更改，进而避免了脏读；各个累计结果与增量结果之间以事件时间分段起点为边界，进而避免了双算问题。</p> 
+<p>此外，在实际应用中，我们还需要考虑如何处理历史State的逐步失效问题。由于State的生命周期是有限的，随着时间的推移，一些早期的State可能会被清除或失效。为了应对这种情况，我们可以将State的生命周期设置成略长于事件时间分段的间隔。这样，即使一些早期的State失效了，我们仍然能够确保最新的事件时间分段内的数据能够在内存中进行完整的排序，进而持续得到准确结果。</p> 
+<p><img src="https://images2.imgbox.com/f8/51/6oekDSzc_o.png" alt=""></p> 
+<p>当然，对于那些已经失效的历史事件时间分段，其排序结果可能会因为数据清除而逐渐变小。为了解决这个问题，我们需要在排序操作的输出端取得每行数据排序结果的最大值。因此，在实际应用中，我们使用Paimon聚合模型来承接排序结果。</p> 
+<p>到目前为止，我们已经基于历史数据和有限的内存消耗在实时环境中实现了全量数据的分组排序。但是，这一操作的基础，是我们一直都是在假设的这样一份“随叫随到”的累计结果快照。那么，这种历史数据究竟是以如何生成、存储、和使用的呢？接下来我们将详细讨论这一部分。</p> 
+<h4><a id="32Paimon_94"></a><strong>3.2如何通过Paimon存储和呈现历史累计数据</strong></h4> 
+<p>接下来，让我们讨论如何生成并且呈现出各个事件时间分段起点的历史累计结果。</p> 
+<p>基于分组排序结果，我们可以在Paimon中采用聚合模型，以业务分组字段作为主键，获取各个分组中最大的事件时间和最大的排序结果。在我们的例子中，就是以项目id作为主键，得到项目A最新一份合同的签约时间，以及当前项目A所对应的合同中，最大的分组排序结果是多少。</p> 
+<p><img src="https://images2.imgbox.com/63/b1/UEmMsstz_o.png" alt=""></p> 
+<p>SQL代码可以参考如下样例：</p> 
+<pre><code class="prism language-js"><span class="token operator">--</span> 分组内聚合的累计结果
+<span class="token constant">CREATE</span> <span class="token constant">TABLE</span> <span class="token keyword">if</span> not exists paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span><span class="token function">dwd_project_contract_final_result_max_table</span> <span class="token punctuation">(</span>
+   project_id   bigint <span class="token constant">COMMENT</span> <span class="token string">'项目id'</span>
+  <span class="token punctuation">,</span>max_rn     bigint <span class="token constant">COMMENT</span> <span class="token string">'该项目下当前最大的rn值'</span>
+  <span class="token punctuation">,</span>max_event_time string  <span class="token constant">COMMENT</span> <span class="token string">'该项目下当前最大的event_time'</span>  
+  <span class="token punctuation">,</span><span class="token constant">PRIMARY</span> <span class="token constant">KEY</span> <span class="token punctuation">(</span>project_id<span class="token punctuation">)</span> <span class="token constant">NOT</span> <span class="token constant">ENFORCED</span>
+<span class="token punctuation">)</span> 
+<span class="token constant">WITH</span> <span class="token punctuation">(</span>
+   <span class="token string">'merge-engine'</span> <span class="token operator">=</span> <span class="token string">'aggregation'</span>
+  <span class="token punctuation">,</span><span class="token string">'changelog-producer'</span> <span class="token operator">=</span> <span class="token string">'lookup'</span>
+  <span class="token punctuation">,</span><span class="token string">'fields.max_rn.aggregate-function'</span> <span class="token operator">=</span> <span class="token string">'max'</span>
+  <span class="token punctuation">,</span><span class="token string">'fields.max_rn.ignore-retract'</span><span class="token operator">=</span><span class="token string">'true'</span>
+  <span class="token punctuation">,</span><span class="token string">'fields.max_event_time.aggregate-function'</span> <span class="token operator">=</span> <span class="token string">'max'</span>
+  <span class="token punctuation">,</span><span class="token string">'fields.max_event_time.ignore-retract'</span><span class="token operator">=</span><span class="token string">'true'</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+​
+insert into paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span>dwd_project_contract_final_result_max_table  
+​
+select project_id <span class="token operator">--</span> 项目id       
+    <span class="token punctuation">,</span>asc_rn   <span class="token operator">--</span> 分组排序结果
+    <span class="token punctuation">,</span>sign_time  <span class="token operator">--</span> <span class="token function">合同签约时间</span><span class="token punctuation">(</span>事件时间<span class="token punctuation">)</span>
+ from paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span>dwd_project_contract_final_result_table <span class="token operator">--</span> 分组排序结果
+</code></pre> 
+<p>随着数据的不断流入，累计结果表中的记录会被不断地更新，呈现出一个又一个版本。为了把累计结果的各个版本反映到历史时间轴上，我们想到了离线数据开发中的拉链表概念。</p> 
+<p>构建拉链表的关键步骤，是将相邻版本的数据记录拼接到同一行，以得到一个版本的起止时间。Paimon提供了一系列系统表，其中的Audit Log表记录了数据变更的完整日志，为构建累计结果的版本变更信息提供了可能。</p> 
+<p>基于累计结果表的Audit Log记录，我们创建了一张Paimon表来存储累计结果每个版本的起止时间信息。这张表包含两组字段：第一组字段用于表示累计结果每个版本的起始时刻，我们通过不断解析累计结果的-U日志来更新这些字段；第二组字段则用于表示累计结果每个版本的终止时间，我们利用累计结果的+U日志来实时更新这些字段。通过这种方式，我们得以追踪并体现出了累计结果的版本变更信息。</p> 
+<p><img src="https://images2.imgbox.com/bd/10/1AJVHwSo_o.png" alt=""></p> 
+<p>SQL代码可以参考如下样例：</p> 
+<pre><code class="prism language-js"><span class="token constant">CREATE</span> <span class="token constant">TABLE</span> <span class="token keyword">if</span> not exists paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span><span class="token function">dwd_project_contract_final_result_table_max_history_table</span> <span class="token punctuation">(</span>
+   project_id      bigint <span class="token constant">COMMENT</span> <span class="token string">'项目id'</span>
+  <span class="token punctuation">,</span>pre_max_rn      bigint <span class="token constant">COMMENT</span> <span class="token string">'该项目下当前最大的rn值'</span>
+  <span class="token punctuation">,</span>pre_max_event_time  string <span class="token constant">COMMENT</span> <span class="token string">'该项目下当前最大的event_time'</span>  
+  <span class="token punctuation">,</span>next_max_event_time string <span class="token constant">COMMENT</span> <span class="token string">'被更新后该项目下当前最大的event_time'</span>  
+  <span class="token punctuation">,</span><span class="token constant">PRIMARY</span> <span class="token constant">KEY</span> <span class="token punctuation">(</span>project_id<span class="token punctuation">)</span> <span class="token constant">NOT</span> <span class="token constant">ENFORCED</span>
+<span class="token punctuation">)</span>
+<span class="token constant">WITH</span> <span class="token punctuation">(</span>
+   <span class="token string">'merge-engine'</span> <span class="token operator">=</span> <span class="token string">'aggregation'</span>
+  <span class="token punctuation">,</span><span class="token string">'changelog-producer'</span> <span class="token operator">=</span> <span class="token string">'lookup'</span>
+  <span class="token punctuation">,</span><span class="token string">'fields.pre_max_rn.aggregate-function'</span> <span class="token operator">=</span> <span class="token string">'max'</span>
+  <span class="token punctuation">,</span><span class="token string">'fields.pre_max_rn.ignore-retract'</span><span class="token operator">=</span><span class="token string">'true'</span>
+  <span class="token punctuation">,</span><span class="token string">'fields.pre_max_event_time.aggregate-function'</span> <span class="token operator">=</span> <span class="token string">'max'</span>
+  <span class="token punctuation">,</span><span class="token string">'fields.pre_max_event_time.ignore-retract'</span><span class="token operator">=</span><span class="token string">'true'</span>
+  <span class="token punctuation">,</span><span class="token string">'fields.next_max_event_time.aggregate-function'</span> <span class="token operator">=</span> <span class="token string">'max'</span>
+  <span class="token punctuation">,</span><span class="token string">'fields.next_max_event_time.ignore-retract'</span><span class="token operator">=</span><span class="token string">'true'</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+​
+<span class="token constant">INSERT</span> <span class="token constant">INTO</span> paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span>dwd_project_contract_final_result_table_max_history_table
+select project_id   
+    <span class="token punctuation">,</span>max_rn     
+    <span class="token punctuation">,</span>max_event_time   
+    <span class="token punctuation">,</span><span class="token string">'0000-00-00 00:00:00'</span>
+ from paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span>dwd_project_contract_final_result_max_table$audit_log
+ where rowkind <span class="token operator">=</span> <span class="token string">'-U'</span>
+​
+ union all
+​
+select project_id   
+    <span class="token punctuation">,</span><span class="token number">0</span>
+    <span class="token punctuation">,</span><span class="token string">'0000-00-00 00:00:00'</span>    
+    <span class="token punctuation">,</span>max_event_time  
+ from paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span>dwd_project_contract_final_result_max_table$audit_log
+ where rowkind <span class="token operator">=</span> <span class="token string">'+U'</span>
+</code></pre> 
+<p>现在，我们已经成功记录了累计结果的版本变更信息。接下来的目标，就是展现历史上所有的版本变更记录。为此，我们再次将目光投向了Audit Log表。累计结果的版本变更信息表对应的Audit Log表中记录了其中各个版本出现的痕迹。因此，我们决定读取其中的+I和+U数据。</p> 
+<p>在读取这些数据时，我们还需要进行一定的过滤操作。因为在数据更新的过程中，会出现起止时间相等的版本。这种情况通常是由于Audit Log表中下一次的-U和上一次+U所包含的信息相同所导致的。为了避免冗余信息的干扰，我们需要在读取数据时进行甄别，过滤掉这些起止时间相等的版本。</p> 
+<p>经过这样的处理，就能够将所有的历史版本平铺呈现出来。</p> 
+<p>除了这些历史版本之外，拉链表中仍然需要包含当前位置的最新版本。所以，在展示历史版本的同时，还需要将当前最新结果合并到拉链表中，以确保数据的完整性和准确性。</p> 
+<p><img src="https://images2.imgbox.com/60/4a/hf0Qne1o_o.png" alt=""></p> 
+<p>SQL代码可以参考如下样例：</p> 
+<pre><code class="prism language-js"><span class="token constant">CREATE</span> <span class="token constant">TABLE</span> <span class="token keyword">if</span> not exists paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span><span class="token function">dwd_project_contract_base_version_table</span> <span class="token punctuation">(</span>
+   project_id      bigint <span class="token constant">COMMENT</span> <span class="token string">'项目id'</span>
+  <span class="token punctuation">,</span>base_ver_start_time  string  <span class="token constant">COMMENT</span> <span class="token string">'该版本开始时间'</span>
+  <span class="token punctuation">,</span>base_ver_end_time   string  <span class="token constant">COMMENT</span> <span class="token string">'该版本结束时间'</span>
+  <span class="token punctuation">,</span>base_ver_max_rn    bigint <span class="token constant">COMMENT</span> <span class="token string">'该版本最大的rn'</span>
+  <span class="token punctuation">,</span><span class="token constant">PRIMARY</span> <span class="token constant">KEY</span> <span class="token punctuation">(</span>project_id<span class="token punctuation">,</span>base_ver_start_time<span class="token punctuation">)</span> <span class="token constant">NOT</span> <span class="token constant">ENFORCED</span>
+<span class="token punctuation">)</span>
+<span class="token constant">WITH</span> <span class="token punctuation">(</span>
+   <span class="token string">'merge-engine'</span> <span class="token operator">=</span> <span class="token string">'deduplicate'</span>
+  <span class="token punctuation">,</span><span class="token string">'changelog-producer'</span> <span class="token operator">=</span> <span class="token string">'lookup'</span>
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+​
+<span class="token constant">INSERT</span> <span class="token constant">INTO</span> paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span>dwd_project_contract_base_version_table <span class="token operator">--</span> 累计结果拉链表
+select project_id      
+    <span class="token punctuation">,</span>pre_max_event_time  <span class="token keyword">as</span> base_ver_start_time
+    <span class="token punctuation">,</span>next_max_event_time <span class="token keyword">as</span> base_ver_end_time
+    <span class="token punctuation">,</span>pre_max_rn      <span class="token keyword">as</span> base_ver_max_rn  
+ from paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span>dwd_project_contract_final_result_max_history_table$audit_log <span class="token operator">--</span> 累计结果的版本变更信息的 audit log
+ where rowkind <span class="token keyword">in</span> <span class="token punctuation">(</span><span class="token string">'+I'</span><span class="token punctuation">,</span><span class="token string">'+U'</span><span class="token punctuation">)</span>
+  and pre_max_event_time <span class="token operator">&lt;</span><span class="token operator">&gt;</span> next_max_event_time
+​
+ union all 
+​
+select project_id   
+    <span class="token punctuation">,</span>max_event_time     <span class="token keyword">as</span> base_ver_start_time
+    <span class="token punctuation">,</span><span class="token string">'9999-99-99 99:99:99'</span> <span class="token keyword">as</span> base_ver_end_time   
+    <span class="token punctuation">,</span>max_rn         <span class="token keyword">as</span> base_ver_max_rn
+ from paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span>dwd_project_contract_final_result_max_table <span class="token operator">--</span> 累计结果
+</code></pre> 
+<h4><a id="33_FlinkPaimon_219"></a><strong>3.3 Flink+Paimon全量数据实时分组排序链路全景</strong></h4> 
+<p>在深入剖析了整体方案的两大核心操作思路及其具体实现后，让我们从整体角度审视整个方案的架构和各个组件之间的交互关系。</p> 
+<p>整个方案由若干Flink任务和Paimon模型组成，整体链路如下图。在这个方案中，实时流入的数据是整个流程的起点。这些数据在经过一系列的排序和处理后，会不断更新数据湖中的累计结果拉链表。这个拉链表不仅记录了累计结果的历史变化，还为后续的实时任务提供了历史时点的累计结果快照。通过这种方式，数据在整个方案中实现了循环流转和持续更新。</p> 
+<p><img src="https://images2.imgbox.com/10/3b/6dzSNXE6_o.png" alt=""></p> 
+<p>在这个流程中，通过实时数据与Paimon表进行look up join的方式，实现内存排序结果与累计结果快照的关联。在关联过程中，需要在匹配分组业务主键的同时，将事件时间分段起点与拉链表中各个版本的起止时间进行比较。</p> 
+<p>SQL代码可以参考如下样例：</p> 
+<pre><code class="prism language-js"><span class="token constant">CREATE</span> <span class="token constant">TABLE</span> <span class="token keyword">if</span> not exists paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span><span class="token function">dwd_project_contract_final_result_table</span> <span class="token punctuation">(</span>
+   project_id           bigint    <span class="token constant">COMMENT</span> <span class="token string">'项目id'</span>
+  <span class="token punctuation">,</span>contract_id          bigint    <span class="token constant">COMMENT</span> <span class="token string">'合同id'</span>
+  <span class="token punctuation">,</span>sign_time           string    <span class="token constant">COMMENT</span> <span class="token string">'合同签约时间'</span>
+  <span class="token punctuation">,</span>event_time           <span class="token constant">TIMESTAMP</span><span class="token punctuation">(</span><span class="token number">3</span><span class="token punctuation">)</span> <span class="token constant">COMMENT</span> <span class="token string">'sign_time作为event_time'</span>
+  <span class="token punctuation">,</span>event_time_group_start_point  <span class="token constant">STRING</span>    <span class="token constant">COMMENT</span> <span class="token string">'业务时间分段起点'</span>
+  <span class="token punctuation">,</span>mem_rn             bigint    <span class="token constant">COMMENT</span> <span class="token string">'这条数据在内存排序中排出来的rn'</span>
+  <span class="token punctuation">,</span>base_ver_start_time      string    <span class="token constant">COMMENT</span> <span class="token string">'该版本开始时间'</span>
+  <span class="token punctuation">,</span>base_ver_end_time       string    <span class="token constant">COMMENT</span> <span class="token string">'该版本结束时间'</span>
+  <span class="token punctuation">,</span>base_ver_max_rn        bigint    <span class="token constant">COMMENT</span> <span class="token string">'该版本最大的rn'</span>
+  <span class="token punctuation">,</span>asc_rn             bigint    <span class="token constant">COMMENT</span> <span class="token string">'最终排序结果'</span>
+  <span class="token punctuation">,</span><span class="token constant">PRIMARY</span> <span class="token constant">KEY</span> <span class="token punctuation">(</span>project_id<span class="token punctuation">,</span>contract_id<span class="token punctuation">,</span>sign_time<span class="token punctuation">,</span>event_time<span class="token punctuation">,</span>event_time_group_start_point<span class="token punctuation">)</span> <span class="token constant">NOT</span> <span class="token constant">ENFORCED</span>
+<span class="token punctuation">)</span>
+<span class="token constant">WITH</span> <span class="token punctuation">(</span>
+   <span class="token string">'merge-engine'</span> <span class="token operator">=</span> <span class="token string">'aggregation'</span>
+  <span class="token punctuation">,</span><span class="token string">'changelog-producer'</span> <span class="token operator">=</span> <span class="token string">'lookup'</span>
+  <span class="token punctuation">,</span><span class="token string">'fields.mem_rn.aggregate-function'</span> <span class="token operator">=</span> <span class="token string">'max'</span>
+  <span class="token punctuation">,</span><span class="token string">'fields.mem_rn.ignore-retract'</span><span class="token operator">=</span><span class="token string">'true'</span>
+  <span class="token punctuation">,</span><span class="token string">'fields.base_ver_start_time.ignore-retract'</span><span class="token operator">=</span><span class="token string">'true'</span>
+  <span class="token punctuation">,</span><span class="token string">'fields.base_ver_end_time.ignore-retract'</span><span class="token operator">=</span><span class="token string">'true'</span>  
+  <span class="token punctuation">,</span><span class="token string">'fields.base_ver_max_rn.aggregate-function'</span> <span class="token operator">=</span> <span class="token string">'max'</span>  
+  <span class="token punctuation">,</span><span class="token string">'fields.base_ver_max_rn.ignore-retract'</span> <span class="token operator">=</span> <span class="token string">'true'</span>    
+  <span class="token punctuation">,</span><span class="token string">'fields.asc_rn.aggregate-function'</span> <span class="token operator">=</span> <span class="token string">'max'</span>  
+  <span class="token punctuation">,</span><span class="token string">'fields.asc_rn.ignore-retract'</span><span class="token operator">=</span><span class="token string">'true'</span>         
+<span class="token punctuation">)</span><span class="token punctuation">;</span>
+​
+insert into paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span>dwd_project_contract_final_result_table
+​
+<span class="token operator">--</span> 实时数据 lookup join 累计结果的历史快照
+select s<span class="token punctuation">.</span>project_id  
+    <span class="token punctuation">,</span>s<span class="token punctuation">.</span>contract_id
+    <span class="token punctuation">,</span>s<span class="token punctuation">.</span>sign_time  
+    <span class="token punctuation">,</span>s<span class="token punctuation">.</span>event_time
+    <span class="token punctuation">,</span>s<span class="token punctuation">.</span>event_step_start_point
+    <span class="token punctuation">,</span>s<span class="token punctuation">.</span>mem_rn
+    <span class="token punctuation">,</span><span class="token function">coalesce</span><span class="token punctuation">(</span>base<span class="token punctuation">.</span>base_ver_start_time <span class="token punctuation">,</span><span class="token string">'0000-00-00 00:00:00'</span><span class="token punctuation">)</span> <span class="token keyword">as</span> base_ver_start_time
+    <span class="token punctuation">,</span><span class="token function">coalesce</span><span class="token punctuation">(</span>base<span class="token punctuation">.</span>base_ver_end_time  <span class="token punctuation">,</span><span class="token string">'0000-00-00 00:00:00'</span><span class="token punctuation">)</span> <span class="token keyword">as</span> base_ver_end_time  
+    <span class="token punctuation">,</span><span class="token function">coalesce</span><span class="token punctuation">(</span>base<span class="token punctuation">.</span>base_ver_max_rn   <span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span> <span class="token keyword">as</span> base_ver_max_rn   
+    <span class="token punctuation">,</span>s<span class="token punctuation">.</span>mem_rn <span class="token operator">+</span> <span class="token function">coalesce</span><span class="token punctuation">(</span>base<span class="token punctuation">.</span>base_ver_max_rn<span class="token punctuation">,</span><span class="token number">0</span><span class="token punctuation">)</span> <span class="token keyword">as</span> asc_rn
+ from paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span>dwd_project_contract_memory_result_table s <span class="token operator">--</span> 实时数据的内存排序结果
+ left join paimon_catalog<span class="token punctuation">.</span>paimon_db<span class="token punctuation">.</span>dwd_project_contract_base_version_table <span class="token constant">FOR</span> <span class="token constant">SYSTEM_TIME</span> <span class="token constant">AS</span> <span class="token constant">OF</span> s<span class="token punctuation">.</span>proctime <span class="token constant">AS</span> base <span class="token operator">--</span> 累计结果拉链表
+  on s<span class="token punctuation">.</span>project_id <span class="token operator">=</span> base<span class="token punctuation">.</span>project_id
+  and s<span class="token punctuation">.</span>event_step_start_point <span class="token operator">&gt;=</span> base<span class="token punctuation">.</span>base_ver_start_time 
+  and s<span class="token punctuation">.</span>event_step_start_point <span class="token operator">&lt;</span> base<span class="token punctuation">.</span>base_ver_end_time
+</code></pre> 
+<h4><a id="34__278"></a><strong>3.4 特定情况下的脏读及自修正方式</strong></h4> 
+<p>实际运行过程中，考虑到集群的计算负载以及HDFS的底层操作，数据湖中各表的更新需要一个短暂的时间。当所处理数据的业务时间刚好在业务时间段起点附近时，仍然可能出现脏读。</p> 
+<p><img src="https://images2.imgbox.com/d0/f1/j6mqdfht_o.png" alt=""></p> 
+<p>如图所示，C1和C2两条数据在业务时间分段起点TG2前后出现。当C1流入之后，累计结果拉链无法立刻将TG2时刻的快照版本从TG2-1更新到TG2-2。进而导致C2关联到的累计结果为未包含C1结果的TG2-1。</p> 
+<p>对于家装业务而言，由于作业人员通常在白天作业，因此我们可以将事件时间分段的交界点调节为每日零点，从而规避这一问题。</p> 
+<p>此处我们跳出家装业务，考虑这种特定情况的通用解法。在关联任务中，除了使用内存排序结果关联拉链表以外，还可以同时使用拉链表的变更记录来反向关联内存排序数据。这样能够将拉链表最新的版本变动同步到实时数据当中，进而修正C2的最终排序结果。</p> 
+<h3><a id="_290"></a><strong>四、总结与展望</strong></h3> 
+<p>随着Flink引擎能力的不断增强以及Flink生态中像Paimon这样优秀项目的崛起，数仓开发人员在实时数据处理方面拥有了更多优秀的工具。这些新的功能和特性使得我们能够更加灵活地应对各种数据需求。</p> 
+<p>“新居住”的时代正在到来。贝壳家装数仓将不断吸收新理念、新技术，继续深入挖掘数据价值，持续打磨贴合家装场景的数据大脑，引领家装行业的数据实践，进一步助力贝壳家装业务为消费者提供更优质、更便捷的服务体验，让“家的美好，一站实现”的美好愿景成为更多家庭的现实。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/10b9359a41c420e7beb0c495db792c9b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Chrome开发者工具学习</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/7c8a9f97988472b90ebadb50d39da918/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">（超简单、超易懂、超详细）算法精讲(四十五)： RSA加密算法</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,839 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>在微信小程序部署AI模型的几种方法 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/a695f66c738da866fcef84c906581406/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="在微信小程序部署AI模型的几种方法">
+  <meta property="og:description" content="前言 本文只是分享思路，不提供可完整运行的项目代码
+onnx部署 以目标检测类模型为例，该类模型会输出类别信息，置信度，包含检测框的4个坐标信息
+但不是所有的onnx模型都能在微信小程序部署，有些算子不支持，这种情况需要点特殊操作，我暂时不能解决。
+微信小程序提供的接口相当于使用onnxruntime的接口运行onnx模型，我们要做的就是将视频帧数据（包含RGBA的一维像素数组）转换成对应形状的数组（比如3*224*224的一维Float32Array），然后调用接口并将图像输入得到运行的结果（比如一个1*10*6的一维Float32Array，代表着10个预测框的类别，置信度和框的4个坐标），然后将结果处理（比如行人检测，给置信度设置一个阈值0.5，筛选置信度大于阈值的数组的index，然后按照index取出相应的类别和框坐标），最后在wxml中显示类别名或置信度或在canvas绘制框。
+代码框架 这里采用的是实时帧数据，按预设频率调用一帧数据并后处理得到结果
+onLoad主体 onLoad(){ // 创建相机上下文 const context = wx.createCameraContext(); // 定义实时帧回调函数 this.listener=context.onCameraFrame((frame)=&gt;this.CamFramCall(frame)); // 初始化session this.initSession() }, 相机实时帧回调函数 得到的实时帧数据因系统而异，并不固定(这对后面画追踪框的时候不利)
+我的处理方法是把帧数据和&lt;camera&gt;组件的长宽比例统一，这样得到坐标后再乘以一个比例系数即可映射到&lt;camera&gt;因为输进去模型的是帧数据，所以返回的追踪框坐标是基于帧数据的，直接画在&lt;camera&gt;上的canvas有可能出现框的位置有偏差
+回调函数里的逻辑是设置&lt;camera&gt;的长（我把宽定死到手机屏幕长度的0.9），预处理图片数据，进行推理，关闭监听（至此完成一帧）
+CamFramCall(frame){ // 根据实时帧的图片长宽比例设置&lt;camera&gt;组件展示大小 this.setData({ windowHeight:frame.height/frame.width*wx.getSystemInfoSync().windowWidth*0.9 }) var dstInput=new Float32Array(3*this.data.imgH*this.data.imgW).fill(255) // 调用图片预处理函数对实时帧数据进行处理 this.preProcess(frame,dstInput) // 将处理完的数据进行推理得到结果 this.infer(dstInput) console.log(&#39;完成一次帧循环&#39;) // 关闭监听 this.listener.stop() }, 初始化session 首先得将onnx上传至云端，获得一个存储路径（比如cloud://cloud1-8gcwcxqrb8722e9e.636c-cloud1-8gcwcxqrb8722e9e-1324077753/rtdetrWorker.onnx）
+当用户首次使用该小程序时，手机里没有onnx模型的存储，需要从云端下载；而已经非第一次使用该小程序的用户手机里已经保存了之前下载的onnx模型，就无需下载。所以此处代码逻辑是需要检测用户的存储里是否有该onnx模型，不存在就下载，下载完并保存模型文件后就执行下一步；存在就直接执行下一步。
+initSession(){ // onnx云端下载路径 const cloudPath=&#39;cloud://cloud1-8gcwcxqrb8722e9e.636c-cloud1-8gcwcxqrb8722e9e-1324077753/best.onnx&#39; const lastIndex=cloudPath.lastIndexOf(&#39;/&#39;) const filename=cloudPath.substring(lastIndex&#43;1) const modelPath=`${wx.env.USER_DATA_PATH}/`&#43;filename // 检测onnx文件是否存在 wx.getFileSystemManager().access({ path:modelPath, // 如果存在就创建session，定时开启监听实时帧 success:(res)=&gt;{ console.log(&#39;file already exist&#39;) this.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-07T07:43:41+08:00">
+    <meta property="article:modified_time" content="2024-05-07T07:43:41+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">在微信小程序部署AI模型的几种方法</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2>前言</h2> 
+<p>本文只是分享思路，不提供可完整运行的项目代码</p> 
+<h2>onnx部署</h2> 
+<p>以目标检测类模型为例，该类模型会输出<span style="background-color:#fbd4d0;">类别信息</span>，<span style="background-color:#fbd4d0;">置信度</span>，<span style="background-color:#fbd4d0;">包含检测框的4个坐标信息</span></p> 
+<p><span style="color:#fe2c24;">但不是所有的onnx模型都能在微信小程序部署，有些算子不支持，这种情况需要点特殊操作，我暂时不能解决。</span></p> 
+<p>微信小程序提供的接口相当于使用onnxruntime的接口运行onnx模型，我们要做的就是<span style="background-color:#f9eda6;">将视频帧数据（包含RGBA的一维像素数组）转换成对应形状的数组（比如3*224*224的一维Float32Array）</span>，<span style="background-color:#ffd7b9;">然后调用接口并将图像输入得到运行的结果（比如一个1*10*6的一维Float32Array，代表着10个预测框的类别，置信度和框的4个坐标）</span>，<span style="background-color:#d4e9d5;">然后将结果处理（比如行人检测，给置信度设置一个阈值0.5，筛选置信度大于阈值的数组的index，然后按照index取出相应的类别和框坐标）</span>，<span style="background-color:#c7e6ea;">最后在wxml中显示类别名或置信度或在canvas绘制框。</span></p> 
+<h3>代码框架</h3> 
+<p>这里采用的是实时帧数据，按预设频率调用一帧数据并后处理得到结果</p> 
+<h4>onLoad主体</h4> 
+<pre><code class="language-javascript">    onLoad(){
+      // 创建相机上下文
+      const context = wx.createCameraContext();
+      // 定义实时帧回调函数
+      this.listener=context.onCameraFrame((frame)=&gt;this.CamFramCall(frame));
+      // 初始化session
+      this.initSession()
+    },</code></pre> 
+<h4>相机实时帧回调函数 </h4> 
+<p>得到的实时帧数据因系统而异，并不固定(这对后面画追踪框的时候不利)</p> 
+<p>我的处理方法是把帧数据和&lt;camera&gt;组件的长宽比例统一，这样得到坐标后再乘以一个比例系数即可映射到&lt;camera&gt;因为输进去模型的是帧数据，所以返回的追踪框坐标是基于帧数据的，直接画在&lt;camera&gt;上的canvas有可能出现框的位置有偏差</p> 
+<p>回调函数里的<span style="background-color:#ed7976;">逻辑是设置&lt;camera&gt;的长（我把宽定死到手机屏幕长度的0.9）</span>，<span style="background-color:#faa572;">预处理图片数据</span>，<span style="background-color:#e6b223;">进行推理</span>，<span style="background-color:#98c091;">关闭监听（至此完成一帧）</span></p> 
+<pre><code class="language-javascript">    CamFramCall(frame){
+      // 根据实时帧的图片长宽比例设置&lt;camera&gt;组件展示大小
+      this.setData({
+        windowHeight:frame.height/frame.width*wx.getSystemInfoSync().windowWidth*0.9
+      })
+      var dstInput=new Float32Array(3*this.data.imgH*this.data.imgW).fill(255)
+      // 调用图片预处理函数对实时帧数据进行处理
+      this.preProcess(frame,dstInput)
+      // 将处理完的数据进行推理得到结果
+      this.infer(dstInput)
+      console.log('完成一次帧循环')
+      // 关闭监听
+      this.listener.stop()
+    },</code></pre> 
+<h4>初始化session</h4> 
+<p>首先得将onnx上传至云端，获得一个存储路径（比如<span style="background-color:#fbd4d0;">cloud://cloud1-8gcwcxqrb8722e9e.636c-cloud1-8gcwcxqrb8722e9e-1324077753/rtdetrWorker.onnx</span>）</p> 
+<p>当用户首次使用该小程序时，手机里没有onnx模型的存储，需要从云端下载；而已经非第一次使用该小程序的用户手机里已经保存了之前下载的onnx模型，就无需下载。所以此处<span style="color:#fe2c24;">代码逻辑</span>是需要检测用户的存储里是否有该onnx模型，不存在就下载，下载完并保存模型文件后就执行<span style="color:#ff9900;">下一步</span>；存在就直接执行<span style="color:#ff9900;">下一步</span>。</p> 
+<pre><code class="language-javascript">    initSession(){
+      // onnx云端下载路径
+      const cloudPath='cloud://cloud1-8gcwcxqrb8722e9e.636c-cloud1-8gcwcxqrb8722e9e-1324077753/best.onnx'
+      const lastIndex=cloudPath.lastIndexOf('/')
+      const filename=cloudPath.substring(lastIndex+1)
+      const modelPath=`${wx.env.USER_DATA_PATH}/`+filename
+      // 检测onnx文件是否存在
+      wx.getFileSystemManager().access({
+        path:modelPath,
+        // 如果存在就创建session，定时开启监听实时帧
+        success:(res)=&gt;{
+          console.log('file already exist')
+          this.createInferenceSession(modelPath)
+          setInterval(()=&gt;{this.listener.start()},1000)
+        },
+        // 如果不存在
+        fail:(res)=&gt;{
+          console.error(res)
+          wx.cloud.init()
+          console.log('begin download model')
+          // 下载提示框
+          wx.showLoading({
+            title: '加载检测中',
+          })
+          // 调用自定义的下载文件函数
+          this.downloadFile(cloudPath,function(r) {
+            console.log(`下载进度：${r.progress}%，已下载${r.totalBytesWritten}B，共${r.totalBytesExpectedToWrite}B`)
+          }).then(result=&gt;{
+            // 下载文件成功后保存
+            wx.getFileSystemManager().saveFile({
+              tempFilePath:result.tempFilePath,
+              filePath:modelPath,
+              // 保存文件成功后创建session，定时开启监听实时帧
+              success:(res)=&gt;{
+                const modelPath=res.savedFilePath
+                console.log('save onnx model at path:'+modelPath)
+                this.createInferenceSession(modelPath)
+                // 关闭下载提示框
+                wx.hideLoading()
+                setInterval(()=&gt;{this.listener.start()},1000)
+              },
+              fail:(res)=&gt;{
+                console.error(res)
+              }
+            })
+          })
+        }
+      })
+    },</code></pre> 
+<h4>自定义的下载文件函数</h4> 
+<pre><code class="language-javascript">  downloadFile(fileID, onCall = () =&gt; {}) {
+    return new Promise((resolve) =&gt; {
+      const task = wx.cloud.downloadFile({
+        fileID,
+        success: res =&gt; resolve(res),
+      })
+      task.onProgressUpdate((res) =&gt; {
+        if (onCall(res) == false) {
+          task.abort()
+        }
+      })
+    })
+  },</code></pre> 
+<h4>自定义创建session的函数</h4> 
+<pre><code class="language-javascript">  createInferenceSession(modelPath) {
+    return new Promise((resolve, reject) =&gt; {
+      this.session = wx.createInferenceSession({
+        model: modelPath,
+        precisionLevel : 4,
+        allowNPU : false,
+        allowQuantize: false,
+      });
+
+      // 监听error事件
+      this.session.onError((error) =&gt; {
+        console.error(error);
+        reject(error);
+      });
+      this.session.onLoad(() =&gt; {
+        resolve();
+      });
+    })
+  },</code></pre> 
+<h4>自定义的图像预处理函数</h4> 
+<p>该函数接收帧数据（RGBA一维数组）和在外面初始化的Float32Array数组，执行归一化、去除透明度通道。</p> 
+<pre><code class="language-javascript">    preProcess(frame,dstInput){
+      return new Promise(resolve=&gt;{
+        const origData = new Uint8Array(frame.data);
+        for(var j=0;j&lt;frame.height;j++){
+          for(var i=0;i&lt;frame.width;i++){
+            dstInput[i*3+this.data.imgW*j*3]=origData[i*4+j*frame.width*4]/255
+            dstInput[i*3+1+this.data.imgW*j*3]=origData[i*4+1+j*frame.width*4]/255
+            dstInput[i*3+2+this.data.imgW*j*3]=origData[i*4+2+j*frame.width*4]/255
+          }
+        }
+        resolve();
+      })
+    },</code></pre> 
+<h4>自定义的推理函数</h4> 
+<p><span style="background-color:#d4e9d5;">推理接口接收数个键值对input，具体需要参照自己的onnx模型，在<a href="https://netron.app/" rel="nofollow" title="Netron">Netron</a>查看相应的模型信息</span></p> 
+<p><span style="background-color:#d4e9d5;">我这里只有1个输入，对应的名字为"images"，接收(1,3,640,640)形状的图像数组</span></p> 
+<p><span style="background-color:#d4e9d5;">我这里的onnx输出数组是1*6*10的，代表有10个检测框，还有4个坐标信息+类别编号+置信度。我的输出的数组名字叫 output0，注意参照自己的onnx输出名</span></p> 
+<p><span style="background-color:#d4e9d5;">接着就是获取最大置信度所在索引并按照索引取出其对应框的信息和类别编号</span></p> 
+<p><span style="background-color:#d4e9d5;">然后绘制在canvas上</span></p> 
+<p>为了在没有检测到物体时不绘制出框，检测到物体时绘制检测框，就先获取&lt;canvas&gt;对象，清空画布，再对session输出的数据进行后处理，然后给个阈值判断是否画框。</p> 
+<pre><code class="language-javascript">    infer(imgData){
+      this.session.run({
+        'images':{
+          shape:[1,3,this.data.imgH,this.data.imgW],
+          data:imgData.buffer,
+          type:'float32',
+        }
+      // 获得运行结果后
+      }).then((res)=&gt;{
+        let results=new Float32Array(res.output0.data)
+        // 获取canvas对象，填上id，这里对应”c1“
+        wx.createSelectorQuery().select('#c1')
+        .fields({node:true,size:true})
+        .exec((res)=&gt;{
+          const canvas=res[0].node
+          const ctx=canvas.getContext('2d')
+          canvas.width=wx.getSystemInfoSync().windowWidth*0.9
+          canvas.height=this.data.windowHeight
+          // 对session数据进行后处理
+          this.postProcess(results).then((index)=&gt;{
+            // 清空画布
+            ctx.clearRect(0,0,canvas.width,canvas.height)
+            // 大于阈值，就认为检测到物体
+            if(this.data.conf&gt;0.5){
+              this.setData({
+                class_name:'检测到苹果'
+              })
+              // 这里需要参考自己的session输出的数组上对应位置的具体含义
+              // 比如我的session输出1*6*10的一维数组，可以看作6*10的二维数组，
+              // 有6行数据，第一行对应中心点x坐标，第二行对应中心点y坐标，
+              // 第3行对应检测框的w宽度，第4行对应检测框的h长度，
+              // 第5行对应置信度，第6行对应类别编号
+              var x=results[index]
+              var y=results[10+index]
+              var w=results[2*10+index]
+              var h=results[3*10+index]
+              var x1=Math.round(x-w/2)
+              var y1=Math.round(y-h/2)
+              var x2=Math.round(x+w/2)
+              var y2=Math.round(y+h/2)
+              ctx.strokeStyle='red'
+              ctx.lineWidth=2
+              ctx.strokeRect(x1,y1,x2,y2)
+            }
+          })
+        })
+      })
+    },</code></pre> 
+<h4> 自定义的后处理函数</h4> 
+<p>初始化置信度和index，对10个检测框进行遍历，取出置信度最大元素所在index，然后更新到全局变量中，这里设定阈值为0.5. 此函数接收session输出的数组，返回index</p> 
+<pre><code class="language-javascript">    postProcess(results){
+      return new Promise((resolve)=&gt;{
+        var maxConf=results[10*4]
+        var index=0
+        for(var i=1;i&lt;10;i+=1){
+          var conf=results[10*4+i]
+          if(conf&gt;0.5 &amp; maxConf&lt;conf){
+            maxConf=conf
+            index=i
+          }
+        }
+        this.setData({
+          conf:maxConf,
+          class_name:'未检测出苹果'
+        })
+        resolve(index)
+      })
+    },</code></pre> 
+<h3>代码总览</h3> 
+<h4>index.js</h4> 
+<pre><code class="language-javascript">Page({
+    data: {
+        imagePath: '/images/tree.png',
+        windowHeight:wx.getSystemInfoSync().windowWidth*1.197,
+        imgH:640,
+        imgW:640,
+        conf:0,
+        class_name:'未检测到红火蚁',
+    },
+    onLoad(){
+      const context = wx.createCameraContext();
+      this.listener=context.onCameraFrame((frame)=&gt;this.CamFramCall(frame));
+      this.initSession()
+    },
+    initSession(){
+      const cloudPath='cloud://cloud1-8gcwcxqrb8722e9e.636c-cloud1-8gcwcxqrb8722e9e-1324077753/best.onnx'
+      const lastIndex=cloudPath.lastIndexOf('/')
+      const filename=cloudPath.substring(lastIndex+1)
+      const modelPath=`${wx.env.USER_DATA_PATH}/`+filename
+      wx.getFileSystemManager().access({
+        path:modelPath,
+        success:(res)=&gt;{
+          console.log('file already exist')
+          this.createInferenceSession(modelPath)
+          setInterval(()=&gt;{this.listener.start()},1000)
+        },
+        fail:(res)=&gt;{
+          console.error(res)
+          wx.cloud.init()
+          console.log('begin download model')
+          wx.showLoading({
+            title: '加载检测中',
+          })
+          this.downloadFile(cloudPath,function(r) {
+            console.log(`下载进度：${r.progress}%，已下载${r.totalBytesWritten}B，共${r.totalBytesExpectedToWrite}B`)
+          }).then(result=&gt;{
+            wx.getFileSystemManager().saveFile({
+              tempFilePath:result.tempFilePath,
+              filePath:modelPath,
+              success:(res)=&gt;{
+                const modelPath=res.savedFilePath
+                console.log('save onnx model at path:'+modelPath)
+                this.createInferenceSession(modelPath)
+                wx.hideLoading()
+                setInterval(()=&gt;{this.listener.start()},1000)
+              },
+              fail:(res)=&gt;{
+                console.error(res)
+              }
+            })
+          })
+        }
+      })
+    },
+    createInferenceSession(modelPath){
+      return new Promise((resolve,reject)=&gt;{
+        this.session=wx.createInferenceSession({
+          model: modelPath,
+          precesionLevel:4,
+          allowNPU:false,
+          allowQuantize:false,
+        })
+        this.session.onError((error) =&gt; {
+          console.error(error)
+          reject(error)
+        })
+        this.session.onLoad(()=&gt;{
+          resolve()
+        })
+      })
+    },
+    CamFramCall(frame){
+      this.setData({
+        windowHeight:frame.height/frame.width*wx.getSystemInfoSync().windowWidth*0.9
+      })
+      var dstInput=new Float32Array(3*this.data.imgH*this.data.imgW).fill(255)
+      this.preProcess(frame,dstInput)
+      this.infer(dstInput)
+      console.log('完成一次帧循环')
+      this.listener.stop()
+    },
+    preProcess(frame,dstInput){
+      return new Promise(resolve=&gt;{
+        const origData = new Uint8Array(frame.data);
+        for(var j=0;j&lt;frame.height;j++){
+          for(var i=0;i&lt;frame.width;i++){
+            dstInput[i*3+this.data.imgW*j*3]=origData[i*4+j*frame.width*4]
+            dstInput[i*3+1+this.data.imgW*j*3]=origData[i*4+1+j*frame.width*4]
+            dstInput[i*3+2+this.data.imgW*j*3]=origData[i*4+2+j*frame.width*4]
+          }
+        }
+        resolve();
+      })
+    },
+    postProcess(results){
+      return new Promise((resolve)=&gt;{
+        var maxConf=results[10*4]
+        var index=0
+        for(var i=1;i&lt;10;i+=1){
+          var conf=results[10*4+i]
+          if(conf&gt;0.5 &amp; maxConf&lt;conf){
+            maxConf=conf
+            index=i
+          }
+        }
+        this.setData({
+          conf:maxConf,
+          class_name:'未检测到红火蚁'
+        })
+        resolve(index)
+      })
+    },
+    infer(imgData){
+      this.session.run({
+        'images':{
+          shape:[1,3,this.data.imgH,this.data.imgW],
+          data:imgData.buffer,
+          type:'float32',
+        }
+      }).then((res)=&gt;{
+        let results=new Float32Array(res.output0.data)
+        wx.createSelectorQuery().select('#c1')
+        .fields({node:true,size:true})
+        .exec((res)=&gt;{
+          const canvas=res[0].node
+          const ctx=canvas.getContext('2d')
+          canvas.width=wx.getSystemInfoSync().windowWidth*0.9
+          canvas.height=this.data.windowHeight
+          this.postProcess(results).then((index)=&gt;{
+            ctx.clearRect(0,0,canvas.width,canvas.height)
+            if(this.data.conf&gt;0.5){
+              this.setData({
+                class_name:'检测到红火蚁'
+              })
+              var x=results[index]
+              var y=results[8400+index]
+              var w=results[2*8400+index]
+              var h=results[3*8400+index]
+              var x1=Math.round(x-w/2)
+              var y1=Math.round(y-h/2)
+              var x2=Math.round(x+w/2)
+              var y2=Math.round(y+h/2)
+              ctx.strokeStyle='red'
+              ctx.lineWidth=2
+              ctx.strokeRect(x1,y1,x2,y2)
+            }
+          })
+        })
+      })
+    },
+    downloadFile(fileID,onCall=()=&gt;{}){
+      return new Promise((resolve)=&gt;{
+        const task=wx.cloud.downloadFile({
+          fileID,
+          success:res=&gt;resolve(res),
+        })
+        task.onProgressUpdate((res)=&gt;{
+          if(onCall(res)==false){
+            task.abort()
+          }
+        })
+      })
+    },
+})</code></pre> 
+<h4> index.wxss</h4> 
+<pre><code class="language-javascript">.c1{
+  width: 100%;
+  align-items: center;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+}
+#myCanvas{
+  width: 100%;
+  height: 100%;
+}</code></pre> 
+<h4>index.wxml</h4> 
+<pre><code class="language-javascript">&lt;view class="c1"&gt;
+&lt;camera class="camera" binderror="error" mode="normal" style="width: 90%; height: {<!-- -->{windowHeight}}px;"&gt;
+  &lt;canvas id="c1" type="2d"&gt;&lt;/canvas&gt;
+&lt;/camera&gt;
+&lt;view&gt;结果：{<!-- -->{class_name}}&lt;/view&gt;
+&lt;view&gt;置信度：{<!-- -->{conf}}&lt;/view&gt;
+&lt;/view&gt; </code></pre> 
+<h2>flask部署</h2> 
+<p>微信小程序负责把图像数据或帧数据传到服务器，在服务器用flask搭建相关模型运行环境，将接收到的图像数据或帧数据预处理后输入模型里，在将结果返回给微信小程序，微信小程序再显示结果。</p> 
+<p>我这里给的例子是传送帧数据的，也就是实时检测。</p> 
+<p>但是目前存在一个问题，速度，检测框的速度跟不上物体移动，只能慢速检测，一旦提高频率小程序就抓不到实时帧。</p> 
+<h3>前端</h3> 
+<p>在前端，获得帧数据后，因为帧数据的格式是一维RGBA数组，为了将其转成png，方便服务器处理，把帧数据绘制到画布上，再导出为png送入服务器。接收到服务器的结果后，将检测框绘制到相机的界面，需要在&lt;camera&gt;标签里加上&lt;canvas&gt;标签，然后画上矩形框，并在下方显示分类结果。</p> 
+<h4>主体代码框架</h4> 
+<p>初始化页面数据，camH是&lt;camera&gt;组件在展示页面的高度，k是比例系数</p> 
+<p>每个系统运行小程序，所导出的frame大小是不同的，为了更好的画检测框：首先模型接收的是frame，其运行的结果的检测框坐标数据是基于frame的。而&lt;camera&gt;组件的展示大小也是要设定的，我把&lt;camera&gt;的宽度定死在整个页面宽度的0.9（在wxss中设定），然后使&lt;camera&gt;与frame成比例（就只需要设定camH，我这里给了一个初始值1.2，后面的程序会更精确的调），&lt;camera&gt;与frame的比例系数为k，再让camera中的画布&lt;canvas&gt;完全贴合于其父元素&lt;camera&gt;，只要把模型跑出的坐标乘以比例系数k即可映射到&lt;camera&gt;上。</p> 
+<pre><code class="language-javascript">  onLoad(){
+    // 执行自定义的初始化函数
+    this.init().then(()=&gt;{
+      // 创建相机上下文
+      const context = wx.createCameraContext();
+      // 设定监听回调函数
+      this.listener=context.onCameraFrame(frame=&gt;this.CamFramCall(frame));
+      // 每500ms开启一次监听
+      setInterval(()=&gt;{this.listener.start()}, 500);
+    })
+  },</code></pre> 
+<h4>自定义的初始化函数</h4> 
+<p> 为了设定&lt;camera&gt;的高和比例系数，需要知道frame的尺寸，所以这里调用了一次相机帧。而后面调用相机帧是为了获取帧数据，两者目的不同。</p> 
+<pre><code class="language-javascript">  init(){
+    return new Promise(resolve=&gt;{
+      const context = wx.createCameraContext();
+      const listener=context.onCameraFrame(frame=&gt;{
+        this.setData({
+          camH:wx.getSystemInfoSync().windowWidth*0.9*frame.height/frame.width,
+          k:wx.getSystemInfoSync().windowWidth*0.9/frame.width
+        })
+        listener.stop()
+    })
+    listener.start()
+    resolve()
+    })
+  },</code></pre> 
+<h4> 实时帧回调函数</h4> 
+<p>在回调函数里，将接收到的数据转base64，然后将数据传到服务器，最后停止监听，至此完成一帧</p> 
+<pre><code class="language-javascript">  CamFramCall(frame){
+    this.base64ToPNG(frame).then(result=&gt;{
+      this.interWithServer({'img':result})
+      console.log('完成一次帧循环')
+      this.listener.stop()
+    })
+  },</code></pre> 
+<h4>自定义帧数据转base64的函数</h4> 
+<p>参考<a href="http://t.csdnimg.cn/2hc7k" rel="nofollow" title="http://t.csdnimg.cn/2hc7k">http://t.csdnimg.cn/2hc7k</a></p> 
+<p>这里增加了异步编程的语句，更合理</p> 
+<pre><code class="language-javascript">  base64ToPNG(frame){
+    return new Promise(resolve=&gt;{
+      const query = wx.createSelectorQuery()
+      query.select('#canvas')
+        .fields({node:true,size:true})
+        .exec((res)=&gt;{
+          const canvas=res[0].node
+          const ctx=canvas.getContext('2d')
+          canvas.width=frame.width
+          canvas.height=frame.height
+          var imageData=ctx.createImageData(canvas.width,canvas.height)
+          var ImgU8Array = new Uint8ClampedArray(frame.data);
+          for(var i=0;i&lt;ImgU8Array.length;i+=4){
+            imageData.data[0+i]=ImgU8Array[i+0]
+            imageData.data[1+i]=ImgU8Array[i+1]
+            imageData.data[2+i]=ImgU8Array[i+2]
+            imageData.data[3+i]=ImgU8Array[i+3]
+          }
+          ctx.putImageData(imageData,0,0,0,0,canvas.width,canvas.height)
+          resolve(canvas.toDataURL())
+        })
+    })
+  },</code></pre> 
+<h4>自定义传数据到服务器函数 </h4> 
+<pre><code class="language-javascript">  interWithServer(imgData){
+    const header = {
+      'content-type': 'application/x-www-form-urlencoded'
+    };
+    wx.request({
+      // 填上自己的服务器地址
+      url: 'http://172.16.3.186:5000/predict',
+      method: 'POST',
+      header: header,
+      data: imgData,
+      success: (res) =&gt; {
+      // 返回的坐标数据，调用自定义的画检测框函数
+this.drawRect(res.data['conf'],res.data['x'],res.data['y'],res.data['w'],res.data['h'])
+      },
+      fail: () =&gt; {
+        wx.showToast({
+          title: 'Failed to connect server!',
+          icon: 'none',
+        });
+      }
+    });
+  },</code></pre> 
+<h4>自定义的画检测框函数 </h4> 
+<pre><code class="language-javascript">  drawRect(conf,x,y,w,h){
+    // 填上&lt;camera&gt;内&lt;canvas&gt;的id
+    wx.createSelectorQuery().select('#c1')
+    .fields({node:true,size:true})
+        .exec((res)=&gt;{
+          const canvas=res[0].node
+          const ctx=canvas.getContext('2d')
+          // 设置宽高，完全填充于&lt;camera&gt;组件的大小
+          canvas.width=wx.getSystemInfoSync().windowWidth*0.9
+          canvas.height=this.data.camH
+          // 清空画布，避免遗留上次的检测框
+          ctx.clearRect(0,0,canvas.width,canvas.height)
+          // 如果置信度大于0.5，才画框
+          if(conf&gt;0.5){
+            ctx.strokeStyle='red'
+            ctx.lineWidth=2
+            const k =this.data.k
+            // 经过真机测试，发现在x和y上乘以比例系数即可，较为精确
+            // 虽然理论上要按比例计算，但可以根据实际的情况做出一点调整，对检测框进行修正
+            ctx.strokeRect(k*x,k*y,x+w,y+h)
+          }
+        })
+  },</code></pre> 
+<h4>index.js</h4> 
+<pre><code class="language-javascript">Page({
+  data: {
+    camH:wx.getSystemInfoSync().windowWidth*1.2,
+    k:1
+  },
+  onLoad(){
+    this.init().then(()=&gt;{
+      const context = wx.createCameraContext();
+      this.listener=context.onCameraFrame(frame=&gt;this.CamFramCall(frame));
+      setInterval(()=&gt;{this.listener.start()}, 500);
+    })
+  },
+  init(){
+    return new Promise(resolve=&gt;{
+      const context = wx.createCameraContext();
+      const listener=context.onCameraFrame(frame=&gt;{
+        this.setData({
+          camH:wx.getSystemInfoSync().windowWidth*0.9*frame.height/frame.width,
+          k:wx.getSystemInfoSync().windowWidth*0.9/frame.width
+        })
+        listener.stop()
+    })
+    listener.start()
+    resolve()
+    })
+  },
+  CamFramCall(frame){
+    this.base64ToPNG(frame).then(result=&gt;{
+      this.interWithServer({'img':result})
+      console.log('完成一次帧循环')
+      this.listener.stop()
+    })
+  },
+  drawRect(conf,x,y,w,h){
+    wx.createSelectorQuery().select('#c1')
+    .fields({node:true,size:true})
+        .exec((res)=&gt;{
+          const canvas=res[0].node
+          const ctx=canvas.getContext('2d')
+          canvas.width=wx.getSystemInfoSync().windowWidth*0.9
+          canvas.height=this.data.camH
+          ctx.clearRect(0,0,canvas.width,canvas.height)
+          if(conf&gt;0.5){
+            ctx.strokeStyle='red'
+            ctx.lineWidth=2
+            const k =this.data.k
+            ctx.strokeRect(k*x,k*y,x+w,y+h)
+          }
+        })
+  },
+  interWithServer(imgData){
+    const header = {
+      'content-type': 'application/x-www-form-urlencoded'
+    };
+    wx.request({
+      url: 'http://172.16.3.186:5000/predict',
+      method: 'POST',
+      header: header,
+      data: imgData,
+      success: (res) =&gt; {
+        this.drawRect(res.data['conf'],res.data['x'],res.data['y'],res.data['w'],res.data['h'])
+      },
+      fail: () =&gt; {
+        wx.showToast({
+          title: 'Failed to connect server!',
+          icon: 'none',
+        });
+      }
+    });
+  },
+  base64ToPNG(frame){
+    return new Promise(resolve=&gt;{
+      const query = wx.createSelectorQuery()
+      query.select('#tranPng')
+        .fields({node:true,size:true})
+        .exec((res)=&gt;{
+          const canvas=res[0].node
+          const ctx=canvas.getContext('2d')
+          canvas.width=frame.width
+          canvas.height=frame.height
+          var imageData=ctx.createImageData(canvas.width,canvas.height)
+          var ImgU8Array = new Uint8ClampedArray(frame.data);
+          for(var i=0;i&lt;ImgU8Array.length;i+=4){
+            imageData.data[0+i]=ImgU8Array[i+0]
+            imageData.data[1+i]=ImgU8Array[i+1]
+            imageData.data[2+i]=ImgU8Array[i+2]
+            imageData.data[3+i]=ImgU8Array[i+3]
+          }
+          ctx.putImageData(imageData,0,0,0,0,canvas.width,canvas.height)
+          resolve(canvas.toDataURL())
+        })
+    })
+  },
+})</code></pre> 
+<h4> index.wxml</h4> 
+<p>注意，&lt;camera&gt;中的&lt;canvas&gt;是为了画检测框，另一个&lt;canvas&gt;是为了将frame数据转base64Png。</p> 
+<pre><code class="language-html">&lt;view class="c1"&gt;
+  &lt;camera class="camera" binderror="error" style="width: 90%; height: {<!-- -->{camH}}px;"&gt;
+    &lt;canvas id="c1" type="2d"&gt;&lt;/canvas&gt;
+  &lt;/camera&gt;
+  &lt;canvas id="tranPng" hidden="true" type="2d"&gt;&lt;/canvas&gt;
+&lt;/view&gt; </code></pre> 
+<h4>index.wxss</h4> 
+<pre><code class="language-javascript">.c1{
+  width: 100%;
+  align-items: center;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+}
+#c1{
+  width: 100%;
+  height: 100%;
+}
+#canvas{
+  width: 100%;
+}</code></pre> 
+<p></p> 
+<h3>后端</h3> 
+<p>接收数据，预处理图像，送入模型，得到初始结果，转化初始结果得到最终结果，返回数据到前端</p> 
+<p>这里仅作演示，不提供完整项目运行代码和依赖项</p> 
+<pre><code class="language-python">from PIL import Image
+from gevent import monkey
+from flask import Flask, jsonify, request
+from gevent.pywsgi import WSGIServer
+import cv2
+import paddle
+import numpy as np
+from ppdet.core.workspace import load_config
+from ppdet.engine import Trainer
+from ppdet.metrics import get_infer_results
+from ppdet.data.transform.operators import NormalizeImage, Permute
+import base64
+import io
+
+app = Flask(__name__)
+monkey.patch_all()
+# 准备基础的参数
+config_path = 'face_detection\\blazeface_1000e.yml'
+cfg = load_config(config_path)
+weight_path = '202.pdparams'
+infer_img_path = '1.png'
+cfg.weights = weight_path
+bbox_thre = 0.8
+paddle.set_device('cpu')
+# 创建所需的类
+trainer = Trainer(cfg, mode='test')
+trainer.load_weights(cfg.weights)
+trainer.model.eval()
+normaler = NormalizeImage(mean=[123, 117, 104], std=[127.502231, 127.502231, 127.502231], is_scale=False)
+permuter = Permute()
+    
+
+model_dir = "face_detection\\blazeface_1000e.yml" # 模型路径
+save_path = "output"  # 推理结果保存路径
+
+
+
+def infer(img, threshold=0.2):
+    img = img.replace("data:image/png;base64,", "")
+    img = base64.b64decode(img)
+    img = Image.open(io.BytesIO(img))
+    img = img.convert('RGB')
+    img = np.array(img)
+    # 准备数据字典
+    data_dict = {'image': img}
+    data_dict = normaler(data_dict)
+    data_dict = permuter(data_dict)
+    h, w, c = img.shape
+    data_dict['im_id'] = paddle.Tensor(np.array([[0]]))
+    data_dict['im_shape'] = paddle.Tensor(np.array([[h, w]], dtype=np.float32))
+    data_dict['scale_factor'] = paddle.Tensor(np.array([[1., 1.]], dtype=np.float32))
+    data_dict['image'] = paddle.Tensor(data_dict['image'].reshape((1, c, h, w)))
+    data_dict['curr_iter'] = paddle.Tensor(np.array([0]))
+    # 进行预测
+    outs = trainer.model(data_dict)
+    # 对预测的数据进行后处理得到最终的bbox信息
+    for key in ['im_shape', 'scale_factor', 'im_id']:
+        outs[key] = data_dict[key]
+    for key, value in outs.items():
+        outs[key] = value.numpy()
+    clsid2catid, catid2name = {0: 'face'}, {0: 0}
+    batch_res = get_infer_results(outs, clsid2catid)
+    for sub_dict in batch_res['bbox']:
+        if sub_dict['score'] &gt; bbox_thre:
+            image_id=sub_dict['image_id']
+            category_id=sub_dict['category_id']
+            x,y,w,h=[int(i) for i in sub_dict['bbox']]
+            conf=sub_dict['score']
+            print(x,y,w,h,conf)
+            return jsonify({'conf':conf,'x':x,'y':y,'w':w,'h':h})
+        else:
+            return jsonify({'conf':0,'x':0,'y':0,'w':0,'h':0})
+
+    
+
+@app.route('/predict', methods=['POST'])
+def predict():
+    if request.method == 'POST':
+        img = request.form.get('img')
+        w=request.form.get('w')
+        h=request.form.get('h')
+        return infer(img)
+        
+if __name__ == '__main__':
+    server = WSGIServer(('0.0.0.0', 5000), app)
+    server.serve_forever()</code></pre> 
+<p></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/358f370210f8a830f6a28b6f2b766f3c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【状态压缩 动态规划 数论】1799. N 次操作后的最大分数和</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4e5c7147eadd3440e660a8243e906c88/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">11个值得关注的文本转语音AI大模型</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

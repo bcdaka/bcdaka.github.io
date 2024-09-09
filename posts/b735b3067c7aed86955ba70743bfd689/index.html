@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Hive-因精度丢失导致的 join 数据异常 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/b735b3067c7aed86955ba70743bfd689/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Hive-因精度丢失导致的 join 数据异常">
+  <meta property="og:description" content="一、问题复现 不知你是否遇到过 join 结果明显不匹配的情况，例如on t1.join_key = t2.join_key中两个join_key明显不相等，但 join 的结果却将其匹配在一起。今日博主在通过用户 id 关联获取用户信息时发现一个用户 id 可以在用户维表中匹配出若干条（用户维表不存在数据重复），如下：
+-- 业务表 create table tmp_hz_perm.tmp_20240520_1 ( id string ) stored as parquet; -- 用户维度表 create table tmp_hz_perm.tmp_20240520_2 ( id bigint, name string ) stored as parquet; 插入若干条数据
+insert into tmp_hz_perm.tmp_20240520_1 values (&#39;4268348961309240666&#39;); insert into tmp_hz_perm.tmp_20240520_2 values (4268348961309240666, &#39;user1&#39;), (4268348961309241004, &#39;user2&#39;), (3268348961319241004, &#39;user3&#39;); 模拟事故 sql
+-- sql-1 select * from tmp_hz_perm.tmp_20240520_1 t1 left join tmp_hz_perm.tmp_20240520_2 t2 on t1.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-31T14:22:07+08:00">
+    <meta property="article:modified_time" content="2024-05-31T14:22:07+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Hive-因精度丢失导致的 join 数据异常</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-dracula">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>一、问题复现</h2> 
+<p>不知你是否遇到过 join 结果明显不匹配的情况，例如<code>on t1.join_key = t2.join_key</code>中两个<code>join_key</code>明显不相等，但 join 的结果却将其匹配在一起。今日博主在通过用户 id 关联获取用户信息时发现一个用户 id 可以在用户维表中匹配出若干条（用户维表不存在数据重复），如下：</p> 
+<pre><code class="prism language-sql"><span class="token comment">-- 业务表</span>
+<span class="token keyword">create</span> <span class="token keyword">table</span> tmp_hz_perm<span class="token punctuation">.</span>tmp_20240520_1
+<span class="token punctuation">(</span>
+    id string
+<span class="token punctuation">)</span> stored <span class="token keyword">as</span> parquet<span class="token punctuation">;</span>
+
+<span class="token comment">-- 用户维度表</span>
+<span class="token keyword">create</span> <span class="token keyword">table</span> tmp_hz_perm<span class="token punctuation">.</span>tmp_20240520_2
+<span class="token punctuation">(</span>
+    id   <span class="token keyword">bigint</span><span class="token punctuation">,</span>
+    name string
+<span class="token punctuation">)</span> stored <span class="token keyword">as</span> parquet<span class="token punctuation">;</span>
+</code></pre> 
+<p>插入若干条数据</p> 
+<pre><code class="prism language-sql"><span class="token keyword">insert</span> <span class="token keyword">into</span> tmp_hz_perm<span class="token punctuation">.</span>tmp_20240520_1
+<span class="token keyword">values</span> <span class="token punctuation">(</span><span class="token string">'4268348961309240666'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">insert</span> <span class="token keyword">into</span> tmp_hz_perm<span class="token punctuation">.</span>tmp_20240520_2
+<span class="token keyword">values</span> <span class="token punctuation">(</span><span class="token number">4268348961309240666</span><span class="token punctuation">,</span> <span class="token string">'user1'</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+       <span class="token punctuation">(</span><span class="token number">4268348961309241004</span><span class="token punctuation">,</span> <span class="token string">'user2'</span><span class="token punctuation">)</span><span class="token punctuation">,</span>
+       <span class="token punctuation">(</span><span class="token number">3268348961319241004</span><span class="token punctuation">,</span> <span class="token string">'user3'</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+</code></pre> 
+<p>模拟事故 sql</p> 
+<pre><code class="prism language-sql"><span class="token comment">-- sql-1</span>
+<span class="token keyword">select</span> <span class="token operator">*</span>
+<span class="token keyword">from</span> tmp_hz_perm<span class="token punctuation">.</span>tmp_20240520_1 t1
+<span class="token keyword">left</span> <span class="token keyword">join</span> tmp_hz_perm<span class="token punctuation">.</span>tmp_20240520_2 t2 <span class="token keyword">on</span> t1<span class="token punctuation">.</span>id <span class="token operator">=</span> t2<span class="token punctuation">.</span>id<span class="token punctuation">;</span>
+</code></pre> 
+<p>我们期望的结果是返回<code>user1</code>，但实际情况却是匹配出多条数据</p> 
+<p><img src="https://images2.imgbox.com/d3/24/bOWgbWbw_o.png" alt="image-20240521162228139"></p> 
+<p>有经验的小伙伴可能一眼就看出来 join 的问题，那就是两个<code>join_key</code>数据类型不一致，恭喜你成功找到了这个问题！！！那么对应的解决方案就是保持数据类型一致即可</p> 
+<pre><code class="prism language-sql"><span class="token comment">-- sql-2</span>
+<span class="token keyword">select</span> <span class="token operator">*</span>
+<span class="token keyword">from</span> tmp_hz_perm<span class="token punctuation">.</span>tmp_20240520_1 t1
+<span class="token keyword">left</span> <span class="token keyword">join</span> tmp_hz_perm<span class="token punctuation">.</span>tmp_20240520_2 t2 <span class="token keyword">on</span> cast<span class="token punctuation">(</span>t1<span class="token punctuation">.</span>id <span class="token keyword">as</span> <span class="token keyword">bigint</span><span class="token punctuation">)</span> <span class="token operator">=</span> t2<span class="token punctuation">.</span>id<span class="token punctuation">;</span>
+</code></pre> 
+<blockquote> 
+ <p>结束了吗？？？显然没有！我们还没有探寻这个问题的本质</p> 
+</blockquote> 
+<h2><a id="_55"></a>二、本质分析</h2> 
+<p>上面的现象可以总结出两点疑问：</p> 
+<ol><li>数据不一致真的查询不出来数据吗</li><li>为什么会关联出一条完全不相干的数据</li></ol> 
+<p>对于问题一，数据不一致是可以查询出来的，例如</p> 
+<pre><code class="prism language-sql"><span class="token comment">-- sql-3</span>
+<span class="token keyword">select</span> <span class="token operator">*</span> <span class="token keyword">from</span> tmp_hz_perm<span class="token punctuation">.</span>tmp_20240520_2 <span class="token keyword">where</span> id <span class="token operator">=</span> <span class="token string">'4268348961309240666'</span><span class="token punctuation">;</span>
+
+<span class="token operator">+</span><span class="token comment">----------------------+----------------------+</span>
+<span class="token operator">|</span>  tmp_20240520_2<span class="token punctuation">.</span>id   <span class="token operator">|</span> tmp_20240520_2<span class="token punctuation">.</span>name  <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----------------------+----------------------+</span>
+<span class="token operator">|</span> <span class="token number">4268348961309240666</span>  <span class="token operator">|</span> user1                <span class="token operator">|</span>
+<span class="token operator">+</span><span class="token comment">----------------------+----------------------+</span>
+<span class="token number">1</span> <span class="token keyword">row</span> selected <span class="token punctuation">(</span><span class="token number">0.145</span> seconds<span class="token punctuation">)</span>
+</code></pre> 
+<p>回答问题二需要从执行计划出发</p> 
+<pre><code class="prism language-sql">STAGE DEPENDENCIES:
+  Stage<span class="token operator">-</span><span class="token number">4</span> <span class="token operator">is</span> a root stage
+  Stage<span class="token operator">-</span><span class="token number">3</span> depends <span class="token keyword">on</span> stages: Stage<span class="token operator">-</span><span class="token number">4</span>
+  Stage<span class="token operator">-</span><span class="token number">0</span> depends <span class="token keyword">on</span> stages: Stage<span class="token operator">-</span><span class="token number">3</span>
+
+STAGE PLANS:
+  Stage: Stage<span class="token operator">-</span><span class="token number">4</span>
+    Map Reduce <span class="token keyword">Local</span> <span class="token keyword">Work</span>
+      Alias <span class="token operator">-</span><span class="token operator">&gt;</span> Map <span class="token keyword">Local</span> <span class="token keyword">Tables</span>:
+        t2 
+          <span class="token keyword">Fetch</span> Operator
+            <span class="token keyword">limit</span>: <span class="token operator">-</span><span class="token number">1</span>
+      Alias <span class="token operator">-</span><span class="token operator">&gt;</span> Map <span class="token keyword">Local</span> Operator Tree:
+        t2 
+          TableScan
+            alias: t2
+            <span class="token keyword">Statistics</span>: Num <span class="token keyword">rows</span>: <span class="token number">3</span> <span class="token keyword">Data</span> size: <span class="token number">6</span> Basic stats: COMPLETE <span class="token keyword">Column</span> stats: NONE
+            HashTable Sink Operator
+              <span class="token keyword">keys</span>:
+                <span class="token number">0</span> UDFToDouble<span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token keyword">type</span>: <span class="token keyword">double</span><span class="token punctuation">)</span>
+                <span class="token number">1</span> UDFToDouble<span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token keyword">type</span>: <span class="token keyword">double</span><span class="token punctuation">)</span>
+                
+  Stage: Stage<span class="token operator">-</span><span class="token number">3</span>
+    Map Reduce
+      Map Operator Tree:
+          TableScan
+            alias: t1
+            <span class="token keyword">Statistics</span>: Num <span class="token keyword">rows</span>: <span class="token number">1</span> <span class="token keyword">Data</span> size: <span class="token number">1</span> Basic stats: COMPLETE <span class="token keyword">Column</span> stats: NONE
+            Map <span class="token keyword">Join</span> Operator
+              condition map:
+                   <span class="token keyword">Left</span> <span class="token keyword">Outer</span> <span class="token keyword">Join</span> <span class="token number">0</span> <span class="token keyword">to</span> <span class="token number">1</span>
+              <span class="token keyword">keys</span>:
+                <span class="token number">0</span> UDFToDouble<span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token keyword">type</span>: <span class="token keyword">double</span><span class="token punctuation">)</span>
+                <span class="token number">1</span> UDFToDouble<span class="token punctuation">(</span>id<span class="token punctuation">)</span> <span class="token punctuation">(</span><span class="token keyword">type</span>: <span class="token keyword">double</span><span class="token punctuation">)</span>
+              outputColumnNames: _col0<span class="token punctuation">,</span> _col4<span class="token punctuation">,</span> _col5
+              <span class="token keyword">Statistics</span>: Num <span class="token keyword">rows</span>: <span class="token number">3</span> <span class="token keyword">Data</span> size: <span class="token number">6</span> Basic stats: COMPLETE <span class="token keyword">Column</span> stats: NONE
+              <span class="token keyword">Select</span> Operator
+                expressions: _col0 <span class="token punctuation">(</span><span class="token keyword">type</span>: string<span class="token punctuation">)</span><span class="token punctuation">,</span> _col4 <span class="token punctuation">(</span><span class="token keyword">type</span>: <span class="token keyword">bigint</span><span class="token punctuation">)</span><span class="token punctuation">,</span> _col5 <span class="token punctuation">(</span><span class="token keyword">type</span>: string<span class="token punctuation">)</span>
+                outputColumnNames: _col0<span class="token punctuation">,</span> _col1<span class="token punctuation">,</span> _col2
+                <span class="token keyword">Statistics</span>: Num <span class="token keyword">rows</span>: <span class="token number">3</span> <span class="token keyword">Data</span> size: <span class="token number">6</span> Basic stats: COMPLETE <span class="token keyword">Column</span> stats: NONE
+                <span class="token keyword">File</span> Output Operator
+                  compressed: <span class="token boolean">false</span>
+                  <span class="token keyword">Statistics</span>: Num <span class="token keyword">rows</span>: <span class="token number">3</span> <span class="token keyword">Data</span> size: <span class="token number">6</span> Basic stats: COMPLETE <span class="token keyword">Column</span> stats: NONE
+                  <span class="token keyword">table</span>:
+                      input format: org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>mapred<span class="token punctuation">.</span>SequenceFileInputFormat
+                      output format: org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>hive<span class="token punctuation">.</span>ql<span class="token punctuation">.</span>io<span class="token punctuation">.</span>HiveSequenceFileOutputFormat
+                      serde: org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>hive<span class="token punctuation">.</span>serde2<span class="token punctuation">.</span>lazy<span class="token punctuation">.</span>LazySimpleSerDe
+      Execution <span class="token keyword">mode</span>: vectorized
+      <span class="token keyword">Local</span> <span class="token keyword">Work</span>:
+        Map Reduce <span class="token keyword">Local</span> <span class="token keyword">Work</span>
+
+  Stage: Stage<span class="token operator">-</span><span class="token number">0</span>
+    <span class="token keyword">Fetch</span> Operator
+      <span class="token keyword">limit</span>: <span class="token operator">-</span><span class="token number">1</span>
+      Processor Tree:
+        ListSink
+</code></pre> 
+<p>注意 hive 的执行计划中比我们想象中要多做一步<code>UDFToDouble</code>，其原因就是当两个关联键数据不一致时为了还可以进行关联，hive 将其 key 统一转换为<code>Double</code>，同时也可以看一下<code>UDFToDouble</code>的处理逻辑</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token class-name">DoubleWritable</span> <span class="token function">evaluate</span><span class="token punctuation">(</span><span class="token class-name">LongWritable</span> i<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>i <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+    doubleWritable<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span>i<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">return</span> doubleWritable<span class="token punctuation">;</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">public</span> <span class="token class-name">DoubleWritable</span> <span class="token function">evaluate</span><span class="token punctuation">(</span><span class="token class-name">Text</span> i<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+  <span class="token keyword">if</span> <span class="token punctuation">(</span>i <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+  <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token class-name">LazyUtils</span><span class="token punctuation">.</span><span class="token function">isNumberMaybe</span><span class="token punctuation">(</span>i<span class="token punctuation">.</span><span class="token function">getBytes</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">,</span> i<span class="token punctuation">.</span><span class="token function">getLength</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+      doubleWritable<span class="token punctuation">.</span><span class="token function">set</span><span class="token punctuation">(</span><span class="token class-name">Double</span><span class="token punctuation">.</span><span class="token function">parseDouble</span><span class="token punctuation">(</span>i<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+      <span class="token keyword">return</span> doubleWritable<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">NumberFormatException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+      <span class="token comment">// MySQL returns 0 if the string is not a well-formed double value.</span>
+      <span class="token comment">// But we decided to return NULL instead, which is more conservative.</span>
+      <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+  <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">// doubleWritable.set(...)</span>
+<span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">set</span><span class="token punctuation">(</span><span class="token keyword">double</span> value<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">this</span><span class="token punctuation">.</span>value <span class="token operator">=</span> value<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>可以看出<code>set</code>入参均是 double，那么<code>4268348961309240666</code>在进行数据转换时一定会发生精度丢失(远超 double 的范围)，下面的一个小 demo 可以很好的解释为什么会匹配出不相等的数据</p> 
+<pre><code class="prism language-java"><span class="token keyword">package</span> <span class="token namespace">fun<span class="token punctuation">.</span>uhope</span><span class="token punctuation">;</span>
+
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>hive<span class="token punctuation">.</span>ql<span class="token punctuation">.</span>udf<span class="token punctuation">.</span></span><span class="token class-name">UDFToDouble</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>hive<span class="token punctuation">.</span>serde2<span class="token punctuation">.</span>io<span class="token punctuation">.</span></span><span class="token class-name">DoubleWritable</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>io<span class="token punctuation">.</span></span><span class="token class-name">LongWritable</span></span><span class="token punctuation">;</span>
+<span class="token keyword">import</span> <span class="token import"><span class="token namespace">org<span class="token punctuation">.</span>apache<span class="token punctuation">.</span>hadoop<span class="token punctuation">.</span>io<span class="token punctuation">.</span></span><span class="token class-name">Text</span></span><span class="token punctuation">;</span>
+
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">Test</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token keyword">void</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token class-name">String</span><span class="token punctuation">[</span><span class="token punctuation">]</span> args<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">String</span> k1 <span class="token operator">=</span> <span class="token string">"4268348961309240666"</span><span class="token punctuation">;</span>
+        <span class="token keyword">long</span> k2 <span class="token operator">=</span> <span class="token number">4268348961309240666L</span><span class="token punctuation">;</span>
+        <span class="token keyword">long</span> k3 <span class="token operator">=</span> <span class="token number">4268348961309241004L</span><span class="token punctuation">;</span>
+        <span class="token keyword">long</span> k4 <span class="token operator">=</span> <span class="token number">3268348961309241004L</span><span class="token punctuation">;</span>
+        <span class="token class-name">UDFToDouble</span> uDFToDouble1 <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">UDFToDouble</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">UDFToDouble</span> uDFToDouble2 <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">UDFToDouble</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">UDFToDouble</span> uDFToDouble3 <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">UDFToDouble</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">UDFToDouble</span> uDFToDouble4 <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">UDFToDouble</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">DoubleWritable</span> v1 <span class="token operator">=</span> uDFToDouble1<span class="token punctuation">.</span><span class="token function">evaluate</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">Text</span><span class="token punctuation">(</span>k1<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">DoubleWritable</span> v2 <span class="token operator">=</span> uDFToDouble2<span class="token punctuation">.</span><span class="token function">evaluate</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">LongWritable</span><span class="token punctuation">(</span>k2<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">DoubleWritable</span> v3 <span class="token operator">=</span> uDFToDouble3<span class="token punctuation">.</span><span class="token function">evaluate</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">LongWritable</span><span class="token punctuation">(</span>k3<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">DoubleWritable</span> v4 <span class="token operator">=</span> uDFToDouble4<span class="token punctuation">.</span><span class="token function">evaluate</span><span class="token punctuation">(</span><span class="token keyword">new</span> <span class="token class-name">LongWritable</span><span class="token punctuation">(</span>k4<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>v1<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>v2<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>v3<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>v4<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>v1<span class="token punctuation">.</span><span class="token function">compareTo</span><span class="token punctuation">(</span>v2<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>v1<span class="token punctuation">.</span><span class="token function">compareTo</span><span class="token punctuation">(</span>v3<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>v1<span class="token punctuation">.</span><span class="token function">compareTo</span><span class="token punctuation">(</span>v4<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">double</span><span class="token punctuation">)</span> k2 <span class="token operator">==</span> <span class="token punctuation">(</span><span class="token keyword">double</span><span class="token punctuation">)</span> k3<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">double</span><span class="token punctuation">)</span> k2 <span class="token operator">==</span> <span class="token punctuation">(</span><span class="token keyword">double</span><span class="token punctuation">)</span> k4<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token class-name">System</span><span class="token punctuation">.</span>out<span class="token punctuation">.</span><span class="token function">println</span><span class="token punctuation">(</span>k2 <span class="token operator">==</span> k3<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>结果如下：</p> 
+<p><img src="https://images2.imgbox.com/71/54/4IaeZFVN_o.png" alt="image-20240521165433637"></p> 
+<p>对于<code>sql-2</code>、<code>sql-3</code>各位可以查看一下各自的执行计划就能明白为什么可以得到期望的结果</p> 
+<blockquote> 
+ <p>思考: 针对 hive join 过程中当数据类型不一致时采用<code>UDFToDouble</code>是否合理</p> 
+</blockquote>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a57c891b8c828f83734e21ca3fa6df4f/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">基于Django的博客系统之用HayStack连接elasticsearch增加搜索功能（五）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/afd52aac57aef1d27f6e1e0417b9607a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">图书管理系统(java) 代码展示和思路介绍 (9000字小长文)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

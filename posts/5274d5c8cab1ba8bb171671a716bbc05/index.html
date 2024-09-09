@@ -1,0 +1,966 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Llama改进之——SwiGLU激活函数 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/5274d5c8cab1ba8bb171671a716bbc05/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Llama改进之——SwiGLU激活函数">
+  <meta property="og:description" content="引言 今天介绍LLAMA模型引入的关于激活函数的改进——SwiGLU1，该激活函数取得了不错的效果，得到了广泛地应用。
+SwiGLU是GLU的一种变体，其中包含了GLU和Swish激活函数。
+GLU GLU(Gated Linear Units,门控线性单元)2引入了两个不同的线性层，其中一个首先经过sigmoid函数，其结果将和另一个线性层的输出进行逐元素相乘作为最终的输出：
+GLU ( x , W , V , b , c ) = σ ( x W &#43; b ) ⊗ ( x V &#43; c ) (1) \text{GLU}(x,W,V,b,c) = \sigma(xW&#43;b) \otimes (xV&#43;c) \tag 1 GLU(x,W,V,b,c)=σ(xW&#43;b)⊗(xV&#43;c)(1)
+这里 W , V W,V W,V以及 b , c b,c b,c分别是这两个线性层的参数； σ ( x W &#43; b ) \sigma(xW&#43;b) σ(xW&#43;b)作为门控，控制 x V &#43; c xV&#43;c xV&#43;c的输出。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-05-04T14:57:35+08:00">
+    <meta property="article:modified_time" content="2024-05-04T14:57:35+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Llama改进之——SwiGLU激活函数</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-dracula">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>引言</h2> 
+<p>今天介绍LLAMA模型引入的关于激活函数的改进——SwiGLU<sup class="footnote-ref"><a href="#fn1" rel="nofollow" id="fnref1">1</a></sup>，该激活函数取得了不错的效果，得到了广泛地应用。</p> 
+<p>SwiGLU是GLU的一种变体，其中包含了GLU和Swish激活函数。</p> 
+<h2><a id="GLU_6"></a>GLU</h2> 
+<p>GLU(Gated Linear Units,门控线性单元)<sup class="footnote-ref"><a href="#fn2" rel="nofollow" id="fnref2">2</a></sup>引入了两个不同的线性层，其中一个首先经过sigmoid函数，其结果将和另一个线性层的输出进行逐元素相乘作为最终的输出：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+           
+           
+             GLU 
+            
+           
+             ( 
+            
+           
+             x 
+            
+           
+             , 
+            
+           
+             W 
+            
+           
+             , 
+            
+           
+             V 
+            
+           
+             , 
+            
+           
+             b 
+            
+           
+             , 
+            
+           
+             c 
+            
+           
+             ) 
+            
+           
+             = 
+            
+           
+             σ 
+            
+           
+             ( 
+            
+           
+             x 
+            
+           
+             W 
+            
+           
+             + 
+            
+           
+             b 
+            
+           
+             ) 
+            
+           
+             ⊗ 
+            
+           
+             ( 
+            
+           
+             x 
+            
+           
+             V 
+            
+           
+             + 
+            
+           
+             c 
+            
+           
+             ) 
+            
+           
+          
+          
+          
+          
+            (1) 
+           
+          
+         
+        
+       
+         \text{GLU}(x,W,V,b,c) = \sigma(xW+b) \otimes (xV+c) \tag 1 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord text"><span class="mord">GLU</span></span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal" style="margin-right: 0.2222em;">V</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal">b</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal">c</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">σ</span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal">b</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">⊗</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mord mathnormal" style="margin-right: 0.2222em;">V</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal">c</span><span class="mclose">)</span></span><span class="tag"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord text"><span class="mord">(</span><span class="mord"><span class="mord">1</span></span><span class="mord">)</span></span></span></span></span></span></span><br> 这里<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         W 
+        
+       
+         , 
+        
+       
+         V 
+        
+       
+      
+        W,V 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8778em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal" style="margin-right: 0.2222em;">V</span></span></span></span></span>以及<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         b 
+        
+       
+         , 
+        
+       
+         c 
+        
+       
+      
+        b,c 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord mathnormal">b</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal">c</span></span></span></span></span>分别是这两个线性层的参数；<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         σ 
+        
+       
+         ( 
+        
+       
+         x 
+        
+       
+         W 
+        
+       
+         + 
+        
+       
+         b 
+        
+       
+         ) 
+        
+       
+      
+        \sigma(xW+b) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">σ</span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal">b</span><span class="mclose">)</span></span></span></span></span>作为门控，控制<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         x 
+        
+       
+         V 
+        
+       
+         + 
+        
+       
+         c 
+        
+       
+      
+        xV+c 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord mathnormal">x</span><span class="mord mathnormal" style="margin-right: 0.2222em;">V</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal">c</span></span></span></span></span>的输出。</p> 
+<p>这里使用<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         σ 
+        
+       
+      
+        \sigma 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">σ</span></span></span></span></span>作为激活函数，修改改激活函数得到的变体通常能带来更好的性能表现，比如SwiGLU修改激活函数为Swish。我们来看下Swish激活函数。</p> 
+<h2><a id="Swish_16"></a>Swish</h2> 
+<p>Swish<sup class="footnote-ref"><a href="#fn3" rel="nofollow" id="fnref3">3</a></sup>激活函数的形式为：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+           
+            
+            
+              Swish 
+             
+            
+              β 
+             
+            
+           
+             ( 
+            
+           
+             x 
+            
+           
+             ) 
+            
+           
+             = 
+            
+           
+             x 
+            
+           
+             σ 
+            
+           
+             ( 
+            
+           
+             β 
+            
+           
+             x 
+            
+           
+             ) 
+            
+           
+          
+          
+          
+          
+            (2) 
+           
+          
+         
+        
+       
+         \text{Swish}_\beta(x) = x \sigma(\beta x) \tag 2 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1.0361em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord text"><span class="mord">Swish</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3361em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0528em;">β</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal">x</span><span class="mord mathnormal" style="margin-right: 0.0359em;">σ</span><span class="mopen">(</span><span class="mord mathnormal" style="margin-right: 0.0528em;">β</span><span class="mord mathnormal">x</span><span class="mclose">)</span></span><span class="tag"><span class="strut" style="height: 1.0361em; vertical-align: -0.2861em;"></span><span class="mord text"><span class="mord">(</span><span class="mord"><span class="mord">2</span></span><span class="mord">)</span></span></span></span></span></span></span><br> 其中<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         σ 
+        
+       
+         ( 
+        
+       
+         x 
+        
+       
+         ) 
+        
+       
+      
+        \sigma(x) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">σ</span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mclose">)</span></span></span></span></span>是Sigmoid函数；<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         β 
+        
+       
+      
+        \beta 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.0528em;">β</span></span></span></span></span>是一个可学习的参数。</p> 
+<p>可以通过下面的代码画出Swish激活函数在不同参数<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         β 
+        
+       
+      
+        \beta 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.0528em;">β</span></span></span></span></span>下的图像：</p> 
+<pre><code class="prism language-py"><span class="token keyword">import</span> numpy <span class="token keyword">as</span> np
+<span class="token keyword">import</span> matplotlib<span class="token punctuation">.</span>pyplot <span class="token keyword">as</span> plt
+
+<span class="token keyword">def</span> <span class="token function">swish</span><span class="token punctuation">(</span>x<span class="token punctuation">,</span> beta<span class="token punctuation">)</span><span class="token punctuation">:</span>
+  <span class="token keyword">return</span> x <span class="token operator">/</span> <span class="token punctuation">(</span><span class="token number">1</span> <span class="token operator">+</span> np<span class="token punctuation">.</span>exp<span class="token punctuation">(</span><span class="token operator">-</span>beta<span class="token operator">*</span>x<span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+x <span class="token operator">=</span> np<span class="token punctuation">.</span>linspace<span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">10</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">,</span> <span class="token number">100</span><span class="token punctuation">)</span>
+betas <span class="token operator">=</span> <span class="token punctuation">[</span><span class="token number">0.1</span><span class="token punctuation">,</span> <span class="token number">1.0</span><span class="token punctuation">,</span> <span class="token number">10.0</span><span class="token punctuation">]</span>
+
+plt<span class="token punctuation">.</span>figure<span class="token punctuation">(</span>figsize<span class="token operator">=</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">,</span> <span class="token number">6</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+
+<span class="token keyword">for</span> beta <span class="token keyword">in</span> betas<span class="token punctuation">:</span>
+    y <span class="token operator">=</span> swish<span class="token punctuation">(</span>x<span class="token punctuation">,</span> beta<span class="token punctuation">)</span>
+    plt<span class="token punctuation">.</span>plot<span class="token punctuation">(</span>x<span class="token punctuation">,</span> y<span class="token punctuation">,</span> label<span class="token operator">=</span><span class="token string-interpolation"><span class="token string">f'beta=</span><span class="token interpolation"><span class="token punctuation">{<!-- --></span>beta<span class="token punctuation">}</span></span><span class="token string">'</span></span><span class="token punctuation">)</span>
+
+plt<span class="token punctuation">.</span>legend<span class="token punctuation">(</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>title<span class="token punctuation">(</span><span class="token string">'Swish Activation Function'</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>xlabel<span class="token punctuation">(</span><span class="token string">'x'</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>ylabel<span class="token punctuation">(</span><span class="token string">'f(x)'</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>grid<span class="token punctuation">(</span><span class="token boolean">True</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>show<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/d1/93/SEAzTz5P_o.png" alt="image-20240428224729925"></p> 
+<p>可以看到<sup class="footnote-ref"><a href="#fn3" rel="nofollow" id="fnref3:1">3</a></sup>，当<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         β 
+        
+       
+      
+        \beta 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.0528em;">β</span></span></span></span></span>趋近于<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         0 
+        
+       
+      
+        0 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">0</span></span></span></span></span>时，Swish函数趋近于线性函数<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         y 
+        
+       
+         = 
+        
+        
+        
+          x 
+         
+        
+          2 
+         
+        
+       
+      
+        y=x^2 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">y</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.8141em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8141em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span></span></span></span></span>；当<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         β 
+        
+       
+      
+        \beta 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.0528em;">β</span></span></span></span></span>趋近于无穷大时，Swish函数趋近于ReLU函数；当<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         β 
+        
+       
+      
+        \beta 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.0528em;">β</span></span></span></span></span>取值为<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         1 
+        
+       
+      
+        1 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">1</span></span></span></span></span>时，Swish函数是光滑且非单调的，等价于参考<sup class="footnote-ref"><a href="#fn4" rel="nofollow" id="fnref4">4</a></sup>中介绍的SiLU。</p> 
+<p>Swish与ReLU之间最显著的区别是当<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         x 
+        
+       
+         &lt; 
+        
+       
+         0 
+        
+       
+      
+        x &lt; 0 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.5782em; vertical-align: -0.0391em;"></span><span class="mord mathnormal">x</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">&lt;</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">0</span></span></span></span></span>时Swish的非单调“凸起”<sup class="footnote-ref"><a href="#fn3" rel="nofollow" id="fnref3:2">3</a></sup>。</p> 
+<h2><a id="SwiGLU_56"></a>SwiGLU</h2> 
+<p>如前文所述，将公式(1)中GLU的激活函数改为Swish即变成了所谓的SwiGLU激活函数<sup class="footnote-ref"><a href="#fn1" rel="nofollow" id="fnref1:1">1</a></sup>：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+           
+           
+             SwiGLU 
+            
+           
+             ( 
+            
+           
+             x 
+            
+           
+             , 
+            
+           
+             W 
+            
+           
+             , 
+            
+           
+             V 
+            
+           
+             ) 
+            
+           
+             = 
+            
+            
+            
+              Swish 
+             
+            
+              β 
+             
+            
+           
+             ( 
+            
+           
+             x 
+            
+           
+             W 
+            
+           
+             ) 
+            
+           
+             ⊗ 
+            
+           
+             ( 
+            
+           
+             x 
+            
+           
+             V 
+            
+           
+             ) 
+            
+           
+          
+          
+          
+          
+            (3) 
+           
+          
+         
+        
+       
+         \text{SwiGLU}(x,W,V) = \text{Swish}_\beta(xW) \otimes (xV) \tag{3} 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord text"><span class="mord">SwiGLU</span></span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal" style="margin-right: 0.2222em;">V</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1.0361em; vertical-align: -0.2861em;"></span><span class="mord"><span class="mord text"><span class="mord">Swish</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3361em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0528em;">β</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2861em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">⊗</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">(</span><span class="mord mathnormal">x</span><span class="mord mathnormal" style="margin-right: 0.2222em;">V</span><span class="mclose">)</span></span><span class="tag"><span class="strut" style="height: 1.0361em; vertical-align: -0.2861em;"></span><span class="mord text"><span class="mord">(</span><span class="mord"><span class="mord">3</span></span><span class="mord">)</span></span></span></span></span></span></span><br> 这里省略了偏置项。</p> 
+<h2><a id="_64"></a>代码实现</h2> 
+<p>参考LLaMA，全连接层使用带有SwiGLU激活函数的FFN(Position-wise Feed-Forward Network)的公式如下<sup class="footnote-ref"><a href="#fn1" rel="nofollow" id="fnref1:2">1</a></sup>：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+           
+            
+            
+              FFN 
+             
+            
+              SwiGLU 
+             
+            
+           
+             ( 
+            
+            
+            
+              x 
+             
+            
+           
+             , 
+            
+           
+             W 
+            
+           
+             , 
+            
+           
+             V 
+            
+           
+             , 
+            
+            
+            
+              W 
+             
+            
+              2 
+             
+            
+           
+             ) 
+            
+           
+             = 
+            
+           
+             ( 
+            
+            
+            
+              Swish 
+             
+            
+              1 
+             
+            
+           
+             ( 
+            
+            
+            
+              x 
+             
+            
+           
+             W 
+            
+           
+             ) 
+            
+           
+             ⊗ 
+            
+            
+            
+              x 
+             
+            
+           
+             V 
+            
+           
+             ) 
+            
+            
+            
+              W 
+             
+            
+              2 
+             
+            
+           
+          
+          
+          
+          
+            (4) 
+           
+          
+         
+        
+       
+         \text{FFN}_{\text{SwiGLU}}(\pmb x,W,V,W_2) = (\text{Swish}_1(\pmb xW) \otimes \pmb xV)W_2 \tag 4 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord text"><span class="mord">FFN</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">SwiGLU</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal" style="margin-right: 0.2222em;">V</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">(</span><span class="mord"><span class="mord text"><span class="mord">Swish</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">⊗</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mord mathnormal" style="margin-right: 0.2222em;">V</span><span class="mclose">)</span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span><span class="tag"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord text"><span class="mord">(</span><span class="mord"><span class="mord">4</span></span><span class="mord">)</span></span></span></span></span></span></span><br> 这里的Swish函数可以被SiLU函数替代：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+        
+          SiLU 
+         
+        
+          ( 
+         
+         
+         
+           x 
+          
+         
+        
+          ) 
+         
+        
+          = 
+         
+         
+         
+           x 
+          
+         
+        
+          σ 
+         
+        
+          ( 
+         
+         
+         
+           x 
+          
+         
+        
+          ) 
+         
+        
+       
+         \text{SiLU}(\pmb x) = \pmb x \sigma(\pmb x) 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord text"><span class="mord">SiLU</span></span><span class="mopen">(</span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mord mathnormal" style="margin-right: 0.0359em;">σ</span><span class="mopen">(</span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mclose">)</span></span></span></span></span></span><br> 即：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+           
+            
+            
+              FFN 
+             
+            
+              SwiGLU 
+             
+            
+           
+             ( 
+            
+            
+            
+              x 
+             
+            
+           
+             , 
+            
+           
+             W 
+            
+           
+             , 
+            
+           
+             V 
+            
+           
+             , 
+            
+            
+            
+              W 
+             
+            
+              2 
+             
+            
+           
+             ) 
+            
+           
+             = 
+            
+           
+             ( 
+            
+           
+             SiLU 
+            
+           
+             ( 
+            
+            
+            
+              x 
+             
+            
+           
+             W 
+            
+           
+             ) 
+            
+           
+             ⊗ 
+            
+            
+            
+              x 
+             
+            
+           
+             V 
+            
+           
+             ) 
+            
+            
+            
+              W 
+             
+            
+              2 
+             
+            
+           
+          
+          
+          
+          
+            (5) 
+           
+          
+         
+        
+       
+         \text{FFN}_{\text{SwiGLU}}(\pmb x,W,V,W_2) = (\text{SiLU}(\pmb xW) \otimes \pmb xV)W_2 \tag 5 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord"><span class="mord text"><span class="mord">FFN</span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord text mtight"><span class="mord mtight">SwiGLU</span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mopen">(</span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal" style="margin-right: 0.2222em;">V</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">(</span><span class="mord text"><span class="mord">SiLU</span></span><span class="mopen">(</span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">⊗</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mord mathnormal" style="margin-right: 0.2222em;">V</span><span class="mclose">)</span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span><span class="tag"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord text"><span class="mord">(</span><span class="mord"><span class="mord">5</span></span><span class="mord">)</span></span></span></span></span></span></span></p> 
+<pre><code class="prism language-py"><span class="token keyword">import</span> torch
+<span class="token keyword">from</span> torch <span class="token keyword">import</span> nn
+<span class="token keyword">import</span> torch<span class="token punctuation">.</span>nn<span class="token punctuation">.</span>functional <span class="token keyword">as</span> F
+
+<span class="token keyword">class</span> <span class="token class-name">FeedForward</span><span class="token punctuation">(</span>nn<span class="token punctuation">.</span>Module<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">def</span> <span class="token function">__init__</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> hidden_size<span class="token punctuation">:</span> <span class="token builtin">int</span><span class="token punctuation">,</span> intermediate_size<span class="token punctuation">:</span> <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token boolean">None</span><span class="token punctuation">:</span>
+       	<span class="token builtin">super</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>__init__<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+        self<span class="token punctuation">.</span>w1 <span class="token operator">=</span> nn<span class="token punctuation">.</span>Linear<span class="token punctuation">(</span>hidden_size<span class="token punctuation">,</span> intermediate_size<span class="token punctuation">,</span> bias<span class="token operator">=</span><span class="token boolean">False</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>w2 <span class="token operator">=</span> nn<span class="token punctuation">.</span>Linear<span class="token punctuation">(</span>intermediate_size<span class="token punctuation">,</span> hidden_size<span class="token punctuation">,</span> bias<span class="token operator">=</span><span class="token boolean">False</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>w3 <span class="token operator">=</span> nn<span class="token punctuation">.</span>Linear<span class="token punctuation">(</span>hidden_size<span class="token punctuation">,</span> intermediate_size<span class="token punctuation">,</span> bias<span class="token operator">=</span><span class="token boolean">False</span><span class="token punctuation">)</span>
+        
+    <span class="token keyword">def</span> <span class="token function">forward</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> x<span class="token punctuation">:</span> torch<span class="token punctuation">.</span>Tensor<span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> torch<span class="token punctuation">.</span>Tensor<span class="token punctuation">:</span>
+        <span class="token comment"># x: (batch_size, seq_len, hidden_size)</span>
+        <span class="token comment"># w1(x) -&gt; (batch_size, seq_len, intermediate_size)</span>
+        <span class="token comment"># w1(x) -&gt; (batch_size, seq_len, intermediate_size)</span>
+        <span class="token comment"># w2(*) -&gt; (batch_size, seq_len, hidden_size)</span>
+    	<span class="token keyword">return</span> self<span class="token punctuation">.</span>w2<span class="token punctuation">(</span>F<span class="token punctuation">.</span>silu<span class="token punctuation">(</span>self<span class="token punctuation">.</span>w1<span class="token punctuation">(</span>x<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">*</span> self<span class="token punctuation">.</span>w3<span class="token punctuation">(</span>x<span class="token punctuation">)</span><span class="token punctuation">)</span>
+            
+</code></pre> 
+<p>这里<code>w1,w2,w3</code>分别对应公式(5)中的<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         W 
+        
+       
+         , 
+        
+        
+        
+          W 
+         
+        
+          2 
+         
+        
+       
+         , 
+        
+       
+         V 
+        
+       
+      
+        W,W_2,V 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8778em; vertical-align: -0.1944em;"></span><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.1389em;">W</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: -0.1389em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal" style="margin-right: 0.2222em;">V</span></span></span></span></span>。</p> 
+<p>注意维度，其中<code>w1,w3</code>将<code>x</code>转换到维度<code>intermediate_size</code>，然后<code>w2</code>转换回<code>hidden_size</code>。</p> 
+<h2><a id="_106"></a>参考</h2> 
+<hr class="footnotes-sep"> 
+<section class="footnotes"> 
+ <ol class="footnotes-list"><li id="fn1" class="footnote-item"><p><a href="https://blog.csdn.net/yjw123456/article/details/137725827">[论文翻译]GLU Variants Improve Transformer</a> <a href="#fnref1" rel="nofollow" class="footnote-backref">↩︎</a> <a href="#fnref1:1" rel="nofollow" class="footnote-backref">↩︎</a> <a href="#fnref1:2" rel="nofollow" class="footnote-backref">↩︎</a></p> </li><li id="fn2" class="footnote-item"><p><a href="https://helloai.blog.csdn.net/article/details/138280247" rel="nofollow">[论文笔记]Language Modeling with Gated Convolutional Networks </a> <a href="#fnref2" rel="nofollow" class="footnote-backref">↩︎</a></p> </li><li id="fn3" class="footnote-item"><p><a href="https://helloai.blog.csdn.net/article/details/138277435" rel="nofollow">[论文笔记]SEARCHING FOR ACTIVATION FUNCTIONS</a> <a href="#fnref3" rel="nofollow" class="footnote-backref">↩︎</a> <a href="#fnref3:1" rel="nofollow" class="footnote-backref">↩︎</a> <a href="#fnref3:2" rel="nofollow" class="footnote-backref">↩︎</a></p> </li><li id="fn4" class="footnote-item"><p><a href="https://blog.csdn.net/yjw123456/article/details/138268087">[论文笔记]GAUSSIAN ERROR LINEAR UNITS (GELUS)</a> <a href="#fnref4" rel="nofollow" class="footnote-backref">↩︎</a></p> </li></ol> 
+</section>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/056e1a363d342a9a3b45b9cf408bd3e7/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【动态规划】路径问题|不同路径I|不同路径II|珠宝的最高价值|下降路径的最小和|最小路径和|</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/481193d9c73117c32365e79652378b5b/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C&#43;&#43;必修：类与对象(三)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

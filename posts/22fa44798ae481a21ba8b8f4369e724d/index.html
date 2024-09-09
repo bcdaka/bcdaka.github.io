@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>使用Python 实现奇异谱分析SSA（Singular Spectrum Analysis）算法 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/22fa44798ae481a21ba8b8f4369e724d/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="使用Python 实现奇异谱分析SSA（Singular Spectrum Analysis）算法">
+  <meta property="og:description" content="简介 SSA是一种近几年新兴的时序分析算法，通过对时间序列进行升维后做SVD，进而分组重构来实现对时间序列的成分分析，目前用于预测、插值补全以及去噪 具体步骤包括四个部分：
+1.构建轨迹矩阵(Embedding) 2.轨迹矩阵SVD分解 3.分组 4.对角平均
+1.准备工作 这里我们生成一组间隔带有噪声的序列,包含了周期项、趋势项和随机噪声
+import numpy as np import matplotlib.pyplot as plt number = 30 days = 180 tend_sequence = np.linspace(2,-2,num=days) time = np.linspace(0,2*np.pi*days/number,num=days) sin_sequence = np.sin(time) signal = sin_sequence&#43;tend_sequence noise = np.random.randn(days) sequence = noise&#43;sin_sequence&#43;tend_sequence plt.plot(tend_sequence,color=&#39;yellow&#39;,label=&#39;Tendency&#39;) plt.plot(sin_sequence,color=&#39;blue&#39;,label=&#39;Periodicity&#39;) plt.plot(noise,color=&#39;red&#39;,label=&#39;noise&#39;) plt.legend() plt.show() plt.plot(sequence,color=&#39;red&#39;,label=&#39;with noise&#39;) plt.plot(signal,color=&#39;blue&#39;,label=&#39;original&#39;) plt.legend() plt.show() 2.SSA具体实现 在实际操作中，我们将从以下步骤进行计算： 1. 对于长度为 N N N 的时间序列，以 L L L 为滑动窗口，依次进行采样，获得大小为 L × K L×K L×K 的轨迹矩阵 X X X，其中 K = N − L &#43; 1 K=N-L&#43;1 K=N−L&#43;1 2.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-03-08T22:11:46+08:00">
+    <meta property="article:modified_time" content="2024-03-08T22:11:46+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">使用Python 实现奇异谱分析SSA（Singular Spectrum Analysis）算法</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_0"></a>简介</h3> 
+<p>SSA是一种近几年新兴的时序分析算法，通过对时间序列进行升维后做SVD，进而分组重构来实现对时间序列的成分分析，目前用于预测、插值补全以及去噪 <br> 具体步骤包括四个部分：<br> 1.构建轨迹矩阵(Embedding) <br> 2.轨迹矩阵SVD分解 <br> 3.分组 <br> 4.对角平均</p> 
+<h3><a id="1_7"></a>1.准备工作</h3> 
+<p>这里我们生成一组间隔带有噪声的序列,包含了周期项、趋势项和随机噪声</p> 
+<pre><code class="prism language-python"><span class="token keyword">import</span> numpy <span class="token keyword">as</span> np
+<span class="token keyword">import</span> matplotlib<span class="token punctuation">.</span>pyplot <span class="token keyword">as</span> plt
+number <span class="token operator">=</span> <span class="token number">30</span>
+days <span class="token operator">=</span> <span class="token number">180</span>
+tend_sequence <span class="token operator">=</span> np<span class="token punctuation">.</span>linspace<span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span><span class="token operator">-</span><span class="token number">2</span><span class="token punctuation">,</span>num<span class="token operator">=</span>days<span class="token punctuation">)</span>
+time <span class="token operator">=</span> np<span class="token punctuation">.</span>linspace<span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token number">2</span><span class="token operator">*</span>np<span class="token punctuation">.</span>pi<span class="token operator">*</span>days<span class="token operator">/</span>number<span class="token punctuation">,</span>num<span class="token operator">=</span>days<span class="token punctuation">)</span>
+sin_sequence <span class="token operator">=</span> np<span class="token punctuation">.</span>sin<span class="token punctuation">(</span>time<span class="token punctuation">)</span>
+signal <span class="token operator">=</span> sin_sequence<span class="token operator">+</span>tend_sequence
+noise <span class="token operator">=</span> np<span class="token punctuation">.</span>random<span class="token punctuation">.</span>randn<span class="token punctuation">(</span>days<span class="token punctuation">)</span>
+sequence <span class="token operator">=</span> noise<span class="token operator">+</span>sin_sequence<span class="token operator">+</span>tend_sequence
+plt<span class="token punctuation">.</span>plot<span class="token punctuation">(</span>tend_sequence<span class="token punctuation">,</span>color<span class="token operator">=</span><span class="token string">'yellow'</span><span class="token punctuation">,</span>label<span class="token operator">=</span><span class="token string">'Tendency'</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>plot<span class="token punctuation">(</span>sin_sequence<span class="token punctuation">,</span>color<span class="token operator">=</span><span class="token string">'blue'</span><span class="token punctuation">,</span>label<span class="token operator">=</span><span class="token string">'Periodicity'</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>plot<span class="token punctuation">(</span>noise<span class="token punctuation">,</span>color<span class="token operator">=</span><span class="token string">'red'</span><span class="token punctuation">,</span>label<span class="token operator">=</span><span class="token string">'noise'</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>legend<span class="token punctuation">(</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>show<span class="token punctuation">(</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>plot<span class="token punctuation">(</span>sequence<span class="token punctuation">,</span>color<span class="token operator">=</span><span class="token string">'red'</span><span class="token punctuation">,</span>label<span class="token operator">=</span><span class="token string">'with noise'</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>plot<span class="token punctuation">(</span>signal<span class="token punctuation">,</span>color<span class="token operator">=</span><span class="token string">'blue'</span><span class="token punctuation">,</span>label<span class="token operator">=</span><span class="token string">'original'</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>legend<span class="token punctuation">(</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>show<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/81/5f/3pd2q1Ul_o.png" alt="模拟数据的组成成分"></p> 
+<p><img src="https://images2.imgbox.com/b1/65/XRJupZbN_o.png" alt="模拟原信号和带有噪声的信号"></p> 
+<h3><a id="2SSA_35"></a>2.SSA具体实现</h3> 
+<p>在实际操作中，我们将从以下步骤进行计算： <br> <strong>1.</strong> 对于长度为 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         N 
+        
+       
+      
+        N 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span></span> 的时间序列，以 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         L 
+        
+       
+      
+        L 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal">L</span></span></span></span></span> 为滑动窗口，依次进行采样，获得大小为 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         L 
+        
+       
+         × 
+        
+       
+         K 
+        
+       
+      
+        L×K 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord mathnormal">L</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">×</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0715em;">K</span></span></span></span></span> 的轨迹矩阵 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         X 
+        
+       
+      
+        X 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0785em;">X</span></span></span></span></span>，其中 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         K 
+        
+       
+         = 
+        
+       
+         N 
+        
+       
+         − 
+        
+       
+         L 
+        
+       
+         + 
+        
+       
+         1 
+        
+       
+      
+        K=N-L+1 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0715em;">K</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.7667em; vertical-align: -0.0833em;"></span><span class="mord mathnormal">L</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6444em;"></span><span class="mord">1</span></span></span></span></span> <br> <strong>2.</strong> 对 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         X 
+        
+       
+      
+        X 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0785em;">X</span></span></span></span></span> 做<em><strong>SVD分解</strong></em>，文献中经常给出完整的计算方法（先计算<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         X 
+        
+        
+        
+          X 
+         
+        
+          T 
+         
+        
+       
+      
+        XX^T 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8413em;"></span><span class="mord mathnormal" style="margin-right: 0.0785em;">X</span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0785em;">X</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8413em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">T</span></span></span></span></span></span></span></span></span></span></span></span>等），但是经过检验直接使用<code>numpy.linalg.svd()</code>是可行的。 <br> 分解后获得 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         U 
+        
+       
+         、 
+        
+       
+         Σ 
+        
+       
+         、 
+        
+        
+        
+          V 
+         
+        
+          T 
+         
+        
+       
+      
+        U、\Sigma 、V^T 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8413em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">U</span><span class="mord cjk_fallback">、</span><span class="mord">Σ</span><span class="mord cjk_fallback">、</span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.2222em;">V</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.8413em;"><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">T</span></span></span></span></span></span></span></span></span></span></span></span> <br> <strong>3.</strong> 构建<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         X 
+        
+       
+      
+        X 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0785em;">X</span></span></span></span></span>的基本矩阵（<em>elementary matrices</em>），这里<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          X 
+         
+        
+          i 
+         
+        
+       
+         = 
+        
+        
+        
+          σ 
+         
+        
+          i 
+         
+        
+        
+        
+          U 
+         
+        
+          i 
+         
+        
+        
+        
+          V 
+         
+        
+          i 
+         
+        
+          T 
+         
+        
+       
+      
+        X_i=\sigma_i U_i V_i^T 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0785em;">X</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3117em;"><span class="" style="top: -2.55em; margin-left: -0.0785em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1.1em; vertical-align: -0.2587em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0359em;">σ</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3117em;"><span class="" style="top: -2.55em; margin-left: -0.0359em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.109em;">U</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3117em;"><span class="" style="top: -2.55em; margin-left: -0.109em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.2222em;">V</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.8413em;"><span class="" style="top: -2.4413em; margin-left: -0.2222em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span><span class="" style="top: -3.063em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right: 0.1389em;">T</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2587em;"><span class=""></span></span></span></span></span></span></span></span></span></span>，这里认为轨迹矩阵<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         X 
+        
+       
+      
+        X 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0785em;">X</span></span></span></span></span>是由<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         L 
+        
+       
+      
+        L 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal">L</span></span></span></span></span>个这样的基本矩阵加和而成的。<br> <strong>4.</strong> 将基本矩阵<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          X 
+         
+        
+          i 
+         
+        
+       
+      
+        X_i 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8333em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0785em;">X</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3117em;"><span class="" style="top: -2.55em; margin-left: -0.0785em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span></span>通过<em><strong>对角平均</strong></em>的操作，还原到长度为<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         N 
+        
+       
+      
+        N 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span></span></span></span></span>的时间序列，即为原序列的一个构成成分</p> 
+<p><img src="https://images2.imgbox.com/a1/b5/F6nFi3bV_o.png" alt="对角平均示意图"><mark><strong>这一部分代码参考了</strong></mark></p> 
+<blockquote> 
+ <p><strong><a href="https://blog.csdn.net/Lucky_Go/article/details/103109045">[机器学习] 奇异谱分析(SSA)原理及Python实现</a></strong></p> 
+</blockquote> 
+<pre><code class="prism language-python">windowlen <span class="token operator">=</span> <span class="token number">45</span>
+serieslen <span class="token operator">=</span> days
+<span class="token comment">#1.嵌入</span>
+K <span class="token operator">=</span> serieslen<span class="token operator">-</span>windowlen<span class="token operator">+</span><span class="token number">1</span>
+X <span class="token operator">=</span> np<span class="token punctuation">.</span>zeros<span class="token punctuation">(</span><span class="token punctuation">(</span>windowlen<span class="token punctuation">,</span>K<span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token keyword">for</span> i <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>windowlen<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    X<span class="token punctuation">[</span>i<span class="token punctuation">,</span><span class="token punctuation">:</span><span class="token punctuation">]</span> <span class="token operator">=</span> sequence<span class="token punctuation">[</span>i<span class="token punctuation">:</span>i<span class="token operator">+</span>K<span class="token punctuation">]</span>
+<span class="token comment">#2.SVD分解</span>
+U<span class="token punctuation">,</span>sigma<span class="token punctuation">,</span>VT <span class="token operator">=</span> np<span class="token punctuation">.</span>linalg<span class="token punctuation">.</span>svd<span class="token punctuation">(</span>X<span class="token punctuation">,</span>full_matrices<span class="token operator">=</span><span class="token boolean">False</span><span class="token punctuation">)</span>
+ZT <span class="token operator">=</span> np<span class="token punctuation">.</span>zeros<span class="token punctuation">(</span><span class="token punctuation">(</span>VT<span class="token punctuation">.</span>shape<span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token keyword">for</span> n <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span><span class="token builtin">len</span><span class="token punctuation">(</span>sigma<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+    ZT<span class="token punctuation">[</span>n<span class="token punctuation">,</span><span class="token punctuation">:</span><span class="token punctuation">]</span> <span class="token operator">=</span> sigma<span class="token punctuation">[</span>n<span class="token punctuation">]</span><span class="token operator">*</span>VT<span class="token punctuation">[</span>n<span class="token punctuation">,</span><span class="token punctuation">:</span><span class="token punctuation">]</span>
+
+<span class="token comment">#3.对每个Ui*ZTi所得到的Xi进行对角平均获得重构子序列，一般我们假设L&lt;K</span>
+RC <span class="token operator">=</span> np<span class="token punctuation">.</span>zeros<span class="token punctuation">(</span><span class="token punctuation">(</span>windowlen<span class="token punctuation">,</span>serieslen<span class="token punctuation">)</span><span class="token punctuation">)</span>
+L <span class="token operator">=</span> windowlen
+<span class="token keyword">for</span> num <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>U<span class="token punctuation">.</span>shape<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">]</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+    Xi <span class="token operator">=</span> np<span class="token punctuation">.</span>outer<span class="token punctuation">(</span>U<span class="token punctuation">[</span><span class="token punctuation">:</span><span class="token punctuation">,</span>num<span class="token punctuation">]</span><span class="token punctuation">,</span>ZT<span class="token punctuation">[</span>num<span class="token punctuation">,</span><span class="token punctuation">:</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+    <span class="token keyword">for</span> k <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>serieslen<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token builtin">sum</span><span class="token operator">=</span><span class="token number">0</span>
+        <span class="token keyword">if</span><span class="token punctuation">(</span>k<span class="token operator">&lt;=</span>L<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            <span class="token keyword">for</span> p <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>k<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+                <span class="token builtin">sum</span><span class="token operator">+=</span>Xi<span class="token punctuation">[</span>p<span class="token punctuation">,</span>k<span class="token operator">-</span>p<span class="token punctuation">]</span>
+            RC<span class="token punctuation">[</span>num<span class="token punctuation">,</span>k<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token builtin">sum</span><span class="token operator">/</span><span class="token punctuation">(</span>k<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span>
+        <span class="token keyword">elif</span><span class="token punctuation">(</span>k<span class="token operator">&lt;=</span>K<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            <span class="token keyword">for</span> p <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>L<span class="token punctuation">)</span><span class="token punctuation">:</span>
+                <span class="token builtin">sum</span><span class="token operator">+=</span>Xi<span class="token punctuation">[</span>p<span class="token punctuation">,</span>k<span class="token operator">-</span>p<span class="token punctuation">]</span>
+            RC<span class="token punctuation">[</span>num<span class="token punctuation">,</span>k<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token builtin">sum</span><span class="token operator">/</span>L
+        <span class="token keyword">elif</span><span class="token punctuation">(</span>k<span class="token operator">&lt;=</span>serieslen<span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+            <span class="token keyword">for</span> p <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>k<span class="token operator">-</span>K<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">,</span>serieslen<span class="token operator">-</span>K<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">:</span>
+                <span class="token builtin">sum</span><span class="token operator">+=</span>Xi<span class="token punctuation">[</span>p<span class="token punctuation">,</span>k<span class="token operator">-</span>p<span class="token punctuation">]</span>
+            RC<span class="token punctuation">[</span>num<span class="token punctuation">,</span>k<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token builtin">sum</span><span class="token operator">/</span><span class="token punctuation">(</span>serieslen<span class="token operator">-</span>k<span class="token punctuation">)</span>
+</code></pre> 
+<h3><a id="3_84"></a>3.结果分析</h3> 
+<p>现在我们可以看到，所获得的RC是由<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         L 
+        
+       
+      
+        L 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal">L</span></span></span></span></span>个成分序列构成的矩阵，每一行对应原序列的一个成分</p> 
+<pre><code class="prism language-python">showN <span class="token operator">=</span> <span class="token number">8</span>
+<span class="token keyword">for</span> m <span class="token keyword">in</span> <span class="token builtin">range</span><span class="token punctuation">(</span>showN<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    plt<span class="token punctuation">.</span>subplot<span class="token punctuation">(</span>showN<span class="token punctuation">,</span><span class="token number">1</span><span class="token punctuation">,</span>m<span class="token operator">+</span><span class="token number">1</span><span class="token punctuation">)</span>
+    plt<span class="token punctuation">.</span>plot<span class="token punctuation">(</span>RC<span class="token punctuation">[</span>m<span class="token punctuation">,</span><span class="token punctuation">:</span><span class="token punctuation">]</span><span class="token punctuation">)</span>
+    plt<span class="token punctuation">.</span>ylabel<span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token string">'RC {}'</span><span class="token punctuation">.</span><span class="token builtin">format</span><span class="token punctuation">(</span>m<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>show<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/70/74/eOIawMVp_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_97"></a><strong>查看周期项分离效果</strong></h4> 
+<pre><code class="prism language-python">plt<span class="token punctuation">.</span>plot<span class="token punctuation">(</span>RC<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token punctuation">:</span><span class="token punctuation">]</span><span class="token operator">+</span>RC<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">,</span><span class="token punctuation">:</span><span class="token punctuation">]</span><span class="token punctuation">,</span>color<span class="token operator">=</span><span class="token string">'blue'</span><span class="token punctuation">,</span>label <span class="token operator">=</span> <span class="token string">'predicted'</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>plot<span class="token punctuation">(</span>sin_sequence<span class="token punctuation">,</span>color<span class="token operator">=</span><span class="token string">'red'</span><span class="token punctuation">,</span>label <span class="token operator">=</span> <span class="token string">'periodicity'</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>legend<span class="token punctuation">(</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>show<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/0f/47/hKUvtFiu_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_107"></a><strong>查看趋势项分离效果</strong></h4> 
+<pre><code class="prism language-python">plt<span class="token punctuation">.</span>plot<span class="token punctuation">(</span>RC<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token punctuation">:</span><span class="token punctuation">]</span><span class="token punctuation">,</span>color<span class="token operator">=</span><span class="token string">'blue'</span><span class="token punctuation">,</span>label <span class="token operator">=</span> <span class="token string">'predicted'</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>plot<span class="token punctuation">(</span>tend_sequence<span class="token punctuation">,</span>color<span class="token operator">=</span><span class="token string">'red'</span><span class="token punctuation">,</span>label <span class="token operator">=</span> <span class="token string">'trend'</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>legend<span class="token punctuation">(</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>show<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/45/a8/55Zfvf7w_o.png" alt="在这里插入图片描述"></p> 
+<h4><a id="_117"></a><strong>查看整体去噪效果</strong></h4> 
+<p>选用RC0\1\2\3四项进行重组</p> 
+<pre><code class="prism language-python">plt<span class="token punctuation">.</span>plot<span class="token punctuation">(</span>RC<span class="token punctuation">[</span><span class="token number">0</span><span class="token punctuation">,</span><span class="token punctuation">:</span><span class="token punctuation">]</span><span class="token operator">+</span>RC<span class="token punctuation">[</span><span class="token number">1</span><span class="token punctuation">,</span><span class="token punctuation">:</span><span class="token punctuation">]</span><span class="token operator">+</span>RC<span class="token punctuation">[</span><span class="token number">2</span><span class="token punctuation">,</span><span class="token punctuation">:</span><span class="token punctuation">]</span><span class="token operator">+</span>RC<span class="token punctuation">[</span><span class="token number">3</span><span class="token punctuation">,</span><span class="token punctuation">:</span><span class="token punctuation">]</span><span class="token punctuation">,</span>color<span class="token operator">=</span><span class="token string">'blue'</span><span class="token punctuation">,</span>label <span class="token operator">=</span> <span class="token string">'predicted'</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>plot<span class="token punctuation">(</span>signal<span class="token punctuation">,</span>color<span class="token operator">=</span><span class="token string">'red'</span><span class="token punctuation">,</span>label <span class="token operator">=</span> <span class="token string">'original'</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>legend<span class="token punctuation">(</span><span class="token punctuation">)</span>
+plt<span class="token punctuation">.</span>show<span class="token punctuation">(</span><span class="token punctuation">)</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/a5/19/4ftBloVA_o.png" alt="在这里插入图片描述"></p> 
+<p>目前所掌握的知识还不足以将SSA发展为一种通用的方法，原因是窗口长度 <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         L 
+        
+       
+      
+        L 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal">L</span></span></span></span></span> 的长度确定具有较强的主观性，重现原序列时对各个成分的取舍也没有具体的标准，还需要进一步的学习。</p> 
+<p><em><strong>博主不是信号处理及数学方面的专业人士，科研项目中用到了这一块，简单记录下学习过程，如果有不正确的地方麻烦指出，欢迎交流~</strong></em></p> 
+<p><strong>参考文献：</strong><br> [1] GOLYANDINA N, ZHIGLJAVSKY A. Singular Spectrum Analysis for Time Series[M/OL]. 2013. DOI:10.1007/978-3-642-34913-3.</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/22e9692bc0a98f0cd9f39f588f9a2677/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">AVL树&amp;红黑树&amp;位图&amp;布隆过滤器&amp;并查集&amp;B树&amp;图</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/47add96275315c212355bc58e88e0d08/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【数据结构】单链表的层层实现！! !</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

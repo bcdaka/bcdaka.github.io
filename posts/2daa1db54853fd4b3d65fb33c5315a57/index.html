@@ -1,0 +1,1043 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>项目：仿RabbitMQ实现的消息队列组件 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/2daa1db54853fd4b3d65fb33c5315a57/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="项目：仿RabbitMQ实现的消息队列组件">
+  <meta property="og:description" content="文章目录 写在前面开源仓库和项目上线其他文档说明 需求分析BrokerServer交换机类型持久化消息应答 模块划分服务端模块客户端模块交换机数据管理模块队列数据管理模块绑定数据管理模块消息数据管理模块队列信息管理模块虚拟机数据管理模块路由匹配模块消费者管理模块信道管理模块 逻辑示意图工具类编写sqlite3字符串分割生成随机数文件常用操作 消息和交换机类型定义交换机数据管理队列数据管理绑定信息管理消息管理消息信息管理消息的持久化管理消息内存数据管理消息对外接口类 虚拟机信息管理交换机路由管理模块消费者和订阅者模块消费者信息结构消费者管理消费者统一管理结构 信道管理模块服务器模块客户端模块订阅者模块信道管理模块异步工作线程池连接管理模块 结束 写在前面 开源仓库和项目上线 本项目已开源到下面链接下的仓库当中
+仿RabbitMQ实现消息队列
+其他文档说明 针对于日志的信息，我采用了之前写的一份利用可变参数实现日志的代码，具体链接如下
+C&#43;&#43;：可变参数实现日志系统
+项目：消息队列的前置知识
+需求分析 对于这个项目来说，首先需要明确几个概念，项目中要包含生产者，消费者，中间人，发布，订阅
+先说生产者和消费者的模型，这个并不陌生，在操作系统中有过对于这些内容的讲解：
+如上所示是一个基本的生产消费者模型的理论，那么在这个理论中比较重要的就是中间的这个Broker Server，这个部分的核心功能就是进行消息的存储和转发
+在中间件服务器Broker当中，存在下面的概念
+虚拟机：类似于是一个MySQL当中的database的概念，是一个逻辑上的集合，一个BrokerServer当中会存在多个VirtualHost
+交换机：这是生产者把消息先发送到Broker当中的Exchange上，再依据不同的规则，把消息转发给不同的Queue
+队列：真正用来存储消息的部分，每个消费者自己进行决定从哪个Queue上进行消息的读取
+绑定：这是一个Exchange和Queue之间的关联关系，Exchange和Queue可以理解为是多对多的概念，而用一个关联表就可以把信息存储起来
+所以要实现的内容，其实就有下面的内容：
+Broker服务器，也就是所谓的消息队列服务器消息发布客户端：生产者，把消息放到服务器上消息订阅客户端：消费者，从服务器上订阅消息 在AMQP协议中细化了对应的规则，以虚拟机为单元，来进行交换机，队列，绑定的整体操作，下面基于这些理论进行一些核心的API功能和操作
+BrokerServer 对于Broker来说，主要有下面的这些功能操作
+创建交换机销毁交换机创建队列销毁队列创建绑定解除绑定发布消息订阅消息确认消息取消订阅 交换机类型 对于RabbitMQ来说，主要支持下面的四种交换机类型
+DirectFanoutTopicHeader 下面针对于前三种比较常见的交换机进行一个简单的概述：
+Direct：生产者发送消息时，直接指定被该交换机绑定的队列名，这样就可以直接进行交换了
+Fanout：生产者发送的消息会被复制到该交换机的所有队列中，就有点类似于是一个广播的效果
+Topic：绑定队列到交换机上，指定一个字符串为bindingKey，发送消息指定一个字符串是routingKey，这样只有这两个Key满足一定条件的时候再进行对应的消息的投递
+持久化 项目一定是需要有持久化的需求的
+消息应答 对于被消费的消息，是要进行一些应答的，具体的策略有两种：
+自动应答：消费者只要消费了消息，就算应答完成了，Broker直接删除这个消息手动应答：消费者手动调用应答接口，Broker收到应答请求之后再进行删除这个消息 对于手动应答来说，比较好的一个特点是，保证了消息确实被消费者处理成功了，在一些对于数据可靠性要求比较高的场景下，是一个比较常见的特点
+模块划分 对于这个项目来说，主要有下面的三个模块
+服务端发布客户端订阅客户端 服务端模块 数据管理模块：对于交换机，队列，绑定，消息数据的管理虚拟机数据管理模块：虚拟机本质上是把上面的这些数据进行一个封装和合并后的管理，虚拟机本质上就可以看成是交换机，队列，绑定，消息的整体逻辑单元，对于虚拟机的数据管理本质上就是把上述的这些模块进行了一个合并管理交换路由模块：消息的发布，就是把消息发布到交换机上，然后交换机把消息再放到队列中，那么如何进行设置对应的方式？其实就需要用到交换机类型，比如有直接，广播或者主题交换等，而交换路由模块就是专门进行匹配的过程的消费者管理模块：消费者说的是订阅了一个队列消息的客户端，一旦这个队列中有了消息，就会推送给客户端，客户端是一个被动获取的效果，在核心API中，存在有订阅消息的功能，这个订阅其实是订阅的某个队列当中的全部内容，而不是订阅某个特定的消息，只要队列中有消息就绪了，就会把消息给客户端信道管理模块：一个连接可能会有对应的多个通信通道，那么一旦有客户端要关闭通信，就要把自己的通信通道管理，因此就要把连接的通信通道进行管理连接管理模块：就是对于一个网络通信对应的连接 客户端模块 消费者管理模块：一个订阅客户端，而当订阅一个队列消息的时候，本质上就相当于创建了一个消费者信道管理模块：客户端的信道和服务端的信道是一一对应的，服务端信道提供的服务，客户端都有，也就是说，相当于服务端给客户端提供服务，客户端给用户提供服务连接管理模块：对于用户来说，所有的服务都是通过信道来完成的，信道在用户的角度就是一个通信通道，所有的请求都是借助信道来完成的基于上述的这三个模块，就可以实现一个订阅客户端和发布客户端这两个内容，其中订阅客户端就是要订阅一个队列的消息，收到推送过来的消息进行处理，而发布客户端就是向一个交换机来发布消息 交换机数据管理模块 要管理的数据：描述了一个交换机中应该有什么数据，而在这内部当中还会存在有交换机的名称，交换机的类型，是否持久化，是否要自动删除对交换机的管理操作：声明(创建)交换机，删除交换机，获取指定名称的交换机，获取当前交换机的数量等等 队列数据管理模块 要管理的数据：在这当中描述的是队列的名称，持久化存储标志，是否独占标志，自动删除表示等提供对应的操作：创建队列，删除队列，获取队列信息，获取队列数量，获取所有队列名称等 绑定数据管理模块 这个模块主要是进行描述的是，哪个队列和哪个交换机绑定在了一起
+要管理的数据：对于这个模块来说，要管理的数据主要有交换机的名称，队列名称，以及binding_key，这个主要是绑定密钥，用来进行描述交换机和队列的一种匹配规则提供对应的操作：添加绑定，解除绑定，获取交换机相关的所有绑定信息，获取队列相关的所有绑定信息，获取绑定信息数量 消息数据管理模块 要管理的数据 对于这个模块来说，先看一下消息数据说的是什么：
+消息信息中主要包含内容&#43;属性：
+对于属性来说包含的有，消息的ID，以及持久化表示，routing_key，这个key表示的是当前消息要发布的队列信息
+管理的方式 对于管理方式当中，必定是要以队列为单元进行管理的，因为消息的所有操作都是在队列当中进行实现的，消息是要存储在队列当中的
+对于管理数据来说，首先会存在一个消息链表，这当中存放的是保存所有待推送的消息，以及待确认消息hash，模仿TCP的方式，保证消息可靠传输，持久化消息hash，以及持久化的有效消息数量，持久化的总的消息数量等
+提供对应的操作 对于消息管理的操作来说，要提供的方法有，向队列新增消息，获取队首消息，对消息的确认，恢复队列历史消息，垃圾回收，删除队列相关消息文件等">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-03T17:15:37+08:00">
+    <meta property="article:modified_time" content="2024-06-03T17:15:37+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">项目：仿RabbitMQ实现的消息队列组件</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_2" rel="nofollow">写在前面</a></li><li><ul><li><a href="#_4" rel="nofollow">开源仓库和项目上线</a></li><li><a href="#_10" rel="nofollow">其他文档说明</a></li></ul> 
+  </li><li><a href="#_19" rel="nofollow">需求分析</a></li><li><ul><li><a href="#BrokerServer_46" rel="nofollow">BrokerServer</a></li><li><a href="#_62" rel="nofollow">交换机类型</a></li><li><a href="#_79" rel="nofollow">持久化</a></li><li><a href="#_83" rel="nofollow">消息应答</a></li></ul> 
+  </li><li><a href="#_92" rel="nofollow">模块划分</a></li><li><ul><li><a href="#_100" rel="nofollow">服务端模块</a></li><li><a href="#_109" rel="nofollow">客户端模块</a></li><li><a href="#_116" rel="nofollow">交换机数据管理模块</a></li><li><a href="#_121" rel="nofollow">队列数据管理模块</a></li><li><a href="#_126" rel="nofollow">绑定数据管理模块</a></li><li><a href="#_133" rel="nofollow">消息数据管理模块</a></li><li><a href="#_153" rel="nofollow">队列信息管理模块</a></li><li><a href="#_160" rel="nofollow">虚拟机数据管理模块</a></li><li><a href="#_181" rel="nofollow">路由匹配模块</a></li><li><a href="#_193" rel="nofollow">消费者管理模块</a></li><li><a href="#_204" rel="nofollow">信道管理模块</a></li></ul> 
+  </li><li><a href="#_221" rel="nofollow">逻辑示意图</a></li><li><a href="#_249" rel="nofollow">工具类编写</a></li><li><ul><li><a href="#sqlite3_253" rel="nofollow">sqlite3</a></li><li><a href="#_270" rel="nofollow">字符串分割</a></li><li><a href="#_280" rel="nofollow">生成随机数</a></li><li><a href="#_290" rel="nofollow">文件常用操作</a></li></ul> 
+  </li><li><a href="#_314" rel="nofollow">消息和交换机类型定义</a></li><li><a href="#_389" rel="nofollow">交换机数据管理</a></li><li><a href="#_461" rel="nofollow">队列数据管理</a></li><li><a href="#_522" rel="nofollow">绑定信息管理</a></li><li><a href="#_591" rel="nofollow">消息管理</a></li><li><ul><li><a href="#_593" rel="nofollow">消息信息管理</a></li><li><a href="#_603" rel="nofollow">消息的持久化管理</a></li><li><a href="#_651" rel="nofollow">消息内存数据管理</a></li><li><a href="#_703" rel="nofollow">消息对外接口类</a></li></ul> 
+  </li><li><a href="#_758" rel="nofollow">虚拟机信息管理</a></li><li><a href="#_803" rel="nofollow">交换机路由管理模块</a></li><li><a href="#_817" rel="nofollow">消费者和订阅者模块</a></li><li><ul><li><a href="#_819" rel="nofollow">消费者信息结构</a></li><li><a href="#_853" rel="nofollow">消费者管理</a></li><li><a href="#_905" rel="nofollow">消费者统一管理结构</a></li></ul> 
+  </li><li><a href="#_944" rel="nofollow">信道管理模块</a></li><li><a href="#_1039" rel="nofollow">服务器模块</a></li><li><a href="#_1136" rel="nofollow">客户端模块</a></li><li><ul><li><a href="#_1151" rel="nofollow">订阅者模块</a></li><li><a href="#_1188" rel="nofollow">信道管理模块</a></li><li><a href="#_1223" rel="nofollow">异步工作线程池</a></li><li><a href="#_1230" rel="nofollow">连接管理模块</a></li></ul> 
+  </li><li><a href="#_1266" rel="nofollow">结束</a></li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_2"></a>写在前面</h2> 
+<h3><a id="_4"></a>开源仓库和项目上线</h3> 
+<p>本项目已开源到下面链接下的仓库当中</p> 
+<p><a href="https://gitee.com/zhaobohan/message-queue" rel="nofollow">仿RabbitMQ实现消息队列</a></p> 
+<h3><a id="_10"></a>其他文档说明</h3> 
+<p>针对于日志的信息，我采用了之前写的一份利用可变参数实现日志的代码，具体链接如下</p> 
+<p><a href="https://blog.csdn.net/qq_73899585/article/details/136994413">C++：可变参数实现日志系统</a></p> 
+<p><a href="https://zhaobohan.blog.csdn.net/article/details/139155176" rel="nofollow">项目：消息队列的前置知识</a></p> 
+<h2><a id="_19"></a>需求分析</h2> 
+<p>对于这个项目来说，首先需要明确几个概念，项目中要包含生产者，消费者，中间人，发布，订阅</p> 
+<p>先说生产者和消费者的模型，这个并不陌生，在操作系统中有过对于这些内容的讲解：</p> 
+<p><img src="https://images2.imgbox.com/f2/d3/kVdAqyxB_o.png" alt="在这里插入图片描述"><br> 如上所示是一个基本的生产消费者模型的理论，那么在这个理论中比较重要的就是中间的这个Broker Server，这个部分的核心功能就是进行消息的存储和转发</p> 
+<p>在中间件服务器Broker当中，存在下面的概念</p> 
+<p><strong>虚拟机</strong>：类似于是一个MySQL当中的database的概念，是一个逻辑上的集合，一个BrokerServer当中会存在多个VirtualHost</p> 
+<p><strong>交换机</strong>：这是生产者把消息先发送到Broker当中的Exchange上，再依据不同的规则，把消息转发给不同的Queue</p> 
+<p><strong>队列</strong>：真正用来存储消息的部分，每个消费者自己进行决定从哪个Queue上进行消息的读取</p> 
+<p><strong>绑定</strong>：这是一个Exchange和Queue之间的关联关系，Exchange和Queue可以理解为是多对多的概念，而用一个关联表就可以把信息存储起来</p> 
+<p>所以要实现的内容，其实就有下面的内容：</p> 
+<ol><li>Broker服务器，也就是所谓的消息队列服务器</li><li>消息发布客户端：生产者，把消息放到服务器上</li><li>消息订阅客户端：消费者，从服务器上订阅消息</li></ol> 
+<p>在AMQP协议中细化了对应的规则，以虚拟机为单元，来进行交换机，队列，绑定的整体操作，下面基于这些理论进行一些核心的API功能和操作</p> 
+<h3><a id="BrokerServer_46"></a>BrokerServer</h3> 
+<p>对于Broker来说，主要有下面的这些功能操作</p> 
+<ol><li>创建交换机</li><li>销毁交换机</li><li>创建队列</li><li>销毁队列</li><li>创建绑定</li><li>解除绑定</li><li>发布消息</li><li>订阅消息</li><li>确认消息</li><li>取消订阅</li></ol> 
+<h3><a id="_62"></a>交换机类型</h3> 
+<p>对于RabbitMQ来说，主要支持下面的四种交换机类型</p> 
+<ol><li>Direct</li><li>Fanout</li><li>Topic</li><li>Header</li></ol> 
+<p>下面针对于前三种比较常见的交换机进行一个简单的概述：</p> 
+<p><strong>Direct</strong>：生产者发送消息时，直接指定被该交换机绑定的队列名，这样就可以直接进行交换了</p> 
+<p><strong>Fanout</strong>：生产者发送的消息会被复制到该交换机的所有队列中，就有点类似于是一个广播的效果</p> 
+<p><strong>Topic</strong>：绑定队列到交换机上，指定一个字符串为bindingKey，发送消息指定一个字符串是routingKey，这样只有这两个Key满足一定条件的时候再进行对应的消息的投递</p> 
+<h3><a id="_79"></a>持久化</h3> 
+<p>项目一定是需要有持久化的需求的</p> 
+<h3><a id="_83"></a>消息应答</h3> 
+<p>对于被消费的消息，是要进行一些应答的，具体的策略有两种：</p> 
+<ol><li>自动应答：消费者只要消费了消息，就算应答完成了，Broker直接删除这个消息</li><li>手动应答：消费者手动调用应答接口，Broker收到应答请求之后再进行删除这个消息</li></ol> 
+<p>对于手动应答来说，比较好的一个特点是，保证了消息确实被消费者处理成功了，在一些对于数据可靠性要求比较高的场景下，是一个比较常见的特点</p> 
+<h2><a id="_92"></a>模块划分</h2> 
+<p>对于这个项目来说，主要有下面的三个模块</p> 
+<ol><li>服务端</li><li>发布客户端</li><li>订阅客户端</li></ol> 
+<h3><a id="_100"></a>服务端模块</h3> 
+<ol><li>数据管理模块：对于交换机，队列，绑定，消息数据的管理</li><li>虚拟机数据管理模块：虚拟机本质上是把上面的这些数据进行一个封装和合并后的管理，虚拟机本质上就可以看成是交换机，队列，绑定，消息的整体逻辑单元，对于虚拟机的数据管理本质上就是把上述的这些模块进行了一个合并管理</li><li>交换路由模块：消息的发布，就是把消息发布到交换机上，然后交换机把消息再放到队列中，那么如何进行设置对应的方式？其实就需要用到交换机类型，比如有直接，广播或者主题交换等，而交换路由模块就是专门进行匹配的过程的</li><li>消费者管理模块：消费者说的是订阅了一个队列消息的客户端，一旦这个队列中有了消息，就会推送给客户端，客户端是一个被动获取的效果，在核心API中，存在有订阅消息的功能，这个订阅其实是订阅的某个队列当中的全部内容，而不是订阅某个特定的消息，只要队列中有消息就绪了，就会把消息给客户端</li><li>信道管理模块：一个连接可能会有对应的多个通信通道，那么一旦有客户端要关闭通信，就要把自己的通信通道管理，因此就要把连接的通信通道进行管理</li><li>连接管理模块：就是对于一个网络通信对应的连接</li></ol> 
+<h3><a id="_109"></a>客户端模块</h3> 
+<ol><li>消费者管理模块：一个订阅客户端，而当订阅一个队列消息的时候，本质上就相当于创建了一个消费者</li><li>信道管理模块：客户端的信道和服务端的信道是一一对应的，服务端信道提供的服务，客户端都有，也就是说，相当于服务端给客户端提供服务，客户端给用户提供服务</li><li>连接管理模块：对于用户来说，所有的服务都是通过信道来完成的，信道在用户的角度就是一个通信通道，所有的请求都是借助信道来完成的</li><li>基于上述的这三个模块，就可以实现一个订阅客户端和发布客户端这两个内容，其中订阅客户端就是要订阅一个队列的消息，收到推送过来的消息进行处理，而发布客户端就是向一个交换机来发布消息</li></ol> 
+<h3><a id="_116"></a>交换机数据管理模块</h3> 
+<ol><li>要管理的数据：描述了一个交换机中应该有什么数据，而在这内部当中还会存在有交换机的名称，交换机的类型，是否持久化，是否要自动删除</li><li>对交换机的管理操作：声明(创建)交换机，删除交换机，获取指定名称的交换机，获取当前交换机的数量等等</li></ol> 
+<h3><a id="_121"></a>队列数据管理模块</h3> 
+<ol><li>要管理的数据：在这当中描述的是队列的名称，持久化存储标志，是否独占标志，自动删除表示等</li><li>提供对应的操作：创建队列，删除队列，获取队列信息，获取队列数量，获取所有队列名称等</li></ol> 
+<h3><a id="_126"></a>绑定数据管理模块</h3> 
+<p>这个模块主要是进行描述的是，哪个队列和哪个交换机绑定在了一起</p> 
+<ol><li>要管理的数据：对于这个模块来说，要管理的数据主要有交换机的名称，队列名称，以及binding_key，这个主要是绑定密钥，用来进行描述交换机和队列的一种匹配规则</li><li>提供对应的操作：添加绑定，解除绑定，获取交换机相关的所有绑定信息，获取队列相关的所有绑定信息，获取绑定信息数量</li></ol> 
+<h3><a id="_133"></a>消息数据管理模块</h3> 
+<ol><li>要管理的数据</li></ol> 
+<p>对于这个模块来说，先看一下消息数据说的是什么：</p> 
+<p>消息信息中主要包含内容+属性：</p> 
+<p>对于属性来说包含的有，消息的ID，以及持久化表示，routing_key，这个key表示的是当前消息要发布的队列信息</p> 
+<ol start="2"><li>管理的方式</li></ol> 
+<p>对于管理方式当中，必定是要以队列为单元进行管理的，因为消息的所有操作都是在队列当中进行实现的，消息是要存储在队列当中的</p> 
+<p>对于管理数据来说，首先会存在一个消息链表，这当中存放的是保存所有待推送的消息，以及待确认消息hash，模仿TCP的方式，保证消息可靠传输，持久化消息hash，以及持久化的有效消息数量，持久化的总的消息数量等</p> 
+<ol start="3"><li>提供对应的操作</li></ol> 
+<p>对于消息管理的操作来说，要提供的方法有，向队列新增消息，获取队首消息，对消息的确认，恢复队列历史消息，垃圾回收，删除队列相关消息文件等</p> 
+<h3><a id="_153"></a>队列信息管理模块</h3> 
+<p>对于队列的管理来说，主要包含有：</p> 
+<p>初始化队列消息，移除队列消息，向队列新增消息，对队列消息进行确认，恢复队列历史消息等</p> 
+<h3><a id="_160"></a>虚拟机数据管理模块</h3> 
+<p>对于虚拟机来说，它内部包含了交换机，队列，绑定，消息，这些数据管理的集合</p> 
+<p>在其内部管理的数据：</p> 
+<ol><li>交换机数据管理句柄</li><li>队列数据管理句柄</li><li>绑定信息数据管理句柄</li><li>消息数据管理句柄</li></ol> 
+<p>要管理的操作包括：</p> 
+<ol><li>删除交换机</li><li>删除队列</li><li>队列的绑定</li><li>队列的解除绑定</li><li>获取队列的信息</li><li>对指定队列信息的确认</li><li>获取交换机相关的所有绑定信息</li></ol> 
+<h3><a id="_181"></a>路由匹配模块</h3> 
+<p>对于这个模块来说，决定了一条消息是否可以发布到指定的队列，具体的，在每个队列和交换机的绑定当中会存在一个binding_key，这个是队列发布的一种匹配规则，在每条要发布的消息中，都会有一个routing_key，这是消息的发布规则</p> 
+<p>而对于交换机来说存在三种类型，直接广播和主题，这三种类型就会借助routing_key和binding_key来进行合适的划分</p> 
+<p>路由器模块的本质，其实没有管理的数据，只是提供一些匹配的操作：</p> 
+<ol><li>判断routing_key和binding_key能否匹配成功</li><li>判断routing_key是否符合规定</li><li>判断binding_key是否符合规定</li></ol> 
+<h3><a id="_193"></a>消费者管理模块</h3> 
+<p>客户端有两种，分别是用来发布消息和订阅消息，只有订阅了指定队列消息的客户端才是一个消费者，而消费者数据存在的意义是，当指定队列有了消息之后，就需要把消息推送给这个消费者客户端</p> 
+<p>对于消费者的信息来说，其中需要包含内容有：</p> 
+<ol><li>消费者的标识</li><li>定语额消息名称</li><li>自动确认标志</li><li>消费者处理回调函数指针</li></ol> 
+<h3><a id="_204"></a>信道管理模块</h3> 
+<p>对于信道管理Channel来说，这是一个在网络通信中的概念，表示的就是通信通道，当进行网络通信的时候，必然是借助一个网络通信连接来完成的，为了更加方便的进行资源的利用，因此要对于通信连接进行了一个更加进一步的细化，细化出了通信通道，对于用户来说，一个通信通道就是网络通信的载体，而一个真正的通信连接，是可以创建出多个通信通道</p> 
+<p>每一个信道和信道之间，在使用者的角度来看是相互独立的存在，所有的网络通信服务都是由信道提供的</p> 
+<p>信道提供的服务操作有：</p> 
+<ol><li>删除交换机</li><li>删除队列</li><li>绑定队列和交换机</li><li>解绑队列和交换机</li><li>发布消息/订阅队列消息/取消队列订阅/队列消息确认</li></ol> 
+<p>信道要管理的数据主要包括有，信道的ID，信道所关联的虚拟机句柄，信道关联的消费者句柄，工作线程池句柄</p> 
+<h2><a id="_221"></a>逻辑示意图</h2> 
+<p>下面基于上述的这些理论，画出下面的逻辑示意图</p> 
+<p><strong>示意图1</strong></p> 
+<p><img src="https://images2.imgbox.com/4a/6e/9iFUP4Vc_o.png" alt="在这里插入图片描述"><br> 首先，对于交换机，它的功能主要是进行消息的转发，当有消息到来之后，交换机的作用是把消息转发到对应的队列当中，而转发的依据就需要用到路由匹配模块，路由匹配模块会根据交换机的类型和对应的binding信息，来匹配到对应的队列进行消息的转发，而整个交换机到binding模块再到路由匹配和队列这一整个模块，就被叫做是虚拟机</p> 
+<p>因此，因为有了虚拟机的存在，所以对于一个要发布的消息来说，只需要把消息传递给虚拟机就可以了，具体的分发策略是由虚拟机来完成的，做到了一个解耦合的效果，下面再来看数据库</p> 
+<p>因为有持久化的原因，所以虚拟机必定是需要伴随着数据库的，数据库当中就会有消息的持久化和数据的持久化，这个模块就是项目大体的核心模块</p> 
+<p><strong>示意图2</strong></p> 
+<p>下面演示的是第二个示意图：</p> 
+<p><img src="https://images2.imgbox.com/b0/58/zPAGPckx_o.png" alt="在这里插入图片描述"><br> 如上所示的是对于BrokerServer模块，这是一个服务端的示意图，对于服务端来说内部会有一个连接管理器，而对于连接管理器来说，它内部会存在一个Channel信道，这个信道内部会有各种各样的方法，例如有创建删除交换机，创建删除队列，绑定解绑队列和交换机，发布消息，订阅队列消息，取消订阅消息，确认消息等等各种各样的接口，这些接口足以支撑整个服务器</p> 
+<p><strong>示意图3</strong></p> 
+<p><img src="https://images2.imgbox.com/1d/eb/8HoWSxdY_o.png" alt="在这里插入图片描述"><br> 如上所示是对于客户端的示意图，客户端分为发布客户端和订阅客户端，而这两个客户端又公用同样的一组接口，这组接口中同样存在有Connection模块进行连接的管理，Connection内部又包含有各种各样的处理方法，而这些方法实际上都会和BrokerServer进行一个连接，这样就把整个服务端，客户端和主体数据库连接在一起了：</p> 
+<p><img src="https://images2.imgbox.com/b7/fe/gdr8uFMr_o.png" alt="在这里插入图片描述"><br> 下面，就基于上述的这些理论，进行代码的编写</p> 
+<h2><a id="_249"></a>工具类编写</h2> 
+<p>这个模块没有什么好说的，就是一些工具的编写，方便进行使用</p> 
+<h3><a id="sqlite3_253"></a>sqlite3</h3> 
+<pre><code class="prism language-cpp"><span class="token keyword">class</span> <span class="token class-name">SqliteHelper</span> 
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token keyword">typedef</span> <span class="token keyword">int</span><span class="token punctuation">(</span><span class="token operator">*</span>SqliteCallback<span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">void</span><span class="token operator">*</span><span class="token punctuation">,</span><span class="token keyword">int</span><span class="token punctuation">,</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token operator">*</span><span class="token punctuation">,</span><span class="token keyword">char</span><span class="token operator">*</span><span class="token operator">*</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token function">SqliteHelper</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>dbfile<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token function">_dbfile</span><span class="token punctuation">(</span>dbfile<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">_handler</span><span class="token punctuation">(</span><span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+    <span class="token keyword">bool</span> <span class="token function">open</span><span class="token punctuation">(</span><span class="token keyword">int</span> safe_leve <span class="token operator">=</span> SQLITE_OPEN_FULLMUTEX<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> <span class="token function">exec</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>sql<span class="token punctuation">,</span> SqliteCallback cb<span class="token punctuation">,</span> <span class="token keyword">void</span> <span class="token operator">*</span>arg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">close</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">private</span><span class="token operator">:</span>
+    string _dbfile<span class="token punctuation">;</span>
+    sqlite3 <span class="token operator">*</span>_handler<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="_270"></a>字符串分割</h3> 
+<pre><code class="prism language-cpp"><span class="token keyword">class</span> <span class="token class-name">StrHelper</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token keyword">static</span> size_t <span class="token function">split</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> str<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> sep<span class="token punctuation">,</span> vector<span class="token operator">&lt;</span>string<span class="token operator">&gt;</span><span class="token operator">&amp;</span> result<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="_280"></a>生成随机数</h3> 
+<pre><code class="prism language-cpp"><span class="token keyword">class</span> <span class="token class-name">UUIDHelper</span> 
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token keyword">static</span> string <span class="token function">uuid</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="_290"></a>文件常用操作</h3> 
+<pre><code class="prism language-cpp"><span class="token keyword">class</span> <span class="token class-name">FileHelper</span> 
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token function">FileHelper</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>filename<span class="token punctuation">)</span><span class="token operator">:</span><span class="token function">_filename</span><span class="token punctuation">(</span>filename<span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+    <span class="token keyword">bool</span> <span class="token function">exists</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    size_t <span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> <span class="token function">read</span><span class="token punctuation">(</span><span class="token keyword">char</span> <span class="token operator">*</span>body<span class="token punctuation">,</span> size_t offset<span class="token punctuation">,</span> size_t len<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> <span class="token function">read</span><span class="token punctuation">(</span>string <span class="token operator">&amp;</span>body<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> <span class="token function">write</span><span class="token punctuation">(</span><span class="token keyword">const</span> <span class="token keyword">char</span> <span class="token operator">*</span>body<span class="token punctuation">,</span> size_t offset<span class="token punctuation">,</span> size_t len<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> <span class="token function">write</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>body<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> <span class="token function">rename</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>nname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">static</span> string <span class="token function">parentDirectory</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>filename<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">static</span> <span class="token keyword">bool</span> <span class="token function">createFile</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>filename<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">static</span> <span class="token keyword">bool</span> <span class="token function">removeFile</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>filename<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">static</span> <span class="token keyword">bool</span> <span class="token function">createDirectory</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>path<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">static</span> <span class="token keyword">bool</span> <span class="token function">removeDirectory</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>path<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">private</span><span class="token operator">:</span>
+    string _filename<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_314"></a>消息和交换机类型定义</h2> 
+<p>在项目功能模块的编写前，要先把消息类型定义出来</p> 
+<p><strong>消息本身要素</strong></p> 
+<ol><li>消息属性：消息ID，消息投递方式，消息的routing_key</li><li>消息有效载荷内容</li></ol> 
+<p><strong>消息额外存储所需要素</strong></p> 
+<ol><li>消息的存储位置</li><li>消息的长度</li><li>消息是否有效</li></ol> 
+<p>下面定义交换机的属性</p> 
+<p><strong>交换机类型</strong></p> 
+<ol><li>direct</li><li>fanout</li><li>topic</li></ol> 
+<p><strong>消息投递模式</strong></p> 
+<ol><li>undurable</li><li>durable</li></ol> 
+<p>声明下面的类型，之后基于这个类型生成代码</p> 
+<pre><code class="prism language-bash">protoc <span class="token parameter variable">--cpp_out</span><span class="token operator">=</span>. message.proto
+</code></pre> 
+<pre><code class="prism language-text">syntax = "proto3";
+package MessageQueue;
+
+enum ExchangeType 
+{
+    UNKNOWTYPE = 0;
+    DIRECT = 1;
+    FANOUT = 2;
+    TOPIC = 3;
+};
+
+enum DeliveryMode 
+{
+    UNKNOWMODE = 0;
+    UNDURABLE = 1;
+    DURABLE = 2;
+};
+
+message BasicProperties
+{
+    string id = 1;
+    DeliveryMode delivery_mode = 2;
+    string routing_key = 3;
+};
+
+message Message 
+{
+    message Payload 
+    {
+        BasicProperties properties = 1;
+        string body = 2;
+        string valid = 3;
+    };
+    Payload payload = 1;
+    uint32 offset = 2;
+    uint32 length = 3;
+};
+</code></pre> 
+<p><img src="https://images2.imgbox.com/0e/b7/ckcBSVVw_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_389"></a>交换机数据管理</h2> 
+<p>下面就基于这两个内容，实现对应的交换机部分的实现</p> 
+<pre><code class="prism language-cpp"><span class="token comment">// 1. 定义交换机类</span>
+<span class="token keyword">struct</span> <span class="token class-name">Exchange</span> 
+<span class="token punctuation">{<!-- --></span>
+    <span class="token function">Exchange</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+    <span class="token keyword">using</span> ptr <span class="token operator">=</span> shared_ptr<span class="token operator">&lt;</span>Exchange<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    <span class="token function">Exchange</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ename<span class="token punctuation">,</span> 
+        MessageQueue<span class="token double-colon punctuation">::</span>ExchangeType etype<span class="token punctuation">,</span> 
+        <span class="token keyword">bool</span> edurable<span class="token punctuation">,</span> 
+        <span class="token keyword">bool</span> eauto_delete<span class="token punctuation">,</span> 
+        unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> string<span class="token operator">&gt;</span> eargs<span class="token punctuation">)</span> <span class="token operator">:</span>
+    <span class="token function">name</span><span class="token punctuation">(</span>ename<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">type</span><span class="token punctuation">(</span>etype<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">durable</span><span class="token punctuation">(</span>edurable<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">auto_delete</span><span class="token punctuation">(</span>eauto_delete<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">args</span><span class="token punctuation">(</span>eargs<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+    <span class="token comment">// args存储键值对，在进行数据库存储的时候，组织字符串格式进行存储</span>
+    <span class="token comment">// 内部解析这种key=val&amp;key=val，把数据存储到数据库中</span>
+    <span class="token keyword">void</span> <span class="token function">SetArgs</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> str_args<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 从args中把数据存储到字符串中</span>
+    string <span class="token function">GetArgs</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 名称，类型，持久化，自动删除，其他参数</span>
+    string name<span class="token punctuation">;</span>
+    MessageQueue<span class="token double-colon punctuation">::</span>ExchangeType type<span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> durable<span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> auto_delete<span class="token punctuation">;</span>
+    unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> string<span class="token operator">&gt;</span> args<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">// 2. 定义交换机持久化管理类--数据存储在sqlite数据库中</span>
+<span class="token keyword">class</span> <span class="token class-name">ExchangeMapper</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">using</span> ExchangeMap <span class="token operator">=</span> unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> Exchange<span class="token double-colon punctuation">::</span>ptr<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token function">ExchangeMapper</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> db_file<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token function">_sql_helper</span><span class="token punctuation">(</span>db_file<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 创建数据表</span>
+    <span class="token keyword">void</span> <span class="token function">CreateTable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 移除数据表</span>
+    <span class="token keyword">void</span> <span class="token function">RemoveTable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 插入数据</span>
+    <span class="token keyword">bool</span> <span class="token function">Insert</span><span class="token punctuation">(</span>Exchange<span class="token double-colon punctuation">::</span>ptr<span class="token operator">&amp;</span> exp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 移除数据</span>
+    <span class="token keyword">void</span> <span class="token function">Remove</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 读取表的数据恢复</span>
+    ExchangeMap <span class="token function">Recovery</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+
+<span class="token comment">// 3. 定义交换机数据内存管理类</span>
+<span class="token keyword">class</span> <span class="token class-name">ExchangeManager</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token keyword">using</span> ptr <span class="token operator">=</span> shared_ptr<span class="token operator">&lt;</span>ExchangeManager<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    <span class="token function">ExchangeManager</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> db_file<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token function">_mapper</span><span class="token punctuation">(</span>db_file<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 声明交换机</span>
+    <span class="token keyword">bool</span> <span class="token function">DeclareExchange</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> name<span class="token punctuation">,</span>
+        MessageQueue<span class="token double-colon punctuation">::</span>ExchangeType type<span class="token punctuation">,</span> 
+        <span class="token keyword">bool</span> durable<span class="token punctuation">,</span> <span class="token keyword">bool</span> auto_delete<span class="token punctuation">,</span>
+        unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> string<span class="token operator">&gt;</span><span class="token operator">&amp;</span> args<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 删除交换机</span>
+    <span class="token keyword">void</span> <span class="token function">DeleteExchange</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 根据名称获取指定交换机对象</span>
+    Exchange<span class="token double-colon punctuation">::</span>ptr <span class="token function">selectExchange</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 判断是否存在</span>
+    <span class="token keyword">bool</span> <span class="token function">exists</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 清除</span>
+    <span class="token keyword">void</span> <span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    size_t <span class="token function">ExchangeSize</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_461"></a>队列数据管理</h2> 
+<pre><code class="prism language-cpp"><span class="token comment">// 1. 队列描述数据类</span>
+<span class="token keyword">struct</span> <span class="token class-name">Queue</span> 
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">using</span> ptr <span class="token operator">=</span> shared_ptr<span class="token operator">&lt;</span>Queue<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    <span class="token function">Queue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+    <span class="token function">Queue</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">,</span> <span class="token keyword">bool</span> qdurable<span class="token punctuation">,</span> <span class="token keyword">bool</span> qexclusive<span class="token punctuation">,</span> <span class="token keyword">bool</span> qauto_delete<span class="token punctuation">,</span>
+        unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> string<span class="token operator">&gt;</span> qargs<span class="token punctuation">)</span>
+        <span class="token operator">:</span> <span class="token function">name</span><span class="token punctuation">(</span>qname<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">durable</span><span class="token punctuation">(</span>qdurable<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">exclusive</span><span class="token punctuation">(</span>qexclusive<span class="token punctuation">)</span><span class="token punctuation">,</span> 
+        <span class="token function">auto_delete</span><span class="token punctuation">(</span>qauto_delete<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">args</span><span class="token punctuation">(</span>qargs<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+
+    <span class="token comment">// args存储键值对，在进行数据库存储的时候，组织字符串格式进行存储</span>
+    <span class="token comment">// 内部解析这种key=val&amp;key=val，把数据存储到数据库中</span>
+    <span class="token keyword">void</span> <span class="token function">SetArgs</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> str_args<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 从args中把数据存储到字符串中</span>
+    string <span class="token function">GetArgs</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    string name<span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> durable<span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> exclusive<span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> auto_delete<span class="token punctuation">;</span>
+    unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> string<span class="token operator">&gt;</span> args<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">// 2. 队列数据持久化类</span>
+<span class="token keyword">class</span> <span class="token class-name">QueueMapper</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token function">QueueMapper</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> db_file<span class="token punctuation">)</span>
+        <span class="token operator">:</span> <span class="token function">_sql_helper</span><span class="token punctuation">(</span>db_file<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">CreateTable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">RemoveTable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> <span class="token function">Insert</span><span class="token punctuation">(</span>Queue<span class="token double-colon punctuation">::</span>ptr<span class="token operator">&amp;</span> qe<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">Remove</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">using</span> QueueMap <span class="token operator">=</span> unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> Queue<span class="token double-colon punctuation">::</span>ptr<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    QueueMap <span class="token function">Recovery</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">// 3. 队列数据管理类</span>
+<span class="token keyword">class</span> <span class="token class-name">QueueManager</span> 
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token keyword">using</span> ptr <span class="token operator">=</span> shared_ptr<span class="token operator">&lt;</span>QueueManager<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    <span class="token function">QueueManager</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>dbfile<span class="token punctuation">)</span><span class="token operator">:</span><span class="token function">_mapper</span><span class="token punctuation">(</span>dbfile<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> <span class="token function">declareQueue</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>qname<span class="token punctuation">,</span> 
+        <span class="token keyword">bool</span> qdurable<span class="token punctuation">,</span> 
+        <span class="token keyword">bool</span> qexclusive<span class="token punctuation">,</span>
+        <span class="token keyword">bool</span> qauto_delete<span class="token punctuation">,</span>
+        <span class="token keyword">const</span> unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> string<span class="token operator">&gt;</span> <span class="token operator">&amp;</span>qargs<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">deleteQueue</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    Queue<span class="token double-colon punctuation">::</span>ptr <span class="token function">selectQueue</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    QueueMapper<span class="token double-colon punctuation">::</span>QueueMap <span class="token function">allQueues</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> <span class="token function">exists</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    size_t <span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_522"></a>绑定信息管理</h2> 
+<p>绑定信息，本质上描述的是交换机关联了哪些队列</p> 
+<pre><code class="prism language-cpp"><span class="token comment">// 1. 定义绑定信息类</span>
+<span class="token keyword">struct</span> <span class="token class-name">Binding</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">using</span> ptr <span class="token operator">=</span> shared_ptr<span class="token operator">&lt;</span>Binding<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    <span class="token function">Binding</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+    <span class="token function">Binding</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> bexchange_name<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> bqueue_name<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> bbinding_key<span class="token punctuation">)</span>
+        <span class="token operator">:</span> <span class="token function">exchange_name</span><span class="token punctuation">(</span>bexchange_name<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">queue_name</span><span class="token punctuation">(</span>bqueue_name<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">binding_key</span><span class="token punctuation">(</span>bbinding_key<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+    string exchange_name<span class="token punctuation">;</span>
+    string queue_name<span class="token punctuation">;</span>
+    string binding_key<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">// 队列与绑定信息是一一对应的，因此一个交换机可能会有多个队列的绑定信息</span>
+<span class="token comment">// 队列名与绑定信息的映射关系</span>
+<span class="token keyword">using</span> QueueBindingMap <span class="token operator">=</span> unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> Binding<span class="token double-colon punctuation">::</span>ptr<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+<span class="token comment">// 交换机与队列的映射关系</span>
+<span class="token keyword">using</span> BindingMap <span class="token operator">=</span> unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> QueueBindingMap<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+
+<span class="token comment">// unordered_map&lt;string, Binding::ptr&gt;; 队列与绑定</span>
+<span class="token comment">// unordered_map&lt;string, Binding::ptr&gt;; 交换机与绑定</span>
+
+<span class="token comment">// 2. 定义绑定信息持久化</span>
+<span class="token keyword">class</span> <span class="token class-name">BindingMapper</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token function">BindingMapper</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> db_file<span class="token punctuation">)</span>
+        <span class="token operator">:</span> <span class="token function">_sql_helper</span><span class="token punctuation">(</span>db_file<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+    <span class="token keyword">void</span> <span class="token function">CreateTable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">RemoveTable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> <span class="token function">Insert</span><span class="token punctuation">(</span>Binding<span class="token double-colon punctuation">::</span>ptr<span class="token operator">&amp;</span> binding<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">Remove</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ename<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">RemoveExchangeBindings</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ename<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">RemoveQueueBindings</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    BindingMap <span class="token function">Recover</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">private</span><span class="token operator">:</span>
+    SqliteHelper _sql_helper<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token comment">// 3. 绑定信息管理</span>
+<span class="token keyword">class</span> <span class="token class-name">BindingManager</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token function">BindingManager</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> dbfile<span class="token punctuation">)</span> 
+        <span class="token operator">:</span> <span class="token function">_mapper</span><span class="token punctuation">(</span>dbfile<span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+    <span class="token keyword">bool</span> <span class="token function">bind</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ename<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">unbind</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ename<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">RemoveQueueBindings</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    QueueBindingMap <span class="token function">GetExchangeBindings</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ename<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    Binding<span class="token double-colon punctuation">::</span>ptr <span class="token function">GetBinding</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ename<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> <span class="token function">exists</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ename<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    size_t <span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">private</span><span class="token operator">:</span>
+    mutex _mutex<span class="token punctuation">;</span>
+    BindingMapper _mapper<span class="token punctuation">;</span>
+    BindingMap _buildings<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_591"></a>消息管理</h2> 
+<h3><a id="_593"></a>消息信息管理</h3> 
+<p>对于消息来说，首先要先描述它，消息大概包含内容和属性，对于属性来说包含的有<strong>消息ID，消息的routing_key，消息的投递模式</strong>等，而对于内容来说就是<strong>实际的消息数据内容</strong></p> 
+<p>对于服务器上的消息管理来说，最重要的是要进行消息的持久化管理，在每一条消息上都有可能要进行持久化存储，推送给客户端再删除，那么这样的每次进行数据的存储就要进行重写一次文件，效率非常低下</p> 
+<ol><li>因此，需要添加一个<strong>消息有效标志</strong>，每次只需要把这个有效标志位对应的数据进行修正为无效即可，消息有效标志需要随着消息的持久化内容一起进行持久化</li><li>当要删除某个消息时，需要重写这个消息在文件的对应位置，此时就把有效标志位记为无效即可，那么就需要有<strong>消息的实际存储位置</strong>，需要有文件的偏移量</li><li>当恢复历史消息的时候，需要解决粘包问题，因此就需要一个<strong>消息的长度</strong>这样的字段</li></ol> 
+<h3><a id="_603"></a>消息的持久化管理</h3> 
+<p>概述：</p> 
+<ol><li>当消息文件垃圾回收的时候，需要重新加载所有的有效消息，重新生成一个新的数据文件进行写入，但是生成新的文件后，存储位置就会发生改变，因此就需要更新内存中的数据信息，这时候就需要把所有的队列数据进行加锁，然后进行更新，效率会比较低，因此，一种解决方案是，使用队列进行管理，每个队列使用自己独立的数据文件，每次只需要对操作的队列数据进行加锁即可，因此，<strong>每个队列都有自己的文件</strong></li><li>由于要存储在文件当中，因此就会有数据格式的要求，具体格式安排是：4字节格式和长度为一组，解决粘包问题</li></ol> 
+<p>提供的操作：</p> 
+<ol><li>消息文件的创建和删除</li><li>消息的新增持久化和删除持久化</li><li>历史数据恢复和垃圾回收</li></ol> 
+<p><strong>垃圾回收的思想</strong></p> 
+<ol><li>垃圾回收的使用场景：每次删除数据并不是真正删除，而是直接进行标记位的标记，因此数据会越来越多，所以必然是需要回收的，因此可以定义一个场景，比如当文件的有效消息超过某些条数，并且有效消息的比例过低时，可以选择进行垃圾回收</li><li>回收思想：加载文件中所有有效消息，写到临时文件，写入完毕后删除源文件，将临时文件进行一个替换即可，返回所有的有效消息，消息中就会记录了新的存储位置，这样就可以更新内存中的数据内容</li></ol> 
+<p><strong>需要管理的数据</strong></p> 
+<ol><li>队列名</li><li>根据队列名生成数据文件名</li><li>根据队列名生成临时文件名</li></ol> 
+<p>函数设计如下：</p> 
+<pre><code class="prism language-cpp"><span class="token comment">// 使用队列来管理消息，每个队列有自己的文件</span>
+<span class="token keyword">class</span> <span class="token class-name">MessageMapper</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token function">MessageMapper</span><span class="token punctuation">(</span>string<span class="token operator">&amp;</span> basedir<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span> <span class="token operator">:</span>
+        <span class="token function">_qname</span><span class="token punctuation">(</span>qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    <span class="token keyword">bool</span> <span class="token function">CreateMessageFile</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">void</span> <span class="token function">RemoveMessageFile</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">bool</span> <span class="token function">Insert</span><span class="token punctuation">(</span>MessagePtr<span class="token operator">&amp;</span> msg<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">bool</span> <span class="token function">Remove</span><span class="token punctuation">(</span>MessagePtr<span class="token operator">&amp;</span> msg<span class="token punctuation">)</span><span class="token punctuation">;</span>e<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 垃圾回收</span>
+    list<span class="token operator">&lt;</span>MessagePtr<span class="token operator">&gt;</span> <span class="token function">gc</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="_651"></a>消息内存数据管理</h3> 
+<p><strong>以队列为单元进行管理</strong></p> 
+<p>如果内存中所有的消息整体进行管理，那么在进行垃圾回收以及恢复历史消息上就会比较麻烦，因此依旧是使用队列来进行管理，每一个队列中都有消息数据的管理结构，然后最终向外提供一个消息管理类</p> 
+<p><strong>队列消息管理</strong></p> 
+<p>对于队列消息来说：</p> 
+<ol><li>创建文件恢复队列历史消息数据</li><li>新增消息/确认消息</li><li>垃圾回收，当持久化数据总量和比例到达一定程度就进行垃圾回收的策略</li><li>获取队首消息</li><li>删除队列所有消息</li><li>获取待推送消息数量</li><li>获取待确认消息数量</li><li>获取持久化消息数量</li></ol> 
+<p>需要进行管理的数据：</p> 
+<ol><li>持久化的管理句柄</li><li>待推送消息链表：以头插尾删的思想实现队列功能</li><li>持久化消息的hashmap：垃圾回收后需要更新消息的实际存储位置</li><li>待确认消息的hashmap：一条消息被推送给客户端，有些消息需要确认</li><li>持久化文件有效消息和总体消息的数量</li><li>队列名称</li></ol> 
+<pre><code class="prism language-cpp"><span class="token keyword">class</span> <span class="token class-name">QueueMessage</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token function">QueueMessage</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> basedir<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> <span class="token function">Insert</span><span class="token punctuation">(</span><span class="token keyword">const</span> MessageQueue<span class="token double-colon punctuation">::</span>BasicProperties <span class="token operator">*</span>bp<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> body<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 每次删除消息后，判断是否需要垃圾回收</span>
+    <span class="token keyword">bool</span> <span class="token function">Remove</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> msg_id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    MessagePtr <span class="token function">front</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    size_t <span class="token function">PushCount</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    size_t <span class="token function">TotalCount</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    size_t <span class="token function">DurableCount</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    size_t <span class="token function">WaitAckCount</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">private</span><span class="token operator">:</span>
+    string _qname<span class="token punctuation">;</span>
+    size_t _valid_count<span class="token punctuation">;</span>
+    size_t _total_count<span class="token punctuation">;</span>
+    list<span class="token operator">&lt;</span>MessagePtr<span class="token operator">&gt;</span> _msgs<span class="token punctuation">;</span>
+    unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> MessagePtr<span class="token operator">&gt;</span> _durable_msgs<span class="token punctuation">;</span>
+    unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> MessagePtr<span class="token operator">&gt;</span> _wait_msgs<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="_703"></a>消息对外接口类</h3> 
+<p>最后要提供一个对外接口类，管理的是每一个队列的消息</p> 
+<p><strong>管理成员</strong></p> 
+<ol><li>互斥锁</li><li>每个队列的消息管理句柄，队列名称和队列消息管理句柄的hash表</li></ol> 
+<p><strong>提供操作</strong></p> 
+<ol><li>初始化队列的消息管理句柄，用来创建队列用</li><li>销毁队列的消息管理句柄</li><li>队列的各项消息操作，新增，获取，确认，回复等等</li></ol> 
+<pre><code class="prism language-cpp"><span class="token comment">// 对外提供操控消息的总接口</span>
+<span class="token keyword">class</span> <span class="token class-name">MessageManager</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token keyword">using</span> ptr <span class="token operator">=</span> shared_ptr<span class="token operator">&lt;</span>MessageManager<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    <span class="token function">MessageManager</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> basedir<span class="token punctuation">)</span> <span class="token operator">:</span> <span class="token function">_basedir</span><span class="token punctuation">(</span>basedir<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">void</span> <span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 把队列进行初始化获取消息</span>
+    <span class="token keyword">void</span> <span class="token function">InitQueueMessage</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 销毁队列</span>
+    <span class="token keyword">void</span> <span class="token function">DestroyQueueMessage</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 插入消息</span>
+    <span class="token keyword">bool</span> <span class="token function">Insert</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">,</span> MessageQueue<span class="token double-colon punctuation">::</span>BasicProperties<span class="token operator">*</span> bp<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> body<span class="token punctuation">,</span> <span class="token keyword">bool</span> queue_is_durable<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 获取队首消息信息</span>
+    MessagePtr <span class="token function">Front</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 获取ack应答</span>
+    <span class="token keyword">void</span> <span class="token function">ack</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> msg_id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    size_t <span class="token function">GetableCount</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    size_t <span class="token function">TotalCount</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    size_t <span class="token function">DurableCount</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    size_t <span class="token function">WaitAckCount</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">private</span><span class="token operator">:</span>
+    mutex _mutex<span class="token punctuation">;</span>
+    string _basedir<span class="token punctuation">;</span>
+    unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> QueueMessage<span class="token double-colon punctuation">::</span>ptr<span class="token operator">&gt;</span> _queue_msgs<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_758"></a>虚拟机信息管理</h2> 
+<p>虚拟机是对于上述的三个数据管理模块的整合，并基于数据之间的关联关系进行联合操作，这个模块其实就是把前面的模块都整合起来了</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">class</span> <span class="token class-name">VirtualHost</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token function">VirtualHost</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> basedir<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> dbfile<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">bool</span> <span class="token function">DeclareExchange</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> name<span class="token punctuation">,</span>
+        MessageQueue<span class="token double-colon punctuation">::</span>ExchangeType type<span class="token punctuation">,</span> 
+        <span class="token keyword">bool</span> durable<span class="token punctuation">,</span> <span class="token keyword">bool</span> auto_delete<span class="token punctuation">,</span>
+        unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> string<span class="token operator">&gt;</span><span class="token operator">&amp;</span> args<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">void</span> <span class="token function">DeleteExchange</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">bool</span> <span class="token function">DeclareQueue</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>qname<span class="token punctuation">,</span> 
+        <span class="token keyword">bool</span> qdurable<span class="token punctuation">,</span> 
+        <span class="token keyword">bool</span> qexclusive<span class="token punctuation">,</span>
+        <span class="token keyword">bool</span> qauto_delete<span class="token punctuation">,</span>
+        <span class="token keyword">const</span> unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> string<span class="token operator">&gt;</span> <span class="token operator">&amp;</span>qargs<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">void</span> <span class="token function">DeleteQueue</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">bool</span> <span class="token function">Bind</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ename<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> key<span class="token punctuation">,</span> <span class="token keyword">bool</span> durable<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">void</span> <span class="token function">UnBind</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ename<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    QueueBindingMap <span class="token function">ExchangeBindings</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ename<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">bool</span> <span class="token function">BasicPublish</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">,</span> MessageQueue<span class="token double-colon punctuation">::</span>BasicProperties<span class="token operator">*</span> bp<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> body<span class="token punctuation">,</span> MessageQueue<span class="token double-colon punctuation">::</span>DeliveryMode mode<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    MessagePtr <span class="token function">BasicConsume</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">bool</span> <span class="token function">BasicAck</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> msgid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">private</span><span class="token operator">:</span>
+    ExchangeManager<span class="token double-colon punctuation">::</span>ptr _emp<span class="token punctuation">;</span>
+    QueueManager<span class="token double-colon punctuation">::</span>ptr _qmp<span class="token punctuation">;</span>
+    BindingManager<span class="token double-colon punctuation">::</span>ptr _bmp<span class="token punctuation">;</span>
+    MessageManager<span class="token double-colon punctuation">::</span>ptr _mmp<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_803"></a>交换机路由管理模块</h2> 
+<p>主要功能就是根据routing_key和binding_key判断是否匹配成功</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">class</span> <span class="token class-name">Router</span> 
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token keyword">static</span> <span class="token keyword">bool</span> <span class="token function">isLegalRoutingKey</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>routing_key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">static</span> <span class="token keyword">bool</span> <span class="token function">isLegalBindingKey</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>binding_key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">static</span> <span class="token keyword">bool</span> <span class="token function">route</span><span class="token punctuation">(</span>MessageQueue<span class="token double-colon punctuation">::</span>ExchangeType type<span class="token punctuation">,</span> <span class="token keyword">const</span> string <span class="token operator">&amp;</span>routing_key<span class="token punctuation">,</span> <span class="token keyword">const</span> string <span class="token operator">&amp;</span>binding_key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_817"></a>消费者和订阅者模块</h2> 
+<h3><a id="_819"></a>消费者信息结构</h3> 
+<ol><li>消费者标识</li><li>订阅的队列名称</li><li>一个消息的处理回调函数</li><li>是否自动应答</li></ol> 
+<pre><code class="prism language-cpp"><span class="token keyword">struct</span> <span class="token class-name">Consumer</span> 
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">using</span> ptr <span class="token operator">=</span> shared_ptr<span class="token operator">&lt;</span>Consumer<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    <span class="token function">Consumer</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">lg</span><span class="token punctuation">(</span>Debug<span class="token punctuation">,</span> <span class="token string">"创建新的消费者：%p"</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token function">Consumer</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ctag<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> queue_name<span class="token punctuation">,</span> <span class="token keyword">bool</span> ack_flag<span class="token punctuation">,</span> <span class="token keyword">const</span> ConsumerCallback<span class="token operator">&amp;</span> cb<span class="token punctuation">)</span>
+        <span class="token operator">:</span> <span class="token function">tag</span><span class="token punctuation">(</span>ctag<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">qname</span><span class="token punctuation">(</span>queue_name<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">auto_ack</span><span class="token punctuation">(</span>ack_flag<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">callback</span><span class="token punctuation">(</span>std<span class="token double-colon punctuation">::</span><span class="token function">move</span><span class="token punctuation">(</span>cb<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">lg</span><span class="token punctuation">(</span>Debug<span class="token punctuation">,</span> <span class="token string">"创建新的消费者：%p"</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token operator">~</span><span class="token function">Consumer</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">lg</span><span class="token punctuation">(</span>Debug<span class="token punctuation">,</span> <span class="token string">"移除消费者：%p"</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    string tag<span class="token punctuation">;</span>
+    string qname<span class="token punctuation">;</span>
+    <span class="token keyword">bool</span> auto_ack<span class="token punctuation">;</span>
+    ConsumerCallback callback<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="_853"></a>消费者管理</h3> 
+<p>管理要以队列为单元进行管理</p> 
+<p><strong>操作</strong></p> 
+<ol><li>新增消费者</li><li>删除消费者</li><li>从队列所有消费者中取出消费者进行推送</li></ol> 
+<p><strong>元素</strong></p> 
+<ol><li>消费者管理结构，vector</li><li>轮转序号</li><li>互斥锁</li><li>队列名称</li></ol> 
+<pre><code class="prism language-cpp"><span class="token comment">// 以队列为单元进行消费者管理</span>
+<span class="token keyword">class</span> <span class="token class-name">QueueConsumer</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token keyword">using</span> ptr <span class="token operator">=</span> shared_ptr<span class="token operator">&lt;</span>QueueConsumer<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    <span class="token function">QueueConsumer</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 新增消费者</span>
+    Consumer<span class="token double-colon punctuation">::</span>ptr <span class="token function">Create</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ctag<span class="token punctuation">,</span> <span class="token keyword">const</span> string<span class="token operator">&amp;</span> queue_name<span class="token punctuation">,</span> <span class="token keyword">bool</span> ack_flag<span class="token punctuation">,</span> <span class="token keyword">const</span> ConsumerCallback<span class="token operator">&amp;</span> cb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 从队列移除消费者</span>
+    <span class="token keyword">void</span> <span class="token function">Remove</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ctag<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 从队列中获取消费者</span>
+    Consumer<span class="token double-colon punctuation">::</span>ptr <span class="token function">Choose</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 判断是否为空</span>
+    <span class="token keyword">bool</span> <span class="token function">Empty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 判断指定消费者是否存在</span>
+    <span class="token keyword">bool</span> <span class="token function">Exists</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> ctag<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 清理所有消费者</span>
+    <span class="token keyword">void</span> <span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">private</span><span class="token operator">:</span>
+    string _qname<span class="token punctuation">;</span>
+    mutex _mutex<span class="token punctuation">;</span>
+    <span class="token keyword">uint64_t</span> _rr_seq<span class="token punctuation">;</span>
+    vector<span class="token operator">&lt;</span>Consumer<span class="token double-colon punctuation">::</span>ptr<span class="token operator">&gt;</span> _consumers<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="_905"></a>消费者统一管理结构</h3> 
+<ol><li>初始化/删除队列的消费者信息结构</li><li>向指定队列新增消费者</li><li>从指定队列移除消费者</li><li>移除指定队列所有消费者</li><li>从指定队列获取消费者</li></ol> 
+<pre><code class="prism language-cpp"><span class="token comment">// 消费者统一管理结构</span>
+<span class="token keyword">class</span> <span class="token class-name">ConsumerManager</span>
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token keyword">using</span> ptr <span class="token operator">=</span> shared_ptr<span class="token operator">&lt;</span>ConsumerManager<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    <span class="token function">ConsumerManager</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+
+    <span class="token keyword">void</span> <span class="token function">InitQueueConsumer</span><span class="token punctuation">(</span><span class="token keyword">const</span> string<span class="token operator">&amp;</span> qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">void</span> <span class="token function">DestroyQueueConsumer</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    Consumer<span class="token double-colon punctuation">::</span>ptr <span class="token function">Create</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>ctag<span class="token punctuation">,</span> <span class="token keyword">const</span> string <span class="token operator">&amp;</span>queue_name<span class="token punctuation">,</span>  <span class="token keyword">bool</span> ack_flag<span class="token punctuation">,</span> <span class="token keyword">const</span> ConsumerCallback <span class="token operator">&amp;</span>cb<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">void</span> <span class="token function">remove</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>ctag<span class="token punctuation">,</span> <span class="token keyword">const</span> string <span class="token operator">&amp;</span>queue_name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    Consumer<span class="token double-colon punctuation">::</span>ptr <span class="token function">choose</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>queue_name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">bool</span> <span class="token function">empty</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>queue_name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">bool</span> <span class="token function">exists</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>ctag<span class="token punctuation">,</span> <span class="token keyword">const</span> string <span class="token operator">&amp;</span>queue_name<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">void</span> <span class="token function">clear</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">private</span><span class="token operator">:</span>
+    mutex _mutex<span class="token punctuation">;</span>
+    unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> QueueConsumer<span class="token double-colon punctuation">::</span>ptr<span class="token operator">&gt;</span> _qconsumers<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_944"></a>信道管理模块</h2> 
+<p><strong>管理信息</strong></p> 
+<ol><li>信道ID</li><li>信道关联的消费者</li><li>信道管理的连接</li><li>消费者管理句柄</li><li>虚拟机句柄</li><li>工作线程池句柄</li><li>Protubuf协议处理句柄</li></ol> 
+<p><strong>管理操作</strong></p> 
+<ol><li>提供声明/删除交换机操作</li><li>提供声明/删除队列操作</li><li>提供声明/解绑队列操作</li><li>提供订阅/取消订阅队列消息操作</li><li>提供发布/确认消息操作</li></ol> 
+<pre><code class="prism language-cpp"><span class="token keyword">class</span> <span class="token class-name">Channel</span> 
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token keyword">using</span> ptr <span class="token operator">=</span> shared_ptr<span class="token operator">&lt;</span>Channel<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    <span class="token function">Channel</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>id<span class="token punctuation">,</span> 
+        <span class="token keyword">const</span> VirtualHost<span class="token double-colon punctuation">::</span>ptr <span class="token operator">&amp;</span>host<span class="token punctuation">,</span> 
+        <span class="token keyword">const</span> ConsumerManager<span class="token double-colon punctuation">::</span>ptr <span class="token operator">&amp;</span>cmp<span class="token punctuation">,</span> 
+        <span class="token keyword">const</span> ProtobufCodecPtr <span class="token operator">&amp;</span>codec<span class="token punctuation">,</span> 
+        <span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr <span class="token operator">&amp;</span>conn<span class="token punctuation">,</span>
+        <span class="token keyword">const</span> threadpool<span class="token double-colon punctuation">::</span>ptr <span class="token operator">&amp;</span>pool<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//交换机的声明与删除</span>
+    <span class="token keyword">void</span> <span class="token function">declareExchange</span><span class="token punctuation">(</span><span class="token keyword">const</span> declareExchangeRequestPtr <span class="token operator">&amp;</span>req<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">void</span> <span class="token function">deleteExchange</span><span class="token punctuation">(</span><span class="token keyword">const</span> deleteExchangeRequestPtr <span class="token operator">&amp;</span>req<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//队列的声明与删除</span>
+    <span class="token keyword">void</span> <span class="token function">declareQueue</span><span class="token punctuation">(</span><span class="token keyword">const</span> declareQueueRequestPtr <span class="token operator">&amp;</span>req<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">void</span> <span class="token function">deleteQueue</span><span class="token punctuation">(</span><span class="token keyword">const</span> deleteQueueRequestPtr <span class="token operator">&amp;</span>req<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    <span class="token comment">//队列的绑定与解除绑定</span>
+    <span class="token keyword">void</span> <span class="token function">queueBind</span><span class="token punctuation">(</span><span class="token keyword">const</span> queueBindRequestPtr <span class="token operator">&amp;</span>req<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">void</span> <span class="token function">queueUnBind</span><span class="token punctuation">(</span><span class="token keyword">const</span> queueUnBindRequestPtr <span class="token operator">&amp;</span>req<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//消息的发布</span>
+    <span class="token keyword">void</span> <span class="token function">basicPublish</span><span class="token punctuation">(</span><span class="token keyword">const</span> basicPublishRequestPtr <span class="token operator">&amp;</span>req<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//消息的确认</span>
+    <span class="token keyword">void</span> <span class="token function">basicAck</span><span class="token punctuation">(</span><span class="token keyword">const</span> basicAckRequestPtr <span class="token operator">&amp;</span>req<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//订阅队列消息</span>
+    <span class="token keyword">void</span> <span class="token function">basicConsume</span><span class="token punctuation">(</span><span class="token keyword">const</span> basicConsumeRequestPtr <span class="token operator">&amp;</span>req<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//取消订阅</span>
+    <span class="token keyword">void</span> <span class="token function">basicCancel</span><span class="token punctuation">(</span><span class="token keyword">const</span> basicCancelRequestPtr <span class="token operator">&amp;</span>req<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">private</span><span class="token operator">:</span>
+    <span class="token keyword">void</span> <span class="token function">callback</span><span class="token punctuation">(</span><span class="token keyword">const</span> string tag<span class="token punctuation">,</span> <span class="token keyword">const</span> MessageQueue<span class="token double-colon punctuation">::</span>BasicProperties <span class="token operator">*</span>bp<span class="token punctuation">,</span> <span class="token keyword">const</span> string <span class="token operator">&amp;</span>body<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">consume</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>qname<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">void</span> <span class="token function">basicResponse</span><span class="token punctuation">(</span><span class="token keyword">bool</span> ok<span class="token punctuation">,</span> <span class="token keyword">const</span> string <span class="token operator">&amp;</span>rid<span class="token punctuation">,</span> <span class="token keyword">const</span> string <span class="token operator">&amp;</span>cid<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">private</span><span class="token operator">:</span>
+    string _cid<span class="token punctuation">;</span>
+    Consumer<span class="token double-colon punctuation">::</span>ptr _consumer<span class="token punctuation">;</span>
+    muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr _conn<span class="token punctuation">;</span>
+    ProtobufCodecPtr _codec<span class="token punctuation">;</span>
+    ConsumerManager<span class="token double-colon punctuation">::</span>ptr _cmp<span class="token punctuation">;</span>
+    VirtualHost<span class="token double-colon punctuation">::</span>ptr _host<span class="token punctuation">;</span>
+    threadpool<span class="token double-colon punctuation">::</span>ptr _pool<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token keyword">class</span> <span class="token class-name">ChannelManager</span> 
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token keyword">using</span> ptr <span class="token operator">=</span> shared_ptr<span class="token operator">&lt;</span>ChannelManager<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    <span class="token function">ChannelManager</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+
+    <span class="token keyword">bool</span> <span class="token function">openChannel</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>id<span class="token punctuation">,</span> 
+        <span class="token keyword">const</span> VirtualHost<span class="token double-colon punctuation">::</span>ptr <span class="token operator">&amp;</span>host<span class="token punctuation">,</span> 
+        <span class="token keyword">const</span> ConsumerManager<span class="token double-colon punctuation">::</span>ptr <span class="token operator">&amp;</span>cmp<span class="token punctuation">,</span> 
+        <span class="token keyword">const</span> ProtobufCodecPtr <span class="token operator">&amp;</span>codec<span class="token punctuation">,</span> 
+        <span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr <span class="token operator">&amp;</span>conn<span class="token punctuation">,</span>
+        <span class="token keyword">const</span> threadpool<span class="token double-colon punctuation">::</span>ptr <span class="token operator">&amp;</span>pool<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">void</span> <span class="token function">closeChannel</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    Channel<span class="token double-colon punctuation">::</span>ptr <span class="token function">getChannel</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>id<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">private</span><span class="token operator">:</span>
+    mutex _mutex<span class="token punctuation">;</span>
+    unordered_map<span class="token operator">&lt;</span>string<span class="token punctuation">,</span> Channel<span class="token double-colon punctuation">::</span>ptr<span class="token operator">&gt;</span> _channels<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_1039"></a>服务器模块</h2> 
+<p>对于服务器模块来说，主要是要借助于muduo库来进行实现，这里考虑到篇幅不再进行讲解，这里进行一个的总结：</p> 
+<p>首先提供了一个server发服务器，这是有一个通用的TCP服务器，而在其当中包含了一个主Reactor，这个Reactor主要是进行一个事件的读取，当有新连接到来后要如何进行读取和分发以及上面的io事件如何处理都是在这个模块来进行实现的，而对于新连接来说，会有一个dispatcher分发器，这个分发器的作用就是根据不同的消息类型进行合适的分发，装载到不同的处理函数当中，这就是muduo库一个整体的框架，而在这上面就是一些应用层的处理，例如有诸如Protubuf编解码器，进行应用层协议的封装，参数传递等等</p> 
+<p><strong>创建MQBrokerServer模块</strong></p> 
+<p>MQBrokerServer是对于整体服务器模块的整合，进行客户端的请求，提供对应的服务，为了方便查看，把讲解作为注释加到了代码中，这里就不进行讲解了</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">class</span> <span class="token class-name">Server</span> 
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token keyword">typedef</span> shared_ptr<span class="token operator">&lt;</span>google<span class="token double-colon punctuation">::</span>protobuf<span class="token double-colon punctuation">::</span>Message<span class="token operator">&gt;</span> MessagePtr<span class="token punctuation">;</span>
+    <span class="token comment">/*
+
+    把服务器进行初始化，传递一个端口号和根目录，要初始化的内容有：
+    1. 服务器 2. 分发器 3. Protubuf协议解析器 4. 虚拟机 5. 消费者 6. 连接管理 7. 线程池
+
+    1. 服务器
+    muduo库中的接口：对于服务器来说，要指定EventLoop，ip端口号，名字和选项
+    TcpServer(EventLoop* loop, const InetAddress&amp; listenAddr, const string&amp; nameArg, Option option = kNoReusePort);
+
+    2. 分发器：遇到不同情况怎么处理
+    muduo库中的接口：需要指定一个defaultCb
+    ProtobufDispatcher(const ProtobufMessageCallback&amp; defaultCb);
+
+    3. Protubuf协议解析器：进行Protubuf的协议解析
+    muduo库中的接口：需要一个ProtobufMessageCallback函数回调
+    ProtobufCodec(const ProtobufMessageCallback&amp; messageCb);
+
+    4. 虚拟机：前面自定义类型
+    VirtualHost(const string &amp;hname, const string &amp;basedir, const string &amp;dbfile);
+    5. 消费者：前面自定义类型
+    6. 连接：前面自定义类型
+    7. 线程池：前面自定义类型
+    */</span>
+    
+    <span class="token function">Server</span><span class="token punctuation">(</span><span class="token keyword">int</span> port<span class="token punctuation">,</span> <span class="token keyword">const</span> string <span class="token operator">&amp;</span>basedir<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    
+    <span class="token comment">// 启动服务器</span>
+    <span class="token keyword">void</span> <span class="token function">start</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">private</span><span class="token operator">:</span>
+    <span class="token comment">//打开信道</span>
+    <span class="token keyword">void</span> <span class="token function">onOpenChannel</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> openChannelRequestPtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//关闭信道</span>
+    <span class="token keyword">void</span> <span class="token function">onCloseChannel</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> closeChannelRequestPtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//声明交换机</span>
+    <span class="token keyword">void</span> <span class="token function">onDeclareExchange</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> declareExchangeRequestPtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//删除交换机</span>
+    <span class="token keyword">void</span> <span class="token function">onDeleteExchange</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> deleteExchangeRequestPtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//声明队列</span>
+    <span class="token keyword">void</span> <span class="token function">onDeclareQueue</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> declareQueueRequestPtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//删除队列</span>
+    <span class="token keyword">void</span> <span class="token function">onDeleteQueue</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> deleteQueueRequestPtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//队列绑定</span>
+    <span class="token keyword">void</span> <span class="token function">onQueueBind</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> queueBindRequestPtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//队列解绑</span>
+    <span class="token keyword">void</span> <span class="token function">onQueueUnBind</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> queueUnBindRequestPtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//消息发布</span>
+    <span class="token keyword">void</span> <span class="token function">onBasicPublish</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> basicPublishRequestPtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//消息确认</span>
+    <span class="token keyword">void</span> <span class="token function">onBasicAck</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> basicAckRequestPtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//队列消息订阅</span>
+    <span class="token keyword">void</span> <span class="token function">onBasicConsume</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> basicConsumeRequestPtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">//队列消息取消订阅</span>
+    <span class="token keyword">void</span> <span class="token function">onBasicCancel</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> basicCancelRequestPtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">void</span> <span class="token function">onUnknownMessage</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> MessagePtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">private</span><span class="token operator">:</span>
+    muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>EventLoop _baseloop<span class="token punctuation">;</span>
+    muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpServer _server<span class="token punctuation">;</span><span class="token comment">//服务器对象</span>
+    ProtobufDispatcher _dispatcher<span class="token punctuation">;</span><span class="token comment">//请求分发器对象--要向其中注册请求处理函数</span>
+    ProtobufCodecPtr _codec<span class="token punctuation">;</span><span class="token comment">//protobuf协议处理器--针对收到的请求数据进行protobuf协议处理</span>
+    VirtualHost<span class="token double-colon punctuation">::</span>ptr _virtual_host<span class="token punctuation">;</span>
+    ConsumerManager<span class="token double-colon punctuation">::</span>ptr _consumer_manager<span class="token punctuation">;</span>
+    ConnectionManager<span class="token double-colon punctuation">::</span>ptr _connection_manager<span class="token punctuation">;</span>
+    threadpool<span class="token double-colon punctuation">::</span>ptr _threadpool<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_1136"></a>客户端模块</h2> 
+<p>在RabbitMQ当中，提供服务的是信道，因此在客户端的实现中，就弱化了对于客户端的概念，在这个项目当中并不会为用户展示出网络通信的概念，而是会用提供服务的方式来进行体现</p> 
+<p>其实总体来说，就是用一个接口来实现一个功能，接口内部完成向客户端请求的过程，对外不体现出客户端和服务端通信的概念，用户需要什么服务就调用什么接口即可</p> 
+<p>因此，对于客户端模块主要有以下的四大模块</p> 
+<ol><li>订阅者模块：表示这是一个消费者</li><li>信道模块：包含一些常用接口，消息发布确认等等</li><li>连接模块：它的作用是进行打开和关闭信道</li><li>异步线程模块：客户端连接的IO事件监控，推送来的消息进行异步处理线程</li></ol> 
+<p>基于上述的部分，就可以实现出下面的部分：</p> 
+<h3><a id="_1151"></a>订阅者模块</h3> 
+<p><strong>包含的描述信息</strong></p> 
+<ol><li>订阅者标识</li><li>订阅队列名</li><li>是否自动确认</li><li>收到消息的回调函数</li></ol> 
+<pre><code class="prism language-cpp"><span class="token keyword">struct</span> <span class="token class-name">Consumer</span>
+<span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">using</span> ptr <span class="token operator">=</span> shared_ptr<span class="token operator">&lt;</span>Consumer<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    string tag<span class="token punctuation">;</span>    <span class="token comment">//消费者标识</span>
+    string qname<span class="token punctuation">;</span>  <span class="token comment">//消费者订阅的队列名称</span>
+    <span class="token keyword">bool</span> auto_ack<span class="token punctuation">;</span>      <span class="token comment">//自动确认标志</span>
+    ConsumerCallback callback<span class="token punctuation">;</span>
+
+    <span class="token function">Consumer</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">lg</span><span class="token punctuation">(</span>Debug<span class="token punctuation">,</span> <span class="token string">"new Consumer: %p"</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token function">Consumer</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>ctag<span class="token punctuation">,</span> <span class="token keyword">const</span> string <span class="token operator">&amp;</span>queue_name<span class="token punctuation">,</span>  <span class="token keyword">bool</span> ack_flag<span class="token punctuation">,</span> <span class="token keyword">const</span> ConsumerCallback <span class="token operator">&amp;</span>cb<span class="token punctuation">)</span>
+        <span class="token operator">:</span> <span class="token function">tag</span><span class="token punctuation">(</span>ctag<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">qname</span><span class="token punctuation">(</span>queue_name<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">auto_ack</span><span class="token punctuation">(</span>ack_flag<span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">callback</span><span class="token punctuation">(</span>std<span class="token double-colon punctuation">::</span><span class="token function">move</span><span class="token punctuation">(</span>cb<span class="token punctuation">)</span><span class="token punctuation">)</span>
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">lg</span><span class="token punctuation">(</span>Debug<span class="token punctuation">,</span> <span class="token string">"new Consumer: %p"</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token operator">~</span><span class="token function">Consumer</span><span class="token punctuation">(</span><span class="token punctuation">)</span> 
+    <span class="token punctuation">{<!-- --></span>
+        <span class="token function">lg</span><span class="token punctuation">(</span>Debug<span class="token punctuation">,</span> <span class="token string">"del Consumer: %p"</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h3><a id="_1188"></a>信道管理模块</h3> 
+<p>在服务端中有信道，自然在客户端中也有信道的概念，并且功能和服务端基本一致，不管是说是客户端的Channel还是服务端的Channel都是为了给用户提供服务而存在，区别为，服务端是给客户端提供服务的，而客户端是给用户提供服务的，也可以理解为是客户端的Channel来进行接口的调用，向服务端发送对应的请求，获取请求的服务</p> 
+<p><strong>信道的描述信息</strong></p> 
+<ol><li>信道ID</li><li>信道关联的网络通信连接对象</li><li>Protubuf协议处理对象</li><li>信道关联的消费者</li><li>请求对应的响应信息队列</li><li>互斥锁条件变量</li></ol> 
+<p><strong>信道的组织操作</strong></p> 
+<ol><li>提供创建信道操作</li><li>提供删除信道操作</li><li>提供交换机声明</li><li>提供删除交换机操作</li><li>提供创建队列操作</li><li>提供删除队列操作</li><li>提供交换机-队列绑定操作</li><li>提供交换机-队列解除绑定操作</li><li>提供添加订阅操作</li><li>提供解除订阅操作</li><li>提供发布消息操作</li><li>提供确认消息操作</li></ol> 
+<p><strong>信道的管理操作</strong></p> 
+<ol><li>创建信道</li><li>查询信道</li><li>删除信道</li></ol> 
+<h3><a id="_1223"></a>异步工作线程池</h3> 
+<p>在客户端的角度有两个线程池需要处理：</p> 
+<ol><li>muduo库中的异步循环线程EventLoopThread</li><li>收到消息后进行异步处理的工作线程池</li></ol> 
+<h3><a id="_1230"></a>连接管理模块</h3> 
+<p>对于客户端来说，操作的思想就是先创建连接，之后通过连接创建信道，通过信道提供服务这一系列的流程，这个模块就是针对于muduo库客户端进行的二次封装，向用户提供了一个创建Channel的接口，创建信道后，借助信道来提供指定的服务</p> 
+<pre><code class="prism language-cpp"><span class="token keyword">class</span> <span class="token class-name">Connection</span> 
+<span class="token punctuation">{<!-- --></span>
+<span class="token keyword">public</span><span class="token operator">:</span>
+    <span class="token keyword">using</span> ptr <span class="token operator">=</span> shared_ptr<span class="token operator">&lt;</span>Connection<span class="token operator">&gt;</span><span class="token punctuation">;</span>
+    <span class="token comment">// 进行连接的创建实例</span>
+    <span class="token function">Connection</span><span class="token punctuation">(</span><span class="token keyword">const</span> string <span class="token operator">&amp;</span>sip<span class="token punctuation">,</span> <span class="token keyword">int</span> sport<span class="token punctuation">,</span> <span class="token keyword">const</span> AsyncWorker<span class="token double-colon punctuation">::</span>ptr <span class="token operator">&amp;</span>worker<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 打开信道</span>
+    Channel<span class="token double-colon punctuation">::</span>ptr <span class="token function">openChannel</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 关闭信道</span>
+    <span class="token keyword">void</span> <span class="token function">closeChannel</span><span class="token punctuation">(</span><span class="token keyword">const</span> Channel<span class="token double-colon punctuation">::</span>ptr <span class="token operator">&amp;</span>channel<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+<span class="token keyword">private</span><span class="token operator">:</span>
+    <span class="token comment">// 通用响应</span>
+    <span class="token keyword">void</span> <span class="token function">basicResponse</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> basicCommonResponsePtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 消息的推送</span>
+    <span class="token keyword">void</span> <span class="token function">consumeResponse</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> basicConsumeResponsePtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 未知的信息</span>
+    <span class="token keyword">void</span> <span class="token function">onUnknownMessage</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span> conn<span class="token punctuation">,</span> <span class="token keyword">const</span> MessagePtr<span class="token operator">&amp;</span> message<span class="token punctuation">,</span> muduo<span class="token double-colon punctuation">::</span>Timestamp<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token comment">// 连接</span>
+    <span class="token keyword">void</span> <span class="token function">onConnection</span><span class="token punctuation">(</span><span class="token keyword">const</span> muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr<span class="token operator">&amp;</span>conn<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token keyword">private</span><span class="token operator">:</span>
+    muduo<span class="token double-colon punctuation">::</span>CountDownLatch _latch<span class="token punctuation">;</span> <span class="token comment">//实现同步的</span>
+    muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpConnectionPtr _conn<span class="token punctuation">;</span> <span class="token comment">//客户端对应的连接</span>
+    muduo<span class="token double-colon punctuation">::</span>net<span class="token double-colon punctuation">::</span>TcpClient _client<span class="token punctuation">;</span> <span class="token comment">//客户端</span>
+    ProtobufDispatcher _dispatcher<span class="token punctuation">;</span> <span class="token comment">//请求分发器</span>
+    ProtobufCodecPtr _codec<span class="token punctuation">;</span> <span class="token comment">//协议处理器</span>
+    AsyncWorker<span class="token double-colon punctuation">::</span>ptr _worker<span class="token punctuation">;</span>
+    ChannelManager<span class="token double-colon punctuation">::</span>ptr _channel_manager<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="_1266"></a>结束</h2> 
+<p>至此，项目就基本结束了，但是这个项目毕竟是组件，实际的应用场景还是要结合上层的逻辑实际处理来完成，后续会更新它的使用场景项目</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/09988e13c152b894d936ff3b3ab590b3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【Python】conda镜像配置，.condarc文件详解，channel镜像</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e12ae8a509a43c6c2d94a54428b774c0/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">基于密度的聚类算法DBSCAN详解！</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

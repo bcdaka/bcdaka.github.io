@@ -1,0 +1,1393 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Stable Diffusion XL优化终极指南 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/fc039fa479b5a16ef09fb463c2316f82/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Stable Diffusion XL优化终极指南">
+  <meta property="og:description" content="如何在自己的显卡上获得SDXL的最佳质量和性能，以及如何选择适当的优化方法和工具，这一让GenAI用户倍感困惑的问题，业内一直没有一份清晰而详尽的评测报告可供参考。直到全栈开发者Félix San出手。
+在本文中，Félix介绍了相关SDXL优化的方法论、基础优化、Pipeline优化以及组件和参数优化。值得一提的是，基于实测表现，他高度评价并推荐了由硅基流动研发的图片/视频推理加速引擎OneDiff，“I just wanted to say that onediff is the fastest of them all! so great job!!（我只想说，OneDiff是所有图像推理引擎中最快的！非常棒的工作！！）”
+由于本文内容相当扎实，篇幅相对较长，不过，他很贴心地提醒读者，可以直接翻到末尾看结论。
+感谢Félix出色的专业评测报告。关于Stable Diffusion XL优化指南，读这一篇就够了。
+（本文由OneFlow编译发布，转载请联系授权。原文：https://www.felixsanz.dev/articles/ultimate-guide-to-optimizing-stable-diffusion-xl）
+本文将介绍Stable Diffusion XL优化，旨在尽可能减少内存使用的同时实现最优性能，从而加快图像生成速度。我们将能够仅用4GB内存生成SDXL图像，因此可以使用低端显卡。
+由于本文以脚本/开发为导向，因此将使用Hugging Face的diffusers库。即便如此，了解不同的优化技术及其相互作用将有助于我们在各种应用中充分利用这些技术，例如Automatic1111的Stable Diffusion webUI，尤其是ComfyUI。
+本文可能显得冗长而深奥，但你无需一次性阅读完毕。我的目标是让读者了解各种现存的优化技术，并教会你何时以及如何使用和组合它们，尽管其中一些技术本身就已经有了实质性的差异。
+你也可以直接跳到结论部分，其中包括所有测试的总结表格，以及针对追求质量、速度或内存受限条件下运行推理时的建议。
+作者 | Félix San
+OneFlow编译
+翻译｜宛子琳、杨婷
+1
+方法论 在测试中，我使用了RunPod平台，在Secure Cloud上生成了一个GPU Pod，配备了RTX 3090显卡。尽管Secure Cloud的费用略高于Community Cloud（$0.44/h vs $0.29/h），但对于测试来说，它似乎更合适。
+该实例生成于EU-CZ-1区域，拥有24GB的VRAM（GPU）、32 个vCPU（AMD EPYC 7H12）和125GB的RAM（CPU和RAM值并不重要）。至于模板，我使用RunPod PyTorch 2.1（runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04），这是一个基础模板，没有其他额外内容。因为我们将对其进行更改，所以PyTorch的版本并不重要，但该模板提供了Ubuntu、Python 3.10和CUDA 11.8作为标准配置。只需两次点击并等待30秒，我们就已经准备好所需的一切。
+如果你要在本地运行模型，请确保已安装Python 3.10和CUDA或等效平台（本文将使用CUDA）。
+所有测试都是在虚拟环境中进行的：
+创建虚拟环境
+python -m venv .venv 激活虚拟环境
+# Unix source .venv/bin/activate # Windows .">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-04-18T17:06:45+08:00">
+    <meta property="article:modified_time" content="2024-04-18T17:06:45+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Stable Diffusion XL优化终极指南</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <div id="js_content"> 
+ <p><img alt="20c8e490518eba1844b6981d16c557f0.jpeg" src="https://images2.imgbox.com/29/3c/SAVNaJyW_o.jpg"></p> 
+ <p style="text-align:left;"></p> 
+ <p style="text-align:justify;">如何在自己的显卡上获得SDXL的最佳质量和性能，以及如何选择适当的优化方法和工具，这一让GenAI用户倍感困惑的问题，业内一直没有一份清晰而详尽的评测报告可供参考。直到全栈开发者Félix San出手。</p> 
+ <p style="text-align:justify;">在本文中，Félix介绍了相关SDXL优化的方法论、基础优化、Pipeline优化以及组件和参数优化。值得一提的是，基于实测表现，他高度评价并推荐了由硅基流动研发的图片/视频推理加速引擎OneDiff，“I just wanted to say that onediff is the fastest of them all! so great job!!（我只想说，OneDiff是所有图像推理引擎中最快的！非常棒的工作！！）”</p> 
+ <p style="text-align:justify;">由于本文内容相当扎实，篇幅相对较长，不过，他很贴心地提醒读者，可以直接翻到末尾看结论。</p> 
+ <p style="text-align:justify;">感谢Félix出色的专业评测报告。关于Stable Diffusion XL优化指南，读这一篇就够了。</p> 
+ <p style="text-align:justify;">（本文由OneFlow编译发布，转载请联系授权。原文：https://www.felixsanz.dev/articles/ultimate-guide-to-optimizing-stable-diffusion-xl）</p> 
+ <p>本文将介绍Stable Diffusion XL优化，旨在尽可能减少内存使用的同时实现最优性能，从而加快图像生成速度。我们将能够仅用4GB内存生成SDXL图像，因此可以使用低端显卡。</p> 
+ <p>由于本文以脚本/开发为导向，因此将使用Hugging Face的diffusers库。即便如此，了解不同的优化技术及其相互作用将有助于我们在各种应用中充分利用这些技术，例如Automatic1111的Stable Diffusion webUI，尤其是ComfyUI。</p> 
+ <p>本文可能显得冗长而深奥，但你无需一次性阅读完毕。我的目标是让读者了解各种现存的优化技术，并教会你何时以及如何使用和组合它们，尽管其中一些技术本身就已经有了实质性的差异。</p> 
+ <p>你也可以直接跳到结论部分，其中包括所有测试的总结表格，以及针对追求质量、速度或内存受限条件下运行推理时的建议。</p> 
+ <p><strong>作者 | </strong><strong>Félix San</strong></p> 
+ <p><strong>OneFlo</strong><strong>w编译</strong></p> 
+ <p><strong>翻译｜宛子琳、杨婷</strong></p> 
+ <p style="text-align:center;"><strong>1</strong></p> 
+ <h3><strong>方法论</strong></h3> 
+ <p style="text-align:left;">在测试中，我使用了RunPod平台，在<strong>Secure Cloud</strong>上生成了一个<strong>GPU Pod</strong>，配备了<strong>RTX 3090</strong>显卡。尽管Secure Cloud的费用略高于Community Cloud（$0.44/h vs $0.29/h），但对于测试来说，它似乎更合适。</p> 
+ <p>该实例生成于EU-CZ-1区域，拥有24GB的VRAM（GPU）、32 个vCPU（AMD EPYC 7H12）和125GB的RAM（CPU和RAM值并不重要）。至于模板，我使用<strong>RunPod PyTorch 2.1</strong>（runpod/pytorch:2.1.0-py3.10-cuda11.8.0-devel-ubuntu22.04），这是一个基础模板，没有其他额外内容。因为我们将对其进行更改，所以PyTorch的版本并不重要，但该模板提供了<strong>Ubuntu、Python 3.10</strong>和<strong>CUDA 11.8</strong>作为标准配置。只需两次点击并等待30秒，我们就已经准备好所需的一切。</p> 
+ <blockquote> 
+  <p>如果你要在本地运行模型，请确保已安装Python 3.10和CUDA或等效平台（本文将使用CUDA）。</p> 
+ </blockquote> 
+ <p>所有测试都是在虚拟环境中进行的：</p> 
+ <p><strong>创建虚拟环境</strong></p> 
+ <pre class="has"><code class="language-css">python -m venv .venv</code></pre> 
+ <p><strong>激活虚拟环境</strong></p> 
+ <pre class="has"><code class="language-bash"># Unix
+source .venv/bin/activate
+# Windows
+.venv\Scripts\activate</code></pre> 
+ <p><strong>安装所需库：</strong></p> 
+ <pre class="has"><code class="language-sql">pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+pip install transformers accelerate diffusers</code></pre> 
+ <p><strong>测试包括生成4张图片，并比较不同的优化技术</strong>，其中一些我相信你以前可能没有见过。这些不同主题的图像是使用stabilityai/stable-diffusion-xl-base-1.0模型生成的，仅使用一个正向提示和一个固定种子。其余参数将保持默认值：无负向提示，1024x1024尺寸，CFG值为5，步数为50（采样步数）。</p> 
+ <p><strong>提示和种子</strong></p> 
+ <pre class="has"><code class="language-bash">queue = []
+# Photorealistic portrait (Portrait)
+queue.extend([{
+  'prompt': '3/4 shot, candid photograph of a beautiful 30 year old redhead woman with messy dark hair, peacefully sleeping in her bed, night, dark, light from window, dark shadows, masterpiece, uhd, moody',
+  'seed': 877866765,
+}])
+# Creative interior image (Interior)
+queue.extend([{
+  'prompt': 'futuristic living room with big windows, brown sofas, coffee table, plants, cyberpunk city, concept art, earthy colors',
+  'seed': 5567822456,
+}])
+# Macro photography (Macro)
+queue.extend([{
+  'prompt': 'macro shot of a bee collecting nectar from lavender flowers',
+  'seed': 2257899453,
+}])
+# Rendered 3D image (3D)
+queue.extend([{
+  'prompt': '3d rendered isometric fiji island beach, 3d tile, polygon, cartoony, mobile game',
+  'seed': 987867834,
+}])</code></pre> 
+ <p>以下是默认生成的图像：</p> 
+ <p><img alt="1936cfff4894405371ca9cd95a4da93a.jpeg" src="https://images2.imgbox.com/ff/1a/jCa5ZZEP_o.jpg"></p> 
+ <p><img alt="3672b06c18cb0da4d405cfc22f47b7e9.jpeg" src="https://images2.imgbox.com/58/0c/FK1s2zYi_o.jpg"></p> 
+ <p><img alt="0624e114d979a023dc68c577d4e2bbd7.jpeg" src="https://images2.imgbox.com/e1/a7/IAfwFc74_o.jpg"></p> 
+ <p><img alt="38d84550496088374b71eefbdd679684.jpeg" src="https://images2.imgbox.com/32/f1/PKwsxqLA_o.jpg"></p> 
+ <p style="text-align:center;"><strong>           ＜左右滑动查看更多图片＞</strong></p> 
+ <p>以下是对比测试的结果：</p> 
+ <ul><li> <p><strong>图像的感知质量</strong>（希望我是位优秀的评判者）。</p> </li><li> <p><strong>生成每张图像所需的时间</strong>，以及<strong>总编译时间</strong>（如果有的话）。</p> </li><li> <p><strong>使用的最大内存量</strong>。</p> </li></ul> 
+ <p>每项测试都运行了<strong>5</strong><strong>次</strong>，并使用<strong>平均值</strong>进行比较。</p> 
+ <p>时间测量采用了以下结构：</p> 
+ <pre class="has"><code class="language-python">from time import perf_counter
+# Import libraries
+# import ...
+
+
+# Define prompts
+# queue = []
+# queue.extend ...
+
+
+for i, generation in enumerate(queue, start=1):
+  # We start the counter
+  image_start = perf_counter()
+
+
+  # Generate and save image
+  # ...
+
+
+  # We stop the counter and save the result
+  generation['total_time'] = perf_counter() - image_start
+
+
+# Print the generation time of each image
+images_totals = ', '.join(map(lambda generation: str(round(generation['total_time'], 1)), queue))
+print('Image time:', images_totals)
+
+
+# Print the average time
+images_average = round(sum(generation['total_time'] for generation in queue) / len(queue), 1)
+print('Average image time:', images_average)</code></pre> 
+ <p>为了找出所使用的最大内存量，文件末尾包含以下语句：</p> 
+ <pre class="has"><code class="language-bash">max_memory = round(torch.cuda.max_memory_allocated(device='cuda') / 1000000000, 2)
+print('Max. memory used:', max_memory, 'GB')</code></pre> 
+ <p>每个测试中包含的内容都是所需的最小代码。虽然每个测试都有自己的结构，但代码大致如下。</p> 
+ <pre class="has"><code class="language-python"># Load the model on the graphics card
+pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+# Create a generator
+generator = torch.Generator(device='cuda')
+
+
+# Start a loop to process prompts one by one
+for i, generation in enumerate(queue, start=1):
+  # Assign the seed to the generator
+  generator.manual_seed(generation['seed'])
+
+
+  # Create the image
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+  ).images[0]
+
+
+  # Save the image
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>为了使测试更真实且减少耗时，所有测试都将使用FP16优化。</p> 
+ <blockquote> 
+  <p>其中许多测试使用了diffusers库中的pipeline，以便抽象复杂性并使代码更清晰简洁。当测试需要时，抽象级别会降低，但最终我们一直会使用该库提供的方法。另外，模型始终以safetensors格式加载，使用use_safetensors=True属性。</p> 
+ </blockquote> 
+ <p>文章中显示的图像尺寸最大为512x512，以便浏览，但你可以在新标签页/窗口中打开图像，查看其原始大小。</p> 
+ <p style="text-align:left;">你可以在GitHub上的文章存储库（<em>github.com/felixsanz/felixsanz_dev</em>）中找到所有单独的测试文件。</p> 
+ <p>让我们开始吧！</p> 
+ <p style="text-align:center;"><strong>2</strong></p> 
+ <h3><strong>基本优化</strong></h3> 
+ <h4><strong>CUDA和PyTorch版本</strong></h4> 
+ <p>我进行该测试是想知道使用<strong>CUDA 11.8</strong>或<strong>CUDA 12.1</strong>之间是否存在差异，以及在<strong>不同版本的PyTorch</strong>（始终在2.0以上）之间可能存在的差异。</p> 
+ <p>测试结果：</p> 
+ <p style="text-align:center;"><img alt="ab69da562e5698de17698d687e763bd1.png" src="https://images2.imgbox.com/b6/ee/CO9Hw22O_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>真令人失望，它们的性能没什么区别。差异是如此之小，也许如果我做更多的测试，这一差异可能会消失。</p> 
+ <p><strong>何时使用</strong>：关于该使用哪个版本，我仍然有一个理论：CUDA版本11.8发布的时间更长，理论上讲，该版本的库和应用程序性能会优于更新的版本。另一方面，对于PyTorch而言，版本越新，它应该提供的功能也就越多，包含的bug也就越少。因此，即使只是心理作用，我也会坚持选择<strong>CUDA 11.8</strong> + <strong>PyTorch 2.2.0</strong>。</p> 
+ <h4><strong>注意力机制</strong></h4> 
+ <p>过去，注意机制必须通过安装xFormers或FlashAttention等库来进行优化。</p> 
+ <p>如果你好奇为什么本文没有提及上述优化，那是因为已无必要。自PyTorch 2.0发布以来，通过各种实现（如上文中提到的这两种），以上算法的优化已经被集成到库里面。PyTorch会根据输入和正在使用的硬件进行适当的实现。</p> 
+ <h4><strong>FP16</strong></h4> 
+ <p>默认情况下，Stable Diffusion XL使用<strong>32 bit浮点格式（FP32）</strong>来表示其所处理和执行计算的数字。</p> 
+ <p>一个显而易见的问题：能否降低精度？答案是肯定的。通过使用参数torch_dtype=torch.float16，模型会以<strong>半精度浮点格式（FP16）</strong>加载到内存中。为了避免不断进行这种转换，我们可以直接下载以FP16格式分发的模型变体。只需包括variant='fp16'参数即可。</p> 
+ <pre class="has"><code class="language-python">pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>测试结果：</p> 
+ <p><img alt="9d8c64a9b029faab9ea4c2b49134a88a.png" src="https://images2.imgbox.com/13/a3/kCnfUpfz_o.png"></p> 
+ <p><img alt="4c494146803b7631a3aefdc8e90c434d.png" src="https://images2.imgbox.com/ae/74/6vABSXMp_o.png"></p> 
+ <p><img alt="3128932647070c677b61e58eed95b025.png" src="https://images2.imgbox.com/d3/dc/sx9j20ES_o.png"></p> 
+ <p><img alt="94e037ce9b8af7269c419254198da90c.png" src="https://images2.imgbox.com/21/67/4kSQ92AN_o.png"></p> 
+ <p style="text-align:center;"><strong>   ＜左右滑动查看更多图片＞</strong></p> 
+ <p style="text-align:center;"><img alt="438a80f070f413b2a1d61491def9733c.png" src="https://images2.imgbox.com/8e/cf/GLUfYaOK_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>通过使用半精度的数字，内存占用大幅降低，计算速度也显著提高。</p> 
+ <p>唯一的“不足”是生成图像质量的降低，<strong>但实际上几乎不可能看到任何区别</strong>，因为FP16足够了。</p> 
+ <p>此外，多亏了variant='fp16' 参数，我们节省了磁盘空间，<strong>因为该变体占用的空间只有原来的一半</strong>（5GB 而不是 10GB）。</p> 
+ <p><strong>何时使用</strong>：随时可用。</p> 
+ <h4><strong>TF32</strong></h4> 
+ <p>TensorFloat-32是介于FP32和FP16之间的一种格式，以使一些NVIDIA显卡（如A100或H100）来使用张量核心执行计算。它使用与FP32相同的bit来表示指数，使用与FP16相同的bit来表示小数部分。</p> 
+ <p style="text-align:center;"><img alt="4cc423bcf2dce7abea7090ea458dd832.png" src="https://images2.imgbox.com/d3/f2/AjAfhI7q_o.png"></p> 
+ <p>尽管在我们的测试平台（RTX 3090）中无法使用此格式进行计算，但出乎意料的是，有一些十分奇特的事发生。</p> 
+ <p>有两个属性用于激活此数字格式：torch.backends.cudnn.allow_tf32（默认情况下已激活）和torch.backends.cuda.matmul.allow_tf32（应手动激活）。第一个属性启用了由cuDNN执行的卷积操作中的TF32，而第二个属性则启用了矩阵乘法操作中的TF32。</p> 
+ <p>torch.backends.cudnn.allow_tf32属性默认启用，与你的显卡是什么无关，这样的设定有点奇怪。如果我们将该属性禁用，对其赋值False ，让我们看看会发生什么。</p> 
+ <pre class="has"><code class="language-python">torch.backends.cudnn.allow_tf32 = False
+# it's already disabled by default
+# torch.backends.cuda.matmul.allow_tf32 = False
+
+
+pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>另外，出于好奇，我还使用启用了TF32的NVIDIA A100显卡进行了测试。</p> 
+ <pre class="has"><code class="language-python"># it's already activated by default
+# torch.backends.cudnn.allow_tf32 = True
+torch.backends.cuda.matmul.allow_tf32 = True
+
+
+pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+).to('cuda')
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <blockquote> 
+  <p>权衡：要使用TF32，必须禁用FP16格式，因此我们无法使用 torch_dtype=torch.float16 或  variant='fp16' 。</p> 
+ </blockquote> 
+ <p>测试结果：</p> 
+ <p style="text-align:center;"><img alt="c4ed04decb93f102a19356d0f642f8c5.png" src="https://images2.imgbox.com/06/3c/5uVntveq_o.png"></p> 
+ <p><strong>结论</strong>：</p> 
+ <p>在使用RTX 3090 时，如果禁用 torch.backends.cudnn.allow_tf32 属性，<strong>内存占用会减少 7%</strong>。为什么呢？我不知道，原则上讲，我认为这可能是一个 bug，因为在不支持TF32的显卡上启用TF32毫无意义。</p> 
+ <p>使用A100显卡时，使用FP16能够显著减少推理时间和内存占用。就像在RTX 3090上一样，通过禁用torch.backends.cudnn.allow_tf32属性能够进一步减少内存占用。至于使用TF32，则介于FP32和FP16之间，它无法超越 FP16。</p> 
+ <p><strong>何时使用</strong>：对于不支持TF32的显卡，<strong>明智的选择显然是禁用默认启用的属性</strong>。在使用A100时，如果可以使用FP16，就不值得使用TF32。</p> 
+ <p style="text-align:center;"><strong>3</strong></p> 
+ <h3><strong>Pipeline优化</strong></h3> 
+ <p>以下优化方法改进了pipeline以改善某些方面的性能。</p> 
+ <p>前三个优化改进了何时将Stable Diffusion的不同组件加载到内存中，以便它们不会同时加载。以上技术实现了减少内存使用量的目的。</p> 
+ <p>当由于显卡和内存限制而需要这些优化时，请使用这些优化方法。如果在Linux上收到RuntimeError: CUDA out of memory报错，本节内容就是你所需要的。在Windows上，默认情况下存在虚拟内存（共享GPU内存），尽管很难出现这种报错，但推理时间会呈指数级增长，因此本节也是你需要关注的内容。</p> 
+ <p>至于本节中的最后三个优化方法，它们以不同方式优化pipeline的库，以尽可能减少推理时间。</p> 
+ <h4><strong>Model CPU Offload</strong></h4> 
+ <h4>Model CPU Offload优化方法来自 accelerate 库。当执行pipeline时，所有模型都会加载到内存中。通过这一优化，我们让pipeline每次只在需要时将模型移入内存。在pipeline的源代码（<em>https://github.com/huggingface/diffusers/blob/main/src/diffusers/pipelines/stable_diffusion_xl/pipeline_stable_diffusion_xl.py#L201</em>）中可以找到这个顺序，在Stable Diffusion XL的情况下，我们会找到以下代码：</h4> 
+ <pre class="has"><code class="language-ini">model_cpu_offload_seq = "text_encoder-&gt;text_encoder_2-&gt;image_encoder-&gt;unet-&gt;vae"</code></pre> 
+ <p>实现Model CPU Offload的代码非常简单：</p> 
+ <pre class="has"><code class="language-python">pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+pipe.enable_model_cpu_offload()
+generator = torch.Generator(device='cuda')
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+  ).images[0]
+  image.save(f'image_{i}.png')</code></pre> 
+ <p><strong>重要提醒：</strong>与其他优化不同，我们不应该使用 to('cuda') 将pipeline移至显卡上。当必要时，该优化会进行自动处理。（感谢Terrence Goh的提醒）</p> 
+ <pre class="has"><code class="language-makefile">pipe = AutoPipelineForText2Image.from_pretrained(
+  # ...
+).to('cuda')</code></pre> 
+ <p>测试结果：</p> 
+ <p style="text-align:center;"><img alt="e907cc0c2bc26eb3e202d10c1f5e554e.png" src="https://images2.imgbox.com/1f/41/odo3NDDX_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p><strong>使用这一技术将取决于我们拥有的显卡</strong>。如果显卡有6-8GB内存，这种优化将有所帮助，因为内存使用量正好减少了一半。</p> 
+ <p>至于推理时间，不会受到太大影响以至于成为一个问题。</p> 
+ <p><strong>何时使用</strong>：需要减少内存消耗时使用。由于消耗最多内存的组件是噪声预测器（U-Net），我们无法通过应用优化到VAE来进一步减少内存消耗。</p> 
+ <h4><strong>Sequential CPU Offload</strong></h4> 
+ <p>这种优化与Model CPU Offload类似，只是更加激进。它不是将整个组件移入内存，而是将每个组件的子模块移入内存。例如，该优化不是将整个U-Net模型移入内存，而是在使用时移动特定部分，以尽可能少地占用内存。这意味着，如果噪声预测器必须在50步内清理一个张量，那么子模块必须进出内存50次。</p> 
+ <p>同样只需添加一行代码：</p> 
+ <pre class="has"><code class="language-python">pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+)
+
+
+pipe.enable_sequential_cpu_offload()
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p><strong>重要提示：</strong>使用模型CPU卸载时，记得不要在pipeline中使用 to('cuda')。</p> 
+ <p>测试结果：</p> 
+ <p style="text-align:center;"><img alt="a359a2e64b157253aba62de295caa679.png" src="https://images2.imgbox.com/80/bb/DVgPLM3Y_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>该优化会考验我们的耐心。为了尽可能减少内存使用，推理时间会大幅增加。</p> 
+ <p><strong>何时使用</strong>：如果你需要不超过4GB的内存，那么将该优化与VAE FP16 fix或Tiny VAE一起使用是你的唯一选择，但如果你不需要这么做，那再好不过。</p> 
+ <h4></h4> 
+ <h4><strong>批处理</strong></h4> 
+ <p style="text-align:left;">该技术是从文章“How to implement Stable Diffusion（<em>https://www.felixsanz.dev/articles/how-to-implement-stable-diffusion</em>）”和“PixArt-α with less than 8GB VRAM（<em>https://www.felixsanz.dev/articles/pixart-a-with-less-than-8gb-vram）”</em>中获取的学习成果，我才了解到这一技术。通过这些文章，你会找到一些我将使用但不再解释的部分代码信息。</p> 
+ <p>这有关批处理中的执行组件。其背后的理念与“Model CPU Offload”技术类似，问题在于官方pipeline实现并未最大程度地优化内存使用。当你启动pipeline，只想获取文本编码器时却做不到。</p> 
+ <p>也就是说，我们应该能够这样做：</p> 
+ <pre class="has"><code class="language-properties">pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+  unet=None,
+  vae=None,
+).to('cuda')</code></pre> 
+ <p>但实际上却不能这样做。当你启动pipeline时，它需要访问U-Net模型配置 (self.unet.config.*)，以及VAE配置 (self.vae.config.*)。</p> 
+ <p>因此（并且无需创建分支），我们将手动使用文本编码器，而不依赖于pipeline。</p> 
+ <p>第一步是复制pipeline中的encode_prompt函数，并对其进行调整/简化。</p> 
+ <p>该函数负责对提示进行词元化并处理，以获取已转换的嵌入张量。你可以在“How to implement Stable Diffusion”中找到对这一过程的解释。</p> 
+ <pre class="has"><code class="language-properties">def encode_prompt(prompts, tokenizers, text_encoders):
+  embeddings_list = []
+  for prompt, tokenizer, text_encoder in zip(prompts, tokenizers, text_encoders):
+    cond_input = tokenizer(
+      prompt,
+      max_length=tokenizer.model_max_length,
+      padding='max_length',
+      truncation=True,
+      return_tensors='pt',
+    )
+    prompt_embeds = text_encoder(cond_input.input_ids.to('cuda'), output_hidden_states=True)
+    pooled_prompt_embeds = prompt_embeds[0]
+    embeddings_list.append(prompt_embeds.hidden_states[-2])
+  prompt_embeds = torch.concat(embeddings_list, dim=-1)
+  negative_prompt_embeds = torch.zeros_like(prompt_embeds)
+  negative_pooled_prompt_embeds = torch.zeros_like(pooled_prompt_embeds)
+  bs_embed, seq_len, _ = prompt_embeds.shape
+  prompt_embeds = prompt_embeds.repeat(1, 1, 1)
+  prompt_embeds = prompt_embeds.view(bs_embed * 1, seq_len, -1)
+  seq_len = negative_prompt_embeds.shape[1]
+  negative_prompt_embeds = negative_prompt_embeds.repeat(1, 1, 1)
+  negative_prompt_embeds = negative_prompt_embeds.view(1 * 1, seq_len, -1)
+  pooled_prompt_embeds = pooled_prompt_embeds.repeat(1, 1).view(bs_embed * 1, -1)
+  negative_pooled_prompt_embeds = negative_pooled_prompt_embeds.repeat(1, 1).view(bs_embed * 1, -1)
+  return prompt_embeds, negative_prompt_embeds, pooled_prompt_embeds, negative_pooled_prompt_embeds</code></pre> 
+ <p>接下来，我们实例化所需的所有组件和模型。我们还需要垃圾收集器 (gc)。</p> 
+ <pre class="has"><code class="language-python">import gc
+from transformers import CLIPTokenizer, CLIPTextModel, CLIPTextModelWithProjection
+# ...
+tokenizer = CLIPTokenizer.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  subfolder='tokenizer',
+)
+text_encoder = CLIPTextModel.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  subfolder='text_encoder',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+tokenizer_2 = CLIPTokenizer.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  subfolder='tokenizer_2',
+)
+text_encoder_2 = CLIPTextModelWithProjection.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  subfolder='text_encoder_2',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')</code></pre> 
+ <p>现在我们需要把这两部分组合起来。我们调用encode_prompt函数，并将相同的提示传递给第一个文本编码器和第二个文本编码器，并为其传递组件以供使用。</p> 
+ <pre class="has"><code class="language-cs">with torch.no_grad():
+  for generation in queue:
+    generation['embeddings'] = encode_prompt(
+      [generation['prompt'], generation['prompt']],
+      [tokenizer, tokenizer_2],
+      [text_encoder, text_encoder_2],
+    )</code></pre> 
+ <p>得到的张量作为结果存储在变量中以供后续使用。</p> 
+ <p>由于我们已经处理了所有提示，可以从内存中删除这些组件：</p> 
+ <pre class="has"><code class="language-css">del tokenizer, text_encoder, tokenizer_2, text_encoder_2
+gc.collect()
+torch.cuda.empty_cache()</code></pre> 
+ <p>现在，让我们创建一个只能访问U-Net和VAE的pipeline，无需实例化文本编码器来节省内存。</p> 
+ <pre class="has"><code class="language-properties">pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+  tokenizer=None,
+  text_encoder=None,
+  tokenizer_2=None,
+  text_encoder_2=None,
+).to('cuda')</code></pre> 
+ <p>预热：由于每个部分都是分开的，这个测试的预热有点复杂。尽管如此，我们将使用以下代码来预热U-Net模型：</p> 
+ <pre class="has"><code class="language-javascript">for generation in queue:
+  pipe(
+    prompt_embeds=generation['embeddings'][0],
+    negative_prompt_embeds =generation['embeddings'][1],
+    pooled_prompt_embeds=generation['embeddings'][2],
+    negative_pooled_prompt_embeds=generation['embeddings'][3],
+    output_type='latent',
+  )</code></pre> 
+ <p>我们使用pipeline来处理上一步保存的嵌入张量。请记住，在这一部分中，pipeline创建了一个充满噪音的张量，并在50步中对其进行清理（同时受到我们的嵌入向量的引导）。</p> 
+ <pre class="has"><code class="language-bash">generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  generation['latents'] = pipe(
+    prompt_embeds=generation['embeddings'][0],
+    negative_prompt_embeds =generation['embeddings'][1],
+    pooled_prompt_embeds=generation['embeddings'][2],
+    negative_pooled_prompt_embeds=generation['embeddings'][3],
+    generator=generator,
+    output_type='latent',
+  ).images # We do not access images[0], but the entire tensor</code></pre> 
+ <p>正如你所见，我们指示pipeline返回潜在空间中的张量（output_type='latent'）。如果不这样做，VAE将被加载到内存中以返回图像，这将导致两个模型同时占用资源。所以，就像我们之前删除文本编码器一样，我们先删除U-Net模型。</p> 
+ <pre class="has"><code class="language-css">del pipe.unet
+gc.collect()
+torch.cuda.empty_cache()</code></pre> 
+ <p>现在，我们将存储的无噪声张量转换为图像：</p> 
+ <pre class="has"><code class="language-sql">pipe.upcast_vae()
+
+
+with torch.no_grad():
+  for i, generation in enumerate(queue, start=1):
+    generation['latents'] = generation['latents'].to(next(iter(pipe.vae.post_quant_conv.parameters())).dtype)
+
+
+    image = pipe.vae.decode(
+      generation['latents'] / pipe.vae.config.scaling_factor,
+      return_dict=False,
+    )[0]
+
+
+    image = pipe.image_processor.postprocess(image, output_type='pil')[0]
+    image.save(f'image_{i}.png')</code></pre> 
+ <blockquote> 
+  <p>VAE（FP32）：在Stable Diffusion XL中，我们用pipe.upcast_vae()来保持VAE为FP32格式，因为在FP16下它无法正常工作。</p> 
+ </blockquote> 
+ <p>此循环负责将处于潜在空间的张量解码，以将其转换为图像空间。然后，使用 pipe.image_processor.postprocess方法，将其转换为图像并保存。</p> 
+ <p>测试结果：</p> 
+ <p style="text-align:center;"><img alt="241a7ae79d468398dd55376a88015482.png" src="https://images2.imgbox.com/41/04/gmZ3UgEk_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>这是我决定撰写这篇文章的原因之一。推理时间没有受到影响的情况下，<strong>我们将内存占用减少了一半</strong>。现在，<strong>甚至可以使用一张只有6GB内存的显卡来生成图像。</strong></p> 
+ <p><strong>何时使用</strong>：虽然Model CPU Offload只是多了一行代码，但推理时间有所增加。因此，如果你不介意写更多的代码，使用这种技术，你将拥有绝对的控制权，并获得更好的性能。你还可以使用专家去噪器集成（Ensemble of Expert Denoisers）方法添加精炼模型，而内存消耗将保持不变。</p> 
+ <h4><strong>Stable Fast</strong></h4> 
+ <p>Stable Fast项目能够通过一系列技术来加速任何扩散模型（如使用增强版本的torch.jit.trace 进行跟踪模型、xFormers、高级的Channels-last-memory-format实现等）。事实上，他们做得非常出色。</p> 
+ <p>他们承诺的结果是创下推理时间的记录，远远超过torch.compile API，并赶上TensorRT。最有趣的是，由于这些是运行时优化，就无需等待数十分钟进行初始编译。</p> 
+ <p>要集成Stable Fast，首先需要安装项目库，还有Triton，以及与我们正在使用的PyTorch版本兼容的xFormers版本。</p> 
+ <pre class="has"><code class="language-sql">pip install stable-fast
+pip install torch torchvision triton xformers --index-url https://download.pytorch.org/whl/cu118</code></pre> 
+ <p>然后，利用Stable Fast修改脚本以导入并启用这些库：</p> 
+ <pre class="has"><code class="language-python">import xformers
+import triton
+from sfast.compilers.diffusion_pipeline_compiler import (compile, CompilationConfig)
+
+
+# ...
+
+
+pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+config = CompilationConfig.Default()
+
+
+config.enable_xformers = True
+config.enable_triton = True
+config.enable_cuda_graph = True
+
+
+pipe = compile(pipe, config)
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>此外，该项目还因其简易性而脱颖而出，只需几行代码就能运行。现在让我们看看它是否符合期望。</p> 
+ <p>测试结果：</p> 
+ <p><img alt="697e98c988b0ee6e1cd835993db023bb.png" src="https://images2.imgbox.com/14/e3/XJT1ALO2_o.png"></p> 
+ <p><img alt="32e584d446746e80e84ee9d69dceb8db.png" src="https://images2.imgbox.com/2d/8c/ohO3dqX6_o.png"></p> 
+ <p><img alt="4dd891b47230ca8d034ba04d9127b35a.png" src="https://images2.imgbox.com/30/69/fRDaCdMv_o.png"></p> 
+ <p><img alt="7098f55ef2cb6d57e8a3b4d076b61ca7.png" src="https://images2.imgbox.com/2f/89/Axtp9jSB_o.png"></p> 
+ <p style="text-align:center;"><strong> ＜左右滑动查看更多图片＞</strong></p> 
+ <p style="text-align:center;"><img alt="c8f9fb94bd3f06bd1b2c482a6fe76571.png" src="https://images2.imgbox.com/1c/3b/yPenoGKb_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>它超出了期望值。你可以看到该项目背后的出色工作。</p> 
+ <p>最引人注目的是速度的提高。我们生成的第一张图像需要较长时间（19秒），但如果在这些测试中进行了预热，就不重要了。</p> 
+ <p>内存使用量有所增加，但仍然相当可控。</p> 
+ <p>至于视觉效果，构图略有变化。在某些图像中，某些元素的质量甚至已经提高，所以……眼见为实。</p> 
+ <p><strong>何时使用</strong>：我想说，随时都可用。</p> 
+ <h4><strong>DeepCache</strong></h4> 
+ <p>DeepCache项目称，要成为用户可以实施的最佳优化方法之一，几乎没有什么缺点，且易于添加。它利用缓存系统来重用高级别函数，并以更高效的方式更新低级别函数。</p> 
+ <p>首先，我们安装所需的库：</p> 
+ <pre class="has"><code class="language-nginx">pip install deepcache</code></pre> 
+ <p>然后，我们将以下代码集成到我们的pipeline中：</p> 
+ <pre class="has"><code class="language-python">from DeepCache import DeepCacheSDHelper
+
+
+# ...
+
+
+pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+helper = DeepCacheSDHelper(pipe=pipe)
+helper.set_params(cache_interval=3, cache_branch_id=0)
+helper.enable()
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>有两个参数可以修改，以实现更高的速度，尽管会在结果中引入更大的质量损失。</p> 
+ <blockquote> 
+  <p>cache_interval=3：指定缓存在几个步数后更新一次。</p> 
+  <p>cache_branch_id=0：指定神经网络负责执行缓存过程的分支（按降序排列，0 是第一层）。</p> 
+  <p>让我们看看使用默认推荐参数的结果。</p> 
+ </blockquote> 
+ <p>测试结果：</p> 
+ <p><img alt="af1abffb6400bc769a017523987218c0.png" src="https://images2.imgbox.com/ca/26/4dIf0vJZ_o.png"></p> 
+ <p><img alt="b3f034d4c974cf54c11aa56820d38f91.png" src="https://images2.imgbox.com/d2/23/W0QAUMSm_o.png"></p> 
+ <p><img alt="44fd59bb0019808ff69850f8ff9ec968.png" src="https://images2.imgbox.com/f0/88/cUqsqRVy_o.png"></p> 
+ <p><img alt="e5105e5926a43fff11eb6c6e1f577beb.png" src="https://images2.imgbox.com/fd/94/ge0ES0dy_o.png"></p> 
+ <p style="text-align:center;"><strong> ＜左右滑动查看更多图片＞</strong></p> 
+ <p style="text-align:center;"><img alt="0bb03bd5c6bdecde0dcd65254e44cf0c.png" src="https://images2.imgbox.com/bd/9e/aJFel88T_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>哇！在略微牺牲内存使用量的情况下，<strong>推理时间可以减少一半以上。</strong></p> 
+ <p>至于图像质量，你可能已经注意到变化很大，且不幸的是，变得更糟了。根据图像的风格，这一点可能更重要或不那么重要，但这个劣势的确存在（在物体图像中似乎并没有太大影响）。</p> 
+ <p>增加cache_branch_id的值似乎可以提供更高的视觉质量，尽管可能还不够。</p> 
+ <p><strong>何时使用</strong>：由于DeepCache大幅降低了推理时间，理所当然地会稍微降低图像质量。毫无疑问，当用于测试提示或参数时，这是一个非常有用的优化方法，不过，当你希望输出更好的图像质量时就不适用了。</p> 
+ <h4><strong>TensorRT</strong></h4> 
+ <p>TensorRT是NVIDIA推出的高性能推理优化器和运行时环境，旨在加速神经网络推理过程。</p> 
+ <p>但我们从一开始就遇到了问题。我们的测试使用的是diffusers库中的pipeline，目前还没有与Stable Diffusion XL兼容的TensorRT pipeline。针对Stable Diffusion 2.x（txt2img、img2img 或 inpainting）有社区提供的pipeline。我也看到一些针对Stable Diffusion 1.x的pipeline，但正如我所说的，都不适用于SDXL。</p> 
+ <p>另一方面，在HuggingFace上，我们可以找到官方的stabilityai/stable-diffusion-xl-1.0-tensorrt库。其中包含了使用TensorRT执行推理过程的说明，但不幸的是，它使用的脚本非常复杂，几乎不可能适应我们的测试。</p> 
+ <p>由于使用的脚本甚至没有相同的调度器（Euler），因此结果看起来会有很大不同。尽管如此，我尽可能地重用了许多数值，包括正向提示、无负向提示、相同的种子、相同的CFG值和相同的图像尺寸。</p> 
+ <p>以下是脚本使用说明，便于你进行深入研究：</p> 
+ <pre class="has"><code class="language-sql"># 克隆整个仓库或从此文件夹下载文件
+# https://github.com/rajeevsrao/TensorRT/tree/release/8.6/demo/Diffusion
+# 像往常一样创建并激活一个虚拟环境
+python -m venv .venv
+## Unix
+source .venv/bin/activate
+## Windows
+.venv\Scripts\activate
+# 安装所需的库
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+pip install transformers accelerate diffusers cuda-python nvtx onnx colored scipy polygraphy
+pip install --pre --extra-index-url https://pypi.nvidia.com tensorrt
+pip install --pre --extra-index-url https://pypi.ngc.nvidia.com onnx_graphsurgeon
+# 可以使用以下行验证 TensorRT 是否正确安装
+python -c "import tensorrt; print(tensorrt.__version__)"
+# 9.3.0.post12.dev1
+# 进行推理
+python demo_txt2img_xl.py "macro shot of a bee collecting nectar from lavender flowers"</code></pre> 
+ <p>测试结果：</p> 
+ <p><img alt="b2df0b441be3fa2cb26eff9a8a9380ad.png" src="https://images2.imgbox.com/bc/4d/q46UD4wO_o.png"></p> 
+ <p><img alt="ac5307630507df8a9901f4005c83e12c.png" src="https://images2.imgbox.com/08/7b/FbYj9QgR_o.png"></p> 
+ <p><img alt="715366ebbe6f625c902a0dbfeb32f867.png" src="https://images2.imgbox.com/19/d8/v9sAHZGW_o.png"></p> 
+ <p><img alt="7ca712ffcca2dd31a45e1b01ddc75549.png" src="https://images2.imgbox.com/b7/ab/sorWqyyL_o.png"></p> 
+ <p style="text-align:center;"><strong> ＜左右滑动查看更多图片＞</strong></p> 
+ <p style="text-align:center;"><img alt="004c01dbc456c19818f42a6ddd977c8a.png" src="https://images2.imgbox.com/5b/48/AmalITI6_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>经过模型准备后（约半个小时，仅在第一次准备时需要），推理过程似乎加速了很多，每张图像的生成时间仅为 8 秒，而未经优化的代码则需要14秒。我无法确定内存消耗情况，因为TensorRT使用了不同的API。</p> 
+ <p>至于图像的质量……在初始状态下看起来很惊艳。</p> 
+ <p><strong>何时使用</strong>：如果你可以将TensorRT集成到你的流程中，可以尝试一下。看起来是一个不错的优化方法，值得一试。</p> 
+ <p style="text-align:center;"><strong>4</strong></p> 
+ <h3><strong>组件优化</strong></h3> 
+ <p>这些优化措施对于 Stable Diffusion XL 的各个组件进行了修改，从而通过多种不同方式提升其性能。每个单独的改进可能只会带来一点点提升，但将它们全部结合起来，就会产生显著影响。</p> 
+ <h4><strong>torch.compile</strong></h4> 
+ <p>使用PyTorch 2或更高版本时，我们可以通过 [torch.compile] API（<em>https://pytorch.org/docs/stable/generated/torch.compile.html</em>） 对模型进行编译，以获得更好的性能。尽管编译需要一定时间，但后续调用将受益于额外的速度提升。</p> 
+ <p>在以前的PyTorch版本中，也可以通过torch.jit.trace API使用跟踪技术对模型进行编译。这种即时（just-in-time / JIT）运行时的编译方法不如新方法高效，因此我们可以忽略此API。</p> 
+ <p>在torch.compile方法中，mode参数接受以下值：default、reduce-overhead、max-autotune和max-autotune-no-cudagraphs。理论上它们是不同的，但我没有看到任何区别，因此我们将使用 reduce-overhead。</p> 
+ <p>Windows操作系统如下所示：</p> 
+ <pre class="has"><code class="language-cpp">RuntimeError: Windows not yet supported for torch.compile</code></pre> 
+ <pre class="has"><code class="language-python">pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+pipe.unet = torch.compile(pipe.unet, mode='reduce-overhead', fullgraph=True)
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>我们将评估编译模型所需的时间以及每一个连续生成所需的时间。</p> 
+ <p>测试结果：</p> 
+ <p style="text-align:center;"><img alt="184faf4a30ed143f63c90420ef7f84e5.png" src="https://images2.imgbox.com/19/dc/NNfU1rEX_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>一项能很快带来成效的简单优化。</p> 
+ <p><strong>何时使用</strong>：当生成的图片足够多，值得承受编译时间时就可以使用这种技术。</p> 
+ <h4><strong>OneDiff</strong></h4> 
+ <p>OneDiff是一个适配了Diffusers、ComfyUI和Stable Diffusion webUI应用框架的优化库。其名字的字面意思是：<strong>一行代码就能加速扩散模型。</strong></p> 
+ <p>该库采用了量化、注意力机制改进和模型编译等技术。</p> 
+ <p style="text-align:left;">安装该加速引擎只需添加几个库，但如果你使用的是其他CUDA版本，或者想要使用不同的安装方法，可以参考技术文档进行安装（<em>https://github.com/siliconflow/onediff#1-install-oneflow</em>）。</p> 
+ <pre class="has"><code class="language-sql">pip install --pre oneflow -f https://github.com/siliconflow/oneflow_releases/releases/expanded_assets/community_cu118
+
+
+pip install --pre onediff</code></pre> 
+ <p>如果你使用的是Windows或macOS，则必须自己编译该库。</p> 
+ <pre class="has"><code class="language-sql">RuntimeError: This package is a placeholder. Please install oneflow following the instructions in https://github.com/Oneflow-Inc/oneflow#install-oneflow</code></pre> 
+ <p>OneDiff创建者还提供了一个企业版，承诺额外提供20%的速度（甚至更多），尽管我无法验证这一点，而且他们也没有提供太多细节。</p> 
+ <p>类似于torch.compile，所需的代码只有一行，可以改变pipe.unet 的行为。</p> 
+ <pre class="has"><code class="language-python">import oneflow as flow
+from onediff.infer_compiler import oneflow_compile
+
+
+# ...
+
+
+pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+pipe.unet = oneflow_compile(pipe.unet)
+
+
+generator = torch.Generator(device='cuda')
+
+
+with flow.autocast('cuda'):
+  for i, generation in enumerate(queue, start=1):
+    generator.manual_seed(generation['seed'])
+
+
+    image = pipe(
+      prompt=generation['prompt'],
+      generator=generator,
+    ).images[0]
+
+
+    image.save(f'image_{i}.png')</code></pre> 
+ <p>让我们看看它是否符合预期。</p> 
+ <p>测试结果：</p> 
+ <p><img alt="be85256dacb5ad90dce0ad0d848e74b6.png" src="https://images2.imgbox.com/62/be/X8AFr4L1_o.png"></p> 
+ <p><img alt="d4554ca3a41dc654cc6f6075b9a4b331.png" src="https://images2.imgbox.com/8e/2d/dVVyizmk_o.png"></p> 
+ <p><img alt="aa9ba943a4721ce860f8b7605e7f2ab9.png" src="https://images2.imgbox.com/a7/2b/yskBxs4B_o.png"></p> 
+ <p><img alt="58210fb203f60bfe14ef1983f9acac08.png" src="https://images2.imgbox.com/f4/b6/5v3Ij2oG_o.png"></p> 
+ <p style="text-align:center;"><strong> ＜左右滑动查看更多图片＞</strong></p> 
+ <p style="text-align:center;"><img alt="60f8a93b90192b1ff8b81d4a20d7cc0f.png" src="https://images2.imgbox.com/8f/45/QyxSlVgU_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>OneDiff稍微改变了图像结构，<strong>但这是一个有利的改变</strong>。在interior图像中，我们可以看到有一个bug通过变成一个阴影的方式被修复了，。</p> 
+ <p><strong>编译时间非常短</strong>，比torch.compile快得多。</p> 
+ <p>OneDiff使推理时间缩短了45%，超过了所有竞品的优化速度（Stable Fast、TensorRT 和 torch.compile）。</p> 
+ <p>令人惊讶的是（与Stable Fast不同），<strong>其内存使用量并没有增加。</strong></p> 
+ <p><strong>何时使用</strong>：建议一直使用。它提高了生成结果的视觉质量，推理时间几乎减半，唯一的代价是在编译时需要稍微等待。<strong>非常漂亮的工作！</strong></p> 
+ <h4><strong>Channels-last内存格式</strong></h4> 
+ <p>Channels-last内存格式组织数据，用以将颜色通道（color channel）储存在张量的最后一个纬度中。</p> 
+ <p>默认情况下，张量采用的是NCHW格式，对应着以下四个维度：</p> 
+ <ol><li> <p>N（数量）：同时生成多少张图像（批大小）。</p> </li><li> <p>C（通道）：图像具有多少个通道。</p> </li><li> <p>H（高度）：图像的高度（以像素为单位）。</p> </li><li> <p>W（宽度）：图像的宽度（以像素为单位）。</p> </li></ol> 
+ <p>相比之下，使用这种技术，以NHWC格式将张量数据重新排序，将通道数放在最后。</p> 
+ <pre class="has"><code class="language-python">pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+pipe.unet.to(memory_format=torch.channels_last)
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>使用以下命令，检查张量是否已重新排序（将其放置在重排序之前和之后）：</p> 
+ <pre class="has"><code class="language-css">print(pipe.unet.conv_out.state_dict()['weight'].stride())</code></pre> 
+ <p>虽然channels-last内存格式在某些情况下可能会提高效率并减少内存使用，但它不兼容某些神经网络，甚至可能会降低性能。因此，我们可以将其排除。</p> 
+ <p>测试结果：</p> 
+ <p style="text-align:center;"><img alt="37705d4aa108b38b11984dac08d9c6e0.png" src="https://images2.imgbox.com/7c/0b/nIKqjYvq_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>在Stable Diffusion XL中，U-Net模型似乎并没有从这种优化中受益，但即使这样，知识也不会占用太多空间对吧？</p> 
+ <p><strong>何时使用</strong>：永远别用。</p> 
+ <h4><strong>FreeU</strong></h4> 
+ <p>FreeU是第一个也是唯一一个不改善推理时间或内存使用情况，而改善图像结果质量的优化技术。</p> 
+ <p>这种技术平衡了U-Net架构中两个关键元素的贡献：skip connections（跳跃连接，引入高频细节）和backbone feature maps（主干特征图，提供语义信息）。</p> 
+ <p>换句话说，FreeU 抵消了图像中不自然细节的引入，提供了更真实的视觉结果。</p> 
+ <pre class="has"><code class="language-python">pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+pipe.enable_freeu(s1=0.9, s2=0.2, b1=1.3, b2=1.4)
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>你可以调整这些值，尽管它们是Stable Diffusion XL的推荐值。</p> 
+ <p style="text-align:left;">如需要更多信息，可查看项目：https://github.com/ChenyangSi/FreeU#parameters</p> 
+ <p>测试结果：</p> 
+ <p><img alt="5fc85eaf1e2b6137ff80c04f5b01f3d5.png" src="https://images2.imgbox.com/4a/fc/3yGnZg1U_o.png"></p> 
+ <p><img alt="56faa738e46b3a0743ee51bab61c0e33.png" src="https://images2.imgbox.com/37/3f/45b9lfEx_o.png"></p> 
+ <p><img alt="904008195d1d6b060067357d864ce166.png" src="https://images2.imgbox.com/99/e0/fT9IvM6t_o.png"></p> 
+ <p><img alt="12de05a7e5127ba8882cf45f31fd42ad.png" src="https://images2.imgbox.com/01/da/WA8cbOhp_o.png"></p> 
+ <p style="text-align:center;"><strong> ＜左右滑动查看更多图片＞</strong></p> 
+ <p><strong>结论：</strong></p> 
+ <p>我之前从未尝试过FreeU，但这个结果给我留下了深刻印象。尽管图片的结构与原始输入有所不同，但我认为它们更忠实于提示，并专注于提供最佳视觉质量，而不会陷入细节的琐碎之中。</p> 
+ <p>同时我发现这个技术也有一个问题，即图片失去了一些连贯性。例如，沙发顶部有一盆植物，蜜蜂有三只翅膀。这表明尽管图片视觉上引人注目，但可能缺乏一定的逻辑一致性或现实感。</p> 
+ <p><strong>何时使用</strong>：当我们想要获得更具创意、更高视觉质量的结果时使用（尽管这也取决于我们所追求的图像风格）。</p> 
+ <h4><strong>VAE FP16 fix</strong></h4> 
+ <p>正如在批处理优化中看到的，Stable Diffusion XL中默认包含的VAE模型无法在FP16格式下运行。在解码图像之前，pipeline会执行一个方式，以使强制模型以FP32格式工作 (pipe.upcast_vae())。而在之前的FP16优化中，将模型以FP32格式运行是一种不必要的资源浪费。</p> 
+ <p>用户madebyollin（也是TAESD的创作者，稍后我们将看到）已经创建了这个模型的一个修复版，使其可以在FP16格式下运行。</p> 
+ <p style="text-align:left;">我们只需导入这个VAE并替换原始版本：（https://huggingface.co/madebyollin/sdxl-vae-fp16-fix）</p> 
+ <pre class="has"><code class="language-python">from diffusers import AutoPipelineForText2Image, AutoencoderKL
+
+
+# ...
+
+
+vae = AutoencoderKL.from_pretrained(
+  'madebyollin/sdxl-vae-fp16-fix',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+).to('cuda')
+
+
+pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+  vae=vae,
+).to('cuda')
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>测试结果：</p> 
+ <p><img alt="564583f26462853595025ea697deca93.png" src="https://images2.imgbox.com/5a/15/kLaBzZIq_o.png"></p> 
+ <p><img alt="665bf971dc250deeaaa13b650901247c.png" src="https://images2.imgbox.com/32/22/Bmgi2eQ5_o.png"></p> 
+ <p><img alt="f9ab1a55ff2ebcee2c4a47933d218be8.png" src="https://images2.imgbox.com/f5/56/XisImXUr_o.png"></p> 
+ <p><img alt="ada5069b2ba4eef1b6565a64f151bef4.png" src="https://images2.imgbox.com/c6/03/P23MojMS_o.png"></p> 
+ <p style="text-align:center;"><strong> ＜左右滑动查看更多图片＞</strong></p> 
+ <p style="text-align:center;"><img alt="3901553d3ec1ac1e9c0db05efe724761.png" src="https://images2.imgbox.com/5a/98/kaSDEwED_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>图像视觉质量与原始模型几乎相同，没有质量损失。</p> 
+ <p>内存使用量减少了将近15%，对于这一简单改进来说是相当不错的结果。</p> 
+ <p style="text-align:left;">何时使用：可以一直使用，除非你更倾向于使用Tiny VAE优化（<em>https://www.felixsanz.dev/articles/ultimate-guide-to-optimizing-stable-diffusion-xl#tiny-vae</em>）。</p> 
+ <h4><strong>VAE slicing</strong></h4> 
+ <p>当同时生成多张图像时（增加批大小），VAE会同时解码所有张量（并行）。这会大大增加内存使用量。为避免这种情况，可以使用VAE切片技术逐个解码张量（串行）。这与我们在批处理优化中手动操作的方式几乎相同。</p> 
+ <p>举例来说，无论使用的批大小为1、2、8还是32，VAE的内存消耗都会保持不变，与此相对应的是，会有一个几乎不可察觉的少量时间损失。</p> 
+ <pre class="has"><code class="language-python">pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+pipe.enable_vae_slicing()
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>批大小为1时，这一优化技术没有任何作用。由于在测试中使用的批处理大小为1，因此我们将跳过测试结果，直接给出结论。</p> 
+ <p><strong>结论：</strong></p> 
+ <p>这一优化技术试图在增加批大小时减少内存使用，而批大小的增加恰恰是导致内存使用增加的最关键因素。因此，这种优化技术本身存在矛盾。</p> 
+ <p><strong>何时使用</strong>：建议仅在有一个完善的流程，同时生成多张图像，并且VAE执行是瓶颈时使用这种优化技术。换句话说，适合使用这种技术的情况很少。</p> 
+ <h4><strong>VAE tiling</strong></h4> 
+ <p>当生成高分辨率图像（如4K/8K）时，VAE往往成为瓶颈。解码这么大尺寸的图像不仅需要花费几分钟时间，而且还会消耗大量内存。经常会遇到如下问题：torch.cuda.OutOfMemoryError: CUDA out of memory.</p> 
+ <p>通过这种优化技术，张量被分割成几部分（就像它们是切片一样），然后逐个解码，最后再重新连接起来形成图像。这样，VAE不必一次性解码所有内容。</p> 
+ <pre class="has"><code class="language-properties">pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+pipe.enable_vae_tiling()
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+    height=4096,
+    width=4096,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>因为图像被分割成了多个部分，然后再重新连接起来，所以连接处可能会出现一些微小的颜色差异或瑕疵。然而，通常情况下这种差异都不太常见或不容易被察觉。</p> 
+ <p>测试结果：</p> 
+ <p style="text-align:center;"><img alt="862951e0fe1880394007114396063b59.png" src="https://images2.imgbox.com/52/ed/MV8OTf5Q_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>这种优化技术相对简单易懂：如果需要生成非常高分辨率的图像，而你的显卡内存不足，这将是实现这一目标的唯一选择。</p> 
+ <p><strong>何时使用</strong>：永远不要使用这种优化技术。非常高分辨率的图像存在缺陷，因为Stable Diffusion模型并没有针对这种任务进行训练。如果需要增加分辨率，应该使用一个上采样器（upscaler）。</p> 
+ <h4><strong>Tiny VAE</strong></h4> 
+ <p>在Stable Diffusion XL中使用了一个拥有5000万个参数的32 bit VAE。由于这个组件是可互换的，我们将使用一个名为TAESD的VAE。这个小模型只有100万个参数，是原始VAE的精简版，同时能够在16 bit格式下运行。</p> 
+ <pre class="has"><code class="language-python">from diffusers import AutoPipelineForText2Image, AutoencoderTiny
+
+
+# ...
+
+
+vae = AutoencoderTiny.from_pretrained(
+  'madebyollin/taesdxl',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+).to('cuda')
+
+
+pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+  vae=vae,
+).to('cuda')
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>牺牲图像质量，以获取更快的速度和更少的内存使用是否值得？</p> 
+ <p>测试结果：</p> 
+ <p><img alt="62380a4506a2a9c79c7d7e067cce0fdb.png" src="https://images2.imgbox.com/b7/dd/eWwchViH_o.png"></p> 
+ <p><img alt="4293dfa16f30562ef6371a405992b00e.png" src="https://images2.imgbox.com/b3/aa/tDd55u5k_o.png"></p> 
+ <p><img alt="a343681f9f57820173b7a51cce158fbb.png" src="https://images2.imgbox.com/1c/75/nmVwBKKR_o.png"></p> 
+ <p><img alt="4d1a4be82dbafb5dd57bdbb924ec663d.png" src="https://images2.imgbox.com/18/de/DudKNbYu_o.png"></p> 
+ <p style="text-align:center;"><strong> ＜左右滑动查看更多图片＞</strong></p> 
+ <p style="text-align:center;"><img alt="eadffa4694efbba35c241669c43517f8.png" src="https://images2.imgbox.com/89/fe/jzVNF49Q_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>由于Tiny VAE是一个更小的模型，并且能够在16 bit格式下运行，因此内存使用量大幅减少。</p> 
+ <p>Tiny VAE并没有显著减少推理时间。</p> 
+ <p>尽管图像略微改变，尤其是似乎增加了一些对比度和纹理，但我认为这种变化不明显。因此，图像质量的损失是可以接受的。</p> 
+ <p><strong>何时使用</strong>：如果你需要一直减少内存使用量，那么建议始终使用Tiny VAE。有了这个模型，甚至可以在不采用其他优化策略的情况下，用8GB显卡运行推理过程。即使不需要减少内存使用，使用Tiny VAE也是一个不错的选择，因为它似乎没有负面影响。</p> 
+ <p style="text-align:center;"><strong>5</strong></p> 
+ <h3><strong>参数优化</strong></h3> 
+ <p>在这个类别中，我们将以牺牲图像质量为代价，修改一些参数以获得额外速度，希望这种牺牲不会太大。</p> 
+ <blockquote> 
+  <p>Stable Diffusion XL使用Euler作为默认采样器。虽然可能有更快的采样器，但Euler本身已经属于快速采样器范畴，因此将Euler替换为其他采样器并不会带来显著的优化效果。</p> 
+ </blockquote> 
+ <h4><strong>步数（Step）</strong></h4> 
+ <p>采用默认SDXL，通过50步来清除一个充满噪音的张量。步数越多，噪音清除效果就越好，但推理时间也会相应增加。使用num_inference_steps参数，我们可以指定想要使用的步数。</p> 
+ <p>我们将分别使用30、25、20和15步，来生成一系列图像。我们将使用默认值（50）作为比较基准。</p> 
+ <pre class="has"><code class="language-python">pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    num_inference_steps=30,
+    generator=generator,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>尽管减少步数可以缩短推理时间，但我们更感兴趣的是保持在一定范围的步数，以尽可能地维持图像的质量和结构。如果我们的图像质量大幅下降，就算节省了大量时间也没有意义。接下来我们来探索步数数量的极限。</p> 
+ <p>测试结果：</p> 
+ <p><img alt="704aa23a541b105609142ca9880c7b7c.png" src="https://images2.imgbox.com/b6/d3/0zOiUH1h_o.png"></p> 
+ <p><img alt="fc6dd6c50a0b7fd08ea9e69058e81316.png" src="https://images2.imgbox.com/72/b5/kyKWAH26_o.png"></p> 
+ <p><img alt="284a6ee387ffc7c2ab7791994073b601.png" src="https://images2.imgbox.com/f7/a5/po4BPkY8_o.png"></p> 
+ <p><img alt="5bb190c3f747788752b853c3ca7141fe.png" src="https://images2.imgbox.com/ba/7a/6xTH4d19_o.png"></p> 
+ <p><img alt="cdf7aa835d2cc126760c0ca0ea4e6f19.png" src="https://images2.imgbox.com/05/a8/Vsch4eK9_o.png"></p> 
+ <p><img alt="67d4ded0b7c265c94df2e8de85489177.png" src="https://images2.imgbox.com/08/8b/KFtrTQkR_o.png"></p> 
+ <p style="text-align:center;"><strong> ＜左右滑动查看更多图片＞</strong></p> 
+ <p style="text-align:center;"><img alt="012ee7e0cbc29a93402c9fdad16c641d.png" src="https://images2.imgbox.com/58/9d/w8dUye6m_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>肖像照片（Portrait）：在15和20步时，质量尚可，但结构有所不同。25步及以上时，我发现图像质量和结构相当不错。</p> 
+ <p>室内照片（Interior）：在15步时，仍然没有达到期望的结构。在20步时，结果相当不错，但某些元素仍有缺失。因此，我认为至少需要25步。</p> 
+ <p>微距摄影（Macro）：在微距摄影中，即使只有15步，细节水平也相当惊人。我不知道应该选哪个步数，因为所有选项都是有效和正确的。</p> 
+ <p>3D图像：在3D风格的图像中，少量步数会导致产生大量缺陷，甚至在某些区域会出现模糊。尽管30步的图像还不错，但我更倾向于使用50步（或者40步）的结果。</p> 
+ <p>总的来说，根据生成的图像风格，可以选择使用更多或更少的步数。但是，在25-30步时可以获得相当不错的质量。这样做可以将推理时间缩短约40％，是一种相当显著的提升。</p> 
+ <p><strong>何时使用</strong>：当测试提示或调整参数，并且想要快速生成图像时，这是一个很好的优化方法。调试完所有参数和提示后，可以增加步数，以获取最高质量的图像。根据具体的使用情况，可以选择是否永久采用这种优化方法。</p> 
+ <h4><strong>禁用 CFG</strong></h4> 
+ <p>正如文章“How Stable Diffusion works”所说，无分类器引导（classifier-free guidance）技术负责调整噪音预测器与特定标签之间的距离。</p> 
+ <p>举例来说，假设我们有一个关于汽车的正向提示和一个关于玩具的负向提示。CFG技术可以调整噪音预测器与“汽车”标签之间的距离，使其更接近“汽车”标签所代表的概念，同时远离“玩具”标签所代表的概念。这样做可以确保生成的图像更符合“汽车”的特征，而不受“玩具”的影响。这是一种非常有效的控制条件图像生成法。</p> 
+ <p style="text-align:left;">“How to implement Stable Diffusion（<em>https://www.felixsanz.dev/articles/how-to-implement-stable-diffusion</em>）”一文介绍了如何实现CFG技术，并且说明了它引入需要复制张量的需求：</p> 
+ <pre class="has"><code class="language-ini"># As we're using classifier-free guidance, we duplicate the tensor to avoid making two passes
+# One pass will be for the conditioned values and another for the unconditioned values
+latent_model_input = torch.cat([latents] * 2)</code></pre> 
+ <p>这意味着噪音预测器在每步上需要花费两倍的时间。</p> 
+ <p>在生成图像的早期阶段，启用CFG技术对于获得质量良好且符合我们提示的图像至关重要。一旦噪音预测器成功地开始产生符合预期的图像，我们就可能不再需要继续使用CFG技术了。在这一优化方法中，我们将探索在图像生成过程中停用CFG技术的影响。</p> 
+ <p>代码很简单，我们创建了一个函数，负责在步数达到指定值后禁用CFG技术（pipe._guidance_scale = 0.0）。此外，停止使用CFG技术后，将不再需要复制张量。</p> 
+ <pre class="has"><code class="language-python">pipe = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+def callback_dynamic_cfg(pipe, step_index, timestep, callback_kwargs):
+  if step_index == int(pipe.num_timesteps * 0.5):
+    callback_kwargs['prompt_embeds'] = callback_kwargs['prompt_embeds'].chunk(2)[-1]
+    callback_kwargs['add_text_embeds'] = callback_kwargs['add_text_embeds'].chunk(2)[-1]
+    callback_kwargs['add_time_ids'] = callback_kwargs['add_time_ids'].chunk(2)[-1]
+    pipe._guidance_scale = 0.0
+
+
+  return callback_kwargs
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = pipe(
+    prompt=generation['prompt'],
+    generator=generator,
+    callback_on_step_end=callback_dynamic_cfg,
+    callback_on_step_end_tensor_inputs=['prompt_embeds', 'add_text_embeds', 'add_time_ids'],
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>由于callback_on_step_end参数，在每一步结束时这个函数作为回调函数被执行。我们需要使用callback_on_step_end_tensor_inputs参数，确定我们将在回调函数内部修改的张量。</p> 
+ <p>我们来看看在图像生成过程的最后25%和后半部分（50%），停用CFG技术会发生什么。</p> 
+ <p>测试结果：</p> 
+ <p><img alt="f5adff41d5c9df2fae9acf719c9f31f5.png" src="https://images2.imgbox.com/e2/bf/CL9f574X_o.png"></p> 
+ <p><img alt="4eeb40eb2f796d0544e3e706040ecbc6.png" src="https://images2.imgbox.com/b8/62/tRiWvOQh_o.png"></p> 
+ <p><img alt="0072f8850fc5f13d2b0e1c60c749c88b.png" src="https://images2.imgbox.com/88/65/qHlqN78u_o.png"></p> 
+ <p style="text-align:center;"><strong> ＜左右滑动查看更多图片＞</strong></p> 
+ <p style="text-align:center;"><img alt="a86c5404b1c9579f7074783db2f6605b.png" src="https://images2.imgbox.com/1d/bb/WPrex1n2_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>正如我们所预期的，<strong>在50%的情况下停用CFG，可以使每张图像的推理时间减少25%</strong>（并非总体时间，因为模型加载时间也计入其中）。这是因为如果使用CFG执行50步操作，模型实际上清理了100个张量。而使用这种优化方法，模型在前25步清理了50个张量，在接下来的25步中清理了一半（25个张量）。所以，75/100相当于跳过了25%的工作量。在停用CFG达到75%的情况下，每张图像的推理时间减少12.5%。</p> 
+ <p>图像质量似乎有所下降但不太明显。<strong>这可能是因为没有使用负向提示</strong>，而使用CFG的主要优势就在于能够应用负向提示。使用更好的提示肯定会提高质量，但在停用CFG达到75%的情况下，这种影响几乎可以忽略不计。</p> 
+ <p><strong>何时使用</strong>：当你对图像生成速度要求较高，且能够接受一定程度的质量损失，那么可以积极采用这种优化方法（例如，用于测试提示或参数时）。通过稍后停用CFG，可以提高速度而不牺牲质量。</p> 
+ <h4><strong>细化模型（Refiner）</strong></h4> 
+ <p>那么细化模型呢？虽然我们已经优化了基础模型，但Stable Diffusion XL的一个主要优势是，它还有一个专门细化细节的模型。这个模型显著提高了生成的图像质量。</p> 
+ <p>默认情况下，基础模型使用11.24 GB的内存。当同时使用细化模型时，内存需求增加到了17.38 GB。但要记住，由于它具有相同的组件（除了第一个文本编码器），大多数优化也可以应用于这个模型。</p> 
+ <p>在使用细化模型进行预热时，因为需要预热两个不同的模型，所以会有些复杂。为实现这一点，我们首先从基础模型获取结果，然后将其通过细化模型进行处理：</p> 
+ <pre class="has"><code class="language-cs">for generation in queue:
+  image = base(generation['prompt'], output_type='latent').images
+  refiner(generation['prompt'], image=image)</code></pre> 
+ <p>细化模型有两种不同的使用方式，我们将分别讨论。</p> 
+ <h5><strong>专家去噪器集成（Ensemble of Expert Denoisers）</strong></h5> 
+ <p>专家去噪器集成是指图像生成的方法，其过程从基础模型开始，最后使用细化模型结束。在整个过程中，不会生成任何图像，而是基础模型在指定数量的步数（总步数的一部分）内清理张量，然后将张量传递给细化模型以完成处理。</p> 
+ <p>可以这样说，它们共同工作以生成结果（基础模型+细化器）。</p> 
+ <p style="text-align:center;"><img alt="b86b9b6827b3f33bbfa7a981ea1677a2.png" src="https://images2.imgbox.com/7d/a1/Dju3Fid1_o.png"></p> 
+ <p>就代码而言，基础模型在使用denoising_end=0.8参数时，会在处理过程的80%处停止其工作，并且通过 output_type='latent' 返回张量。</p> 
+ <p>细化模型通过image参数接收到这个张量（讽刺的是，它并不是一个图像）。然后，细化模型开始清理这个张量，通过参数denoising_start=0.8假设已经完成了80%的工作。我们再次指定了整个处理过程的步数 (num_inference_steps)，以便它计算剩余需要清理的步数。也就是说，如果我们使用50步，并且在80%处进行了变化，那么基础模型将会在前40步清理张量，细化模型将为剩余的10步进行精细化处理，以完善剩余细节。</p> 
+ <pre class="has"><code class="language-properties">from diffusers import AutoPipelineForText2Image, AutoPipelineForImage2Image
+
+
+# ...
+
+
+base = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+refiner = AutoPipelineForImage2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-refiner-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = base(
+    prompt=generation['prompt'],
+    generator=generator,
+    num_inference_steps=50,
+    denoising_end=0.8,
+    output_type='latent',
+  ).images # Remember that here we do not access images[0], but the entire tensor
+
+
+  image = refiner(
+    prompt=generation['prompt'],
+    generator=generator,
+    num_inference_steps=50,
+    denoising_start=0.8,
+    image=image,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>我们将在50、40、30和20步时生成图像，并在处理到0.9和0.8时切换到细化模型。</p> 
+ <p>作为参考，我们还将包括在所有比较中作为基础的图像（只使用基础模型，共50步）。</p> 
+ <p>测试结果：</p> 
+ <p><img alt="29e2c90d1628db4becdefa272d2aa051.png" src="https://images2.imgbox.com/1a/2f/DoRCPxJ5_o.png"></p> 
+ <p><img alt="a81cd1bb5a40872246b59507f1ae8f43.png" src="https://images2.imgbox.com/37/f3/RZTT3n1D_o.png"></p> 
+ <p><img alt="4c431d94f1ec98c6185690307e0f590d.png" src="https://images2.imgbox.com/5a/eb/PBObpryF_o.png"></p> 
+ <p><img alt="96de8b65f67bdd5480914d9e0f84848b.png" src="https://images2.imgbox.com/2f/55/Xuxwjbpl_o.png"></p> 
+ <p><img alt="a45e098e1b2476bda17ec42c793826ce.png" src="https://images2.imgbox.com/b1/37/s12kEroH_o.png"></p> 
+ <p><img alt="d9b1134908febede9acdd0b542b25fb0.png" src="https://images2.imgbox.com/6d/37/q73hQGy1_o.png"></p> 
+ <p><img alt="b04673973890ce74041aaa0eeb6d302f.png" src="https://images2.imgbox.com/31/87/yW74vdYa_o.png"></p> 
+ <p><img alt="dfcb92a23b1c5e269d060a3d199710d9.png" src="https://images2.imgbox.com/6f/a6/RFgChCxK_o.png"></p> 
+ <p><img alt="31ccbeb0007a2fde81bb5c622c83518e.png" src="https://images2.imgbox.com/02/e0/28zstRFx_o.png"></p> 
+ <p style="text-align:center;"><strong> ＜左右滑动查看更多图片＞</strong></p> 
+ <p style="text-align:center;"><img alt="d4368859508b3ad9064b382fd0d1af9c.png" src="https://images2.imgbox.com/01/59/v1wlGoFI_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>毫无疑问，使用细化模型显然会极大地改善结果。</p> 
+ <p>那么应该在何时使用细化模型来处理图像呢？显然，可以看出在 0.9 处得到的结果比在 0.8 处更好，<strong>因为细化模型旨在优化最终细节，不应该用于改变图像结构。</strong></p> 
+ <p>我认为，<strong>无论步数是多少，细化模型似乎都能提供非常高的视觉质量结果</strong>。唯一会改变的是图像结构，但即使只有30步，视觉质量也很高。</p> 
+ <p>同时，我们还要考虑到当步数减少到40以下时，所需时间会显著减少。</p> 
+ <p><strong>何时使用</strong>：每当我们想要利用细化模型来提高图像的视觉质量时，就可以使用它。至于参数，只要我们不追求最佳的质量，就可以使用30或40步。当然始终要在0.9处切换到细化模型。</p> 
+ <h5><strong>图像到图像（Image-to-image）</strong></h5> 
+ <p>在Stable Diffusion XL中，经典的图像到图像（img2img）方法并不新鲜。这种方法是使用基础模型生成完整图像，然后将生成的图像和原始提示一起传递给细化模型，细化模型使用这些条件生成新的图像。</p> 
+ <p>换句话说，在img2img方法中，这两个模型是独立工作的（基础模型-&gt;细化模型）。</p> 
+ <p style="text-align:center;"><img alt="3a32a45b7a464a629e56ef81aab69ba3.png" src="https://images2.imgbox.com/08/d4/30Ur4al5_o.png"></p> 
+ <p>由于两个过程是独立的，因此相对容易应用本文中的优化方法。尽管如此，代码并没有太大的差异，只是简单地生成了一个图像，并将其用作细化模型的参数。</p> 
+ <pre class="has"><code class="language-properties">from diffusers import AutoPipelineForText2Image, AutoPipelineForImage2Image
+
+
+# ...
+
+
+base = AutoPipelineForText2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-base-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+refiner = AutoPipelineForImage2Image.from_pretrained(
+  'stabilityai/stable-diffusion-xl-refiner-1.0',
+  use_safetensors=True,
+  torch_dtype=torch.float16,
+  variant='fp16',
+).to('cuda')
+
+
+generator = torch.Generator(device='cuda')
+
+
+for i, generation in enumerate(queue, start=1):
+  generator.manual_seed(generation['seed'])
+
+
+  image = base(
+    prompt=generation['prompt'],
+    generator=generator,
+    num_inference_steps=50,
+  ).images[0]
+
+
+  image = refiner(
+    prompt=generation['prompt'],
+    generator=generator,
+    num_inference_steps=10,
+    image=image,
+  ).images[0]
+
+
+  image.save(f'image_{i}.png')</code></pre> 
+ <p>我们将使用基础模型在50、40、30和20步处生成图像，然后再通过细化模型添加额外的20步和10步的组合。</p> 
+ <p>作为参考，我们还包含了所有比较的基础图像，这张图像是基础模型处理的结果，只进行了50步的处理。</p> 
+ <p>测试结果：</p> 
+ <p><img alt="598a17193420e2f53d8e115d06d9d59f.png" src="https://images2.imgbox.com/80/9c/VnDYV9g8_o.png"></p> 
+ <p><img alt="42b448b4cb2bc53cd90f7b8298d59749.png" src="https://images2.imgbox.com/55/65/VTfTNlOd_o.png"></p> 
+ <p><img alt="ef32a8d992746fb54843d990ac7648f2.png" src="https://images2.imgbox.com/5f/5e/HPUkerVZ_o.png"></p> 
+ <p><img alt="036c1ed6076a48e37c5622fc49235b1d.png" src="https://images2.imgbox.com/ad/b4/F3wPNu6z_o.png"></p> 
+ <p><img alt="2b197a31a6ef01548e0b8d0bb6b44ddb.png" src="https://images2.imgbox.com/47/ba/Z2ZbGT8f_o.png"></p> 
+ <p><img alt="d101023241c57b7f08c190b25f4f5350.png" src="https://images2.imgbox.com/38/a7/D10Xszvu_o.png"></p> 
+ <p><img alt="da0889ac7e875605d5d1299b5df88f79.png" src="https://images2.imgbox.com/1c/7d/be0ggjkb_o.png"></p> 
+ <p><img alt="1c83dc9ee539eb3c594e59fc9ad464d9.png" src="https://images2.imgbox.com/30/61/PRUcm90L_o.png"></p> 
+ <p><img alt="67560b5490ba32af2ced9985af752071.png" src="https://images2.imgbox.com/7b/d8/933oChAj_o.png"></p> 
+ <p style="text-align:center;"><strong> ＜左右滑动查看更多图片＞</strong></p> 
+ <p style="text-align:center;"><img alt="d914fcfdf2bc6df7da82f941cd933f04.png" src="https://images2.imgbox.com/a7/33/grlZekWY_o.png"></p> 
+ <p><strong>结论：</strong></p> 
+ <p>在图像到图像（img2img）模式中，细化模型的表现不如人意。</p> 
+ <p>当我们在基础模型中使用足够的步数时，似乎细化模型被迫向本不需要的部分添加细节。换句话说，这是在画蛇添足。</p> 
+ <p>另一方面，如果我们在基础模型中使用较少的步数，结果会稍微好一些。这是因为使用如此少的步数，基础模型无法添加细微的细节，为细化模型提供了更大的发挥空间。</p> 
+ <p>同时，我们也必须考虑通过减少步数来减少时间。如果我们使用太多步数，将会受到显著的损失。</p> 
+ <p><strong>何时使用</strong>：首先要记住的是，<strong>使用细化模型的目的是最大化视觉质量。</strong>在这种情况下，我们可以增加步数，因此，“专家去噪器集成”方法是最佳选择。我认为，使用少量步数无法获得更好的视觉质量，也不会提高生成速度，与其他方法相比也不具备优势。因此，在图像到图像模式下使用细化模型有其优势，但其优势并不突出。</p> 
+ <p style="text-align:center;"><strong>6</strong></p> 
+ <h3><strong>结论</strong></h3> 
+ <p>开始写这篇文章时，我并没有想到会深入研究到这个程度。我能够理解直接跳到结论部分的读者，同时我也很佩服看了所有优化内容的读者。希望阅读完本文后，读者们能够有所所获。</p> 
+ <p>根据目标和可用的硬件，我们需要应用不同的优化方法。让我们以表格的形式，总结所有的优化措施以及它们引入的改进（或损失）。</p> 
+ <blockquote> 
+  <p>理论上来说，“中立”的优化方法是该类别中一个有利的改变，但其可解释性可能有争议，或者仅适用于某些特定用例。</p> 
+ </blockquote> 
+ <p><img alt="b5438b91519a6f9d51a2cce9302e60ba.png" src="https://images2.imgbox.com/bd/6f/ujfuldEu_o.png"></p> 
+ <p><strong>最快速度</strong></p> 
+ <p>使用基础模型结合OneDiff+Tiny VAE+75%处禁用CFG+30步，<strong>可以在几乎质量无损的情况下实现最短的生成时间，从而达到最快速度。</strong></p> 
+ <p>在拥有RTX 3090显卡的情况下，<strong>可以在仅4.0秒的时间内生成图像</strong>，内存消耗为6.91 GB，因此甚至可以在具有8 GB内存的显卡上运行。</p> 
+ <p>我们还可以添加DeepCache以进一步加快流程，但问题是，它与禁用CFG优化不兼容，一旦禁用它，最终速度就会增加。</p> 
+ <p>使用相同的配置，A100显卡可以在2.7秒内生成图像。在全新的 H100 上，推理时间仅为2.0秒。</p> 
+ <p><strong>不到4GB的内存使用量</strong></p> 
+ <p>在使用Sequential CPU Offload时，瓶颈在于VAE。因此，将这种优化与VAE FP16 fix或Tiny VAE结合使用，将分别需要2.56 GB和0.68 GB的内存使用量。虽然内存使用量低得离谱，但推理时间会让你觉得有必要去换一张拥有更多内存的新显卡。</p> 
+ <p><strong>不到6GB的内存使用量</strong></p> 
+ <p>通过使用批处理优化，内存使用量降低至5.77 GB，从而使得在拥有6 GB内存的显卡上可以使用 Stable Diffusion XL 生成图像。在这种情况下，没有质量损失或推理时间增加，如果我们想使用细化模型也没有问题，内存消耗是一样的。</p> 
+ <p>另一个选择是使用Model CPU Offload，这也足以减少内存使用，只不过会有一点时间上的损失。</p> 
+ <p>通过使用VAE FP16 fix或Tiny VAE优化VAE，我们可以稍微加快推理过程。</p> 
+ <p>如果我们想要稍微加快推理过程并在12.9秒内生成图像，我们可以通过使用VAE FP16 fix来实现这一点。而且，如果我们不介意稍微改变结果，我们还可以进一步优化，通过使用Tiny VAE，将内存消耗降低到5.6 GB，生成时间缩短到12.6秒。</p> 
+ <p>请记住，仍然可以应用其他优化措施来减少生成时间。</p> 
+ <p><strong>不到8GB的内存使用量</strong></p> 
+ <p>突破了6 GB的内存限制之后，就可以开启新的优化选择。</p> 
+ <p>正如之前所看到的，<strong>使用OneDiff+Tiny VAE将内存使用量降至6.91 </strong><strong>GB</strong>，并实现了可能的最低推理时间。因此，如果你的显卡至少有8 GB内存，<strong>这可能是你的最佳选择。</strong></p> 
+ <p><strong>【OneDiff v0.12.1正式发布（生产环境稳定加速SD&amp;SVD）】</strong>本次更新包含以下亮点，欢迎体验新版本：github.com/siliconflow/onediff</p> 
+ <p>*  更新SDXL和SVD的SOTA性能</p> 
+ <p>*  全面支持SD和SVD动态分辨率运行</p> 
+ <p>*  编译/保存/加载HF Diffusers的pipeline</p> 
+ <p>*  HF Diffusers的快速LoRA加载和切换</p> 
+ <p>*  加速了InstantID（加速1.8倍）</p> 
+ <p>*  加速了SDXL Lightning</p> 
+ <p><img alt="36022d4bd39ab5430d5eadb94a99cbc9.png" src="https://images2.imgbox.com/32/5e/o5XZm0bx_o.png"></p> 
+ <p style="text-align:center;"><em>（SDXL E2E Time）</em></p> 
+ <p><img alt="3181a657a73e33023bae3c46a2acef62.png" src="https://images2.imgbox.com/4d/4d/cJVRhtMm_o.png"></p> 
+ <p style="text-align:center;"><em>（SVD E2E Time）</em></p> 
+ <p>更多详情：https://medium.com/@SiliconFlowAI/</p> 
+ <p style="text-align:left;">其他人都在看</p> 
+ <h4></h4> 
+ <ul><li> <p><a href="" rel="nofollow">800+页免费“大模型”电子书</a></p> </li><li> <p><a href="" rel="nofollow">LLM推理的极限速度</a></p> </li><li> <p><a href="" rel="nofollow">强化学习之父：通往AGI的另一种可能</a></p> </li><li> <p><a href="" rel="nofollow">好久不见！OneFlow 1.0全新版本上线</a></p> </li><li> <p><a href="" rel="nofollow">LLM推理入门指南②：深入解析KV缓存</a></p> </li><li> <p><a href="" rel="nofollow">仅需50秒，AI让你的通话彩铃变身短视频</a></p> </li><li> <p><a href="" rel="nofollow">OneDiffx“图生生”，电商AI图像处理新范式</a></p> </li></ul> 
+ <p style="text-align:center;"><img alt="36739169044ee79a071f27a4f53170db.png" src="https://images2.imgbox.com/b0/3d/Q9XFBhP8_o.png"></p> 
+</div>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/2fad2e601158c14595c2276658d1f574/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">权威答案！灵犀医疗引入 Zilliz Cloud，千万级向量数据库赋能医学 AIGC 平台</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/353e6aed733dda12f5b4e09536458df3/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">福彩双色球开奖数据爬虫工具-Python彩票数据爬虫实实战（附上所有代码）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【MySQL | 第七篇】一文读懂MySQL存储引擎（InnoDB、MyISAM、Memory）、MVCC（易懂、明白） - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/c55c431f1002bfd953e106ec3dff799d/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【MySQL | 第七篇】一文读懂MySQL存储引擎（InnoDB、MyISAM、Memory）、MVCC（易懂、明白）">
+  <meta property="og:description" content="文章目录 7.一文读懂MySQL存储引擎7.1InnoDB存储引擎7.1.1概述7.1.2体系架构7.1.3存储结构（1）表空间①系统表空间②独立表空间③通用表空间④undo表空间⑤临时表空间 （2）段（3）区（4）页（5）行 7.1.4 MVCC（多版本并发控制）（1）相关概念（2）实现原理①三个隐藏字段②undo log 日志③undo log 版本链④ReadView 快照 （3）RC（读已提交）隔离级别：举例①事务1-4过程如下：②分析ReadViw，提取数据③总结 （4）RR（可重复读）隔离级别：举例（5）扩展：RR能解决幻读问题吗？ 7.2MyISAM存储引擎7.2.1概述7.2.2应用场景 7.3Memory存储引擎7.3.1概述7.3.2应用场景 7.一文读懂MySQL存储引擎 MySQL存储引擎一共有InnoDB、MyISAM、Memory等常见的存储引擎；下面将从存储结果、事务支持、行/表级锁、外键支持、以及关键特性 共五个角度阐述上面的存储引起； 7.1InnoDB存储引擎 7.1.1概述 InnoDB 是 MySQL数据库系统中最常用的存储引擎之一，尤其在事务处理、并发控制及数据可靠性方面表现突出。以下是对 InnoDB 存储引擎的主要特点和功能的概述：
+存储结构：InnoDB 存储引擎将数据按照页（Page）的方式组织在磁盘上，并且采用B&#43;树作为索引结构，使得数据检索效率相对较高。
+事务支持：InnoDB 提供完全的 ACID（原子性、一致性、隔离性、持久性）事务支持，适用于需要高可靠性和数据一致性的应用场景，如银行交易、电子商务等。
+行级锁定：InnoDB 实现了行级锁定机制，这意味着在执行事务时只锁定受影响的行，而非整个表，这大大提高了并发环境下多用户读写数据的性能。
+外键约束：支持外键约束，确保数据的一致性和参照完整性，防止非法的数据操作。
+缓冲池：内存管理中，InnoDB 使用了一个称为缓冲池的内存区域，用于缓存表数据和索引，减少磁盘 I/O 操作，提高数据读写的效率。
+崩溃恢复：提供完善的崩溃恢复机制，包括 redo 日志（重做日志）和 undo 日志（撤销日志），保证即使在系统崩溃后也能恢复到崩溃前的一致状态。
+内存结构：InnoDB 内部有多个内存区域，如redo log buffer、undo logs、buffer pool manager等，用于管理事务、缓存数据以及辅助事务处理过程。
+关键特性：
+多版本并发控制（MVCC）：InnoDB 采用 MVCC 来实现高并发下的读写操作，允许在不阻塞读操作的情况下进行写操作，提升了并发性能，降低了死锁概率。
+插入缓冲（Insert Buffer）：优化对非唯一二级索引插入操作的性能。
+两次写（Double Write）：用于保护数据页免受意外宕机造成的数据损坏。
+自适应哈希索引（Adaptive Hash Index）：自动为经常使用的查询创建哈希索引，提高查询速度。
+异步IO（Async I/O）：提高磁盘I/O性能，减少等待时间。
+7.1.2体系架构 InnoDB存储引擎的体系架构主要由内存结构、磁盘存储、线程与并发控制、数据阻止结构、以及外部接口共五个方面组成内存结构： Buffer Pool (缓冲池)：它是 InnoDB 的核心组件之一，用于缓存表的数据页和索引页，减少对磁盘 I/O 的访问次数。缓冲池中的数据页在事务提交时会根据需要刷新到磁盘。Change Buffer（变更缓冲区）：对于非唯一二级索引的插入操作，如果所在的数据页尚未加载到缓冲池中，InnoDB 会将这部分修改暂存在变更缓冲区中，待后续数据页加载到缓冲池时再合并写入。Adaptive Hash Index（自适应哈希索引）：InnoDB 会根据查询模式自动生成哈希索引，加快某些查询的性能。Log Buffer（日志缓冲区）：存储待写入重做日志文件（redo log）的事务日志记录，以确保事务的持久性和崩溃恢复能力。 磁盘存储： 表空间（Tablespaces）：InnoDB 使用表空间作为逻辑上的数据容器，每个表空间可以包含多个数据文件。系统表空间存放全局数据，用户表空间存放用户数据和索引。重做日志文件（Redo Log）：记录了对数据的更改操作，以支持事务的持久性和崩溃恢复。回滚段（Undo Logs）：用于实现事务的原子性和一致性，存储了事务回滚所需的历史版本数据。 线程与并发控制： 后台线程：包括 master thread、IO thread（用于处理redo log刷盘）、purge thread（用于清理不再需要的undo日志）等，共同维护数据库的正常运行和数据一致性。行级锁定（Row-level Locking）：InnoDB 支持行级锁定，有效减少并发事务之间的冲突，提高并发性能。多版本并发控制（MVCC）：InnoDB 通过 MVCC 实现了非锁定读（Read Committed 或 Repeatable Read 隔离级别下），减少了事务之间的阻塞。 数据组织结构： 页（Page）：InnoDB 使用页作为基本的存储单位，每个页通常为16KB，存储表数据和索引。B&#43;树索引：InnoDB 表的数据和二级索引都采用 B&#43;树结构组织，保证高效的数据检索和范围查询。 外部接口： InnoDB 通过与 MySQL Server 的交互接口，响应来自客户端的 SQL 请求，执行事务处理、查询优化和数据检索等功能。 7.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-04-22T15:14:05+08:00">
+    <meta property="article:modified_time" content="2024-04-22T15:14:05+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【MySQL | 第七篇】一文读懂MySQL存储引擎（InnoDB、MyISAM、Memory）、MVCC（易懂、明白）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p><img src="https://images2.imgbox.com/63/b8/FCjfC8Hs_o.jpg" alt="在这里插入图片描述"></p> 
+<p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#7MySQL_3" rel="nofollow">7.一文读懂MySQL存储引擎</a></li><li><ul><li><a href="#71InnoDB_8" rel="nofollow">7.1InnoDB存储引擎</a></li><li><ul><li><a href="#711_10" rel="nofollow">7.1.1概述</a></li><li><a href="#712_37" rel="nofollow">7.1.2体系架构</a></li><li><a href="#713_59" rel="nofollow">7.1.3存储结构</a></li><li><ul><li><a href="#1_65" rel="nofollow">（1）表空间</a></li><li><ul><li><a href="#_69" rel="nofollow">①系统表空间</a></li><li><a href="#_89" rel="nofollow">②独立表空间</a></li><li><a href="#_105" rel="nofollow">③通用表空间</a></li><li><a href="#undo_109" rel="nofollow">④undo表空间</a></li><li><a href="#_115" rel="nofollow">⑤临时表空间</a></li></ul> 
+     </li><li><a href="#2_119" rel="nofollow">（2）段</a></li><li><a href="#3_124" rel="nofollow">（3）区</a></li><li><a href="#4_128" rel="nofollow">（4）页</a></li><li><a href="#5_132" rel="nofollow">（5）行</a></li></ul> 
+    </li><li><a href="#714_MVCC_138" rel="nofollow">7.1.4 MVCC（多版本并发控制）</a></li><li><ul><li><a href="#1_146" rel="nofollow">（1）相关概念</a></li><li><a href="#2_161" rel="nofollow">（2）实现原理</a></li><li><ul><li><a href="#_163" rel="nofollow">①三个隐藏字段</a></li><li><a href="#undo_log__171" rel="nofollow">②undo log 日志</a></li><li><a href="#undo_log__180" rel="nofollow">③undo log 版本链</a></li><li><a href="#ReadView__184" rel="nofollow">④ReadView 快照</a></li></ul> 
+     </li><li><a href="#3RC_192" rel="nofollow">（3）RC（读已提交）隔离级别：举例</a></li><li><ul><li><a href="#14_194" rel="nofollow">①事务1-4过程如下：</a></li><li><a href="#ReadViw_200" rel="nofollow">②分析ReadViw，提取数据</a></li><li><a href="#_216" rel="nofollow">③总结</a></li></ul> 
+     </li><li><a href="#4RR_227" rel="nofollow">（4）RR（可重复读）隔离级别：举例</a></li><li><a href="#5RR_233" rel="nofollow">（5）扩展：RR能解决幻读问题吗？</a></li></ul> 
+   </li></ul> 
+   </li><li><a href="#72MyISAM_247" rel="nofollow">7.2MyISAM存储引擎</a></li><li><ul><li><a href="#721_249" rel="nofollow">7.2.1概述</a></li><li><a href="#722_259" rel="nofollow">7.2.2应用场景</a></li></ul> 
+   </li><li><a href="#73Memory_266" rel="nofollow">7.3Memory存储引擎</a></li><li><ul><li><a href="#731_268" rel="nofollow">7.3.1概述</a></li><li><a href="#732_278" rel="nofollow">7.3.2应用场景</a></li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="7MySQL_3"></a>7.一文读懂MySQL存储引擎</h2> 
+<ul><li>MySQL存储引擎一共有InnoDB、MyISAM、Memory等常见的存储引擎；</li><li>下面将从存储结果、事务支持、行/表级锁、外键支持、以及关键特性 共五个角度阐述上面的存储引起；</li></ul> 
+<h3><a id="71InnoDB_8"></a>7.1InnoDB存储引擎</h3> 
+<h4><a id="711_10"></a>7.1.1概述</h4> 
+<p>InnoDB 是 MySQL数据库系统中最常用的存储引擎之一，尤其在事务处理、并发控制及数据可靠性方面表现突出。以下是对 InnoDB 存储引擎的主要特点和功能的概述：</p> 
+<ol><li> <p><strong><mark>存储结构</mark></strong>：InnoDB 存储引擎将数据按照页（Page）的方式组织在磁盘上，并且采用<mark>B+树</mark>作为索引结构，使得数据检索效率相对较高。</p> </li><li> <p><strong><mark>事务支持</mark></strong>：InnoDB 提供完全的 ACID（原子性、一致性、隔离性、持久性）事务支持，适用于需要高可靠性和数据一致性的应用场景，如银行交易、电子商务等。</p> </li><li> <p><strong><mark>行级锁定</mark></strong>：InnoDB 实现了行级锁定机制，这意味着在执行事务时只锁定受影响的行，而非整个表，这大大提高了并发环境下多用户读写数据的性能。</p> </li><li> <p><strong><mark>外键约束</mark></strong>：支持外键约束，确保数据的一致性和参照完整性，防止非法的数据操作。</p> </li><li> <p><strong>缓冲池</strong>：内存管理中，InnoDB 使用了一个称为缓冲池的内存区域，用于缓存表数据和索引，减少磁盘 I/O 操作，提高数据读写的效率。</p> </li><li> <p><strong>崩溃恢复</strong>：提供完善的崩溃恢复机制，包括 redo 日志（重做日志）和 undo 日志（撤销日志），保证即使在系统崩溃后也能恢复到崩溃前的一致状态。</p> </li><li> <p><strong>内存结构</strong>：InnoDB 内部有多个内存区域，如redo log buffer、undo logs、buffer pool manager等，用于管理事务、缓存数据以及辅助事务处理过程。</p> </li><li> <p><strong>关键特性</strong>：</p> 
+  <ul><li> <p><strong><mark>多版本并发控制（MVCC）</mark></strong>：InnoDB 采用 MVCC 来实现高并发下的读写操作，允许在不阻塞读操作的情况下进行写操作，提升了并发性能，降低了死锁概率。</p> </li><li> <p>插入缓冲（Insert Buffer）：优化对非唯一二级索引插入操作的性能。</p> </li><li> <p>两次写（Double Write）：用于保护数据页免受意外宕机造成的数据损坏。</p> </li><li> <p>自适应哈希索引（Adaptive Hash Index）：自动为经常使用的查询创建哈希索引，提高查询速度。</p> </li><li> <p>异步IO（Async I/O）：提高磁盘I/O性能，减少等待时间。</p> </li></ul> </li></ol> 
+<h4><a id="712_37"></a>7.1.2体系架构</h4> 
+<ol><li>InnoDB存储引擎的体系架构主要由内存结构、磁盘存储、线程与并发控制、数据阻止结构、以及外部接口共五个方面组成</li><li><strong>内存结构</strong>： 
+  <ul><li><strong>Buffer Pool (缓冲池)</strong>：它是 InnoDB 的核心组件之一，用于缓存表的数据页和索引页，减少对磁盘 I/O 的访问次数。缓冲池中的数据页在事务提交时会根据需要刷新到磁盘。</li><li><strong>Change Buffer（变更缓冲区）</strong>：对于非唯一二级索引的插入操作，如果所在的数据页尚未加载到缓冲池中，InnoDB 会将这部分修改暂存在变更缓冲区中，待后续数据页加载到缓冲池时再合并写入。</li><li><strong>Adaptive Hash Index（自适应哈希索引）</strong>：InnoDB 会根据查询模式自动生成哈希索引，加快某些查询的性能。</li><li><strong>Log Buffer（日志缓冲区）</strong>：存储待写入重做日志文件（redo log）的事务日志记录，以确保事务的持久性和崩溃恢复能力。</li></ul> </li><li><strong>磁盘存储</strong>： 
+  <ul><li><strong><mark>表空间（Tablespaces）</mark></strong>：InnoDB 使用表空间作为逻辑上的数据容器，每个<mark>表空间可以包含多个数据文件。系统表空间存放全局数据，用户表空间存放用户数据和索引</mark>。</li><li><strong>重做日志文件（Redo Log）</strong>：记录了对数据的更改操作，以支持事务的持久性和崩溃恢复。</li><li><strong>回滚段（Undo Logs）</strong>：用于实现事务的原子性和一致性，存储了事务回滚所需的历史版本数据。</li></ul> </li><li><strong>线程与并发控制</strong>： 
+  <ul><li><strong>后台线程</strong>：包括 master thread、IO thread（用于处理redo log刷盘）、purge thread（用于清理不再需要的undo日志）等，共同维护数据库的正常运行和数据一致性。</li><li><strong>行级锁定（Row-level Locking）</strong>：InnoDB 支持行级锁定，有效减少并发事务之间的冲突，提高并发性能。</li><li><strong>多版本并发控制（MVCC）</strong>：InnoDB 通过 MVCC 实现了非锁定读（Read Committed 或 Repeatable Read 隔离级别下），减少了事务之间的阻塞。</li></ul> </li><li><strong>数据组织结构</strong>： 
+  <ul><li><strong><mark>页（Page）</mark></strong>：InnoDB 使用页作为基本的存储单位，每个页通常为16KB，存储表数据和索引。</li><li><strong><mark>B+树索引</mark></strong>：InnoDB 表的数据和二级索引都采用 B+树结构组织，保证高效的数据检索和范围查询。</li></ul> </li><li><strong>外部接口</strong>： 
+  <ul><li>InnoDB 通过与 MySQL Server 的交互接口，响应来自客户端的 SQL 请求，执行事务处理、查询优化和数据检索等功能。</li></ul> </li></ol> 
+<h4><a id="713_59"></a>7.1.3存储结构</h4> 
+<ul><li>InnoDB 逻辑存储单元主要分为：表空间、段、区、页。层级关系如下图：</li></ul> 
+<p><img src="https://images2.imgbox.com/b8/02/hPNpyoNL_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="1_65"></a>（1）表空间</h5> 
+<p>MySQL5.7以后，表空间分为：<mark>系统表空间、独立表空间</mark>、通用表空间、undo表空间、临时表空间。</p> 
+<h6><a id="_69"></a>①系统表空间</h6> 
+<ol><li> <p>系统表空间以 ibdata1 命名，新建一个数据库时，InnoDB 存储引擎会初始化一个名为 ibdata1 的表空间文件</p> </li><li> <p>默认情况下，<mark>这个文件存储所有表的数据</mark>，比如看不到的系统表，此外，还会存储数据字典、双写缓冲区、更新缓冲区和undo log。MySQL 5.6 以后，已经可以通过参数来设置 undo log 的存储位置了，可以独立于 ibdata1 文件进行存储。</p> </li><li> <p>如果系统表空间大小不够，可以配置为自动扩展，<mark>数据库默认的自动扩展大小是 64MB</mark>，当然还可以通过添加另一个数据文件来增加系统表空间的大小。</p> 
+  <blockquote> 
+   <p>MySQL 默认 ibdata1 大小是 12MB（Mysql 8），一般不建议使用默认大小，在遇到高并发事务时，会受到很大影响，建议把 <mark>ibdata1 的初始数值大小调整为 1GB</mark></p> 
+  </blockquote> <pre><code>mysql&gt; show variables like '%innodb_data_file_path%';
++-----------------------+------------------------+
+| Variable_name         | Value                  |
++-----------------------+------------------------+
+| innodb_data_file_path | ibdata1:12M:autoextend |
++-----------------------+------------------------+
+1 row in set (0.02 sec)
+</code></pre> </li></ol> 
+<h6><a id="_89"></a>②独立表空间</h6> 
+<ol><li>除了系统表空间还有独立表空间(File-per-table)，<mark>每个表的表空间包含单个 InnoDB 表的数据和索引</mark>，并存储在文件系统上的单个数据文件中。</li><li>MySQL 每创建一个表，就会生成一个独立表空间，是以 table_name.db 命名的。</li></ol> 
+<ul><li> <p>系统表空间和独立表空间有什么区别？</p> 
+  <ul><li>截断或删除<mark>独立表空间</mark>中创建的表后，磁盘<mark>空间将被释放</mark></li><li>截断或删除<mark>系统表空间</mark>中的表会在系统表空间数据文件中创建空闲空间，此空间只能 <mark><strong>用于存储 InnoDB 数据</strong></mark>，也就是系统表空间在表截断或删除后<mark>占用系统空间不会缩小</mark>。</li><li>• 设置innodb_file_per_table决定表空间模式（on即为采用独立表空间、off为系统表空间）</li></ul> </li><li> <p>为什么推荐采用独立表空间？</p> 
+  <ul><li>系统表空间 all in one 不利于管理</li><li>系统表空间<mark>会产生IO瓶颈</mark></li><li>系统表空间很难回收存储空间</li><li>独立表空间使用optimize table 命令回收存储空间</li></ul> </li></ul> 
+<h6><a id="_105"></a>③通用表空间</h6> 
+<p>与系统表空间类似，通用表空间是能够为多个表存储数据的共享表空间。可以根据活跃度来划分表，存放在不同的磁盘上，可以减少 metadata 的存储开销。</p> 
+<h6><a id="undo_109"></a>④undo表空间</h6> 
+<p>undo表空间包含undo log，这是包含有关如何<mark>撤消事务对聚集索引记录的最新更改的信息的记录集合</mark>。</p> 
+<p>undo日志默认存储在系统表空间中，但也可以存储在一个或多个undo表空间中。使用undo表空间可以减少任何一个表空间中undo log所需的空间量。undo log 的 I/O 模式也使 undo 空间成为SSD存储的理想选择 。</p> 
+<h6><a id="_115"></a>⑤临时表空间</h6> 
+<p>把临时表的数据从系统表空间中抽离出来，形成独立的表空间参数 innodb_temp_data_file_path ，独立表空间文件名为 ibtmp1，默认大小 12MB</p> 
+<h5><a id="2_119"></a>（2）段</h5> 
+<ol><li>表空间是由段组成的，也可以把一个表理解为一个段，通常由<mark>数据段、回滚段、索引段</mark>等，每个段由 N 个区和 32 个零散的页组成，段空间扩展是以区为单位进行扩展的</li><li>通常情况下，创建一个索引的同时会创建两个段，分别为非叶子节点和叶子节点段。</li></ol> 
+<h5><a id="3_124"></a>（3）区</h5> 
+<ol><li>区是由连续的页组成的，是物理上连续分配的一段空间，每个区的大小固定是 1MB</li></ol> 
+<h5><a id="4_128"></a>（4）页</h5> 
+<p>InnoDB 的最小物理存储单位是页，有数据页回滚页等。一般情况下，一个区由 64 个连续的页组成，页默认大小是 16KB，可以自行调整页的大小。区也就是 64*16KB = 1MB</p> 
+<h5><a id="5_132"></a>（5）行</h5> 
+<p>页里又记录着行记录的信息，InnoDB存储引擎是面向列的，也就是数据是按行存储的。行记录格式可以分为四种：Compact，dynamic，redundant，compressed，MySQL5.7 默认使用 dynamic 行记录格式。Compact 是目前使用最多的一种，但默认是 dynamic ，二者有什么不同？</p> 
+<blockquote> 
+ <p>后面再补充</p> 
+</blockquote> 
+<h4><a id="714_MVCC_138"></a>7.1.4 MVCC（多版本并发控制）</h4> 
+<ol><li>MVCC（<mark>Multi-Version Concurrency Control，多版本并发控制</mark>）是一种用于数据库管理系统中实现并发控制的技术。它允许多个事务同时对数据库进行读写操作而不会导致数据不一致或丢失。</li><li>MVCC 的核心思想是<mark>在数据库中维护多个数据版本</mark>，并根据事务的隔离级别来决定哪个版本对特定事务是可见的。</li><li>MVCC的具体实现还需要依赖数据库中的<mark>三个隐式字段，undo log 日志，undo log 版本链、readView</mark></li></ol> 
+<h5><a id="1_146"></a>（1）相关概念</h5> 
+<ol><li><mark><strong>当前读 &amp; 快照读</strong></mark>： 
+  <ul><li><mark><strong>当前读</strong></mark>： 
+    <ul><li><mark>读取的是当前记录的最新版本</mark>，读取的时候需要保证其他并发事务不能修改当前记录，对当前记录加锁</li><li>例子：Insert、Update、Delete、Select… for update（写锁）、Select… lock in share mode（读锁）</li></ul> </li><li><mark><strong>快照读：</strong></mark> 
+    <ul><li>最普通的Select查询SQL语句</li><li>读取的是数据的可见版本，有可能是历史数据、当前版本，<mark>不加锁，是非阻塞读</mark></li><li>底层依赖：当执行“快照读”SQL语句时，依据 <mark>ReadView（快照）</mark> 来提取数据</li></ul> </li></ul> </li><li><mark><strong>ReadView（快照）</strong></mark>：下面论述<mark>不同隔离级别下快照生成的时机</mark> 
+  <ul><li>RC（读已提交）：每一次select，都生成一个 ReadView</li><li>RR（可重复读）：开启一个事务之后，只有第一个select语句才会生成一张快照，此后读的都是快照中的数据，直到事务提交</li><li>Serializable（可序列化）：快照读退化成当前读（加锁，阻塞，读取到的是最新的数据）</li></ul> </li></ol> 
+<h5><a id="2_161"></a>（2）实现原理</h5> 
+<h6><a id="_163"></a>①三个隐藏字段</h6> 
+<p>当我们尝试创建一张表之后，InnoDB会自动为我们加上三个字段：</p> 
+<ul><li>DB_ROW_ID：隐藏主键（如果表结构没有主键，将会生成该隐藏字段）</li><li><mark>DB_TRX_ID</mark>：最近一次修改或删除记录的事务ID</li><li><mark>DB_ROLL_PTR</mark>：回滚指针，指向记录的上一个版本</li></ul> 
+<h6><a id="undo_log__171"></a>②undo log 日志</h6> 
+<ul><li>Undo 日志中记录了修改前的数据值，以及撤销操作所需的信息，以便在事务回滚或 MVCC 中使用。</li><li>当事务提交的时候，相关的Undo log 日志就被标记为可回收状态，可以在之后的操作中被回收</li></ul> 
+<blockquote> 
+ <p>如果是insert语句，那么Undo log日志只需要在回滚的时候需要，当事务提交之后，会被立即删除。</p> 
+ <p>如果是update,delete的时候，产生的undo log日志不仅在回滚的时候需要，在产生快照读的时候也需要，因此其不会被立即删除。（undo log 中残留的旧版本数据可供其他并发事务进行快照读）</p> 
+</blockquote> 
+<h6><a id="undo_log__180"></a>③undo log 版本链</h6> 
+<p><img src="https://images2.imgbox.com/70/2a/ImeEXRzz_o.png" alt="image-20240416111024377"></p> 
+<h6><a id="ReadView__184"></a>④ReadView 快照</h6> 
+<ul><li>ReadView快照是一个数据结构，包含四个字段 
+  <ul><li>m_ids：当前<mark>活跃</mark>的事务编号集合</li><li>min_trx_id：最小活跃事务编号</li><li>max_trx_id：预分配事务编号，即当前最大事务编号+1</li><li><mark>creator_trx_id：ReadView创建者的事务编号</mark></li></ul> </li></ul> 
+<h5><a id="3RC_192"></a>（3）RC（读已提交）隔离级别：举例</h5> 
+<h6><a id="14_194"></a>①事务1-4过程如下：</h6> 
+<ul><li><mark>其中事务4的两次快照读均会产生ReadView</mark>，如下：</li></ul> 
+<p><img src="https://images2.imgbox.com/e3/2f/tHQaFsQG_o.png" alt="image-20240416111607748"></p> 
+<h6><a id="ReadViw_200"></a>②分析ReadViw，提取数据</h6> 
+<ul><li> <p>首先声明 undo log版本链的数据访问规则：</p> 
+  <ol><li>若 trx_id==creator_trx_id？可以访问该版本，因为数据是当前这个事务更改的；</li><li>若 trx_id &lt; min_trx_id？可以访问该版本，因为数据已经提交了；</li><li>若 trx_id &gt; max_trx_id？<mark>不可以访问该版本</mark>，因为该事务修改的数据是在 ReadView生成后才开启的；</li><li>若 min_trx_id&lt;=trx_id&lt;=max_trx_id 并且 <mark>trx_id不在 m_ids（活跃事务编号集合）中</mark>，可以访问该版本，因为该数据已经提交；</li></ol> </li><li> <p>过程如下：第一个ReadView</p> </li></ul> 
+<p><img src="https://images2.imgbox.com/97/64/23fwq38k_o.png" alt="image-20240416112044314"></p> 
+<ul><li>过程如下：第二个ReadView</li></ul> 
+<p><img src="https://images2.imgbox.com/18/4e/Qg7jSr5N_o.png" alt="image-20240416112809451"></p> 
+<h6><a id="_216"></a>③总结</h6> 
+<ul><li>在RC（读已提交）的事务隔离级别下，同一事务的两次快照读均会产生两个快照（ReadView）；</li><li>第一个快照读读取的数据是 事务一修改并提交的数据：张三</li><li>第二个快照读读取的数据是 事务二修改并提交的数据：张小三</li><li>小结：同一事务的<mark>两个不同select（快照读）读取的数据不一样，产生不可重复读现象</mark></li></ul> 
+<p>思考：应该怎么解决？</p> 
+<p>解决：设置隔离级别为 RR（可重复读），<mark>同一事务从始至终只会生成一个快照</mark></p> 
+<h5><a id="4RR_227"></a>（4）RR（可重复读）隔离级别：举例</h5> 
+<ol><li>隔离级别为 RR（可重复读），<mark>同一事务从始至终只会生成一个快照</mark>，即不会产生 不可重复读问题</li></ol> 
+<p><img src="https://images2.imgbox.com/0d/8b/DTjmldPm_o.png" alt="image-20240416113413125"></p> 
+<h5><a id="5RR_233"></a>（5）扩展：RR能解决幻读问题吗？</h5> 
+<ol><li> <p>结论：RR（可重复读）可以解决<mark>一部分幻读问题</mark></p> </li><li> <p>原因：</p> 
+  <ol><li> <p>同一事务的连续多次快照读，ReadView会产生复用，没有幻读问题</p> </li><li> <p>特例：当两次快照读之间存在当前读，ReadView会重新生成，导致幻读问题</p> <p><img src="https://images2.imgbox.com/2e/3a/wslaKmbW_o.png" alt="image-20240416115328840"></p> </li></ol> </li></ol> 
+<h3><a id="72MyISAM_247"></a>7.2MyISAM存储引擎</h3> 
+<h4><a id="721_249"></a>7.2.1概述</h4> 
+<ol><li><strong><mark>存储结构</mark></strong>：B+树</li><li><strong><mark>事务支持</mark></strong>：不支持事务</li><li><strong><mark>表级锁定</mark></strong>：表级锁</li><li><strong><mark>外键约束</mark></strong>：不支持外键约束</li><li><mark><strong>关键特性：</strong></mark> 
+  <ul><li>支持全文检索、支持前缀索引</li><li>紧密存储，顺序读性能好</li></ul> </li></ol> 
+<h4><a id="722_259"></a>7.2.2应用场景</h4> 
+<ol><li>非事务应用，如：保存日志</li><li>只读类应用，如：报表数据、字典数据</li></ol> 
+<h3><a id="73Memory_266"></a>7.3Memory存储引擎</h3> 
+<h4><a id="731_268"></a>7.3.1概述</h4> 
+<ol><li><strong><mark>存储结构</mark></strong>：</li><li><strong><mark>事务支持</mark></strong>：</li><li><strong><mark>表级锁定</mark></strong>：表级锁</li><li><strong><mark>外键约束</mark></strong>：</li><li><mark><strong>关键特性：</strong></mark> 
+  <ul><li>内存读写，临时存储</li><li>超高的读写效率，比MyISAM高一个量级</li></ul> </li></ol> 
+<h4><a id="732_278"></a>7.3.2应用场景</h4> 
+<p><img src="https://images2.imgbox.com/c3/e6/AGQNWeoe_o.png" alt="image-20240416120812870"></p> 
+<p><img src="https://images2.imgbox.com/8b/72/iPaZHICw_o.jpg" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6ce8204d5498cde41b123a7017131a00/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【Python】serial库的介绍及用法</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f579a81aaccc60928ac704253a657729/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Hive 中常用的函数以及数据类型</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,683 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Llama改进之——均方根层归一化RMSNorm - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/0cf781c59f51e7563d93260e2e5c9ac9/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Llama改进之——均方根层归一化RMSNorm">
+  <meta property="og:description" content="引言 在学习完GPT2之后，从本文开始进入Llama模型系列。
+本文介绍Llama模型的改进之RMSNorm(均方根层归一化)。它是由Root Mean Square Layer Normalization论文提出来的，可以参阅其论文笔记1。
+LayerNorm 层归一化(LayerNorm)对Transformer等模型来说非常重要，它可以帮助稳定训练并提升模型收敛性。LayerNorm针对一个样本所有特征计算均值和方差，然后使用这些来对样本进行归一化：
+μ = 1 H ∑ i = 1 H x i , σ = 1 H ∑ i = 1 H ( x i − μ ) 2 , N ( x ) = x − μ σ , h = g ⊙ N ( x ) &#43; b (1) \mu = \frac{1}{H}\sum_{i=1}^H x_i,\quad \sigma = \sqrt{\frac{1}{H}\sum_{i=1}^H (x_i - \mu)^2}, \quad N(\pmb x) = \frac{\pmb x-\mu}{\sigma},\quad \pmb h = \pmb g \,\odot N(\pmb x) &#43; \pmb b \tag 1 μ=H1​i=1∑H​xi​,σ=H1​i=1∑H​(xi​−μ)2 ​,N(x)=σx−μ​,h=g⊙N(x)&#43;b(1)">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-04-23T22:11:48+08:00">
+    <meta property="article:modified_time" content="2024-04-23T22:11:48+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Llama改进之——均方根层归一化RMSNorm</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-dracula">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h2><a id="_0"></a>引言</h2> 
+<p>在学习完GPT2之后，从本文开始进入Llama模型系列。</p> 
+<p>本文介绍Llama模型的改进之RMSNorm(均方根层归一化)。它是由<em>Root Mean Square Layer Normalization</em>论文提出来的，可以参阅其论文笔记<sup class="footnote-ref"><a href="#fn1" rel="nofollow" id="fnref1">1</a></sup>。</p> 
+<h2><a id="LayerNorm_6"></a>LayerNorm</h2> 
+<p>层归一化(LayerNorm)对Transformer等模型来说非常重要，它可以帮助稳定训练并提升模型收敛性。LayerNorm针对一个样本所有特征计算均值和方差，然后使用这些来对样本进行归一化：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+           
+           
+             μ 
+            
+           
+             = 
+            
+            
+            
+              1 
+             
+            
+              H 
+             
+            
+            
+            
+              ∑ 
+             
+             
+             
+               i 
+              
+             
+               = 
+              
+             
+               1 
+              
+             
+            
+              H 
+             
+            
+            
+            
+              x 
+             
+            
+              i 
+             
+            
+           
+             , 
+            
+            
+           
+             σ 
+            
+           
+             = 
+            
+            
+             
+              
+              
+                1 
+               
+              
+                H 
+               
+              
+              
+              
+                ∑ 
+               
+               
+               
+                 i 
+                
+               
+                 = 
+                
+               
+                 1 
+                
+               
+              
+                H 
+               
+              
+             
+               ( 
+              
+              
+              
+                x 
+               
+              
+                i 
+               
+              
+             
+               − 
+              
+             
+               μ 
+              
+              
+              
+                ) 
+               
+              
+                2 
+               
+              
+             
+            
+           
+             , 
+            
+            
+           
+             N 
+            
+           
+             ( 
+            
+            
+            
+              x 
+             
+            
+           
+             ) 
+            
+           
+             = 
+            
+            
+             
+              
+              
+                x 
+               
+              
+             
+               − 
+              
+             
+               μ 
+              
+             
+            
+              σ 
+             
+            
+           
+             , 
+            
+            
+            
+            
+              h 
+             
+            
+           
+             = 
+            
+            
+            
+              g 
+             
+             
+           
+             ⊙ 
+            
+           
+             N 
+            
+           
+             ( 
+            
+            
+            
+              x 
+             
+            
+           
+             ) 
+            
+           
+             + 
+            
+            
+            
+              b 
+             
+            
+           
+          
+          
+          
+          
+            (1) 
+           
+          
+         
+        
+       
+         \mu = \frac{1}{H}\sum_{i=1}^H x_i,\quad \sigma = \sqrt{\frac{1}{H}\sum_{i=1}^H (x_i - \mu)^2}, \quad N(\pmb x) = \frac{\pmb x-\mu}{\sigma},\quad \pmb h = \pmb g \,\odot N(\pmb x) + \pmb b \tag 1 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.1944em;"></span><span class="mord mathnormal">μ</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 3.106em; vertical-align: -1.2777em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.3214em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0813em;">H</span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.686em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.8283em;"><span class="" style="top: -1.8723em; margin-left: 0em;"><span class="pstrut" style="height: 3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span><span class="mrel mtight">=</span><span class="mord mtight">1</span></span></span></span><span class="" style="top: -3.05em;"><span class="pstrut" style="height: 3.05em;"></span><span class=""><span class="mop op-symbol large-op">∑</span></span></span><span class="" style="top: -4.3em; margin-left: 0em;"><span class="pstrut" style="height: 3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0813em;">H</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.2777em;"><span class=""></span></span></span></span></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3117em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 1em;"></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal" style="margin-right: 0.0359em;">σ</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 3.3338em; vertical-align: -1.2777em;"></span><span class="mord sqrt"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 2.0561em;"><span class="svg-align" style="top: -5.2938em;"><span class="pstrut" style="height: 5.2938em;"></span><span class="mord" style="padding-left: 1.056em;"><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.3214em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0813em;">H</span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.686em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.8283em;"><span class="" style="top: -1.8723em; margin-left: 0em;"><span class="pstrut" style="height: 3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span><span class="mrel mtight">=</span><span class="mord mtight">1</span></span></span></span><span class="" style="top: -3.05em;"><span class="pstrut" style="height: 3.05em;"></span><span class=""><span class="mop op-symbol large-op">∑</span></span></span><span class="" style="top: -4.3em; margin-left: 0em;"><span class="pstrut" style="height: 3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0813em;">H</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.2777em;"><span class=""></span></span></span></span></span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3117em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mord mathnormal">μ</span><span class="mclose"><span class="mclose">)</span><span class="msupsub"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.7401em;"><span class="" style="top: -2.989em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span></span></span></span></span></span></span><span class="" style="top: -4.0161em;"><span class="pstrut" style="height: 5.2938em;"></span><span class="hide-tail" style="min-width: 0.742em; height: 3.3738em;"> 
+            <svg width="400em" height="3.3738em" viewbox="0 0 400000 3373" preserveaspectratio="xMinYMin slice"> 
+             <path d="M702 80H40000040
+H742v3239l-4 4-4 4c-.667.7 -2 1.5-4 2.5s-4.167 1.833-6.5 2.5-5.5 1-9.5 1
+h-12l-28-84c-16.667-52-96.667 -294.333-240-727l-212 -643 -85 170
+c-4-3.333-8.333-7.667-13 -13l-13-13l77-155 77-156c66 199.333 139 419.667
+219 661 l218 661zM702 80H400000v40H742z"></path> 
+            </svg></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.2777em;"><span class=""></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 1em;"></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span><span class="mopen">(</span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1.9463em; vertical-align: -0.686em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.2603em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0359em;">σ</span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">−</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mord mathnormal">μ</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.686em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 1em;"></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">h</span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 0.7778em; vertical-align: -0.1944em;"></span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal" style="margin-right: 0.0359em;">g</span></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">⊙</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mord mathnormal" style="margin-right: 0.109em;">N</span><span class="mopen">(</span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2222em;"></span><span class="mbin">+</span><span class="mspace" style="margin-right: 0.2222em;"></span></span><span class="base"><span class="strut" style="height: 0.6944em;"></span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">b</span></span></span><span class="tag"><span class="strut" style="height: 3.3338em; vertical-align: -1.2777em;"></span><span class="mord text"><span class="mord">(</span><span class="mord"><span class="mord">1</span></span><span class="mord">)</span></span></span></span></span></span></span><br> 这里<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+       
+         = 
+        
+       
+         ( 
+        
+        
+        
+          x 
+         
+        
+          1 
+         
+        
+       
+         , 
+        
+        
+        
+          x 
+         
+        
+          2 
+         
+        
+       
+         , 
+        
+       
+         ⋯ 
+         
+       
+         , 
+        
+        
+        
+          x 
+         
+        
+          H 
+         
+        
+       
+         ) 
+        
+       
+      
+        \pmb x = (x_1,x_2,\cdots, x_H) 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 1em; vertical-align: -0.25em;"></span><span class="mopen">(</span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3011em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="minner">⋯</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3283em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0813em;">H</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mclose">)</span></span></span></span></span>表示某个时间步LN层的输入向量表示，向量维度为<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         H 
+        
+       
+      
+        H 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6833em;"></span><span class="mord mathnormal" style="margin-right: 0.0813em;">H</span></span></span></span></span>；<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          h 
+         
+        
+       
+      
+        \pmb h 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6944em;"></span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">h</span></span></span></span></span></span>实LN层的输出； <span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          g 
+         
+        
+       
+         , 
+        
+        
+        
+          b 
+         
+        
+       
+      
+        \pmb g,\pmb b 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.8889em; vertical-align: -0.1944em;"></span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal" style="margin-right: 0.0359em;">g</span></span><span class="mpunct">,</span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">b</span></span></span></span></span></span>实两个可学习的参数。</p> 
+<p>为什么层归一化有用？一些解释如下<sup class="footnote-ref"><a href="#fn2" rel="nofollow" id="fnref2">2</a></sup>：</p> 
+<ol><li><strong>减少内部协变量偏移（Internal Covariate Shift）：</strong> 内部协变量偏移是指在深度神经网络的训练过程中，每一层输入的分布会发生变化，导致网络的训练变得困难。层归一化通过对每一层的输入进行归一化处理，可以减少内部协变量偏移，使得每一层的输入分布更加稳定。</li><li><strong>稳定化梯度：</strong> 层归一化有助于保持每一层输出的均值和方差稳定，从而使得梯度的传播更加稳定。这有助于减少梯度消失或梯度爆炸的问题，提高梯度在网络中的流动性，加快训练速度。</li><li><strong>更好的参数初始化和学习率调整：</strong> 通过层归一化，每一层的输入分布被归一化到均值为0、方差为1的标准正态分布，这有助于更好地初始化网络参数和调整学习率。参数初始化与学习率调整的稳定性对模型的训练效果至关重要。</li><li><strong>增强模型的泛化能力：</strong> 层归一化可以减少网络对训练数据分布的依赖，降低了过拟合的风险，从而提高模型的泛化能力。稳定的输入分布有助于模型更好地适应不同数据集和任务。</li></ol> 
+<h2><a id="RMSNorm_22"></a>RMSNorm</h2> 
+<p>虽然LayerNorm很好，但是它每次需要计算均值和方差。RMSNorm的思想就是移除(1)式中<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+       
+         μ 
+        
+       
+      
+        \mu 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.625em; vertical-align: -0.1944em;"></span><span class="mord mathnormal">μ</span></span></span></span></span>的计算部分<sup class="footnote-ref"><a href="#fn1" rel="nofollow" id="fnref1:1">1</a></sup>：<br> <span class="katex--display"><span class="katex-display"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+          
+          
+           
+            
+             
+             
+               x 
+              
+             
+               ˉ 
+              
+             
+            
+              i 
+             
+            
+           
+             = 
+            
+            
+             
+             
+               x 
+              
+             
+               i 
+              
+             
+             
+             
+               RMS 
+              
+             
+               ( 
+              
+              
+              
+                x 
+               
+              
+             
+               ) 
+              
+             
+            
+            
+            
+              g 
+             
+            
+              i 
+             
+            
+            
+           
+             RMS 
+            
+           
+             ( 
+            
+            
+            
+              x 
+             
+            
+           
+             ) 
+            
+           
+             = 
+            
+            
+             
+              
+              
+                1 
+               
+              
+                H 
+               
+              
+              
+              
+                ∑ 
+               
+               
+               
+                 i 
+                
+               
+                 = 
+                
+               
+                 1 
+                
+               
+              
+                H 
+               
+              
+              
+              
+                x 
+               
+              
+                i 
+               
+              
+                2 
+               
+              
+             
+            
+           
+          
+          
+          
+          
+            (2) 
+           
+          
+         
+        
+       
+         \bar x_i = \frac{x_i }{ \text{RMS}(\pmb x)} g_i \quad \text{RMS}(\pmb x) =\sqrt{\frac{1}{H} \sum_{i=1}^H x_i^2} \tag 2 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.7178em; vertical-align: -0.15em;"></span><span class="mord"><span class="mord accent"><span class="vlist-t"><span class="vlist-r"><span class="vlist" style="height: 0.5678em;"><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="mord mathnormal">x</span></span><span class="" style="top: -3em;"><span class="pstrut" style="height: 3em;"></span><span class="accent-body" style="left: -0.2222em;"><span class="mord">ˉ</span></span></span></span></span></span></span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3117em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 2.0436em; vertical-align: -0.936em;"></span><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.1076em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord text"><span class="mord">RMS</span></span><span class="mopen">(</span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mclose">)</span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3117em;"><span class="" style="top: -2.55em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.936em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0359em;">g</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.3117em;"><span class="" style="top: -2.55em; margin-left: -0.0359em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.15em;"><span class=""></span></span></span></span></span></span><span class="mspace" style="margin-right: 1em;"></span><span class="mord text"><span class="mord">RMS</span></span><span class="mopen">(</span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span><span class="mclose">)</span><span class="mspace" style="margin-right: 0.2778em;"></span><span class="mrel">=</span><span class="mspace" style="margin-right: 0.2778em;"></span></span><span class="base"><span class="strut" style="height: 3.3338em; vertical-align: -1.2777em;"></span><span class="mord sqrt"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 2.0561em;"><span class="svg-align" style="top: -5.2938em;"><span class="pstrut" style="height: 5.2938em;"></span><span class="mord" style="padding-left: 1.056em;"><span class="mord"><span class="mopen nulldelimiter"></span><span class="mfrac"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.3214em;"><span class="" style="top: -2.314em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord mathnormal" style="margin-right: 0.0813em;">H</span></span></span><span class="" style="top: -3.23em;"><span class="pstrut" style="height: 3em;"></span><span class="frac-line" style="border-bottom-width: 0.04em;"></span></span><span class="" style="top: -3.677em;"><span class="pstrut" style="height: 3em;"></span><span class="mord"><span class="mord">1</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.686em;"><span class=""></span></span></span></span></span><span class="mclose nulldelimiter"></span></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mop op-limits"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 1.8283em;"><span class="" style="top: -1.8723em; margin-left: 0em;"><span class="pstrut" style="height: 3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight"><span class="mord mathnormal mtight">i</span><span class="mrel mtight">=</span><span class="mord mtight">1</span></span></span></span><span class="" style="top: -3.05em;"><span class="pstrut" style="height: 3.05em;"></span><span class=""><span class="mop op-symbol large-op">∑</span></span></span><span class="" style="top: -4.3em; margin-left: 0em;"><span class="pstrut" style="height: 3.05em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight" style="margin-right: 0.0813em;">H</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.2777em;"><span class=""></span></span></span></span></span><span class="mspace" style="margin-right: 0.1667em;"></span><span class="mord"><span class="mord mathnormal">x</span><span class="msupsub"><span class="vlist-t vlist-t2"><span class="vlist-r"><span class="vlist" style="height: 0.7959em;"><span class="" style="top: -2.4231em; margin-left: 0em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mathnormal mtight">i</span></span></span><span class="" style="top: -3.0448em; margin-right: 0.05em;"><span class="pstrut" style="height: 2.7em;"></span><span class="sizing reset-size6 size3 mtight"><span class="mord mtight">2</span></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 0.2769em;"><span class=""></span></span></span></span></span></span></span></span><span class="" style="top: -4.0161em;"><span class="pstrut" style="height: 5.2938em;"></span><span class="hide-tail" style="min-width: 0.742em; height: 3.3738em;"> 
+            <svg width="400em" height="3.3738em" viewbox="0 0 400000 3373" preserveaspectratio="xMinYMin slice"> 
+             <path d="M702 80H40000040
+H742v3239l-4 4-4 4c-.667.7 -2 1.5-4 2.5s-4.167 1.833-6.5 2.5-5.5 1-9.5 1
+h-12l-28-84c-16.667-52-96.667 -294.333-240-727l-212 -643 -85 170
+c-4-3.333-8.333-7.667-13 -13l-13-13l77-155 77-156c66 199.333 139 419.667
+219 661 l218 661zM702 80H400000v40H742z"></path> 
+            </svg></span></span></span><span class="vlist-s">​</span></span><span class="vlist-r"><span class="vlist" style="height: 1.2777em;"><span class=""></span></span></span></span></span></span><span class="tag"><span class="strut" style="height: 3.3338em; vertical-align: -1.2777em;"></span><span class="mord text"><span class="mord">(</span><span class="mord"><span class="mord">2</span></span><span class="mord">)</span></span></span></span></span></span></span></p> 
+<blockquote> 
+ <p>同时在实现也可以移除平移偏置<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+      
+       
+        
+         
+         
+           b 
+          
+         
+        
+       
+         \pmb b 
+        
+       
+     </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.6944em;"></span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">b</span></span></span></span></span></span>。</p> 
+</blockquote> 
+<p>单看(2)式的话，相当于仅使用<span class="katex--inline"><span class="katex"><span class="katex-mathml"> 
+     
+      
+       
+        
+        
+          x 
+         
+        
+       
+      
+        \pmb x 
+       
+      
+    </span><span class="katex-html"><span class="base"><span class="strut" style="height: 0.4306em;"></span><span class="mord" style="text-shadow: 0.02em 0.01em 0.04px;"><span class="mord mathnormal">x</span></span></span></span></span></span>的均方根来对输入进行归一化，它简化了层归一化的计算，变得更加高效，同时还有可能带来性能上的提升。</p> 
+<h2><a id="_33"></a>实现</h2> 
+<p>RMSNorm的实现很简单：</p> 
+<pre><code class="prism language-py"><span class="token keyword">import</span> torch
+<span class="token keyword">import</span> torch<span class="token punctuation">.</span>nn <span class="token keyword">as</span> nn
+<span class="token keyword">from</span> torch <span class="token keyword">import</span> Tensor
+
+<span class="token keyword">class</span> <span class="token class-name">RMSNorm</span><span class="token punctuation">(</span>nn<span class="token punctuation">.</span>Module<span class="token punctuation">)</span><span class="token punctuation">:</span>
+  <span class="token keyword">def</span> <span class="token function">__init__</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> hidden_size<span class="token punctuation">:</span> <span class="token builtin">int</span><span class="token punctuation">,</span> eps<span class="token punctuation">:</span> <span class="token builtin">float</span> <span class="token operator">=</span> <span class="token number">1e-6</span><span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> <span class="token boolean">None</span><span class="token punctuation">:</span>
+    <span class="token builtin">super</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span>__init__<span class="token punctuation">(</span><span class="token punctuation">)</span>
+    self<span class="token punctuation">.</span>eps <span class="token operator">=</span> eps
+    self<span class="token punctuation">.</span>weight <span class="token operator">=</span> nn<span class="token punctuation">.</span>Parameter<span class="token punctuation">(</span>torch<span class="token punctuation">.</span>ones<span class="token punctuation">(</span>hidden_size<span class="token punctuation">)</span><span class="token punctuation">)</span>
+  
+  <span class="token keyword">def</span> <span class="token function">_norm</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> hidden_states<span class="token punctuation">:</span> Tensor<span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> Tensor<span class="token punctuation">:</span>
+    variance <span class="token operator">=</span> hidden_states<span class="token punctuation">.</span><span class="token builtin">pow</span><span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">)</span><span class="token punctuation">.</span>mean<span class="token punctuation">(</span><span class="token operator">-</span><span class="token number">1</span><span class="token punctuation">,</span> keepdim<span class="token operator">=</span><span class="token boolean">True</span><span class="token punctuation">)</span>
+    <span class="token keyword">return</span> hidden_states <span class="token operator">*</span> torch<span class="token punctuation">.</span>rsqrt<span class="token punctuation">(</span>variance <span class="token operator">+</span> self<span class="token punctuation">.</span>eps<span class="token punctuation">)</span>
+  
+  <span class="token keyword">def</span> <span class="token function">forward</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> hidden_states<span class="token punctuation">:</span> Tensor<span class="token punctuation">)</span> <span class="token operator">-</span><span class="token operator">&gt;</span> Tensor<span class="token punctuation">:</span>
+    <span class="token keyword">return</span> self<span class="token punctuation">.</span>weight <span class="token operator">*</span> self<span class="token punctuation">.</span>_norm<span class="token punctuation">(</span>hidden_states<span class="token punctuation">.</span><span class="token builtin">float</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span>type_as<span class="token punctuation">(</span>hidden_states<span class="token punctuation">)</span>
+    
+</code></pre> 
+<p><code>torch.rsqrt</code>是<code>torch.sqrt</code>的倒数；<code>eps</code>是一个很小的数，防止除零；<code>hidden_states.float()</code>确保了标准差计算的精确度和稳定性，然后在<code>forward</code>方法中，通过<code>.type_as(hidden_states)</code>将结果转换回原来的数据类型，以保持与输入张量相同的数据类型，使得归一化处理后的结果与输入数据类型一致。</p> 
+<p>下面通过一个简单的网络来测试一下：</p> 
+<pre><code class="prism language-py"><span class="token keyword">import</span> torch
+<span class="token keyword">import</span> torch<span class="token punctuation">.</span>nn <span class="token keyword">as</span> nn
+<span class="token keyword">from</span> torch <span class="token keyword">import</span> Tensor
+
+<span class="token keyword">class</span> <span class="token class-name">SimpleNet</span><span class="token punctuation">(</span>nn<span class="token punctuation">.</span>Module<span class="token punctuation">)</span><span class="token punctuation">:</span>
+    <span class="token keyword">def</span> <span class="token function">__init__</span><span class="token punctuation">(</span>self<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        <span class="token builtin">super</span><span class="token punctuation">(</span>SimpleNet<span class="token punctuation">,</span> self<span class="token punctuation">)</span><span class="token punctuation">.</span>__init__<span class="token punctuation">(</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>linear <span class="token operator">=</span> nn<span class="token punctuation">.</span>Linear<span class="token punctuation">(</span>in_features<span class="token operator">=</span><span class="token number">10</span><span class="token punctuation">,</span> out_features<span class="token operator">=</span><span class="token number">5</span><span class="token punctuation">)</span>
+        self<span class="token punctuation">.</span>rmsnorm <span class="token operator">=</span> RMSNorm<span class="token punctuation">(</span>hidden_size<span class="token operator">=</span><span class="token number">5</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">def</span> <span class="token function">forward</span><span class="token punctuation">(</span>self<span class="token punctuation">,</span> x<span class="token punctuation">)</span><span class="token punctuation">:</span>
+        x <span class="token operator">=</span> self<span class="token punctuation">.</span>linear<span class="token punctuation">(</span>x<span class="token punctuation">)</span>
+        x <span class="token operator">=</span> self<span class="token punctuation">.</span>rmsnorm<span class="token punctuation">(</span>x<span class="token punctuation">)</span>
+        <span class="token keyword">return</span> x
+
+
+net <span class="token operator">=</span> SimpleNet<span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+
+input_data <span class="token operator">=</span> torch<span class="token punctuation">.</span>randn<span class="token punctuation">(</span><span class="token number">2</span><span class="token punctuation">,</span> <span class="token number">10</span><span class="token punctuation">)</span>  <span class="token comment"># 2个样本，每个样本包含10个特征</span>
+
+output <span class="token operator">=</span> net<span class="token punctuation">(</span>input_data<span class="token punctuation">)</span>
+
+<span class="token keyword">print</span><span class="token punctuation">(</span><span class="token string">"Input Shape:"</span><span class="token punctuation">,</span> input_data<span class="token punctuation">.</span>shape<span class="token punctuation">)</span>
+<span class="token keyword">print</span><span class="token punctuation">(</span><span class="token string">"Output Shape:"</span><span class="token punctuation">,</span> output<span class="token punctuation">.</span>shape<span class="token punctuation">)</span>
+</code></pre> 
+<pre><code>Input Shape: torch.Size([2, 10])
+Output Shape: torch.Size([2, 5])
+</code></pre> 
+<h2><a id="_96"></a>参考</h2> 
+<hr class="footnotes-sep"> 
+<section class="footnotes"> 
+ <ol class="footnotes-list"><li id="fn1" class="footnote-item"><p><a href="https://blog.csdn.net/yjw123456/article/details/137879915">[论文笔记]Root Mean Square Layer Normalization</a> <a href="#fnref1" rel="nofollow" class="footnote-backref">↩︎</a> <a href="#fnref1:1" rel="nofollow" class="footnote-backref">↩︎</a></p> </li><li id="fn2" class="footnote-item"><p><a href="https://blog.csdn.net/yjw123456/article/details/119177520">批归一化和层归一化</a> <a href="#fnref2" rel="nofollow" class="footnote-backref">↩︎</a></p> </li></ol> 
+</section>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/589536b849299a8355915e85844bece5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Python-Mysql 实现学生信息管理系统</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/595c5adaca72c979c5c6114f9fe3a58c/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">nohup java -jar 启动java项目</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

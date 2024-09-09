@@ -1,0 +1,317 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>MySQL中实现动态表单中JSON元素精准匹配的方法 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/46a935762338d94b8e3d2e473dd89c39/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="MySQL中实现动态表单中JSON元素精准匹配的方法">
+  <meta property="og:description" content="目录
+前言
+一、动态表单技术
+1、包含的主要信息
+2、元素属性设置
+3、表单内容
+二、表单数据存储和查询
+1、数据存储
+2、数据的查询
+3、在5.7版本中进行JSON检索
+4、8.0后的优化查询
+三、总结
+前言 在很多有工作流设置的地方、比如需要在不同的流程中，需要实现流程表单的自定义。在以前的一些业务中，我们几乎都需要用户来固化表单。这样的实现方式，非常不友好，扩展性也不强。通常在上线后会需要进行调整。同时，在调整时，一般需要用户先明确流程，然后再反馈给开发人员，因为当时没有在线的流程表单构造器，流程的表单调整还需要开发人员来配合。这样一来，系统的开发步骤就比较长，一个流程要想走下来，花费的时间代价就非常大。因此，在这样的需求背景下，有的技术团队开始研究动态表单，将用户的创造和动手能力直接引入进来。用户不仅能自定义流程引擎，同时还能基于流程引擎来定义挂载在流程引擎上的表单。
+到了这一步，应该说是非常友好的，用户可以深度的参与相关的设计，如果想调整流程。只需要下架旧的流程，然后设计新的流程，同时把相应的表单也设计好后一同发布。这样系统就会启动新的流程，表单也会自动更新。曾几何时，这种技术还是少数部分用户玩的，而今再看，就像“旧时王谢堂前燕飞入寻常百姓家”，已经没有了什么神秘的面纱，向大众展示它背后的一面。
+虽然在流程中使用动态表单，有很好的扩展性和可用性。但是，同时也带来了一些额外的技术实现复杂度，就是在生成动态表单的时候，表单通常比较复杂，通常我们需要进行很多表单元素的编辑，还要定义表单的值，各种各样的表单元素类型。如果我想使用表格来导入这些数据，应该怎么来进行对应。导出的时候，怎么精准的写出数据。这对我们在数据库中设计相应的表以及针对动态表单的数据进行表单元素级的精准匹配有了一定的技术要求。
+本文重点不是在于讲解如何设计动态表单，而是重点讲解，如何在将设计好的动态表单信息进行提取，比如进行模板数据导入的时候，可以根据不同的表单类型，比如根据单行文字框的名字来动态设置值，也可以在导数数据时，知道将数据库的性别一列保存的1和2翻译成男和女这两种属性。这都需要我们精准的提取表单中的不同的信息，能精准提取表单的文本、类型、默认值域还有其他的表单元素的设置。通过本文，您可以了解如何正确的操作动态表单信息，同时了解如何从表单中查找表单元素。
+一、动态表单技术 为了让大家了解一些动态表单可能会包含哪些技术，我还是决定对动态表单技术进行简单的讲解，更深入的就不再进行赘述。目的是让大家对动态表单有个基本的认识。
+1、包含的主要信息 众所周知，在Web界面的设计和实现中，表单其实就一个form界面，我们在这个Web界面中可以定义不同的表单元素，比如单行文本框，多行文本域、单选按钮、多选按钮、下拉框，而在现代的界面中，对元素的类型做了更进一步的细分，比如时间又可以分为时间选择器、日期选择器，其它的常见还有打分控件、计数器、颜色选择器、开关、滑块等等。在下图中列出来了常见的一些表单要素。
+上面这个就是一个非常典型的表单设计器，它按照功能区域可以分为表单元素类型、表单设计渔区、属性设计渔区三个部分。从结构来说分为左、中、右三种类型。最左边的部分是表单中包含的元素类型，这个在上面的内容中有所涉及。下面有布局字段，布局的话就是用来控制页面的元素如何布置，比如一行是摆放三个单行文本域还是摆2个，这些都是通过布局元素来设置的。 中间就是主题的设计界面。点击左边的元素，然后拖到中间的设计器中即可。
+2、元素属性设置 将元素和布局都设置好之后，一个设计良好的表单，还需要对表单的属性信息进行定义，比如表单的名字、它的默认值是什么，如果是下拉框，下拉框的值域又是什么？默认的下拉选项是哪个。表单的元素是否必填，是有其它的数据格式校验类型等等。这些属性信息都在最右边的属性编辑器中进行定义和设置。在中间的要素设计器中点击对应的表单元素，可以打开它对应的属性设置信息。如下图所示：
+通过上面的表单设计界面，我们就可以实现表单的灵活设置。
+3、表单内容 相信大家对于生成的表单内容是什么样的，一定很有兴趣吧。下面我们来看一下经过上面的动态表单设计之后，生成的表单内容是什么样的？具体的格式是什么？首先来点击预览，看一下表单设计器生成的页面效果。
+点击“生成json”按钮可以将动态表单转成json，这样我们就可以把表单存储到数据库中，实现动态的管理和配置。来看下json的表单生成结果。
+内容比较多，我们将表单内容复制到文本编辑器中，然后将json进行格式的美化后来看实际的效果。 &#34;list&#34;: [ { &#34;type&#34;: &#34;grid&#34;, &#34;icon&#34;: &#34;icon-grid-&#34;, &#34;columns&#34;: [ { &#34;span&#34;: 12, &#34;list&#34;: [ { &#34;type&#34;: &#34;input&#34;, &#34;icon&#34;: &#34;icon-input&#34;, &#34;options&#34;: { &#34;width&#34;: &#34;100%&#34;, &#34;defaultValue&#34;: &#34;&#34;, &#34;required&#34;: false, &#34;dataType&#34;: &#34;string&#34;, &#34;pattern&#34;: &#34;&#34;, &#34;placeholder&#34;: &#34;请输入姓名&#34;, &#34;disabled&#34;: false, &#34;maxlength&#34;: -1, &#34;showWordLimit&#34;: false, &#34;">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-24T22:46:43+08:00">
+    <meta property="article:modified_time" content="2024-07-24T22:46:43+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">MySQL中实现动态表单中JSON元素精准匹配的方法</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p id="main-toc"><strong>目录</strong></p> 
+<p id="-toc" style="margin-left:0px;"></p> 
+<p id="%E5%89%8D%E8%A8%80-toc" style="margin-left:0px;"><a href="#%E5%89%8D%E8%A8%80" rel="nofollow">前言</a></p> 
+<p id="%E4%B8%80%E3%80%81%E5%8A%A8%E6%80%81%E8%A1%A8%E5%8D%95%E6%8A%80%E6%9C%AF-toc" style="margin-left:0px;"><a href="#%E4%B8%80%E3%80%81%E5%8A%A8%E6%80%81%E8%A1%A8%E5%8D%95%E6%8A%80%E6%9C%AF" rel="nofollow">一、动态表单技术</a></p> 
+<p id="1%E3%80%81%E5%8C%85%E5%90%AB%E7%9A%84%E4%B8%BB%E8%A6%81%E4%BF%A1%E6%81%AF-toc" style="margin-left:40px;"><a href="#1%E3%80%81%E5%8C%85%E5%90%AB%E7%9A%84%E4%B8%BB%E8%A6%81%E4%BF%A1%E6%81%AF" rel="nofollow">1、包含的主要信息</a></p> 
+<p id="2%E3%80%81%E5%85%83%E7%B4%A0%E5%B1%9E%E6%80%A7%E8%AE%BE%E7%BD%AE-toc" style="margin-left:40px;"><a href="#2%E3%80%81%E5%85%83%E7%B4%A0%E5%B1%9E%E6%80%A7%E8%AE%BE%E7%BD%AE" rel="nofollow">2、元素属性设置</a></p> 
+<p id="3%E3%80%81%E8%A1%A8%E5%8D%95%E5%86%85%E5%AE%B9-toc" style="margin-left:40px;"><a href="#3%E3%80%81%E8%A1%A8%E5%8D%95%E5%86%85%E5%AE%B9" rel="nofollow">3、表单内容</a></p> 
+<p id="%E4%BA%8C%E3%80%81%E8%A1%A8%E5%8D%95%E6%95%B0%E6%8D%AE%E5%AD%98%E5%82%A8%E5%92%8C%E6%9F%A5%E8%AF%A2-toc" style="margin-left:0px;"><a href="#%E4%BA%8C%E3%80%81%E8%A1%A8%E5%8D%95%E6%95%B0%E6%8D%AE%E5%AD%98%E5%82%A8%E5%92%8C%E6%9F%A5%E8%AF%A2" rel="nofollow">二、表单数据存储和查询</a></p> 
+<p id="1%E3%80%81%E6%95%B0%E6%8D%AE%E5%AD%98%E5%82%A8-toc" style="margin-left:40px;"><a href="#1%E3%80%81%E6%95%B0%E6%8D%AE%E5%AD%98%E5%82%A8" rel="nofollow">1、数据存储</a></p> 
+<p id="2%E3%80%81%E6%95%B0%E6%8D%AE%E7%9A%84%E6%9F%A5%E8%AF%A2-toc" style="margin-left:40px;"><a href="#2%E3%80%81%E6%95%B0%E6%8D%AE%E7%9A%84%E6%9F%A5%E8%AF%A2" rel="nofollow">2、数据的查询</a></p> 
+<p id="3%E3%80%81%E5%9C%A85.7%E7%89%88%E6%9C%AC%E4%B8%AD%E8%BF%9B%E8%A1%8CJSON%E6%A3%80%E7%B4%A2-toc" style="margin-left:40px;"><a href="#3%E3%80%81%E5%9C%A85.7%E7%89%88%E6%9C%AC%E4%B8%AD%E8%BF%9B%E8%A1%8CJSON%E6%A3%80%E7%B4%A2" rel="nofollow">3、在5.7版本中进行JSON检索</a></p> 
+<p id="4%E3%80%818.0%E5%90%8E%E7%9A%84%E4%BC%98%E5%8C%96%E6%9F%A5%E8%AF%A2-toc" style="margin-left:40px;"><a href="#4%E3%80%818.0%E5%90%8E%E7%9A%84%E4%BC%98%E5%8C%96%E6%9F%A5%E8%AF%A2" rel="nofollow">4、8.0后的优化查询</a></p> 
+<p id="%E6%80%BB%E7%BB%93-toc" style="margin-left:0px;">三、<a href="#%E6%80%BB%E7%BB%93" rel="nofollow">总结</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2> 
+<p>        在很多有工作流设置的地方、比如需要在不同的流程中，需要实现流程表单的自定义。在以前的一些业务中，我们几乎都需要用户来固化表单。这样的实现方式，非常不友好，扩展性也不强。通常在上线后会需要进行调整。同时，在调整时，一般需要用户先明确流程，然后再反馈给开发人员，因为当时没有在线的流程表单构造器，流程的表单调整还需要开发人员来配合。这样一来，系统的开发步骤就比较长，一个流程要想走下来，花费的时间代价就非常大。因此，在这样的需求背景下，有的技术团队开始研究动态表单，将用户的创造和动手能力直接引入进来。用户不仅能自定义流程引擎，同时还能基于流程引擎来定义挂载在流程引擎上的表单。</p> 
+<p class="img-center"><img alt="" height="302" src="https://images2.imgbox.com/4d/f9/DIoFy4yn_o.png" width="656"></p> 
+<p>        到了这一步，应该说是非常友好的，用户可以深度的参与相关的设计，如果想调整流程。只需要下架旧的流程，然后设计新的流程，同时把相应的表单也设计好后一同发布。这样系统就会启动新的流程，表单也会自动更新。曾几何时，这种技术还是少数部分用户玩的，而今再看，就像“<em>旧时王谢堂前燕飞入寻常百姓家</em>”，已经没有了什么神秘的面纱，向大众展示它背后的一面。</p> 
+<p>        虽然在流程中使用动态表单，有很好的扩展性和可用性。但是，同时也带来了一些额外的技术实现复杂度，就是在生成动态表单的时候，表单通常比较复杂，通常我们需要进行很多表单元素的编辑，还要定义表单的值，各种各样的表单元素类型。如果我想使用表格来导入这些数据，应该怎么来进行对应。导出的时候，怎么精准的写出数据。这对我们在数据库中设计相应的表以及针对动态表单的数据进行表单元素级的精准匹配有了一定的技术要求。</p> 
+<p>        本文重点不是在于讲解如何设计动态表单，而是重点讲解，如何在将设计好的动态表单信息进行提取，比如进行模板数据导入的时候，可以根据不同的表单类型，比如根据单行文字框的名字来动态设置值，也可以在导数数据时，知道将数据库的性别一列保存的1和2翻译成男和女这两种属性。这都需要我们精准的提取表单中的不同的信息，能精准提取表单的文本、类型、默认值域还有其他的表单元素的设置。通过本文，您可以了解如何正确的操作动态表单信息，同时了解如何从表单中查找表单元素。</p> 
+<h2 id="%E4%B8%80%E3%80%81%E5%8A%A8%E6%80%81%E8%A1%A8%E5%8D%95%E6%8A%80%E6%9C%AF">一、动态表单技术</h2> 
+<p>        为了让大家了解一些动态表单可能会包含哪些技术，我还是决定对动态表单技术进行简单的讲解，更深入的就不再进行赘述。目的是让大家对动态表单有个基本的认识。</p> 
+<h3 id="1%E3%80%81%E5%8C%85%E5%90%AB%E7%9A%84%E4%B8%BB%E8%A6%81%E4%BF%A1%E6%81%AF">1、包含的主要信息</h3> 
+<p>        众所周知，在Web界面的设计和实现中，表单其实就一个form界面，我们在这个Web界面中可以定义不同的表单元素，比如单行文本框，多行文本域、单选按钮、多选按钮、下拉框，而在现代的界面中，对元素的类型做了更进一步的细分，比如时间又可以分为时间选择器、日期选择器，其它的常见还有打分控件、计数器、颜色选择器、开关、滑块等等。在下图中列出来了常见的一些表单要素。</p> 
+<p class="img-center"><img alt="" height="300" src="https://images2.imgbox.com/99/68/ZLC7fkAy_o.png" width="651"></p> 
+<p>        上面这个就是一个非常典型的表单设计器，它按照功能区域可以分为表单元素类型、表单设计渔区、属性设计渔区三个部分。从结构来说分为左、中、右三种类型。最左边的部分是表单中包含的元素类型，这个在上面的内容中有所涉及。下面有布局字段，布局的话就是用来控制页面的元素如何布置，比如一行是摆放三个单行文本域还是摆2个，这些都是通过布局元素来设置的。 中间就是主题的设计界面。点击左边的元素，然后拖到中间的设计器中即可。</p> 
+<h3 id="2%E3%80%81%E5%85%83%E7%B4%A0%E5%B1%9E%E6%80%A7%E8%AE%BE%E7%BD%AE">2、元素属性设置</h3> 
+<p>        将元素和布局都设置好之后，一个设计良好的表单，还需要对表单的属性信息进行定义，比如表单的名字、它的默认值是什么，如果是下拉框，下拉框的值域又是什么？默认的下拉选项是哪个。表单的元素是否必填，是有其它的数据格式校验类型等等。这些属性信息都在最右边的属性编辑器中进行定义和设置。在中间的要素设计器中点击对应的表单元素，可以打开它对应的属性设置信息。如下图所示：</p> 
+<p class="img-center"><img alt="" height="281" src="https://images2.imgbox.com/10/e1/odA1uGFd_o.png" width="669"></p> 
+<p>        通过上面的表单设计界面，我们就可以实现表单的灵活设置。</p> 
+<h3 id="3%E3%80%81%E8%A1%A8%E5%8D%95%E5%86%85%E5%AE%B9">3、表单内容</h3> 
+<p>        相信大家对于生成的表单内容是什么样的，一定很有兴趣吧。下面我们来看一下经过上面的动态表单设计之后，生成的表单内容是什么样的？具体的格式是什么？首先来点击预览，看一下表单设计器生成的页面效果。</p> 
+<p class="img-center"><img alt="" height="279" src="https://images2.imgbox.com/e9/b5/OebiLnDg_o.png" width="655"></p> 
+<p>        点击“生成json”按钮可以将动态表单转成json，这样我们就可以把表单存储到数据库中，实现动态的管理和配置。来看下json的表单生成结果。</p> 
+<p class="img-center"><img alt="" height="254" src="https://images2.imgbox.com/11/fd/7iGvKWI6_o.png" width="627"></p> 
+<p>        内容比较多，我们将表单内容复制到文本编辑器中，然后将json进行格式的美化后来看实际的效果。 </p> 
+<pre><code class="language-bash">	"list": [
+		{
+			"type": "grid",
+			"icon": "icon-grid-",
+			"columns": [
+				{
+					"span": 12,
+					"list": [
+						{
+							"type": "input",
+							"icon": "icon-input",
+							"options": {
+								"width": "100%",
+								"defaultValue": "",
+								"required": false,
+								"dataType": "string",
+								"pattern": "",
+								"placeholder": "请输入姓名",
+								"disabled": false,
+								"maxlength": -1,
+								"showWordLimit": false,
+								"remoteFunc": "func_1721826724000_49979"
+							},
+							"name": "姓名",
+							"key": "1721826724000_49979",
+							"model": "input_1721826724000_49979",
+							"rules": [
+								{
+									"type": "string",
+									"message": "姓名格式不正确"
+								}
+							]
+						}
+					]
+				}</code></pre> 
+<p>        以上就是我们对上面的动态表单的相关知识的介绍。介绍上面的内容，主要是为了让大家对数据的格式和样例有一个基本的掌握。</p> 
+<h2 id="%E4%BA%8C%E3%80%81%E8%A1%A8%E5%8D%95%E6%95%B0%E6%8D%AE%E5%AD%98%E5%82%A8%E5%92%8C%E6%9F%A5%E8%AF%A2">二、表单数据存储和查询</h2> 
+<p>        在掌握了动态表单的设计之后，为了实现可以灵活的管理和检索，我们还需要将表单的数据进行存储，在需要调用的时候还需要进行高效的查询。本节就简单的来讲一下如何进行动态表单数据的存储和查询。数据库采用的是MySQL数据库，版本是5.7，采用的数据类型是JSON。</p> 
+<h3 id="1%E3%80%81%E6%95%B0%E6%8D%AE%E5%AD%98%E5%82%A8">1、数据存储</h3> 
+<p>        要想把上述的表单数据存储起来，我们可以有两种选择，第一种是将表单的内容直接存成字符串，配合后台的开发语言来实现表单的存储。第二种就是利用数据库的特性，直接将数据以JSON的形式存储。第一种方案，数据库简单，但是应用程序复杂。而第二种方案刚好相反。依然使用了数据库，而且用到了5.7这样的版本，在MySQL当中，是支持我们直接操作和管理JSON类型的数据的。因此这里我们采用第二种方案，直接设计json字段。将动态表单的内容存储到json字段中。设计的表结构如下：</p> 
+<pre><code class="language-sql">-- ----------------------------
+-- Table structure for ems_equipment_classification_attr
+-- ----------------------------
+DROP TABLE IF EXISTS `ems_equipment_classification_attr`;
+CREATE TABLE `ems_equipment_classification_attr`  (
+  `equip_class_id` varchar(10) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '设备分类ID',
+  `attr_config` json NOT NULL COMMENT '属性信息，以json的形式存储',
+  `create_uid` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '创建人',
+  `create_time` int(11) NOT NULL DEFAULT 0 COMMENT '创建时间',
+  `modify_uid` varchar(20) CHARACTER SET utf8mb4 COLLATE utf8mb4_general_ci NOT NULL DEFAULT '' COMMENT '更新人',
+  `modify_time` int(11) NOT NULL DEFAULT 0 COMMENT '更新时间',
+  `version` int(4) NOT NULL DEFAULT 0 COMMENT '版本号',
+  `inherit_flag` int(4) NOT NULL DEFAULT 1 COMMENT '属性继承标记，1表示继承上级属性，0表示独立属性',
+  INDEX `idx_ems_equipment_class_attr_class_id`(`equip_class_id`) USING BTREE
+) ENGINE = InnoDB CHARACTER SET = utf8mb4 COLLATE = utf8mb4_general_ci COMMENT = '设备分类属性,以json的形式进行存储，支持各层级单独定义，下级分类自动继承上级分类属性' ROW_FORMAT = Dynamic;
+</code></pre> 
+<p>        在上述表中我们有一个attr_config 字段，这个字段设计成json类型的，主要用来保存动态表单的值。然后我们使用以下语句来新增一条记录：</p> 
+<pre><code class="language-sql">-- ----------------------------
+-- Records of ems_equipment_classification_attr
+-- ----------------------------
+INSERT INTO `ems_equipment_classification_attr` VALUES ('3', '{\"formConfig\": {\"size\": \"\", \"cssCode\": \"\", \"refName\": \"vForm\", \"functions\": \"\", \"modelName\": \"formData\", \"rulesName\": \"rules\", \"labelAlign\": \"label-left-align\", \"labelWidth\": 80, \"layoutType\": \"PC\", \"customClass\": \"\", \"jsonVersion\": 3, \"labelPosition\": \"left\", \"onFormCreated\": \"\", \"onFormMounted\": \"\", \"onFormValidate\": \"\", \"onFormDataChange\": \"\"}, \"widgetList\": [{\"id\": \"grid93809\", \"key\": 43585, \"cols\": [{\"id\": \"grid-col-52064\", \"icon\": \"grid-col\", \"type\": \"grid-col\", \"options\": {\"md\": 12, \"sm\": 12, \"xs\": 12, \"name\": \"gridCol52064\", \"pull\": 0, \"push\": 0, \"span\": 12, \"hidden\": false, \"offset\": 0, \"responsive\": false, \"customClass\": []}, \"category\": \"container\", \"internal\": true, \"widgetList\": [{\"id\": \"input36308\", \"key\": 90048, \"icon\": \"text-field\", \"type\": \"input\", \"options\": {\"name\": \"input36308\", \"size\": \"\", \"type\": \"text\", \"label\": \"直径（DN）\", \"hidden\": false, \"onBlur\": \"\", \"onFocus\": \"\", \"onInput\": \"\", \"disabled\": false, \"onChange\": \"\", \"readonly\": false, \"required\": true, \"clearable\": true, \"maxLength\": null, \"minLength\": null, \"onCreated\": \"\", \"onMounted\": \"\", \"buttonIcon\": \"custom-search\", \"labelAlign\": \"\", \"labelWidth\": null, \"onValidate\": \"\", \"prefixIcon\": \"\", \"suffixIcon\": \"\", \"validation\": \"\", \"columnWidth\": \"200px\", \"customClass\": [], \"labelHidden\": false, \"placeholder\": \"\", \"appendButton\": false, \"defaultValue\": \"\", \"labelTooltip\": null, \"requiredHint\": \"品牌不能为空\", \"showPassword\": false, \"showWordLimit\": false, \"labelIconClass\": null, \"validationHint\": \"\", \"labelIconPosition\": \"rear\", \"onAppendButtonClick\": \"\", \"appendButtonDisabled\": false}, \"formItemFlag\": true}]}, {\"id\": \"grid-col-95927\", \"icon\": \"grid-col\", \"type\": \"grid-col\", \"options\": {\"md\": 12, \"sm\": 12, \"xs\": 12, \"name\": \"gridCol95927\", \"pull\": 0, \"push\": 0, \"span\": 12, \"hidden\": false, \"offset\": 0, \"responsive\": false, \"customClass\": []}, \"category\": \"container\", \"internal\": true, \"widgetList\": [{\"id\": \"select17890\", \"key\": 27039, \"icon\": \"select-field\", \"type\": \"select\", \"options\": {\"name\": \"select17890\", \"size\": \"\", \"label\": \"制动方式\", \"hidden\": false, \"onBlur\": \"\", \"remote\": false, \"onFocus\": \"\", \"disabled\": false, \"multiple\": false, \"onChange\": \"\", \"required\": true, \"clearable\": true, \"onCreated\": \"\", \"onMounted\": \"\", \"filterable\": false, \"labelAlign\": \"\", \"labelWidth\": null, \"onValidate\": \"\", \"validation\": \"\", \"allowCreate\": false, \"columnWidth\": \"200px\", \"customClass\": [], \"labelHidden\": false, \"optionItems\": [{\"label\": \"手动\", \"value\": 1}, {\"label\": \"电动\", \"value\": 2}, {\"label\": \"气动\", \"value\": \"3\"}, {\"label\": \"液压控制\", \"value\": 4}, {\"label\": \"其他\", \"value\": 5}], \"placeholder\": \"\", \"defaultValue\": \"\", \"labelTooltip\": null, \"requiredHint\": \"制动方式不能空\", \"multipleLimit\": 0, \"onRemoteQuery\": \"\", \"labelIconClass\": null, \"validationHint\": \"\", \"automaticDropdown\": false, \"labelIconPosition\": \"rear\"}, \"formItemFlag\": true}]}], \"icon\": \"grid\", \"type\": \"grid\", \"options\": {\"name\": \"grid93809\", \"gutter\": 12, \"hidden\": false, \"colHeight\": null, \"customClass\": []}, \"category\": \"container\"}, {\"id\": \"grid40469\", \"key\": 43585, \"cols\": [{\"id\": \"grid-col-77638\", \"icon\": \"grid-col\", \"type\": \"grid-col\", \"options\": {\"md\": 12, \"sm\": 12, \"xs\": 12, \"name\": \"gridCol77638\", \"pull\": 0, \"push\": 0, \"span\": 12, \"hidden\": false, \"offset\": 0, \"responsive\": false, \"customClass\": []}, \"category\": \"container\", \"internal\": true, \"widgetList\": [{\"id\": \"input30722\", \"key\": 90048, \"icon\": \"text-field\", \"type\": \"input\", \"options\": {\"name\": \"input30722\", \"size\": \"\", \"type\": \"text\", \"label\": \"压力(MP)\", \"hidden\": false, \"onBlur\": \"\", \"onFocus\": \"\", \"onInput\": \"\", \"disabled\": false, \"onChange\": \"\", \"readonly\": false, \"required\": true, \"clearable\": true, \"maxLength\": null, \"minLength\": null, \"onCreated\": \"\", \"onMounted\": \"\", \"buttonIcon\": \"custom-search\", \"labelAlign\": \"\", \"labelWidth\": null, \"onValidate\": \"\", \"prefixIcon\": \"\", \"suffixIcon\": \"\", \"validation\": \"\", \"columnWidth\": \"200px\", \"customClass\": [], \"labelHidden\": false, \"placeholder\": \"\", \"appendButton\": false, \"defaultValue\": \"\", \"labelTooltip\": null, \"requiredHint\": \"压力不能为空\", \"showPassword\": false, \"showWordLimit\": false, \"labelIconClass\": null, \"validationHint\": \"\", \"labelIconPosition\": \"rear\", \"onAppendButtonClick\": \"\", \"appendButtonDisabled\": false}, \"formItemFlag\": true}]}, {\"id\": \"grid-col-71433\", \"icon\": \"grid-col\", \"type\": \"grid-col\", \"options\": {\"md\": 12, \"sm\": 12, \"xs\": 12, \"name\": \"gridCol71433\", \"pull\": 0, \"push\": 0, \"span\": 12, \"hidden\": false, \"offset\": 0, \"responsive\": false, \"customClass\": []}, \"category\": \"container\", \"internal\": true, \"widgetList\": [{\"id\": \"select11081\", \"key\": 31288, \"icon\": \"select-field\", \"type\": \"select\", \"options\": {\"name\": \"select11081\", \"size\": \"\", \"label\": \"材质\", \"hidden\": false, \"onBlur\": \"\", \"remote\": false, \"onFocus\": \"\", \"disabled\": false, \"multiple\": false, \"onChange\": \"\", \"required\": true, \"clearable\": true, \"onCreated\": \"\", \"onMounted\": \"\", \"filterable\": true, \"labelAlign\": \"\", \"labelWidth\": null, \"onValidate\": \"\", \"validation\": \"\", \"allowCreate\": false, \"columnWidth\": \"200px\", \"customClass\": [], \"labelHidden\": false, \"optionItems\": [{\"label\": \"铸铁\", \"value\": 1}, {\"label\": \"不锈钢\", \"value\": 2}, {\"label\": \"碳钢\", \"value\": 3}, {\"label\": \"铜\", \"value\": 4}, {\"label\": \"其他\", \"value\": 5}], \"placeholder\": \"\", \"defaultValue\": \"\", \"labelTooltip\": null, \"requiredHint\": \"材质不能为空\", \"multipleLimit\": 0, \"onRemoteQuery\": \"\", \"labelIconClass\": null, \"validationHint\": \"\", \"automaticDropdown\": false, \"labelIconPosition\": \"rear\"}, \"formItemFlag\": true}]}], \"icon\": \"grid\", \"type\": \"grid\", \"options\": {\"name\": \"grid40469\", \"gutter\": 12, \"hidden\": false, \"colHeight\": null, \"customClass\": []}, \"category\": \"container\"}, {\"id\": \"grid4823\", \"key\": 62462, \"cols\": [{\"id\": \"grid-col-24973\", \"icon\": \"grid-col\", \"type\": \"grid-col\", \"options\": {\"md\": 12, \"sm\": 12, \"xs\": 12, \"name\": \"gridCol24973\", \"pull\": 0, \"push\": 0, \"span\": 12, \"hidden\": false, \"offset\": 0, \"responsive\": false, \"customClass\": []}, \"category\": \"container\", \"internal\": true, \"widgetList\": [{\"id\": \"input21916\", \"key\": 28602, \"icon\": \"text-field\", \"type\": \"input\", \"options\": {\"name\": \"input21916\", \"size\": \"\", \"type\": \"text\", \"label\": \"其他属性\", \"hidden\": false, \"onBlur\": \"\", \"onFocus\": \"\", \"onInput\": \"\", \"disabled\": false, \"onChange\": \"\", \"readonly\": false, \"required\": false, \"clearable\": true, \"maxLength\": null, \"minLength\": null, \"onCreated\": \"\", \"onMounted\": \"\", \"buttonIcon\": \"custom-search\", \"labelAlign\": \"\", \"labelWidth\": null, \"onValidate\": \"\", \"prefixIcon\": \"\", \"suffixIcon\": \"\", \"validation\": \"\", \"columnWidth\": \"400px\", \"customClass\": [], \"labelHidden\": false, \"placeholder\": \"\", \"appendButton\": false, \"defaultValue\": \"\", \"labelTooltip\": null, \"requiredHint\": \"\", \"showPassword\": false, \"showWordLimit\": false, \"labelIconClass\": null, \"validationHint\": \"\", \"labelIconPosition\": \"rear\", \"onAppendButtonClick\": \"\", \"appendButtonDisabled\": false}, \"formItemFlag\": true}]}], \"icon\": \"grid\", \"type\": \"grid\", \"options\": {\"name\": \"grid4823\", \"gutter\": 12, \"hidden\": false, \"colHeight\": null, \"customClass\": []}, \"category\": \"container\"}]}', '', 1709188741, 'G6', 1711434246, 1021100012, 1);
+</code></pre> 
+<h3 id="2%E3%80%81%E6%95%B0%E6%8D%AE%E7%9A%84%E6%9F%A5%E8%AF%A2">2、数据的查询</h3> 
+<p>        在使用上面的sql脚本将数据插入到数据库之后呢，我们怎么把页面的表单给精准的查询出来呢？实现我们最初的需求呢。这里就需要介绍一下在MySQL中的JSON数据的查询问题。在MySQL5.7中关于JSON的方法参见其官网的定义：</p> 
+<table align="center"><thead><tr><th style="width:147px;">Name</th><th style="width:345px;">Description</th><th>Introduced</th><th>Deprecated</th></tr></thead><tbody><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-search-functions.html#operator_json-column-path" rel="nofollow" title="-&gt;">-&gt;</a></th><td style="width:345px;">Return value from JSON column after evaluating path; equivalent to JSON_EXTRACT().</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-search-functions.html#operator_json-inline-path" rel="nofollow" title="-&gt;&gt;">-&gt;&gt;</a></th><td style="width:345px;">Return value from JSON column after evaluating path and unquoting the result; equivalent to JSON_UNQUOTE(JSON_EXTRACT()).</td><td>5.7.13</td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-modification-functions.html#function_json-append" rel="nofollow" title="JSON_APPEND()">JSON_APPEND()</a></th><td style="width:345px;">Append data to JSON document</td><td></td><td>Yes</td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-creation-functions.html#function_json-array" rel="nofollow" title="JSON_ARRAY()">JSON_ARRAY()</a></th><td style="width:345px;">Create JSON array</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-modification-functions.html#function_json-array-append" rel="nofollow" title="JSON_ARRAY_APPEND()">JSON_ARRAY_APPEND()</a></th><td style="width:345px;">Append data to JSON document</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-modification-functions.html#function_json-array-insert" rel="nofollow" title="JSON_ARRAY_INSERT()">JSON_ARRAY_INSERT()</a></th><td style="width:345px;">Insert into JSON array</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-search-functions.html#function_json-contains" rel="nofollow" title="JSON_CONTAINS()">JSON_CONTAINS()</a></th><td style="width:345px;">Whether JSON document contains specific object at path</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-search-functions.html#function_json-contains-path" rel="nofollow" title="JSON_CONTAINS_PATH()">JSON_CONTAINS_PATH()</a></th><td style="width:345px;">Whether JSON document contains any data at path</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-attribute-functions.html#function_json-depth" rel="nofollow" title="JSON_DEPTH()">JSON_DEPTH()</a></th><td style="width:345px;">Maximum depth of JSON document</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-search-functions.html#function_json-extract" rel="nofollow" title="JSON_EXTRACT()">JSON_EXTRACT()</a></th><td style="width:345px;">Return data from JSON document</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-modification-functions.html#function_json-insert" rel="nofollow" title="JSON_INSERT()">JSON_INSERT()</a></th><td style="width:345px;">Insert data into JSON document</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-search-functions.html#function_json-keys" rel="nofollow" title="JSON_KEYS()">JSON_KEYS()</a></th><td style="width:345px;">Array of keys from JSON document</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-attribute-functions.html#function_json-length" rel="nofollow" title="JSON_LENGTH()">JSON_LENGTH()</a></th><td style="width:345px;">Number of elements in JSON document</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-modification-functions.html#function_json-merge" rel="nofollow" title="JSON_MERGE()">JSON_MERGE()</a></th><td style="width:345px;">Merge JSON documents, preserving duplicate keys. Deprecated synonym for JSON_MERGE_PRESERVE()</td><td></td><td>5.7.22</td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-modification-functions.html#function_json-merge-patch" rel="nofollow" title="JSON_MERGE_PATCH()">JSON_MERGE_PATCH()</a></th><td style="width:345px;">Merge JSON documents, replacing values of duplicate keys</td><td>5.7.22</td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-modification-functions.html#function_json-merge-preserve" rel="nofollow" title="JSON_MERGE_PRESERVE()">JSON_MERGE_PRESERVE()</a></th><td style="width:345px;">Merge JSON documents, preserving duplicate keys</td><td>5.7.22</td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-creation-functions.html#function_json-object" rel="nofollow" title="JSON_OBJECT()">JSON_OBJECT()</a></th><td style="width:345px;">Create JSON object</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-utility-functions.html#function_json-pretty" rel="nofollow" title="JSON_PRETTY()">JSON_PRETTY()</a></th><td style="width:345px;">Print a JSON document in human-readable format</td><td>5.7.22</td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-creation-functions.html#function_json-quote" rel="nofollow" title="JSON_QUOTE()">JSON_QUOTE()</a></th><td style="width:345px;">Quote JSON document</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-modification-functions.html#function_json-remove" rel="nofollow" title="JSON_REMOVE()">JSON_REMOVE()</a></th><td style="width:345px;">Remove data from JSON document</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-modification-functions.html#function_json-replace" rel="nofollow" title="JSON_REPLACE()">JSON_REPLACE()</a></th><td style="width:345px;">Replace values in JSON document</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-search-functions.html#function_json-search" rel="nofollow" title="JSON_SEARCH()">JSON_SEARCH()</a></th><td style="width:345px;">Path to value within JSON document</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-modification-functions.html#function_json-set" rel="nofollow" title="JSON_SET()">JSON_SET()</a></th><td style="width:345px;">Insert data into JSON document</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-utility-functions.html#function_json-storage-size" rel="nofollow" title="JSON_STORAGE_SIZE()">JSON_STORAGE_SIZE()</a></th><td style="width:345px;">Space used for storage of binary representation of a JSON document</td><td>5.7.22</td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-attribute-functions.html#function_json-type" rel="nofollow" title="JSON_TYPE()">JSON_TYPE()</a></th><td style="width:345px;">Type of JSON value</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-modification-functions.html#function_json-unquote" rel="nofollow" title="JSON_UNQUOTE()">JSON_UNQUOTE()</a></th><td style="width:345px;">Unquote JSON value</td><td></td><td></td></tr><tr><th style="width:147px;"><a href="https://dev.mysql.com/doc/refman/5.7/en/json-attribute-functions.html#function_json-valid" rel="nofollow" title="JSON_VALID()">JSON_VALID()</a></th><td style="width:345px;">Whether JSON value is valid</td><td></td></tr></tbody></table> 
+<h3 id="3%E3%80%81%E5%9C%A85.7%E7%89%88%E6%9C%AC%E4%B8%AD%E8%BF%9B%E8%A1%8CJSON%E6%A3%80%E7%B4%A2">3、在5.7版本中进行JSON检索</h3> 
+<p>        首先第一步查询一下数据版本，在客户端软件中执行以下sql：</p> 
+<pre><code class="language-sql">-- 查看mysql 的服务器版本
+SELECT VERSION();
+
+5.7.14-log</code></pre> 
+<p>        第二步、查询当前待提取的表单的选项的最大长度</p> 
+<pre><code class="language-sql">-- 这里只能在mysql中使用一种折中的实现方案
+-- 查出数组最大长度
+SELECT MAX(JSON_LENGTH(JSON_EXTRACT(attr_config, CONCAT('$**.options'))))
+FROM ems_equipment_classification_attr where equip_class_id = '3';
+
+13</code></pre> 
+<p>        这里要查询JSON_LENGTH的原因是因为，在当前我这个版本的MYSQL中，如果要实现行列转护转换，只能使用一种折中的方式。通过上述的步骤求出待提取的目标的长度，然后动态拼接参数，实现数据转成多行。这里直接给出最终拼接成的SQL，在得到这个SQL之前，我也是花了很长的时间进行实验才找到这个方法，感谢前人提供的思路。</p> 
+<pre><code class="language-sql">select 
+tb.element -&gt; '$[0].key' keystr,tb.element -&gt;&gt; '$[0].type' type, tb.element -&gt;&gt; '$[0].icon' icon, 
+tb.element -&gt;&gt; '$[0].options.name' namestr, tb.element -&gt;&gt; '$[0].options.label' label, tb.element -&gt;&gt; '$[0].options.optionItems' optionItems, 
+tb.element
+from (
+SELECT JSON_EXTRACT(ta.json_val, CONCAT('$[', idx ,']')) AS element
+FROM (
+	SELECT JSON_TYPE( attr_config -&gt; '$**.widgetList' ) type,
+			attr_config -&gt; '$**.widgetList' json_val,t.* 
+		FROM
+			ems_equipment_classification_attr t 
+		WHERE
+			JSON_TYPE( attr_config -&gt; '$**.label' ) IS NOT NULL 
+			AND equip_class_id = '3' 
+) ta  -- Inline table of sequential values to index into JSON array
+INNER JOIN (
+    SELECT  0 AS idx UNION 
+    SELECT  1 UNION 
+    SELECT  2 UNION 
+    SELECT  3 UNION 
+		SELECT  4 UNION 
+		SELECT  5 UNION
+		select  6 union
+	  select  7 union
+		select  8
+  -- 一直 UNION 到数组最大长度 - 1
+  ) AS indexes
+-- 排除元素数量比最大值要小导致的空项
+WHERE JSON_EXTRACT(ta.json_val, CONCAT('$[', idx ,']')) IS NOT NULL
+ORDER BY idx
+) tb where JSON_TYPE(tb.element -&gt;'$**.label') IS NOT NULL;</code></pre> 
+<p>        请注意这里的1到8就是需要动态生成，结合mybatis框架，可以支持按传入的参数进行生成。</p> 
+<p>查询出来的结果如下所示：</p> 
+<pre><code class="language-bash">43585	grid	grid	grid93809		
+90048	input	text-field	input36308	直径（DN）	
+27039	select	select-field	select17890	制动方式	[{"label": "手动", "value": 1}, {"label": "电动", "value": 2}, {"label": "气动", "value": "3"}, {"label": "液压控制", "value": 4}, {"label": "其他", "value": 5}]
+90048	input	text-field	input30722	压力(MP)	
+31288	select	select-field	select11081	材质	[{"label": "铸铁", "value": 1}, {"label": "不锈钢", "value": 2}, {"label": "碳钢", "value": 3}, {"label": "铜", "value": 4}, {"label": "其他", "value": 5}]
+28602	input	text-field	input21916	其他属性	</code></pre> 
+<p>        到此，在MySQL5.7下的查询完全实现。剩下的参数匹配等，我们在系统重直接对应节即可。</p> 
+<h3 id="4%E3%80%818.0%E5%90%8E%E7%9A%84%E4%BC%98%E5%8C%96%E6%9F%A5%E8%AF%A2">4、8.0后的优化查询</h3> 
+<p>        在mysql8.0之前，mysql没有支持JSON_TABLE的用法，所以我们只用采用上面的这种处理办法。如果您的项目环境用的是8.0的，那么可以直接使用JSON_TABLE的方法直接生成，更加简单。各位如果有8.0的环境，可以按照以下sql进行实验。</p> 
+<pre><code class="language-sql">SELECT 
+    *
+FROM 
+    ems_equipment_classification_attr t
+CROSS JOIN JSON_TABLE(
+    t.attr_config -&gt; '$**.widgetList',
+    '$[*]' COLUMNS(
+        value VARCHAR(255) PATH '$[0].options.value',
+        label VARCHAR(255) PATH '$[0].options.label',
+				name VARCHAR(255) PATH '$[0].options.name',
+				type VARCHAR(255) path '$[0].type',
+				icon VARCHAR(255) path '$[0].icon',
+				requiredHint VARCHAR(255) PATH '$[0].options.requiredHint',
+				optionItems json path '$[0].options.optionItems'
+    )
+) AS jt
+where t.equip_class_id = '3';</code></pre> 
+<p>        正常执行的话可以得到以下的结果：</p> 
+<pre><code class="language-bash">43585	grid	grid	grid93809		
+90048	input	text-field	input36308	直径（DN）	
+27039	select	select-field	select17890	制动方式	[{"label": "手动", "value": 1}, {"label": "电动", "value": 2}, {"label": "气动", "value": "3"}, {"label": "液压控制", "value": 4}, {"label": "其他", "value": 5}]
+90048	input	text-field	input30722	压力(MP)	
+31288	select	select-field	select11081	材质	[{"label": "铸铁", "value": 1}, {"label": "不锈钢", "value": 2}, {"label": "碳钢", "value": 3}, {"label": "铜", "value": 4}, {"label": "其他", "value": 5}]
+28602	input	text-field	input21916	其他属性</code></pre> 
+<p>        基本上跟5.7的执行结果差不太多。到此就完成了在MySQL中两个版本的json数据的精准查询的支持。希望对大家有所帮助。</p> 
+<h2 id="%E6%80%BB%E7%BB%93">三、总结</h2> 
+<p>        以上就是本文的主要内容，本文重点讲解如何在将设计好的动态表单信息进行提取，比如进行模板数据导入的时候，可以根据不同的表单类型，比如根据单行文字框的名字来动态设置值，也可以在导数数据时，知道将数据库的性别一列保存的1和2翻译成男和女这两种属性。这都需要我们精准的提取表单中的不同的信息，能精准提取表单的文本、类型、默认值域还有其他的表单元素的设置。通过本文，您可以了解如何正确的操作动态表单信息，同时了解如何从表单中查找表单元素。行文仓促，难免有不足之处，欢迎各位专家朋友批评指正，不甚感激。</p> 
+<p>参考资料：</p> 
+<p>1、<a class="link-info" href="https://blog.csdn.net/weixin_39873661/article/details/134145555" title="MySQL5.7从JSON数组提取行的办法">MySQL5.7从JSON数组提取行的办法</a>。</p> 
+<p>2、<a class="link-info" href="https://dev.mysql.com/doc/refman/5.7/en/json-function-reference.html" rel="nofollow" title="json-function-reference">json-function-reference</a>。</p> 
+<p>3、<a class="link-info" href="https://openadmin.bpmport.com/idm/#/flowable/bpmn" rel="nofollow" title="流程设计器演示地址">流程设计器演示地址</a>。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/e66debd588d717b6ba7ca924620e8c15/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">算法从零到精通 (一) ~ 快慢双指针</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/ff9035d1d49fa5f5cffe35add5840dae/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【进阶篇-Day12：JAVA中stream流、File类的介绍】</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

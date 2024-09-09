@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>位运算在数据库中的运用实践-以MySQL和PG为例 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/c4c2602a1297c17896381962a93ee420/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="位运算在数据库中的运用实践-以MySQL和PG为例">
+  <meta property="og:description" content="目录
+前言
+一、两种不同的数据库设计
+1、状态字段存储JSON
+2、使用位运算
+二、数据库中的位运算实践
+1、MySQL中的位运算实践
+2、PostgreSQL中位运算实践
+三、总结
+前言 最近在解决某用户的一个业务需求时，遇到一个很有意思的场景。首先先跟大家分享一下需求背景。用户主要是面向一线的企业工厂，在他们实际生产过程中，为了保障安全生产。由于在车间中，所有的设备和机器都是全天运行，因此特别容易出现运行故障。因此，安全管理部门呢就结合生产时间，将组织专门的人员在上班时间内实现对运行设备的一个巡视，每个班组上班时间为8小时，同时要求每4个小时就要对设备进行一次巡查。根据上班时间分为早班、中班、晚班，每个班由1到多个人员组成。要求在他们上班后的一个小时内和快下班的一个小时内实现对目标设备的巡视，系统需要记录每次的检查记录，比如早班第一次和早班第二次等等。同时呢，在生产高峰期，由于订单的增加，有的机器运行更加频繁，因此要求加大巡视力度，巡视次数增加至四次，即两个小时巡视一次。同样要求系统记录不同次数的状态，一天巡查结束后，系统自动提供巡视结果，能反应出应巡的次数和漏巡的次数，工厂的管理班组将根据情况对相应的车间和安全管理人员进行考核和评价，纳入到月的的绩效考核当中，对于提早发现的故障信息，处置得当的给予奖励和奖金。
+以上就是大致的需求，其实刚开始拿到这个需求的时候，对于状态的记录到底用什么字段来存储，如何能达到快速保存状态和检索。比如可以快速的设置第一次和第二次的巡视状态为已完成。同时在查询时能快速查询第N次是否已完成等等操作。在实际业务中可有哪些选择来支持以上的需求，既能满足业务需求，也能较少技术的复杂度。
+这就是本文的理由，本文以一个实际的工厂日常检查工作的状态标记场景为例，首先讲解可以有哪些技术方案来实现上述需求，然后讲解表结构的设计，其次着重介绍位运算的表设计方式，以及位运算的处理方式，最后以MySQL和PostgreSQL为例介绍如何在这两个数据库中实现位运算，通过实际例子的讲解，让朋友理解位运算在数据库状态位的场景中的具体使用。通过本文，您可以掌握在面对状态标记时的数据库设计方法，如何在位运算中体现多次，如何操作位运算来设置值，以及如何快速查询定位等知识。
+一、两种不同的数据库设计 本节将根据拿到的用户初步需求，对需求进行分析，根据分析结果完成数据库的设计，同时具体阐述如何去进行表状态字段的更新和查询操作。设计没有好坏，根据不同的场景，有不同的应用。这里欢迎各位朋友进行讨论。由于在实际情况下，在上面的巡视工作中，根据不同的工作需求，每个组的巡视次数可能不固定的，所以这里要考虑实现次数的动态标记的需求。
+1、状态字段存储JSON 之所以考虑使用JSON的方式来进行存储，第一个考虑就是实现灵活的状态，如果是固定的次数，比如每个班就巡视两次，那么我们不妨设计出多个字段，比如早班第一次状态，早班第二次状态,一直到早班第N次，如果N有限，我们的字段尚且还可以设计出来，如果N是一个不固定的值，那么这种设计也是一种灾难。这里我想可能有朋友会说，多设计一些冗余字段是否可行，比如一次性设计8个字段出来。诚然，这种方案是没有大毛病，但是你想想这些问题，万一超了怎么办，还有就是一个班组8个字段，3个班组就是24个字段，光用来标记状态的字典就有24个，再加上其它的业务字段，这就是25&#43;了，如此设计不仅浪费，同时查询性能也低，扩展性也不好。
+这个方式的改良办法就是将多字段改成JSON，通过JSON的存储来实现动态的次数，比如{“1”：0，“0”:1}用这样的字符串表示第一次已完成，第二次未完成。然后在查询的时候每次只需要进行json的关联查询即可，性能暂时还在可以接受的范围之内。你可以想想使用JSON存储值究竟有什么问题。
+2、使用位运算 其实在上面一节中已经大体讲了一下，在我们的业务中，我们只要顺序的记录每一次任务的执行状态，比如用0表示未完成，1表示已完成。0和1是二进制中最简单的表示，应用到应用程序中也是，使用他们来进行数据查询和检索，速度也是非常快的。而且也能实现动态的效果。比如，我们设计一个8位的二进制数，如下所示：
+第8位第7位第6位第5位第4位第3位第2位第1位00000000 在上面的二进制数表示中，我们采用8位（可以根据实际情况增加长度）来表示对应次数的状态位，第一位表示第一次的状态，0表示未完成。在设计字段时，我们会将状态只设计成一个字段，它的值则有这8位二进制数转成对应的十进制数来表示，这样子不仅大大的减少了字段数，同时还能实现不同次数的状态分别记录。下面举个例子：
+第一次巡视已完成的二进制表示如下：
+第8位第7位第6位第5位第4位第3位第2位第1位00000001 这里的第一位表示第一次为1，其它的仍为0，这是计算出来的二进制值是1。下面再来举一个例子，我们将第二次和第四次的状态设置为1，则8位的二进制表示如下：
+第8位第7位第6位第5位第4位第3位第2位第1位00001010 此时，00001010这个数字换算成十进制的值为10,也就是十进制10表示二进制的00001010，表示该班组的第4次和第2次的巡视工作已完成，其它次数尚未完成。通过以上例子的讲解，您是否发现，使用位运算是否极大的简化了相关的数据库设计，也降低了数据的数据更新和检索的难度。因此我们在此情况下决定采用位运算的方式进行对应工作状态的标记。
+二、数据库中的位运算实践 前一节详细的介绍了我们选择的两种方案，也重点比较了两种方案的不同，优缺点也都进行了说明。当然，以上两种方案都可以实现业务需求，也能实现动态灵活的方案，但是相比于复杂度，我们选择位运算来实现。
+本节将结合MySQL和PostgreSQL数据库来分别详细讲解如何在这两个数据库中实现位运算，如何在这两个数据库中设置位运算结果和查询位状态。通过本节大家可以了解在MySQL和PostgreSQL数据库中熟练的进行位运算的操作。
+1、MySQL中的位运算实践 这里使用的MySQL的版本是5.7.14-x的版本，位运算是基础的计算，在更高级的版本中应该都是兼容的。本博客使用MySQL 5.7来做实验环境。
+查询MySQL版本，使用以下sql：
+select VERSION(); 5.7.14-log 我们首先来创建一张表，表仅用作演示，不代表实际的业务，实际的业务表还请各位朋友自己去设计。主要体现的位运算的处理过程，表的物理结构如下所示：
+CREATE TABLE `example_table` ( `id` INT AUTO_INCREMENT PRIMARY KEY, `status` INT NOT NULL DEFAULT 0 ); 表结构非常简单，只有两个字段，第一个字段是主键ID，设置位自增，而第二个字段为状态位，存储的值是十进制的表示数，请注意，这里的数据类型请结合具体的二进制状态位的计算过来定，int是一个非常大的数字了，用来存储是足够了，它的默认值用0表示，因为二进制8个0对应的十进制数也是0。
+首先我们查询一下表的数据，默认情况下，表里是没有数据的，需要我们手动插入数据，插入数据后的表数据如下：
+select * from example_table; idstatus10203040506070 下面我们来修改表记录的值，比如我们设置id为3的数据，第一次为1即标记已完成。sql语句如下：
+-- 设置第N次为已完成 正确的做法 UPDATE example_table SET status = status | (1 &lt;&lt; (N - 1)) WHERE id = 3; -- N表示具体的次数，即N=1 UPDATE example_table SET status = status | (1 &lt;&lt; (1 - 1)) WHERE id = 3; 在数据库客户端执行以下sql之后，客户端返回如下：">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-10T22:00:00+08:00">
+    <meta property="article:modified_time" content="2024-07-10T22:00:00+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">位运算在数据库中的运用实践-以MySQL和PG为例</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h2><a id="AI_0"></a></h2> 
+<p id="main-toc"><strong>目录</strong></p> 
+<p id="-toc" style="margin-left:0px;"></p> 
+<p id="%E5%89%8D%E8%A8%80-toc" style="margin-left:0px;"><a href="#%E5%89%8D%E8%A8%80" rel="nofollow">前言</a></p> 
+<p id="%E4%B8%80%E3%80%81%E4%B8%A4%E7%A7%8D%E4%B8%8D%E5%90%8C%E7%9A%84%E6%95%B0%E6%8D%AE%E5%BA%93%E8%AE%BE%E8%AE%A1-toc" style="margin-left:0px;"><a href="#%E4%B8%80%E3%80%81%E4%B8%A4%E7%A7%8D%E4%B8%8D%E5%90%8C%E7%9A%84%E6%95%B0%E6%8D%AE%E5%BA%93%E8%AE%BE%E8%AE%A1" rel="nofollow">一、两种不同的数据库设计</a></p> 
+<p id="1%E3%80%81%E7%8A%B6%E6%80%81%E5%AD%97%E6%AE%B5%E5%AD%98%E5%82%A8JSON-toc" style="margin-left:40px;"><a href="#1%E3%80%81%E7%8A%B6%E6%80%81%E5%AD%97%E6%AE%B5%E5%AD%98%E5%82%A8JSON" rel="nofollow">1、状态字段存储JSON</a></p> 
+<p id="2%E3%80%81%E4%BD%BF%E7%94%A8%E4%BD%8D%E8%BF%90%E7%AE%97-toc" style="margin-left:40px;"><a href="#2%E3%80%81%E4%BD%BF%E7%94%A8%E4%BD%8D%E8%BF%90%E7%AE%97" rel="nofollow">2、使用位运算</a></p> 
+<p id="%E4%BA%8C%E3%80%81%E6%95%B0%E6%8D%AE%E5%BA%93%E4%B8%AD%E7%9A%84%E4%BD%8D%E8%BF%90%E7%AE%97%E5%AE%9E%E8%B7%B5-toc" style="margin-left:0px;"><a href="#%E4%BA%8C%E3%80%81%E6%95%B0%E6%8D%AE%E5%BA%93%E4%B8%AD%E7%9A%84%E4%BD%8D%E8%BF%90%E7%AE%97%E5%AE%9E%E8%B7%B5" rel="nofollow">二、数据库中的位运算实践</a></p> 
+<p id="1%E3%80%81MySQL%E4%B8%AD%E7%9A%84%E4%BD%8D%E8%BF%90%E7%AE%97%E5%AE%9E%E8%B7%B5-toc" style="margin-left:40px;"><a href="#1%E3%80%81MySQL%E4%B8%AD%E7%9A%84%E4%BD%8D%E8%BF%90%E7%AE%97%E5%AE%9E%E8%B7%B5" rel="nofollow">1、MySQL中的位运算实践</a></p> 
+<p id="2%E3%80%81PostgreSQL%E4%B8%AD%E4%BD%8D%E8%BF%90%E7%AE%97%E5%AE%9E%E8%B7%B5-toc" style="margin-left:40px;"><a href="#2%E3%80%81PostgreSQL%E4%B8%AD%E4%BD%8D%E8%BF%90%E7%AE%97%E5%AE%9E%E8%B7%B5" rel="nofollow">2、PostgreSQL中位运算实践</a></p> 
+<p id="%E4%B8%89%E3%80%81%E6%80%BB%E7%BB%93-toc" style="margin-left:0px;"><a href="#%E4%B8%89%E3%80%81%E6%80%BB%E7%BB%93" rel="nofollow">三、总结</a></p> 
+<hr id="hr-toc"> 
+<p></p> 
+<h2 id="%E5%89%8D%E8%A8%80">前言</h2> 
+<p>        最近在解决某用户的一个业务需求时，遇到一个很有意思的场景。首先先跟大家分享一下需求背景。用户主要是面向一线的企业工厂，在他们实际生产过程中，为了保障安全生产。由于在车间中，所有的设备和机器都是全天运行，因此特别容易出现运行故障。因此，安全管理部门呢就结合生产时间，将组织专门的人员在上班时间内实现对运行设备的一个巡视，每个班组上班时间为8小时，同时要求每4个小时就要对设备进行一次巡查。根据上班时间分为早班、中班、晚班，每个班由1到多个人员组成。要求在他们上班后的一个小时内和快下班的一个小时内实现对目标设备的巡视，系统需要记录每次的检查记录，比如早班第一次和早班第二次等等。同时呢，在生产高峰期，由于订单的增加，有的机器运行更加频繁，因此要求加大巡视力度，巡视次数增加至四次，即两个小时巡视一次。同样要求系统记录不同次数的状态，一天巡查结束后，系统自动提供巡视结果，能反应出应巡的次数和漏巡的次数，工厂的管理班组将根据情况对相应的车间和安全管理人员进行考核和评价，纳入到月的的绩效考核当中，对于提早发现的故障信息，处置得当的给予奖励和奖金。</p> 
+<p>        以上就是大致的需求，其实刚开始拿到这个需求的时候，对于状态的记录到底用什么字段来存储，如何能达到快速保存状态和检索。比如可以快速的设置第一次和第二次的巡视状态为已完成。同时在查询时能快速查询第N次是否已完成等等操作。在实际业务中可有哪些选择来支持以上的需求，既能满足业务需求，也能较少技术的复杂度。</p> 
+<p>        这就是本文的理由，本文以一个实际的工厂日常检查工作的状态标记场景为例，首先讲解可以有哪些技术方案来实现上述需求，然后讲解表结构的设计，其次着重介绍位运算的表设计方式，以及位运算的处理方式，最后以MySQL和PostgreSQL为例介绍如何在这两个数据库中实现位运算，通过实际例子的讲解，让朋友理解位运算在数据库状态位的场景中的具体使用。通过本文，您可以掌握在面对状态标记时的数据库设计方法，如何在位运算中体现多次，如何操作位运算来设置值，以及如何快速查询定位等知识。</p> 
+<h2 id="%E4%B8%80%E3%80%81%E4%B8%A4%E7%A7%8D%E4%B8%8D%E5%90%8C%E7%9A%84%E6%95%B0%E6%8D%AE%E5%BA%93%E8%AE%BE%E8%AE%A1">一、两种不同的数据库设计</h2> 
+<p>        本节将根据拿到的用户初步需求，对需求进行分析，根据分析结果完成数据库的设计，同时具体阐述如何去进行表状态字段的更新和查询操作。设计没有好坏，根据不同的场景，有不同的应用。这里欢迎各位朋友进行讨论。由于在实际情况下，在上面的巡视工作中，根据不同的工作需求，每个组的巡视次数可能不固定的，所以这里要考虑实现次数的动态标记的需求。</p> 
+<h3 id="1%E3%80%81%E7%8A%B6%E6%80%81%E5%AD%97%E6%AE%B5%E5%AD%98%E5%82%A8JSON">1、状态字段存储JSON</h3> 
+<p>        之所以考虑使用JSON的方式来进行存储，第一个考虑就是实现灵活的状态，如果是固定的次数，比如每个班就巡视两次，那么我们不妨设计出多个字段，比如早班第一次状态，早班第二次状态,一直到早班第N次，如果N有限，我们的字段尚且还可以设计出来，如果N是一个不固定的值，那么这种设计也是一种灾难。这里我想可能有朋友会说，多设计一些冗余字段是否可行，比如一次性设计8个字段出来。诚然，这种方案是没有大毛病，但是你想想这些问题，万一超了怎么办，还有就是一个班组8个字段，3个班组就是24个字段，光用来标记状态的字典就有24个，再加上其它的业务字段，这就是25+了，如此设计不仅浪费，同时查询性能也低，扩展性也不好。</p> 
+<p>        这个方式的改良办法就是将多字段改成JSON，通过JSON的存储来实现动态的次数，比如{“1”：0，“0”:1}用这样的字符串表示第一次已完成，第二次未完成。然后在查询的时候每次只需要进行json的关联查询即可，性能暂时还在可以接受的范围之内。你可以想想使用JSON存储值究竟有什么问题。</p> 
+<h3 id="2%E3%80%81%E4%BD%BF%E7%94%A8%E4%BD%8D%E8%BF%90%E7%AE%97">2、使用位运算</h3> 
+<p>        其实在上面一节中已经大体讲了一下，在我们的业务中，我们只要顺序的记录每一次任务的执行状态，比如用0表示未完成，1表示已完成。0和1是二进制中最简单的表示，应用到应用程序中也是，使用他们来进行数据查询和检索，速度也是非常快的。而且也能实现动态的效果。比如，我们设计一个8位的二进制数，如下所示：</p> 
+<p class="img-center"><img alt="" height="238" src="https://images2.imgbox.com/d0/46/45QQyK2m_o.png" width="474"></p> 
+<table align="center" border="1" cellpadding="1" cellspacing="1"><tbody><tr><td>第8位</td><td>第7位</td><td>第6位</td><td>第5位</td><td>第4位</td><td>第3位</td><td>第2位</td><td>第1位</td></tr><tr><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td></tr></tbody></table> 
+<p>        在上面的二进制数表示中，我们采用8位（可以根据实际情况增加长度）来表示对应次数的状态位，第一位表示第一次的状态，0表示未完成。在设计字段时，我们会将状态只设计成一个字段，它的值则有这8位二进制数转成对应的十进制数来表示，这样子不仅大大的减少了字段数，同时还能实现不同次数的状态分别记录。下面举个例子：</p> 
+<p>        第一次巡视已完成的二进制表示如下：</p> 
+<table align="center" border="1" cellpadding="1" cellspacing="1"><tbody><tr><td>第8位</td><td>第7位</td><td>第6位</td><td>第5位</td><td>第4位</td><td>第3位</td><td>第2位</td><td>第1位</td></tr><tr><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td>0</td><td><span style="color:#fe2c24;">1</span></td></tr></tbody></table> 
+<p>        这里的第一位表示第一次为1，其它的仍为0，这是计算出来的二进制值是1。下面再来举一个例子，我们将第二次和第四次的状态设置为1，则8位的二进制表示如下：</p> 
+<table align="center" border="1" cellpadding="1" cellspacing="1"><tbody><tr><td>第8位</td><td>第7位</td><td>第6位</td><td>第5位</td><td>第4位</td><td>第3位</td><td>第2位</td><td>第1位</td></tr><tr><td>0</td><td>0</td><td>0</td><td>0</td><td><span style="color:#fe2c24;">1</span></td><td>0</td><td><span style="color:#fe2c24;">1</span></td><td><span style="color:#0d0016;">0</span></td></tr></tbody></table> 
+<p>        此时，00001010这个数字换算成十进制的值为10,也就是十进制10表示二进制的00001010，表示该班组的第4次和第2次的巡视工作已完成，其它次数尚未完成。通过以上例子的讲解，您是否发现，使用位运算是否极大的简化了相关的数据库设计，也降低了数据的数据更新和检索的难度。因此我们在此情况下决定采用位运算的方式进行对应工作状态的标记。</p> 
+<h2 id="%E4%BA%8C%E3%80%81%E6%95%B0%E6%8D%AE%E5%BA%93%E4%B8%AD%E7%9A%84%E4%BD%8D%E8%BF%90%E7%AE%97%E5%AE%9E%E8%B7%B5">二、数据库中的位运算实践</h2> 
+<p>        前一节详细的介绍了我们选择的两种方案，也重点比较了两种方案的不同，优缺点也都进行了说明。当然，以上两种方案都可以实现业务需求，也能实现动态灵活的方案，但是相比于复杂度，我们选择位运算来实现。</p> 
+<p>        本节将结合MySQL和PostgreSQL数据库来分别详细讲解如何在这两个数据库中实现位运算，如何在这两个数据库中设置位运算结果和查询位状态。通过本节大家可以了解在MySQL和PostgreSQL数据库中熟练的进行位运算的操作。</p> 
+<h3 id="1%E3%80%81MySQL%E4%B8%AD%E7%9A%84%E4%BD%8D%E8%BF%90%E7%AE%97%E5%AE%9E%E8%B7%B5">1、MySQL中的位运算实践</h3> 
+<p>        这里使用的MySQL的版本是5.7.14-x的版本，位运算是基础的计算，在更高级的版本中应该都是兼容的。本博客使用MySQL 5.7来做实验环境。</p> 
+<p>        查询MySQL版本，使用以下sql：</p> 
+<pre><code class="language-sql">select VERSION();
+
+5.7.14-log</code></pre> 
+<p>        我们首先来创建一张表，表仅用作演示，不代表实际的业务，实际的业务表还请各位朋友自己去设计。主要体现的位运算的处理过程，表的物理结构如下所示：</p> 
+<pre><code class="language-sql">CREATE TABLE `example_table` (
+  `id` INT AUTO_INCREMENT PRIMARY KEY,
+  `status` INT NOT NULL DEFAULT 0
+);</code></pre> 
+<p>        表结构非常简单，只有两个字段，第一个字段是主键ID，设置位自增，而第二个字段为状态位，存储的值是十进制的表示数，请注意，这里的数据类型请结合具体的二进制状态位的计算过来定，int是一个非常大的数字了，用来存储是足够了，它的默认值用0表示，因为二进制8个0对应的十进制数也是0。</p> 
+<p>        首先我们查询一下表的数据，默认情况下，表里是没有数据的，需要我们手动插入数据，插入数据后的表数据如下：</p> 
+<pre><code class="language-sql">select * from example_table;</code></pre> 
+<table align="center" border="1" cellpadding="1" cellspacing="1"><tbody><tr><td style="width:360px;">id</td><td style="width:315px;">status</td></tr><tr><td style="width:360px;">1</td><td style="width:315px;">0</td></tr><tr><td style="width:360px;">2</td><td style="width:315px;">0</td></tr><tr><td style="width:360px;">3</td><td style="width:315px;">0</td></tr><tr><td style="width:360px;">4</td><td style="width:315px;">0</td></tr><tr><td style="width:360px;">5</td><td style="width:315px;">0</td></tr><tr><td style="width:360px;">6</td><td style="width:315px;">0</td></tr><tr><td style="width:360px;">7</td><td style="width:315px;">0</td></tr></tbody></table> 
+<p>        下面我们来修改表记录的值，比如我们设置id为3的数据，第一次为1即标记已完成。sql语句如下：</p> 
+<pre><code class="language-sql">-- 设置第N次为已完成 正确的做法
+UPDATE example_table SET status = status | (1 &lt;&lt; (N - 1)) WHERE id = 3;
+
+-- N表示具体的次数，即N=1
+UPDATE example_table SET status = status | (1 &lt;&lt; (1 - 1)) WHERE id = 3;</code></pre> 
+<p>        在数据库客户端执行以下sql之后，客户端返回如下：</p> 
+<pre><code class="language-bash">UPDATE example_table SET status = status | (1 &lt;&lt; (1 - 1)) WHERE id = 3
+&gt; Affected rows: 1
+&gt; 时间: 0.089s
+</code></pre> 
+<p>        表名id=3的这条记录已经发生了变更且更新成功。为了验证这个结果是不是二进制的正确表达呢？我们选择在数据库中进行进制转换的查询展示：</p> 
+<pre><code class="language-sql">select *, CONCAT(REPEAT('0', 8 - CHAR_LENGTH(BIN(status))),BIN(status)) AS binary_status FROM example_table ;</code></pre> 
+<p>        这里用到的函数有三个，最里面的是bin函数，表示将值转为二进制，然后用char_length函数求出转换出来的二进制数长度，再repeat函数和concat函数，最终拼成一个二进制字符串的表示，总的长度为8位，如果位数不足，则在前面补0，比如十进制0，二进制表达为：00000000。十进制1，二进制表示位:00000001。在客户端中执行以上的sql后可以在返回的结果中看到如下：</p> 
+<table align="center" border="1" cellpadding="1" cellspacing="1"><tbody><tr><td>id</td><td>status</td><td>binary_status</td></tr><tr><td>1</td><td>0</td><td>00000000</td></tr><tr><td>2</td><td>0</td><td>00000000</td></tr><tr><td>3</td><td>1</td><td>00000001</td></tr><tr><td>4</td><td>0</td><td>00000000</td></tr><tr><td>5</td><td>9</td><td>00001001</td></tr><tr><td>6</td><td>0</td><td>00000000</td></tr><tr><td>7</td><td>0</td><td>00000000</td></tr></tbody></table> 
+<p>        到这里，我们已经实现了状态位运算的动态更新，比如指定第几位为1，那么与之对应的另一个问题就是，如何查询出第几位为已完成。同样的我们也还是需要使用位运算，计算的方法如下：</p> 
+<pre><code class="language-sql">-- 查询第N次是否完成，N表示第几次
+select *, CONCAT(REPEAT('0', 8 - CHAR_LENGTH(BIN(status))),BIN(status)) AS binary_status FROM example_table 
+WHERE (status &amp; (1 &lt;&lt; (N - 1))) &gt; 0 ;
+
+-- 查询第N次是否完成，1表示第1次即N=1
+select *, CONCAT(REPEAT('0', 8 - CHAR_LENGTH(BIN(status))),BIN(status)) AS binary_status FROM example_table 
+WHERE (status &amp; (1 &lt;&lt; (1 - 1))) &gt; 0 ;</code></pre> 
+<p>        上述查询的结果如下：</p> 
+<table align="center" border="1" cellpadding="1" cellspacing="1"><tbody><tr><td>id</td><td>status</td><td>binary_status</td></tr><tr><td>3</td><td>1</td><td>00000001</td></tr><tr><td>5</td><td>9</td><td>00001001</td></tr></tbody></table> 
+<p>        到此，关于如何在MySQL中进行位运算的设置以及查询的效果演示就到此结束，关于其它的位运算可以参考其它网页的资料。</p> 
+<h3 id="2%E3%80%81PostgreSQL%E4%B8%AD%E4%BD%8D%E8%BF%90%E7%AE%97%E5%AE%9E%E8%B7%B5">2、PostgreSQL中位运算实践</h3> 
+<p>        在讲解了位运算在MySQL中的应用之后，下面也来讲讲在PG的运用。其实位运算在SQL中的运用效果是差不多的，MySQL和PG的位运算过程效果差别不大，为什么这里还要拿出来讲呢？主要是在PG中，要想实现二进制字符串的展示不太直观，这里分享一种在PG中的处理方式，供大家参考。</p> 
+<p>        本文使用的PG版本如下：</p> 
+<p>        查询sql：SELECT version(); 执行后查询结果如下：</p> 
+<pre><code class="language-bash">PostgreSQL 12.3, compiled by Visual C++ build 1914, 64-bit</code></pre> 
+<p>        与MySQL一样的，为了演示上述的效果，我们依然创建一张Pg的表，相关DDL语言稍微有点区别：</p> 
+<pre><code class="language-sql">CREATE TABLE "public"."example_table" (
+  "id" int8 NOT NULL,
+  "status" int4,
+  CONSTRAINT "example_table_pkey" PRIMARY KEY ("id")
+);</code></pre> 
+<p>        在PG中设置第N次为已完成即为1的sql语句与MySQL是一致的，如下：</p> 
+<pre><code class="language-sql">-- 设置第N次为已完成 正确的做法
+UPDATE example_table SET status = status | (1 &lt;&lt; (N - 1)) WHERE id = 6;</code></pre> 
+<p>        这里有小伙伴会问，上面的SQL是设置为已完成，那么重置为0应该怎么实现呢？可以使用下面的sql来实现：</p> 
+<pre><code class="language-sql">-- 设置第几次为0
+UPDATE example_table SET status = status &amp; (~(1 &lt;&lt; (N - 1))) WHERE  id = 5;</code></pre> 
+<p>        在PG数据库中，直接将二进制转换为十进制的字符串的方法没有，因此我们不能直接使用内置函数来完成，需要使用自定义函数的方式，自定义函数的逻辑与MySQL差不多，整体长度是8，不够的位数用0来补齐。函数的实现如下：</p> 
+<pre><code class="language-sql">CREATE OR REPLACE FUNCTION "public"."decimal_to_binary_string"("num" int8)
+  RETURNS "pg_catalog"."text" AS $BODY$
+  
+DECLARE  
+    binary_str TEXT := '';  
+    temp_num BIGINT := num;  
+BEGIN  
+    WHILE temp_num &gt; 0 LOOP  
+        -- 使用模2运算来获取最低位的二进制值  
+        binary_str := CAST(temp_num % 2 AS TEXT) || binary_str;  
+        -- 使用整除2来去掉已经处理的最低位  
+        temp_num := temp_num / 2;  
+    END LOOP;  
+      
+    -- 如果输入为0，则直接返回'0'  
+    IF binary_str = '' THEN  
+        binary_str := '0';  
+    END IF;  
+      
+    RETURN binary_str;  
+END;  
+ 
+$BODY$
+  LANGUAGE plpgsql VOLATILE
+  COST 100</code></pre> 
+<p>        在创建好以上的转换函数之后，在数据库中执行以下SQL：</p> 
+<pre><code class="language-sql">select *, LPAD(decimal_to_binary_string(status), 8, '0') AS binary_status FROM example_table
+order by id;</code></pre> 
+<p>        查询结果如下：</p> 
+<table border="1" cellpadding="1" cellspacing="1"><tbody><tr><td style="width:171px;">id</td><td style="width:214px;">status</td><td style="width:289px;">binary_status</td></tr><tr><td style="width:171px;">1</td><td style="width:214px;">0</td><td style="width:289px;">00000000</td></tr><tr><td style="width:171px;">2</td><td style="width:214px;">0</td><td style="width:289px;">00000000</td></tr><tr><td style="width:171px;">3</td><td style="width:214px;">0</td><td style="width:289px;">00000000</td></tr><tr><td style="width:171px;">4</td><td style="width:214px;">0</td><td style="width:289px;">00000000</td></tr><tr><td style="width:171px;">5</td><td style="width:214px;">0</td><td style="width:289px;">00000000</td></tr></tbody></table> 
+<p>        到此，我们将如何在PG中实现位运算进行了详细的说明。</p> 
+<h2 id="%E4%B8%89%E3%80%81%E6%80%BB%E7%BB%93">三、总结</h2> 
+<p>        以上就是本文的主要内容，本文以一个实际的工厂日常检查工作的状态标记场景为例，首先讲解可以有哪些技术方案来实现上述需求，然后讲解表结构的设计，其次着重介绍位运算的表设计方式，以及位运算的处理方式，最后以MySQL和PostgreSQL为例介绍如何在这两个数据库中实现位运算，通过实际例子的讲解，让朋友理解位运算在数据库状态位的场景中的具体使用。通过本文，您可以掌握在面对状态标记时的数据库设计方法，如何在位运算中体现多次，如何操作位运算来设置值，以及如何快速查询定位等知识。行文仓促，难免有不足之处，如果有不足之处，还请各位专家朋友在评论区不吝赐教，不甚感激。</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/7a411a876eb92ba0a951c1367c4d4342/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【LeetCode】单词规律</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/f612a802e0871503b72420bae9f06045/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C&#43;&#43; 语法习题(3)</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

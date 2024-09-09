@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>go语言并发编程-超详细mutex解析 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/bcead9f78fc80357fdcab0533ac68276/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="go语言并发编程-超详细mutex解析">
+  <meta property="og:description" content="文章目录 1 go语言并发编程学习-mutex1.1 学习过程1.2 如何解决资源并发访问的问题？【基本用法】1.2.1 并发访问带来的问题1.2.1.1 导致问题的原因 1.2.2 race detector检查data race1.2.3 mutex的基本实现机制以及使用方法1.2.3.1 具体使用-11.2.3.1 具体使用-2 1 go语言并发编程学习-mutex 1.1 学习过程 1.2 如何解决资源并发访问的问题？【基本用法】 本小节主要为了解答以下问题：
+为什么需要解决并发访问的问题？怎么通过race detector来查找程序中的data race？mutex的基本机制和基本使用方法？ 1.2.1 并发访问带来的问题 1. 多个goroutine并发更新计数器
+在多个goroutine的情况下并发更新计数器，得到的值可能不符合预期。
+package main import ( &#34;fmt&#34; &#34;sync&#34; ) var counter int var wg sync.WaitGroup func increment() { defer wg.Done() counter &#43;= 100 } func main() { wg.Add(1000) // 这个可以先不管，理解为，main函数需要等待goroutine都执行完才能退出，可以把wg相关全去掉，在main函数后面加上time.sleep(time.second * 10) for i := 0; i &lt; 1000; i&#43;&#43; { go increment() } wg.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-09-02T20:14:54+08:00">
+    <meta property="article:modified_time" content="2024-09-02T20:14:54+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">go语言并发编程-超详细mutex解析</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-tomorrow-night">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#1_gomutex_1" rel="nofollow">1 go语言并发编程学习-mutex</a></li><li><ul><li><a href="#11__3" rel="nofollow">1.1 学习过程</a></li><li><a href="#12__5" rel="nofollow">1.2 如何解决资源并发访问的问题？【基本用法】</a></li><li><ul><li><a href="#121__13" rel="nofollow">1.2.1 并发访问带来的问题</a></li><li><ul><li><a href="#1211__116" rel="nofollow">1.2.1.1 导致问题的原因</a></li></ul> 
+    </li><li><a href="#122_race_detectordata_race_138" rel="nofollow">1.2.2 race detector检查data race</a></li><li><a href="#123_mutex_150" rel="nofollow">1.2.3 mutex的基本实现机制以及使用方法</a></li><li><ul><li><a href="#1231_1_185" rel="nofollow">1.2.3.1 具体使用-1</a></li><li><a href="#1231_2_221" rel="nofollow">1.2.3.1 具体使用-2</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="1_gomutex_1"></a>1 go语言并发编程学习-mutex</h2> 
+<h3><a id="11__3"></a>1.1 学习过程</h3> 
+<p><img src="https://images2.imgbox.com/f7/f3/fQnj8O4i_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="12__5"></a>1.2 如何解决资源并发访问的问题？【基本用法】</h3> 
+<p>本小节主要为了解答以下问题：</p> 
+<ol><li>为什么需要解决并发访问的问题？</li><li>怎么通过race detector来查找程序中的data race？</li><li>mutex的基本机制和基本使用方法？</li></ol> 
+<h4><a id="121__13"></a>1.2.1 并发访问带来的问题</h4> 
+<p><strong>1. 多个goroutine并发更新计数器</strong></p> 
+<p>在多个goroutine的情况下并发更新计数器，得到的值可能不符合预期。</p> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+    <span class="token string">"fmt"</span>
+    <span class="token string">"sync"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">var</span> counter <span class="token builtin">int</span>
+<span class="token keyword">var</span> wg sync<span class="token punctuation">.</span>WaitGroup
+
+<span class="token keyword">func</span> <span class="token function">increment</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">defer</span> wg<span class="token punctuation">.</span><span class="token function">Done</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    counter <span class="token operator">+=</span> <span class="token number">100</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    wg<span class="token punctuation">.</span><span class="token function">Add</span><span class="token punctuation">(</span><span class="token number">1000</span><span class="token punctuation">)</span> <span class="token comment">// 这个可以先不管，理解为，main函数需要等待goroutine都执行完才能退出，可以把wg相关全去掉，在main函数后面加上time.sleep(time.second * 10)</span>
+    <span class="token keyword">for</span> i <span class="token operator">:=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token number">1000</span><span class="token punctuation">;</span> i<span class="token operator">++</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token keyword">go</span> <span class="token function">increment</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    wg<span class="token punctuation">.</span><span class="token function">Wait</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"Final counter:"</span><span class="token punctuation">,</span> counter<span class="token punctuation">)</span> <span class="token comment">// 期望输出 2，但可能输出 0 或 1</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>2. 更新用户的账户余额</strong></p> 
+<p>在用户收入和支出的时候，如果不同的goroutine同时对该账户余额进行更新处理的时候，可能会导致余额错误</p> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+    <span class="token string">"fmt"</span>
+    <span class="token string">"sync"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">var</span> balance <span class="token builtin">int</span> <span class="token operator">=</span> <span class="token number">1000</span>
+<span class="token keyword">var</span> wg sync<span class="token punctuation">.</span>WaitGroup
+
+<span class="token keyword">func</span> <span class="token function">deposit</span><span class="token punctuation">(</span>amount <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">defer</span> wg<span class="token punctuation">.</span><span class="token function">Done</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    balance <span class="token operator">+=</span> amount
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">withdraw</span><span class="token punctuation">(</span>amount <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">defer</span> wg<span class="token punctuation">.</span><span class="token function">Done</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    balance <span class="token operator">-=</span> amount
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    wg<span class="token punctuation">.</span><span class="token function">Add</span><span class="token punctuation">(</span><span class="token number">2000</span><span class="token punctuation">)</span>
+    <span class="token keyword">for</span> i <span class="token operator">:=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token number">1000</span><span class="token punctuation">;</span> i<span class="token operator">++</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token keyword">go</span> <span class="token function">deposit</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+       <span class="token keyword">go</span> <span class="token function">withdraw</span><span class="token punctuation">(</span><span class="token number">1</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    wg<span class="token punctuation">.</span><span class="token function">Wait</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"Final balance:"</span><span class="token punctuation">,</span> balance<span class="token punctuation">)</span> <span class="token comment">// 期望输出 1000，但可能输出其他值</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>3. 秒杀系统</strong></p> 
+<p>没有互斥锁的情况下，可能会出现超卖的情况。也就是商品已经没有了，但是还是可以进行出售商品，商品数量减1的操作。</p> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+    <span class="token string">"fmt"</span>
+    <span class="token string">"sync"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">var</span> stock <span class="token builtin">int</span> <span class="token operator">=</span> <span class="token number">10</span>
+<span class="token keyword">var</span> wg sync<span class="token punctuation">.</span>WaitGroup
+
+<span class="token keyword">func</span> <span class="token function">purchase</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">defer</span> wg<span class="token punctuation">.</span><span class="token function">Done</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token keyword">if</span> stock <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+       fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"Stock:"</span><span class="token punctuation">,</span> stock<span class="token punctuation">)</span>
+       stock<span class="token operator">--</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    wg<span class="token punctuation">.</span><span class="token function">Add</span><span class="token punctuation">(</span><span class="token number">100000</span><span class="token punctuation">)</span>
+    <span class="token keyword">for</span> i <span class="token operator">:=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token number">100000</span><span class="token punctuation">;</span> i<span class="token operator">++</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token keyword">go</span> <span class="token function">purchase</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    wg<span class="token punctuation">.</span><span class="token function">Wait</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"Final stock:"</span><span class="token punctuation">,</span> stock<span class="token punctuation">)</span> <span class="token comment">// 期望输出 0，但可能输出负数</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>还有一些其他的场景，比如并发写入buffer等等，不解决并发访问的问题，就会发生很严重的后果。</p> 
+<h5><a id="1211__116"></a>1.2.1.1 导致问题的原因</h5> 
+<p>并发访问问题的核心在于对<strong>共享资源的非原子性操作</strong>。临界区是指一段需要独占访问的代码块，多个goroutine在执行这段代码时，如果没有同步机制（如互斥锁）来保证互斥访问，就可能会产生数据竞争，导致数据不一致和其他问题。以下从临界区的角度来解释这些问题。下面分析多个goroutine并发更新计数器：</p> 
+<p>计数器的更新操作通常包括以下步骤：</p> 
+<ol><li>读取当前计数器的值</li><li>对读取的值进行加法运算</li><li>将结果写回计数器</li></ol> 
+<p>在并发情况下，如果两个goroutine同时执行这三个步骤中的任意一个步骤，没有同步机制来保证这三个步骤是原子操作，就会产生问题：</p> 
+<pre><code>Goroutine 1: 读取 counter = 0
+Goroutine 2: 读取 counter = 0
+Goroutine 1: counter = 0 + 1 =&gt; counter = 1
+Goroutine 2: counter = 0 + 1 =&gt; counter = 1 （覆盖了Goroutine 1的结果）
+
+</code></pre> 
+<p>那么怎么在程序运行的时候发现呢？可以参考一下race detector工具</p> 
+<h4><a id="122_race_detectordata_race_138"></a>1.2.2 race detector检查data race</h4> 
+<p>可以使用上文的秒杀系统作为例子。写这个的时候，图片转存失败，因此决定用极客上的图片。<br> 1、 在执行<code>go run counter.go</code>的时候会出现以下结果，是可以正常运行通过的，但是结果不如愿：<br> <img src="https://images2.imgbox.com/26/eb/70lq7Bs8_o.png" alt="在这里插入图片描述"><br> 2、但是假如race之后：<code>go run -race main.go</code><br> <img src="https://images2.imgbox.com/c6/bd/iPeiW7U2_o.png" alt="在这里插入图片描述"><br> 这个警告不但会告诉你有并发问题,而且还会告诉你哪个goroutiine在哪一行对哪个变量有写操作,同时,哪个goroutine在哪一行对哪个变量有读操作,就是这些并发的读写访问,引起了datarace。<br> <strong>例子中的goroutine 10 对内存地址0x000126010有读的操作(ctounter.go文件第16行),同时,goroutine7对内存地址0x00c000126010有写的操作(counter.go文件第16行)。而且还可能有多个goroutine在同时进行读写,所以,警告信息可能会很长。</strong></p> 
+<p>总结一下,通过在编译的时候插入一些指令,在运行时通过这些插入的指令检测并发读写从而发现data race问题,就是这个工具的实现机制。<br> 既然这个例子存在data race问题,我们就要想办法来解决它。这个时候,我们这节课的主角Mutex就要登场了,它可以轻松地消除掉data race。<br> 具体怎么做呢?下面,我就结合这个例子,来具体说一说Mutex的基本用法。</p> 
+<h4><a id="123_mutex_150"></a>1.2.3 mutex的基本实现机制以及使用方法</h4> 
+<p><img src="https://images2.imgbox.com/40/a8/KcsjGopr_o.png" alt="在这里插入图片描述"><br> ​ mutex的基本实现的机制，就是每次只允许一个goroutine进入临界区，具体就是进入临界区的时候给临界区加上一个锁，禁止其他goroutine进入临界区，在退出临界区的时候释放锁，从而允许其他goroutine进入。</p> 
+<p>​ <code>Mutex</code> 是 Go 语言中常用的同步原语，用于控制对共享资源的独占访问。<code>Mutex</code> 实现了 <code>sync.Locker</code> 接口，该接口定义了两个方法：<code>Lock</code> 和 <code>Unlock</code>。在解释 <code>Mutex</code> 的基本使用方法之前，先简单介绍一下 <code>sync.Locker</code> 接口：</p> 
+<pre><code class="prism language-go"><span class="token keyword">type</span> Locker <span class="token keyword">interface</span> <span class="token punctuation">{<!-- --></span>    
+	<span class="token function">Lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>    
+	<span class="token function">Unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> 
+<span class="token punctuation">}</span> 
+</code></pre> 
+<p>任何实现了 <code>Lock</code> 和 <code>Unlock</code> 方法的类型，都可以被视为 <code>Locker</code>，所以 <code>sync.Mutex</code> 也实现了这个接口。以下是一个基本的 <code>sync.Mutex</code> 的使用方法：</p> 
+<p><strong>1、基本使用方法：</strong></p> 
+<p>声明一个sync.Mutex类型的变量，<strong>无需初始化</strong></p> 
+<pre><code class="prism language-go"><span class="token keyword">var</span> mutex sync<span class="token punctuation">.</span>Mutex 
+</code></pre> 
+<p><strong>2、在需要保护的临界区前调用 <code>Lock</code> 方法：</strong></p> 
+<pre><code class="prism language-go">mutex<span class="token punctuation">.</span><span class="token function">Lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> 
+</code></pre> 
+<p><strong>3、在临界区结束后调用 <code>Unlock</code> 方法：</strong></p> 
+<pre><code class="prism language-go">mutex<span class="token punctuation">.</span><span class="token function">Unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> 
+</code></pre> 
+<h5><a id="1231_1_185"></a>1.2.3.1 具体使用-1</h5> 
+<p>这种使用，主要是在临界区代码中直接使用mutex即可。</p> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+    <span class="token string">"fmt"</span>
+    <span class="token string">"sync"</span>
+<span class="token punctuation">)</span>
+
+<span class="token keyword">var</span> stock <span class="token builtin">int</span> <span class="token operator">=</span> <span class="token number">10</span>
+<span class="token keyword">var</span> wg sync<span class="token punctuation">.</span>WaitGroup
+<span class="token keyword">var</span> mutex sync<span class="token punctuation">.</span>Mutex
+
+<span class="token keyword">func</span> <span class="token function">purchase</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">defer</span> wg<span class="token punctuation">.</span><span class="token function">Done</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    mutex<span class="token punctuation">.</span><span class="token function">Lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>         <span class="token comment">// 加锁，进入临界区</span>
+    <span class="token keyword">defer</span> mutex<span class="token punctuation">.</span><span class="token function">Unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token comment">// 确保解锁</span>
+    <span class="token keyword">if</span> stock <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+       fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"Stock:"</span><span class="token punctuation">,</span> stock<span class="token punctuation">)</span>
+       stock<span class="token operator">--</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    wg<span class="token punctuation">.</span><span class="token function">Add</span><span class="token punctuation">(</span><span class="token number">100000</span><span class="token punctuation">)</span>
+    <span class="token keyword">for</span> i <span class="token operator">:=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> <span class="token number">100000</span><span class="token punctuation">;</span> i<span class="token operator">++</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token keyword">go</span> <span class="token function">purchase</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    wg<span class="token punctuation">.</span><span class="token function">Wait</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"Final stock:"</span><span class="token punctuation">,</span> stock<span class="token punctuation">)</span> <span class="token comment">// 期望输出 0，但可能输出负数</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="1231_2_221"></a>1.2.3.1 具体使用-2</h5> 
+<p>该使用是把mutex和临界区资源封装为一个类，这样更好的进行复用，不暴露内部实现</p> 
+<pre><code class="prism language-go"><span class="token keyword">package</span> main
+
+<span class="token keyword">import</span> <span class="token punctuation">(</span>
+    <span class="token string">"fmt"</span>
+    <span class="token string">"sync"</span>
+<span class="token punctuation">)</span>
+
+<span class="token comment">// StockManager 结构体封装了库存和互斥锁</span>
+<span class="token keyword">type</span> StockManager <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+    stock <span class="token builtin">int</span>
+    mutex sync<span class="token punctuation">.</span>Mutex
+<span class="token punctuation">}</span>
+
+<span class="token comment">// NewStockManager 创建一个新的 StockManager</span>
+<span class="token keyword">func</span> <span class="token function">NewStockManager</span><span class="token punctuation">(</span>initialStock <span class="token builtin">int</span><span class="token punctuation">)</span> <span class="token operator">*</span>StockManager <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">return</span> <span class="token operator">&amp;</span>StockManager<span class="token punctuation">{<!-- --></span>stock<span class="token punctuation">:</span> initialStock<span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">// Purchase 尝试购买一个商品</span>
+<span class="token keyword">func</span> <span class="token punctuation">(</span>sm <span class="token operator">*</span>StockManager<span class="token punctuation">)</span> <span class="token function">Purchase</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token builtin">bool</span> <span class="token punctuation">{<!-- --></span>
+    sm<span class="token punctuation">.</span>mutex<span class="token punctuation">.</span><span class="token function">Lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token keyword">defer</span> sm<span class="token punctuation">.</span>mutex<span class="token punctuation">.</span><span class="token function">Unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+
+    <span class="token keyword">if</span> sm<span class="token punctuation">.</span>stock <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token punctuation">{<!-- --></span>
+       sm<span class="token punctuation">.</span>stock<span class="token operator">--</span>
+       fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"Purchase successful, remaining stock:"</span><span class="token punctuation">,</span> sm<span class="token punctuation">.</span>stock<span class="token punctuation">)</span>
+       <span class="token keyword">return</span> <span class="token boolean">true</span>
+    <span class="token punctuation">}</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"Purchase failed, out of stock"</span><span class="token punctuation">)</span>
+    <span class="token keyword">return</span> <span class="token boolean">false</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">// GetStock 获取当前库存</span>
+<span class="token keyword">func</span> <span class="token punctuation">(</span>sm <span class="token operator">*</span>StockManager<span class="token punctuation">)</span> <span class="token function">GetStock</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token builtin">int</span> <span class="token punctuation">{<!-- --></span>
+    sm<span class="token punctuation">.</span>mutex<span class="token punctuation">.</span><span class="token function">Lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token keyword">defer</span> sm<span class="token punctuation">.</span>mutex<span class="token punctuation">.</span><span class="token function">Unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token keyword">return</span> sm<span class="token punctuation">.</span>stock
+<span class="token punctuation">}</span>
+
+<span class="token keyword">func</span> <span class="token function">main</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    sm <span class="token operator">:=</span> <span class="token function">NewStockManager</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">)</span>
+    <span class="token keyword">var</span> wg sync<span class="token punctuation">.</span>WaitGroup
+
+    numUsers <span class="token operator">:=</span> <span class="token number">100000</span>
+    wg<span class="token punctuation">.</span><span class="token function">Add</span><span class="token punctuation">(</span>numUsers<span class="token punctuation">)</span>
+    <span class="token keyword">for</span> i <span class="token operator">:=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> numUsers<span class="token punctuation">;</span> i<span class="token operator">++</span> <span class="token punctuation">{<!-- --></span>
+       <span class="token keyword">go</span> <span class="token keyword">func</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+          <span class="token keyword">defer</span> wg<span class="token punctuation">.</span><span class="token function">Done</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+          sm<span class="token punctuation">.</span><span class="token function">Purchase</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+       <span class="token punctuation">}</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    <span class="token punctuation">}</span>
+    wg<span class="token punctuation">.</span><span class="token function">Wait</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+    fmt<span class="token punctuation">.</span><span class="token function">Println</span><span class="token punctuation">(</span><span class="token string">"Final stock:"</span><span class="token punctuation">,</span> sm<span class="token punctuation">.</span><span class="token function">GetStock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><strong>下一篇：mutex的原理以及常见的错误。</strong></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/3b23ee4e15edbbfe400da65bcb7a9693/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">MASM32&#43; HTML &amp; JavaScript，好搭档</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/25dc358b079c84717020467d62655dc6/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">深入理解HTTP连接池及其在Java中的应用</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

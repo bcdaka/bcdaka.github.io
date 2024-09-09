@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>剖析 Kafka 消息丢失的原因 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/9ee9ff9a6719fe102fd05eb8f3742149/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="剖析 Kafka 消息丢失的原因">
+  <meta property="og:description" content="文章目录 前言一、生产者导致消息丢失的场景场景1：消息体太大解决方案 ：1、减少生产者发送消息体体积2、调整参数`max.request.size` 场景2：异步发送机制解决方案 ：1、使用带回调函数的发送方法 场景3：网络问题和配置不当解决方案 ：1、设置`acks`参数设置为&#34;all&#34;2、设置重试参数3、设置 `min.insync.replicas`参数 二、Broker服务端导致消息丢失的场景场景1：Broker 宕机解决方案 ：1、增加副本数量 场景2：leader挂掉，follower未同步解决方案 ：1、leader竞选资格2、增加副本数量 场景3：持久化错误解决方案 ：1、调整刷盘参数2、增加副本数量 三、消费者导致消息丢失的场景场景1：提交偏移量后消息处理失败解决方案 ： 场景2：并发消费解决方案 ： 场景3：消息堆积解决方案 ： 场景4：消费者组rebalance解决方案 ：1、尽量提高客户端的消费速度2、调整参数避免不 必要的rebalance 依然会丢消息的场景场景 1：场景 2： 总结 前言 Kafka消息丢失的原因通常涉及多个方面，包括生产者、消费者和Kafka服务端（Broker）的配置和行为。下面将围绕这三个关键点，详细探讨Kafka消息丢失的常见原因，并提供相应的解决方案和最佳实践。具体分析如下：
+一、生产者导致消息丢失的场景 场景1：消息体太大 消息大小超过Broker的message.max.bytes的值。此时Broker会直接返回错误。
+解决方案 ： 1、减少生产者发送消息体体积 可以通过压缩消息体、去除不必要的字段等方式减小消息大小。
+2、调整参数max.request.size max.request.size，表示生产者发送的单个消息的最大值，也可以指单个请求中所有消息的总和大小。默认值为1048576B，1MB。这个参数的值值必须小于Broker的message.max.bytes。
+场景2：异步发送机制 Kafka生产者默认采用异步发送消息，如果未正确处理发送结果，可能导致消息丢失。
+解决方案 ： 1、使用带回调函数的发送方法 不要使用 producer.send(msg)，而要使用 producer.send(msg, callback)。带有回调通知的 send 方法可以针对发送失败的消息进行重试处理。
+场景3：网络问题和配置不当 ​ 生产者在发送消息时可能遇到网络抖动或完全中断，导致消息未能到达Broker。如果生产者的配置没有考虑这种情况，例如未设置恰当的重试机制（retries参数）和确认机制（acks参数），消息就可能在网络不稳定时丢失。
+解决方案 ： 1、设置acks参数设置为&#34;all&#34; acks参数指定了必须要有多少个分区副本收到消息，生产者才认为该消息是写入成功的，这个参数对于消息是否丢失起着重要作用，该参数的配置具体如下：
+all/-1 : 表示kafka isr列表中所有的副本同步数据成功，才返回消息给客户端0 ：表示客户端只管发送数据，不管服务端接收数据的任何情况1 ：表示客户端发送数据后，需要在服务端 leader 副本写入数据成功后，返回响应 使用同步发送方式或确保acks参数设置为&#34;all&#34;，以确保所有副本接收到消息。
+2、设置重试参数 重试参数主要有retries和retry.backoff.ms两个参数。
+（1）参数 retries是指生产者重试次数，该参数默认值为0。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-23T17:48:15+08:00">
+    <meta property="article:modified_time" content="2024-07-23T17:48:15+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">剖析 Kafka 消息丢失的原因</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_1" rel="nofollow">前言</a></li><li><a href="#_4" rel="nofollow">一、生产者导致消息丢失的场景</a></li><li><ul><li><a href="#1_5" rel="nofollow">场景1：消息体太大</a></li><li><ul><li><a href="#__9" rel="nofollow">解决方案 ：</a></li><li><ul><li><a href="#1_11" rel="nofollow">1、减少生产者发送消息体体积</a></li><li><a href="#2maxrequestsize_13" rel="nofollow">2、调整参数`max.request.size`</a></li></ul> 
+   </li></ul> 
+   </li><li><a href="#2_17" rel="nofollow">场景2：异步发送机制</a></li><li><ul><li><a href="#__21" rel="nofollow">解决方案 ：</a></li><li><ul><li><a href="#1_22" rel="nofollow">1、使用带回调函数的发送方法</a></li></ul> 
+   </li></ul> 
+   </li><li><a href="#3_27" rel="nofollow">场景3：网络问题和配置不当</a></li><li><ul><li><a href="#__32" rel="nofollow">解决方案 ：</a></li><li><ul><li><a href="#1acksall_33" rel="nofollow">1、设置`acks`参数设置为"all"</a></li><li><a href="#2_43" rel="nofollow">2、设置重试参数</a></li><li><a href="#3_mininsyncreplicas_68" rel="nofollow">3、设置 `min.insync.replicas`参数</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+  </li><li><a href="#Broker_76" rel="nofollow">二、Broker服务端导致消息丢失的场景</a></li><li><ul><li><a href="#1Broker__78" rel="nofollow">场景1：Broker 宕机</a></li><li><ul><li><a href="#__84" rel="nofollow">解决方案 ：</a></li><li><ul><li><a href="#1_85" rel="nofollow">1、增加副本数量</a></li></ul> 
+   </li></ul> 
+   </li><li><a href="#2leaderfollower_90" rel="nofollow">场景2：leader挂掉，follower未同步</a></li><li><ul><li><a href="#__94" rel="nofollow">解决方案 ：</a></li><li><ul><li><a href="#1leader_95" rel="nofollow">1、leader竞选资格</a></li><li><a href="#2_106" rel="nofollow">2、增加副本数量</a></li></ul> 
+   </li></ul> 
+   </li><li><a href="#3_110" rel="nofollow">场景3：持久化错误</a></li><li><ul><li><a href="#__116" rel="nofollow">解决方案 ：</a></li><li><ul><li><a href="#1_117" rel="nofollow">1、调整刷盘参数</a></li><li><a href="#2_133" rel="nofollow">2、增加副本数量</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+  </li><li><a href="#_139" rel="nofollow">三、消费者导致消息丢失的场景</a></li><li><ul><li><a href="#1_141" rel="nofollow">场景1：提交偏移量后消息处理失败</a></li><li><ul><li><a href="#__145" rel="nofollow">解决方案 ：</a></li></ul> 
+   </li><li><a href="#2_149" rel="nofollow">场景2：并发消费</a></li><li><ul><li><a href="#__152" rel="nofollow">解决方案 ：</a></li></ul> 
+   </li><li><a href="#3_156" rel="nofollow">场景3：消息堆积</a></li><li><ul><li><a href="#__158" rel="nofollow">解决方案 ：</a></li></ul> 
+   </li><li><a href="#4rebalance_161" rel="nofollow">场景4：消费者组rebalance</a></li><li><ul><li><a href="#__166" rel="nofollow">解决方案 ：</a></li><li><ul><li><a href="#1_167" rel="nofollow">1、尽量提高客户端的消费速度</a></li><li><a href="#2_rebalance_170" rel="nofollow">2、调整参数避免不 必要的rebalance</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+  </li><li><a href="#_186" rel="nofollow">依然会丢消息的场景</a></li><li><ul><li><a href="#_1_190" rel="nofollow">场景 1：</a></li><li><ul><li><a href="#_2_196" rel="nofollow">场景 2：</a></li></ul> 
+   </li><li><a href="#_201" rel="nofollow">总结</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>前言</h2> 
+<p>Kafka消息丢失的原因通常涉及多个方面，包括<strong>生产者、消费者和Kafka服务端（Broker）的配置和行为</strong>。下面将围绕这三个关键点，详细探讨Kafka消息丢失的常见原因，并提供相应的解决方案和最佳实践。具体分析如下：</p> 
+<h2><a id="_4"></a>一、生产者导致消息丢失的场景</h2> 
+<h3><a id="1_5"></a>场景1：消息体太大</h3> 
+<p>消息大小超过Broker的<code>message.max.bytes</code>的值。此时Broker会直接返回错误。</p> 
+<h4><a id="__9"></a>解决方案 ：</h4> 
+<h5><a id="1_11"></a>1、减少生产者发送消息体体积</h5> 
+<p>可以通过压缩消息体、去除不必要的字段等方式减小消息大小。</p> 
+<h5><a id="2maxrequestsize_13"></a>2、调整参数<code>max.request.size</code></h5> 
+<p><code>max.request.size</code>，表示生产者发送的单个消息的最大值，也可以指单个请求中所有消息的总和大小。默认值为1048576B，1MB。这个参数的值值必须小于Broker的<code>message.max.bytes</code>。</p> 
+<h3><a id="2_17"></a>场景2：异步发送机制</h3> 
+<p>Kafka生产者默认采用异步发送消息，如果未正确处理发送结果，可能导致消息丢失。</p> 
+<h4><a id="__21"></a>解决方案 ：</h4> 
+<h5><a id="1_22"></a>1、使用带回调函数的发送方法</h5> 
+<p>不要使用 <code>producer.send(msg)</code>，而要使用 <code>producer.send(msg, callback)</code>。带有回调通知的 send 方法可以针对发送失败的消息进行重试处理。</p> 
+<h3><a id="3_27"></a>场景3：网络问题和配置不当</h3> 
+<p>​ 生产者在发送消息时可能遇到网络抖动或完全中断，导致消息未能到达Broker。如果生产者的配置没有考虑这种情况，例如未设置恰当的重试机制（<code>retries</code>参数）和确认机制（<code>acks</code>参数），消息就可能在网络不稳定时丢失。</p> 
+<h4><a id="__32"></a>解决方案 ：</h4> 
+<h5><a id="1acksall_33"></a>1、设置<code>acks</code>参数设置为"all"</h5> 
+<p>acks参数指定了必须要有多少个分区副本收到消息，生产者才认为该消息是写入成功的，这个参数对于消息是否丢失起着重要作用，该参数的配置具体如下：</p> 
+<ul><li>all/-1 : 表示kafka isr列表中所有的副本同步数据成功，才返回消息给客户端</li><li>0 ：表示客户端只管发送数据，不管服务端接收数据的任何情况</li><li>1 ：表示客户端发送数据后，需要在服务端 leader 副本写入数据成功后，返回响应</li></ul> 
+<p>使用同步发送方式或确保<code>acks</code>参数设置为"all"，以确保所有副本接收到消息。</p> 
+<h5><a id="2_43"></a>2、设置重试参数</h5> 
+<p>重试参数主要有<code>retries</code>和<code>retry.backoff.ms</code>两个参数。</p> 
+<p>（1）参数 retries是指生产者重试次数，该参数默认值为0。</p> 
+<p>消息在从生产者从发出到成功写入broker之前可能发生一些临时性异常，比如网络抖动、leader副本选举等，这些异常发生时客户端会进行重试，而重试的次数由<code>retries</code>参数指定。如果重试达到设定次数，生产者才会放弃重试并抛出异常。但是并不是所有的异常都可以通过重试来解决，比如消息过大，超过<code>max.request.size</code>参数配置的数值（默认值为1048576B，1MB）。如果设置<code>retries</code>大于0而没有设置参数<code>max.in.flight.requests.per.connection</code>（限制每个连接，也就是客户端与Node之间的连接最多缓存请求数）大于0则意味着放弃发送消息的顺序性。</p> 
+<p>使用<code>retries</code>的默认值交给使用方自己去控制，结果往往是不处理。所以通用设置建议设置如下：</p> 
+<pre><code class="prism language-shell">retries <span class="token operator">=</span> Integer.MAX_VALUE
+max.in.flight.requests.per.connection <span class="token operator">=</span> <span class="token number">1</span>
+</code></pre> 
+<p>该参数的设置已经在kafka 2.4版本中默认设置为Integer.MAX_VALUE；同时增加了<code>delivery.timeout.ms</code>的参数设置。</p> 
+<p>（2）参数<code>retry.backoff.ms</code> 用于设定两次重试之间的时间间隔，默认值为100。</p> 
+<p>避免无效的频繁重试。在配置<code>retries</code>和<code>retry.backoff.ms</code>之前，最好先估算一下可能的异常恢复时间，这样可以设定总的重试时间要大于异常恢复时间，避免生产者过早的放弃重试。</p> 
+<h5><a id="3_mininsyncreplicas_68"></a>3、设置 <code>min.insync.replicas</code>参数</h5> 
+<p>参数<code>min.insync.replicas</code>， 该参数控制的是消息至少被写入到多少个副本才算是 “真正写入”，该值默认值为 1，不建议使用默认值 1， 建议设置<code>min.insync.replicas</code>至少为2。 因为如果同步副本的数量低于该配置值，则生产者会收到错误响应，从而确保消息不丢失。</p> 
+<h2><a id="Broker_76"></a>二、Broker服务端导致消息丢失的场景</h2> 
+<h3><a id="1Broker__78"></a>场景1：Broker 宕机</h3> 
+<p>为了提升性能，Kafka 使用 Page Cache，先将消息写入 Page Cache，采用了异步刷盘机制去把消息保存到磁盘。如果刷盘之前，Broker Leader 节点宕机了，并且没有 Follower 节点可以切换成 Leader，则 Leader 重启后这部分未刷盘的消息就会丢失。</p> 
+<p>如果Broker的副本因子（<code>replication.factor</code>）设置过低，或者同步副本的数量（<code>min.insync.replicas</code>）设置不当，一旦Leader Broker宕机，选举出的新的Leader可能不包含全部消息，导致消息丢失。</p> 
+<h4><a id="__84"></a>解决方案 ：</h4> 
+<h5><a id="1_85"></a>1、增加副本数量</h5> 
+<p>这种场景下多设置副本数是一个好的选择，通常的做法是设置<code> replication.factor</code> &gt;= 3，这样每个 Partition 就会有 3个以上 Broker 副本来保存消息，同时宕机的概率很低。</p> 
+<p>同时配合设置上文提到的参数 <code>min.insync.replicas</code>至少为2（不建议使用默认值 1），表示消息至少要被成功写入到 2 个 Broker 副本才算是发送成功。</p> 
+<h3><a id="2leaderfollower_90"></a>场景2：leader挂掉，follower未同步</h3> 
+<p>假如 leader 副本所在的 broker 突然挂掉，那么就要从 follower 副本重新选出一个 leader ，但 leader 的数据还有一些没有被 follower 副本同步的话，就会造成消息丢失。</p> 
+<h4><a id="__94"></a>解决方案 ：</h4> 
+<h5><a id="1leader_95"></a>1、leader竞选资格</h5> 
+<p>参数<code>unclean.leader.election.enable</code> 的值说明如下：</p> 
+<ul><li>true：允许 ISR 列表之外的节点参与竞选 Leader；</li><li>false：不允许 ISR 列表之外的节点参与竞选 Leader。</li></ul> 
+<p>该参数默认值为false。但如果为true的话，意味着非ISR集合中的副本也可以参加选举成为leader，由于不同步副本的消息较为滞后，此时成为leader的话可能出现消息不一致的情况。所以<code>unclean.leader.election.enable</code> 这个参数值要设置为 false。</p> 
+<h5><a id="2_106"></a>2、增加副本数量</h5> 
+<p>同上文。</p> 
+<h3><a id="3_110"></a>场景3：持久化错误</h3> 
+<p>为了提高性能，减少刷盘次数， Kafka的Broker数据持久化时，会先存储到页缓存（Page cache）中，</p> 
+<p>按照一定的消息量和时间间隔进行进行批量刷盘的做法。数据在page cache时，如果系统挂掉，消息未能及时写入磁盘，数据就会丢失。Kafka没有提供同步刷盘的方式，所以只能通过增加副本或者修改刷盘参数提高刷盘频率来来减少这一情况。</p> 
+<h4><a id="__116"></a>解决方案 ：</h4> 
+<h5><a id="1_117"></a>1、调整刷盘参数</h5> 
+<p>kafka提供设置刷盘机制的参数如下：</p> 
+<p><code>log.flush.interval.messages</code><br> 多少条消息刷盘1次，默认Long.MaxValue</p> 
+<p><code>log.flush.interval.ms</code><br> 隔多长时间刷盘1次 默认null</p> 
+<p><code>log.flush.scheduler.interval.ms</code><br> 周期性的刷盘。默认Long.MaxValue</p> 
+<p>官方不建议通过上述的刷盘3个参数来强制写盘。其认为数据的可靠性通过replica来保证，而强制flush数据到磁盘会对整体性能产生影响。</p> 
+<h5><a id="2_133"></a>2、增加副本数量</h5> 
+<p>同上文。</p> 
+<h2><a id="_139"></a>三、消费者导致消息丢失的场景</h2> 
+<h3><a id="1_141"></a>场景1：提交偏移量后消息处理失败</h3> 
+<p>参数 <code>enable.auto.commit</code> 于设定是否自动提交offset，默认是true。代表消息会自动提交偏移量。但是提交偏移量后，消息处理失败了，则该消息丢失。</p> 
+<h4><a id="__145"></a>解决方案 ：</h4> 
+<p>可以把<code> enable.auto.commit</code> 设置为 false，这样相当于每次消费完后手动更新 Offset。不过这又会带来提交偏移量失败时，该消息复消费问题，因此消费端需要做好幂等处理。</p> 
+<h3><a id="2_149"></a>场景2：并发消费</h3> 
+<p>如果消费端采用多线程并发消费，很容易因为并发更新 Offset 导致消费失败。</p> 
+<h4><a id="__152"></a>解决方案 ：</h4> 
+<p>如果对消息丢失很敏感，最好使用单线程来进行消费。如果需要采用多线程，可以把 <code>enable.auto.commit </code>设置为 false，这样相当于每次消费完后手动更新 Offset。</p> 
+<h3><a id="3_156"></a>场景3：消息堆积</h3> 
+<p>消费者如果处理消息的速度跟不上消息产生的速度，可能会导致消息堆积，进而触发消费者客户端的流控机制，从而遗失部分消息。</p> 
+<h4><a id="__158"></a>解决方案 ：</h4> 
+<p>一般问题都出在消费端，尽量提高客户端的消费速度，消费逻辑另起线程进行处理。</p> 
+<h3><a id="4rebalance_161"></a>场景4：消费者组rebalance</h3> 
+<p>消费者组 rebalance导致导致消息丢失的场景有两种：<br> 1、某个客户端心跳超时，触发 Rebalance被踢出消费组。如果只有这一个客户端，那消息就不会被消费了。<br> 2、Rebalance时没有及时提交偏移量，消费者组内的消费者需要重新进行分区分配，在这个过程中无法消费消息。所以如果在 消费者在 rebalance 之前没有正确处理完正在处理的消息，那么这些消息就可能会丢失或者重复消费。</p> 
+<h4><a id="__166"></a>解决方案 ：</h4> 
+<h5><a id="1_167"></a>1、尽量提高客户端的消费速度</h5> 
+<p>提高单条消息的处理速度，例如对消息处理中比 较耗时的步骤可通过异步的方式进行处理、利用多线程处理等。</p> 
+<h5><a id="2_rebalance_170"></a>2、调整参数避免不 必要的rebalance</h5> 
+<p>某些参数设置不当会导致重平衡频繁 ，严重影响消费速度，此时可以通过调整参数避免不必要的重平衡。 kafka rebalance所涉及的参数如下：</p> 
+<p><code>session.timeout.ms</code><br> 该参数是 Coordinator 检测消费者失败的时间，即在这段时间内客户端是否跟 Coordinator 保持心跳，如果该参数设置数值小，可以更早发现消费者崩溃的信息，从而更快地开启重平衡，避免消费滞后，但是这也会导致频繁重平衡，这要根据实际业务来衡量。</p> 
+<p><code>max.poll.interval.ms</code><br> 于设定consumer两次poll的最大时间间隔（默认5分钟），如果超过了该间隔consumer client会主动向coordinator发起LeaveGroup请求，触发rebalance。根据实际场景可将max.poll.interval.ms值设置大一点，避免不 必要的rebalance。</p> 
+<p><code>heartbeat.interval.ms</code><br> 该参数跟 <em>session.timeout.ms</em> 紧密关联，前面也说过，只要在 <em>session.timeout.ms</em> 时间内与 Coordinator 保持心跳，就不会被 Coordinator 剔除，那么心跳间隔的时间就是<em>session.timeout.ms</em>，因此，该参数值必须小于 <em>session.timeout.ms</em>，以保持 <em>session.timeout.ms</em> 时间内有心跳。</p> 
+<p><code>max.poll.records</code><br> 于设定每次调用poll()时取到的records的最大数，默认值是500，可根 据实际消息速率适当调小。这种思路可解决因消费时间过长导致的重复消费问题， 对代码改动较小，但无法绝对避免重复消费问题。</p> 
+<h2><a id="_186"></a>依然会丢消息的场景</h2> 
+<p>即使把参数都设置的很完善也会丢失消息的两种场景</p> 
+<h3><a id="_1_190"></a>场景 1：</h3> 
+<p>当把数据写到足够多的PageCache的时候就会告知生产者现在数据已经写入成功，但如果还没有把PageCache的数据写到硬盘上，这时候PageCache所在的操作系统都挂了，此时就会丢失数据。</p> 
+<h4><a id="_2_196"></a>场景 2：</h4> 
+<p>副本所在的服务器硬盘都坏了，也会丢数据。</p> 
+<h3><a id="_201"></a>总结</h3> 
+<p>总的来说，Kafka消息丢失是一个涉及多个环节的问题，需要从生产者、Broker和消费者三个层面综合考虑。通过合理的配置和策略，结合监控和及时的应对措施，可以大幅降低消息丢失的风险，确保数据在分布式系统中的可靠传递。</p> 
+<p>下图是本文内容总结的脑图：<br> <img src="https://images2.imgbox.com/a4/ee/GhgRKL0V_o.png" alt="在这里插入图片描述"></p> 
+<p>最后<br> <img src="https://images2.imgbox.com/57/24/8E8ExeWh_o.jpg" alt="请添加图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6b046afe39d078ac4ffd67e681e1a774/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【Linux】条件变量及生产者消费者模型</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/5716970ed92892c8933c63c9ecd46390/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">解决kkfileview 使用https预览问题记录</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

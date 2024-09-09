@@ -1,0 +1,669 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Tomcat源码解析(八)：一个请求的执行流程（附Tomcat整体总结） - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/92fc023459015d95592563206fed78ec/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Tomcat源码解析(八)：一个请求的执行流程（附Tomcat整体总结）">
+  <meta property="og:description" content="Tomcat源码系列文章
+Tomcat源码解析(一)：Tomcat整体架构
+Tomcat源码解析(二)：Bootstrap和Catalina
+Tomcat源码解析(三)：LifeCycle生命周期管理
+Tomcat源码解析(四)：StandardServer和StandardService
+Tomcat源码解析(五)：StandardEngine、StandardHost、StandardContext、StandardWrapper
+Tomcat源码解析(六)：Connector、ProtocolHandler、Endpoint
+Tomcat源码解析(七)：底层如何获取请求url、请求头、json数据？
+Tomcat源码解析(八)：一个请求的执行流程
+文章目录 前言一、Engine管道内容1、StandardEngineValve2、如何通过Engine找到Host 二、Host管道内容1、ErrorReportValve（拼接html错误页面）2、StandardHostValve3、如何通过Host找到Context(上下文) 三、Context管道内容1、StandardContextValve2、如何通过Context找到Wrapper 四、Wrapper管道内容1、StandardWrapperValve1.1、创建过滤器链1.2、执行过滤器链1.2.1、Request和Response的门面模式1.2.2、doFilter方法 Tomcat最终总结 前言 前文中我们介绍了NIO解析请求数据，网络字节流转化为Request和Response对象。接下来介绍拿到Req和Res之后如何走到Servelt，以及正常响应返回。
+回顾之前篇章，NioEndpoint通过socket服务端ServerSocketChannel.accept()监听8080端口接收连接，获取到连接扔给连接池处理，SocketProcessor从NioChannel通道中读取数据到ByteBuff缓冲区再赋值给对应属性，最后通过适配器CoyoteAdapter生成容器Req和Res调用容器管道的执行方法。
+Endpoint是连接器Connector的核心组件之一，那么NioEndpoint接受到的连接最后交给自己的连接器connector；由如下server.xml可知，Service对象由一个容器Engine和多个连接器Connector组成，所以结合上面核心代码connector.getService().getContainer()获取到的就是自己的顶级容器Engine。
+以前第一篇文章Tomcat源码解析(一)：Tomcat整体架构最后一部分有说过管道的结构。这里再简单的说下容器管道，其实可以理解为容器Engine、Host、Context、Wrapper设置的拦截器，一个请求进来，需要通过每个容器设置的拦截器(如下链状结构，可以设置多个)，也就是说每个容器可能有多个处理点。作用其实就是在请求Servelt之前可以拦截请求做一些额外处理。另外一方面，也是从顶级容器Engine找到Wrapper从而找到Servelt执行我们写的业务逻辑
+一、Engine管道内容 1、StandardEngineValve 这里感觉没啥核心内容，其实就是找到对应的Host，然后调用Host的管道执行方法。
+final class StandardEngineValve extends ValveBase { ... @Override public final void invoke(Request request, Response response) throws IOException, ServletException { // 从request中获取虚拟主机host Host host = request.getHost(); if (host == null) { response.sendError (HttpServletResponse.SC_BAD_REQUEST, sm.getString(&#34;standardEngine.noHost&#34;, request.getServerName())); return; } if (request.isAsyncSupported()) { request.setAsyncSupported(host.getPipeline().isAsyncSupported()); } // 请此主机处理此请求，调用对应主机的管道执行方法 host.getPipeline().getFirst().invoke(request, response); } } 2、如何通过Engine找到Host 顶级容器Engine下可以有多个虚拟主机Host(主机名称和ip地址，默认localhost)；在上篇文章中讲过NIO解析请求数据，里面自然包括请求ip地址，此时只要比对下即可在多个虚拟主机Host中找到。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-10T15:22:25+08:00">
+    <meta property="article:modified_time" content="2024-06-10T15:22:25+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Tomcat源码解析(八)：一个请求的执行流程（附Tomcat整体总结）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-dracula">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p><font size="5"><strong>Tomcat源码系列文章</strong></font></p> 
+<p><a href="https://blog.csdn.net/qq_35512802/article/details/135456651">Tomcat源码解析(一)：Tomcat整体架构</a></p> 
+<p><a href="https://blog.csdn.net/qq_35512802/article/details/135490769">Tomcat源码解析(二)：Bootstrap和Catalina</a></p> 
+<p><a href="https://blog.csdn.net/qq_35512802/article/details/136389511">Tomcat源码解析(三)：LifeCycle生命周期管理</a></p> 
+<p><a href="https://blog.csdn.net/qq_35512802/article/details/136480579">Tomcat源码解析(四)：StandardServer和StandardService</a></p> 
+<p><a href="https://blog.csdn.net/qq_35512802/article/details/136582762">Tomcat源码解析(五)：StandardEngine、StandardHost、StandardContext、StandardWrapper</a></p> 
+<p><a href="https://blog.csdn.net/qq_35512802/article/details/137260508">Tomcat源码解析(六)：Connector、ProtocolHandler、Endpoint</a></p> 
+<p><a href="https://blog.csdn.net/qq_35512802/article/details/139043605">Tomcat源码解析(七)：底层如何获取请求url、请求头、json数据？</a></p> 
+<p><a href="https://blog.csdn.net/qq_35512802/article/details/139278521">Tomcat源码解析(八)：一个请求的执行流程</a></p> 
+<hr> 
+<p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#_25" rel="nofollow">前言</a></li><li><a href="#Engine_41" rel="nofollow">一、Engine管道内容</a></li><li><ul><li><a href="#1StandardEngineValve_42" rel="nofollow">1、StandardEngineValve</a></li><li><a href="#2EngineHost_71" rel="nofollow">2、如何通过Engine找到Host</a></li></ul> 
+  </li><li><a href="#Host_79" rel="nofollow">二、Host管道内容</a></li><li><ul><li><a href="#1ErrorReportValvehtml_88" rel="nofollow">1、ErrorReportValve（拼接html错误页面）</a></li><li><a href="#2StandardHostValve_240" rel="nofollow">2、StandardHostValve</a></li><li><a href="#3HostContext_304" rel="nofollow">3、如何通过Host找到Context(上下文)</a></li></ul> 
+  </li><li><a href="#Context_313" rel="nofollow">三、Context管道内容</a></li><li><ul><li><a href="#1StandardContextValve_315" rel="nofollow">1、StandardContextValve</a></li><li><a href="#2ContextWrapper_365" rel="nofollow">2、如何通过Context找到Wrapper</a></li></ul> 
+  </li><li><a href="#Wrapper_378" rel="nofollow">四、Wrapper管道内容</a></li><li><ul><li><a href="#1StandardWrapperValve_380" rel="nofollow">1、StandardWrapperValve</a></li><li><ul><li><a href="#11_445" rel="nofollow">1.1、创建过滤器链</a></li><li><a href="#12_540" rel="nofollow">1.2、执行过滤器链</a></li><li><ul><li><a href="#121RequestResponse_544" rel="nofollow">1.2.1、Request和Response的门面模式</a></li><li><a href="#122doFilter_588" rel="nofollow">1.2.2、doFilter方法</a></li></ul> 
+   </li></ul> 
+  </li></ul> 
+  </li><li><a href="#Tomcat_631" rel="nofollow">Tomcat最终总结</a></li></ul> 
+</div> 
+<p></p> 
+<hr> 
+<h2><a id="_25"></a>前言</h2> 
+<p>  <font color="purple"><strong>前文中我们介绍了NIO<code>解析请求数据</code>，网络字节流转化为Request和Response对象。<font color="green">接下来介绍拿到Req和Res之后如何走到Servelt，以及正常响应返回。</font></strong></font></p> 
+<p>  <font color="RoyalBlue"><strong>回顾之前篇章，NioEndpoint通过socket服务端<code>ServerSocketChannel.accept()</code>监听8080端口接收连接，获取到连接扔给连接池处理，SocketProcessor从<code>NioChannel</code>通道中读取数据到<code>ByteBuff缓冲区</code>再赋值给对应属性，最后通过适配器<code>CoyoteAdapter</code>生成容器Req和Res调用容器管道的执行方法。</strong></font></p> 
+<p><img src="https://images2.imgbox.com/38/ac/rnzWHQBK_o.png" alt="在这里插入图片描述"></p> 
+<p>  <font color="RoyalBlue"><strong><code>Endpoint</code>是连接器<code>Connector</code>的核心组件之一，那么NioEndpoint接受到的连接最后交给自己的连接器connector；由如下<code>server.xml</code>可知，Service对象由一个容器Engine和多个连接器Connector组成，所以结合上面核心代码<code>connector.getService().getContainer()</code>获取到的就是自己的<code>顶级容器Engine</code>。</strong></font></p> 
+<p><img src="https://images2.imgbox.com/30/70/MCAHv77L_o.png" alt="在这里插入图片描述"></p> 
+<p>  <font color="SaddleBrown"><strong>以前第一篇文章<a href="https://blog.csdn.net/qq_35512802/article/details/135456651">Tomcat源码解析(一)：Tomcat整体架构</a>最后一部分有说过管道的结构。</strong><font color="RoyalBlue"><strong>这里再简单的说下容器管道，其实可以理解为容器Engine、Host、Context、Wrapper设置的拦截器，一个请求进来，需要通过每个容器设置的拦截器(<code>如下链状结构，可以设置多个</code>)，也就是说每个容器可能有多个<code>处理点</code>。作用其实就是在请求Servelt之前可以<code>拦截请求做一些额外处理</code>。<font color="Olive">另外一方面，也是从顶级容器Engine找到Wrapper从而找到Servelt执行我们写的业务逻辑</font></strong></font></font></p> 
+<p><img src="https://images2.imgbox.com/e4/60/MKAiGvW3_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="Engine_41"></a>一、Engine管道内容</h2> 
+<h3><a id="1StandardEngineValve_42"></a>1、StandardEngineValve</h3> 
+<p>  <font color="purple"><strong>这里感觉没啥核心内容，其实就是找到对应的Host，然后调用Host的管道执行方法。</strong></font></p> 
+<pre><code class="prism language-java"><span class="token keyword">final</span> <span class="token keyword">class</span> <span class="token class-name">StandardEngineValve</span> <span class="token keyword">extends</span> <span class="token class-name">ValveBase</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">final</span> <span class="token keyword">void</span> <span class="token function">invoke</span><span class="token punctuation">(</span><span class="token class-name">Request</span> request<span class="token punctuation">,</span> <span class="token class-name">Response</span> response<span class="token punctuation">)</span>
+        <span class="token keyword">throws</span> <span class="token class-name">IOException</span><span class="token punctuation">,</span> <span class="token class-name">ServletException</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token comment">// 从request中获取虚拟主机host</span>
+        <span class="token class-name">Host</span> host <span class="token operator">=</span> request<span class="token punctuation">.</span><span class="token function">getHost</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>host <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            response<span class="token punctuation">.</span>sendError
+                <span class="token punctuation">(</span><span class="token class-name">HttpServletResponse</span><span class="token punctuation">.</span><span class="token constant">SC_BAD_REQUEST</span><span class="token punctuation">,</span>
+                 sm<span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span><span class="token string">"standardEngine.noHost"</span><span class="token punctuation">,</span>
+                              request<span class="token punctuation">.</span><span class="token function">getServerName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">return</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>request<span class="token punctuation">.</span><span class="token function">isAsyncSupported</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            request<span class="token punctuation">.</span><span class="token function">setAsyncSupported</span><span class="token punctuation">(</span>host<span class="token punctuation">.</span><span class="token function">getPipeline</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">isAsyncSupported</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">// 请此主机处理此请求，调用对应主机的管道执行方法</span>
+        host<span class="token punctuation">.</span><span class="token function">getPipeline</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getFirst</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">invoke</span><span class="token punctuation">(</span>request<span class="token punctuation">,</span> response<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="2EngineHost_71"></a>2、如何通过Engine找到Host</h3> 
+<p>  <font color="green"><strong>顶级容器Engine下可以有<code>多个虚拟主机Host</code>(主机名称和ip地址，默认localhost)；在上篇文章中讲过NIO解析请求数据，里面自然包括请求ip地址，此时只要比对下即可在多个虚拟主机Host中找到。</strong></font></p> 
+<p>  <font color="Olive"><strong>在解析请求后会调用如下方法，最终会将获取到Host对象的<code>mappingData.host</code>属性赋值给<code>Request</code>，这样上面<code>request.getHost()</code>就能获取到对应的Host了。</strong></font></p> 
+<p><img src="https://images2.imgbox.com/35/1c/TAEe8XPM_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="Host_79"></a>二、Host管道内容</h2> 
+<blockquote> 
+ <p><strong><font size="3">AccessLogValve</font></strong></p> 
+</blockquote> 
+<ul><li><font color="SaddleBrown"><strong>这个处理点是日志记录用的，具体也没研究干啥的</strong></font></li><li><font color="RoyalBlue"><strong>这里可以理解为Host的拦截器链，这个执行点执行完，调用下一个</strong></font></li></ul> 
+<p><img src="https://images2.imgbox.com/46/ae/wKArb1Qf_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="1ErrorReportValvehtml_88"></a>1、ErrorReportValve（拼接html错误页面）</h3> 
+<ul><li><font color="purple"><strong>接下来这个处理点，就是本单元的主要讲的内容，错误页面的拼接</strong></font></li></ul> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">ErrorReportValve</span> <span class="token keyword">extends</span> <span class="token class-name">ValveBase</span> <span class="token punctuation">{<!-- --></span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">invoke</span><span class="token punctuation">(</span><span class="token class-name">Request</span> request<span class="token punctuation">,</span> <span class="token class-name">Response</span> response<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">IOException</span><span class="token punctuation">,</span> <span class="token class-name">ServletException</span> <span class="token punctuation">{<!-- --></span>
+
+        <span class="token comment">// 执行请求</span>
+        <span class="token function">getNext</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">invoke</span><span class="token punctuation">(</span>request<span class="token punctuation">,</span> response<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+		
+		<span class="token comment">// 此异常是执行请求时候捕获的，如我们的业务逻辑抛出的异常，这里就能获取到</span>
+		<span class="token comment">// 后面会讲到</span>
+        <span class="token class-name">Throwable</span> throwable <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span><span class="token punctuation">)</span> request<span class="token punctuation">.</span><span class="token function">getAttribute</span><span class="token punctuation">(</span><span class="token class-name">RequestDispatcher</span><span class="token punctuation">.</span><span class="token constant">ERROR_EXCEPTION</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+        	<span class="token comment">// 返回html的错误页面</span>
+            <span class="token function">report</span><span class="token punctuation">(</span>request<span class="token punctuation">,</span> response<span class="token punctuation">,</span> throwable<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> tt<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">ExceptionUtils</span><span class="token punctuation">.</span><span class="token function">handleThrowable</span><span class="token punctuation">(</span>tt<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+    <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<ul><li><font color="green"><strong>在1xx、2xx和3xx状态下不执行任何操作</strong></font></li><li><font color="green"><strong>4xx客户端错误，5xx服务端错误则需要组装错误响应业务</strong></font></li><li><font color="#d32b8f"><strong>html字符串拼接完成后，将数据通过网络写出到客户端</strong></font></li></ul> 
+<pre><code class="prism language-java"><span class="token comment">// ErrorReportValve类方法</span>
+<span class="token keyword">protected</span> <span class="token keyword">void</span> <span class="token function">report</span><span class="token punctuation">(</span><span class="token class-name">Request</span> request<span class="token punctuation">,</span> <span class="token class-name">Response</span> response<span class="token punctuation">,</span> <span class="token class-name">Throwable</span> throwable<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token keyword">int</span> statusCode <span class="token operator">=</span> response<span class="token punctuation">.</span><span class="token function">getStatus</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 在 1xx、2xx 和 3xx 状态下不执行任何操作</span>
+    <span class="token comment">// 4xx客户端错误，5xx服务端错误则需要组装错误响应业务</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>statusCode <span class="token operator">&lt;</span> <span class="token number">400</span> <span class="token operator">||</span> response<span class="token punctuation">.</span><span class="token function">getContentWritten</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">&gt;</span> <span class="token number">0</span> <span class="token operator">||</span> <span class="token operator">!</span>response<span class="token punctuation">.</span><span class="token function">setErrorReported</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+	
+	<span class="token comment">// sb即为拼接的html返回字符串</span>
+    <span class="token class-name">StringBuilder</span> sb <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">StringBuilder</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;!doctype html&gt;&lt;html lang=\""</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span>smClient<span class="token punctuation">.</span><span class="token function">getLocale</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getLanguage</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"\"&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;head&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;title&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span>smClient<span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span><span class="token string">"errorReportValve.statusHeader"</span><span class="token punctuation">,</span>
+            <span class="token class-name">String</span><span class="token punctuation">.</span><span class="token function">valueOf</span><span class="token punctuation">(</span>statusCode<span class="token punctuation">)</span><span class="token punctuation">,</span> reason<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/title&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;style type=\"text/css\"&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token class-name">TomcatCSS</span><span class="token punctuation">.</span><span class="token constant">TOMCAT_CSS</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/style&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/head&gt;&lt;body&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;h1&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span>smClient<span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span><span class="token string">"errorReportValve.statusHeader"</span><span class="token punctuation">,</span>
+            <span class="token class-name">String</span><span class="token punctuation">.</span><span class="token function">valueOf</span><span class="token punctuation">(</span>statusCode<span class="token punctuation">)</span><span class="token punctuation">,</span> reason<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/h1&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">isShowReport</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;hr class=\"line\" /&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;p&gt;&lt;b&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span>smClient<span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span><span class="token string">"errorReportValve.type"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/b&gt; "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>throwable <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span>smClient<span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span><span class="token string">"errorReportValve.exceptionReport"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span>smClient<span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span><span class="token string">"errorReportValve.statusReport"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/p&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>message<span class="token punctuation">.</span><span class="token function">isEmpty</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;p&gt;&lt;b&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span>smClient<span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span><span class="token string">"errorReportValve.message"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/b&gt; "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span>message<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/p&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;p&gt;&lt;b&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span>smClient<span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span><span class="token string">"errorReportValve.description"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/b&gt; "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span>description<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/p&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>throwable <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">String</span> stackTrace <span class="token operator">=</span> <span class="token function">getPartialServletStackTrace</span><span class="token punctuation">(</span>throwable<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;p&gt;&lt;b&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span>smClient<span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span><span class="token string">"errorReportValve.exception"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/b&gt;&lt;/p&gt;&lt;pre&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token class-name">Escape</span><span class="token punctuation">.</span><span class="token function">htmlElementContent</span><span class="token punctuation">(</span>stackTrace<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/pre&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+            <span class="token keyword">int</span> loops <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+            <span class="token class-name">Throwable</span> rootCause <span class="token operator">=</span> throwable<span class="token punctuation">.</span><span class="token function">getCause</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">while</span> <span class="token punctuation">(</span>rootCause <span class="token operator">!=</span> <span class="token keyword">null</span> <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>loops <span class="token operator">&lt;</span> <span class="token number">10</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                stackTrace <span class="token operator">=</span> <span class="token function">getPartialServletStackTrace</span><span class="token punctuation">(</span>rootCause<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;p&gt;&lt;b&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span>smClient<span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span><span class="token string">"errorReportValve.rootCause"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/b&gt;&lt;/p&gt;&lt;pre&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token class-name">Escape</span><span class="token punctuation">.</span><span class="token function">htmlElementContent</span><span class="token punctuation">(</span>stackTrace<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/pre&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token comment">// In case root cause is somehow heavily nested</span>
+                rootCause <span class="token operator">=</span> rootCause<span class="token punctuation">.</span><span class="token function">getCause</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                loops<span class="token operator">++</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;p&gt;&lt;b&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span>smClient<span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span><span class="token string">"errorReportValve.note"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/b&gt; "</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span>smClient<span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span><span class="token string">"errorReportValve.rootCauseInLogs"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/p&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token punctuation">}</span>
+        sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;hr class=\"line\" /&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">isShowServerInfo</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;h3&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token class-name">ServerInfo</span><span class="token punctuation">.</span><span class="token function">getServerInfo</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/h3&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    sb<span class="token punctuation">.</span><span class="token function">append</span><span class="token punctuation">(</span><span class="token string">"&lt;/body&gt;&lt;/html&gt;"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            response<span class="token punctuation">.</span><span class="token function">setContentType</span><span class="token punctuation">(</span><span class="token string">"text/html"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            response<span class="token punctuation">.</span><span class="token function">setCharacterEncoding</span><span class="token punctuation">(</span><span class="token string">"utf-8"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> t<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">ExceptionUtils</span><span class="token punctuation">.</span><span class="token function">handleThrowable</span><span class="token punctuation">(</span>t<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">Writer</span> writer <span class="token operator">=</span> response<span class="token punctuation">.</span><span class="token function">getReporter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>writer <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+	        <span class="token comment">// 将响应的html写到响应对象Response的一个字符缓冲区CharBuffer中</span>
+	        writer<span class="token punctuation">.</span><span class="token function">write</span><span class="token punctuation">(</span>sb<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	        <span class="token comment">// 将响应缓冲区中的数据通过网络发送给客户端</span>
+	        response<span class="token punctuation">.</span><span class="token function">finishResponse</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Ignore</span>
+    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IllegalStateException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Ignore</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<ul><li><font color="BlueViolet"><strong>html字符串对应业务关键内容</strong></font></li></ul> 
+<p><img src="https://images2.imgbox.com/d5/27/0q0Yqg7d_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="2StandardHostValve_240"></a>2、StandardHostValve</h3> 
+<ul><li><font color="SaddleBrown"><strong>回到执行请求那里，继续向里走</strong></font></li></ul> 
+<p><img src="https://images2.imgbox.com/74/03/mQvf5n2t_o.png" alt="在这里插入图片描述"></p> 
+<ul><li><font color="RoyalBlue"><strong>一旦我们业务代码抛出异常，这里会获取到，然后设置响应码<code>response.setStatus(500)</code>等等</strong></font></li><li><font color="purple"><strong>这些都是为上面说的拼接html错误页面做准备</strong></font></li></ul> 
+<pre><code class="prism language-java"><span class="token comment">// StandardHostValve类方法</span>
+<span class="token annotation punctuation">@Override</span>
+<span class="token keyword">public</span> <span class="token keyword">final</span> <span class="token keyword">void</span> <span class="token function">invoke</span><span class="token punctuation">(</span><span class="token class-name">Request</span> request<span class="token punctuation">,</span> <span class="token class-name">Response</span> response<span class="token punctuation">)</span>
+    <span class="token keyword">throws</span> <span class="token class-name">IOException</span><span class="token punctuation">,</span> <span class="token class-name">ServletException</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">// 获取请求的Context(上下文)</span>
+    <span class="token class-name">Context</span> context <span class="token operator">=</span> request<span class="token punctuation">.</span><span class="token function">getContext</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>context <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+	
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+    	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>response<span class="token punctuation">.</span><span class="token function">isErrorReportRequired</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            	<span class="token comment">// 下一个执行点NonLoginAuthenticator</span>
+                context<span class="token punctuation">.</span><span class="token function">getPipeline</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getFirst</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">invoke</span><span class="token punctuation">(</span>request<span class="token punctuation">,</span> response<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span> t<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        <span class="token punctuation">}</span>
+		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+		
+		<span class="token comment">// 此异常是执行请求时候捕获的，如我们的业务逻辑抛出的异常，这里就能获取到</span>
+        <span class="token class-name">Throwable</span> t <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">Throwable</span><span class="token punctuation">)</span> request<span class="token punctuation">.</span><span class="token function">getAttribute</span><span class="token punctuation">(</span><span class="token class-name">RequestDispatcher</span><span class="token punctuation">.</span><span class="token constant">ERROR_EXCEPTION</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+        <span class="token comment">// Look for (and render if found) an application level error page</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>response<span class="token punctuation">.</span><span class="token function">isErrorReportRequired</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>t <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            	<span class="token comment">// 设置响应信息</span>
+            	<span class="token comment">// public static final int SC_INTERNAL_SERVER_ERROR = 500;</span>
+            	<span class="token comment">// response.setStatus(HttpServletResponse.SC_INTERNAL_SERVER_ERROR);</span>
+                <span class="token function">throwable</span><span class="token punctuation">(</span>request<span class="token punctuation">,</span> response<span class="token punctuation">,</span> t<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token function">status</span><span class="token punctuation">(</span>request<span class="token punctuation">,</span> response<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>	
+        <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">}</span> <span class="token keyword">finally</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">}</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<blockquote> 
+ <p><strong><font size="3">NonLoginAuthenticator</font></strong></p> 
+</blockquote> 
+<ul><li><font color="purple"><strong>此处理点主要是tomcat登录权限以及其他权限校验，暂不做研究</strong></font></li><li><font color="SaddleBrown"><strong>接着继续下一个就是Context的处理点</strong></font></li></ul> 
+<p><img src="https://images2.imgbox.com/dd/85/ORUTjRJq_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="3HostContext_304"></a>3、如何通过Host找到Context(上下文)</h3> 
+<p>  <font color="green"><strong>虚拟主机Host下可能有<code>多个项目</code>，即<code>webapps</code>目录下的文件夹，每个<code>文件夹</code>就是一个<code>应用项目</code>，而这个文件夹的名称即请求url的统一前缀。</strong></font></p> 
+<p>  <font color="Olive"><strong>在解析请求后调用如下方法，最终会将获取到Context对象的<code>mappingData.context</code>属性赋值给<code>Request</code>，这样上面<code>request.getContext()</code>就能获取到上下文Context。</strong></font></p> 
+<p><img src="https://images2.imgbox.com/46/44/KraXTauj_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="Context_313"></a>三、Context管道内容</h2> 
+<h3><a id="1StandardContextValve_315"></a>1、StandardContextValve</h3> 
+<ul><li><font color="green"><strong>禁止直接访问 <code>WEB-INF</code> 或 <code>META-INF</code> 下的资源</strong></font></li><li><font color="RoyalBlue"><strong>获取Wrapper，找不到设置错误码<code>404</code>，最后调用Wrapper的处理点</strong></font></li></ul> 
+<pre><code class="prism language-java"><span class="token comment">// StandardContextValve类方法</span>
+<span class="token annotation punctuation">@Override</span>
+<span class="token keyword">public</span> <span class="token keyword">final</span> <span class="token keyword">void</span> <span class="token function">invoke</span><span class="token punctuation">(</span><span class="token class-name">Request</span> request<span class="token punctuation">,</span> <span class="token class-name">Response</span> response<span class="token punctuation">)</span>
+    <span class="token keyword">throws</span> <span class="token class-name">IOException</span><span class="token punctuation">,</span> <span class="token class-name">ServletException</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">// 禁止直接访问 WEB-INF 或 META-INF 下的资源</span>
+    <span class="token class-name">MessageBytes</span> requestPathMB <span class="token operator">=</span> request<span class="token punctuation">.</span><span class="token function">getRequestPathMB</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>requestPathMB<span class="token punctuation">.</span><span class="token function">startsWithIgnoreCase</span><span class="token punctuation">(</span><span class="token string">"/META-INF/"</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token operator">||</span> <span class="token punctuation">(</span>requestPathMB<span class="token punctuation">.</span><span class="token function">equalsIgnoreCase</span><span class="token punctuation">(</span><span class="token string">"/META-INF"</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token operator">||</span> <span class="token punctuation">(</span>requestPathMB<span class="token punctuation">.</span><span class="token function">startsWithIgnoreCase</span><span class="token punctuation">(</span><span class="token string">"/WEB-INF/"</span><span class="token punctuation">,</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+            <span class="token operator">||</span> <span class="token punctuation">(</span>requestPathMB<span class="token punctuation">.</span><span class="token function">equalsIgnoreCase</span><span class="token punctuation">(</span><span class="token string">"/WEB-INF"</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        response<span class="token punctuation">.</span><span class="token function">sendError</span><span class="token punctuation">(</span><span class="token class-name">HttpServletResponse</span><span class="token punctuation">.</span><span class="token constant">SC_NOT_FOUND</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 获取请求的Wrapper</span>
+    <span class="token class-name">Wrapper</span> wrapper <span class="token operator">=</span> request<span class="token punctuation">.</span><span class="token function">getWrapper</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>wrapper <span class="token operator">==</span> <span class="token keyword">null</span> <span class="token operator">||</span> wrapper<span class="token punctuation">.</span><span class="token function">isUnavailable</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        response<span class="token punctuation">.</span><span class="token function">sendError</span><span class="token punctuation">(</span><span class="token class-name">HttpServletResponse</span><span class="token punctuation">.</span><span class="token constant">SC_NOT_FOUND</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 确认请求</span>
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// 最终会调用 Http11Processor#ack() 方法</span>
+        <span class="token comment">// 也就是简单地将 HTTP/1.1 100 加上回车换行符写给客户端</span>
+        <span class="token comment">// public static final byte[] ACK_BYTES = ByteChunk.convertToBytes("HTTP/1.1 100 " + CRLF + CRLF);</span>
+        response<span class="token punctuation">.</span><span class="token function">sendAcknowledgement</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> ioe<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        container<span class="token punctuation">.</span><span class="token function">getLogger</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">error</span><span class="token punctuation">(</span>sm<span class="token punctuation">.</span><span class="token function">getString</span><span class="token punctuation">(</span>
+                <span class="token string">"standardContextValve.acknowledgeException"</span><span class="token punctuation">)</span><span class="token punctuation">,</span> ioe<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        request<span class="token punctuation">.</span><span class="token function">setAttribute</span><span class="token punctuation">(</span><span class="token class-name">RequestDispatcher</span><span class="token punctuation">.</span><span class="token constant">ERROR_EXCEPTION</span><span class="token punctuation">,</span> ioe<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        response<span class="token punctuation">.</span><span class="token function">sendError</span><span class="token punctuation">(</span><span class="token class-name">HttpServletResponse</span><span class="token punctuation">.</span><span class="token constant">SC_INTERNAL_SERVER_ERROR</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>request<span class="token punctuation">.</span><span class="token function">isAsyncSupported</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        request<span class="token punctuation">.</span><span class="token function">setAsyncSupported</span><span class="token punctuation">(</span>wrapper<span class="token punctuation">.</span><span class="token function">getPipeline</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">isAsyncSupported</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token comment">// 调用Wrapper的处理点</span>
+    wrapper<span class="token punctuation">.</span><span class="token function">getPipeline</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getFirst</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">invoke</span><span class="token punctuation">(</span>request<span class="token punctuation">,</span> response<span class="token punctuation">)</span><span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h3><a id="2ContextWrapper_365"></a>2、如何通过Context找到Wrapper</h3> 
+<p>  <font color="green"><strong>tomcat启动时候，在将所有Servelt实例化以后，会将所有的映射url和Wrapper组成MappedWrapper统一放到esactWrappers集合中。</strong></font></p> 
+<p>  <font color="Olive"><strong>在解析请求后调用如下方法，通过请求解析的path找到esactWrappers集合中对应的MappedWrapper，最终会将获取到Wrapper对象的<code>mappingData.wrapper</code>属性赋值给<code>Request</code>，这样上面<code>request.getWrapper()</code>就能获取到Wrapper，从而找到Servelt。</strong></font></p> 
+<p><img src="https://images2.imgbox.com/ee/59/zYwtN1ue_o.png" alt="在这里插入图片描述"></p> 
+<p>  <font color="BlueViolet"><strong>之前篇章<a href="https://blog.csdn.net/qq_35512802/article/details/136582762">Tomcat源码解析(五)：StandardEngine、StandardHost、StandardContext、StandardWrapper</a>最后一节Mapper组件介绍过Mapper的组成，下面再来看下<code>Mapper中对应映射和Wrapper的位置</code>。</strong></font></p> 
+<p><img src="https://images2.imgbox.com/1e/d1/kpDNhVt1_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="Wrapper_378"></a>四、Wrapper管道内容</h2> 
+<h3><a id="1StandardWrapperValve_380"></a>1、StandardWrapperValve</h3> 
+<ul><li><font color="blue"><strong>第一步：<font color="green">获取Wrapper中的Servelt实例(<code>loadOnStartup&gt;0</code>的已经在项目启动时候实例化和初始化)，如果<code>loadOnStartup默认值-1</code>则表示此时才会实例化和初始化Servelt并返回</font></strong></font></li><li><font color="blue"><strong>第二步：<font color="green"><code>为此请求创建过滤器链(包括要执行的Servelt)</code>，过滤器链先添加Servelt，再通过过滤器的urlPatterns和servletNames匹配当前servelt添加到过滤器链中</font></strong></font></li><li><font color="blue"><strong>第三步：<font color="green">过滤器链执行完以后，释放过滤器链，<code>将过滤器链中的过滤器和Servelt置为空</code>，因为下个请求还需要重新创建过滤器链</font></strong></font></li></ul> 
+<pre><code class="prism language-java"><span class="token comment">// StandardWrapperValve类方法</span>
+<span class="token annotation punctuation">@Override</span>
+<span class="token keyword">public</span> <span class="token keyword">final</span> <span class="token keyword">void</span> <span class="token function">invoke</span><span class="token punctuation">(</span><span class="token class-name">Request</span> request<span class="token punctuation">,</span> <span class="token class-name">Response</span> response<span class="token punctuation">)</span>
+    <span class="token keyword">throws</span> <span class="token class-name">IOException</span><span class="token punctuation">,</span> <span class="token class-name">ServletException</span> <span class="token punctuation">{<!-- --></span>
+
+	<span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	<span class="token comment">// 获取Wrapper</span>
+    <span class="token class-name">StandardWrapper</span> wrapper <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">StandardWrapper</span><span class="token punctuation">)</span> <span class="token function">getContainer</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name">Servlet</span> servlet <span class="token operator">=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+    <span class="token class-name">Context</span> context <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">Context</span><span class="token punctuation">)</span> wrapper<span class="token punctuation">.</span><span class="token function">getParent</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+    <span class="token comment">// 分配一个 servlet 实例来处理此请求</span>
+    <span class="token comment">// 如果是loadOnStartup&gt;0的Servlet直接从Wrapper中获取即可，否则需要实例化创建</span>
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>unavailable<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            servlet <span class="token operator">=</span> wrapper<span class="token punctuation">.</span><span class="token function">allocate</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span>xxxException e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">}</span> 
+	
+	<span class="token comment">// 解析请求的mapping映射</span>
+	<span class="token comment">// 如：http://localhost:8080/springmvc/servletTomcat，这里为/serveltTomcat</span>
+    <span class="token class-name">MessageBytes</span> requestPathMB <span class="token operator">=</span> request<span class="token punctuation">.</span><span class="token function">getRequestPathMB</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>	
+
+    <span class="token comment">// 为此请求创建过滤器链（包括要执行的Servelt）</span>
+    <span class="token class-name">ApplicationFilterChain</span> filterChain <span class="token operator">=</span>
+            <span class="token class-name">ApplicationFilterFactory</span><span class="token punctuation">.</span><span class="token function">createFilterChain</span><span class="token punctuation">(</span>request<span class="token punctuation">,</span> wrapper<span class="token punctuation">,</span> servlet<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 为此请求调用过滤器链</span>
+    <span class="token comment">// 注意：这也调用了servlet的service()方法</span>
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>servlet <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token operator">&amp;&amp;</span> <span class="token punctuation">(</span>filterChain <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        	<span class="token comment">// 执行连接器链</span>
+	        filterChain<span class="token punctuation">.</span><span class="token function">doFilter</span><span class="token punctuation">(</span>request<span class="token punctuation">.</span><span class="token function">getRequest</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span>response<span class="token punctuation">.</span><span class="token function">getResponse</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        <span class="token punctuation">}</span>
+	<span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span>xxxException e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        throwable <span class="token operator">=</span> e<span class="token punctuation">;</span>
+        <span class="token comment">// 将异常添加到request，并设置错误码500</span>
+        <span class="token function">exception</span><span class="token punctuation">(</span>request<span class="token punctuation">,</span> response<span class="token punctuation">,</span> e<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 释放过滤器链，将过滤器链中的过滤器和Servelt置为空</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>filterChain <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        filterChain<span class="token punctuation">.</span><span class="token function">release</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+	
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>    
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="11_445"></a>1.1、创建过滤器链</h4> 
+<ul><li><font color="RoyalBlue"><strong>从req从获取过滤器链，没有的话创建<code>ApplicationFilterChain</code>过滤器链对象</strong></font></li><li><font color="Olive"><strong>将<code>servelt</code>添加到过滤器链中</strong></font></li><li><font color="RoyalBlue"><strong>获取项目启动时候实例化的所有过滤器</strong></font></li><li><font color="Olive"><strong>先根据过滤器的<code>urlPatterns</code>匹配当前servelt，匹配成功添加到过滤器链中</strong></font></li><li><font color="Olive"><strong>再根据过滤器的<code>servletNames</code>匹配当前servelt，匹配成功添加到过滤器链中</strong></font></li></ul> 
+<pre><code class="prism language-java"><span class="token comment">// ApplicationFilterFactory类方法</span>
+<span class="token keyword">public</span> <span class="token keyword">static</span> <span class="token class-name">ApplicationFilterChain</span> <span class="token function">createFilterChain</span><span class="token punctuation">(</span><span class="token class-name">ServletRequest</span> request<span class="token punctuation">,</span>
+        <span class="token class-name">Wrapper</span> wrapper<span class="token punctuation">,</span> <span class="token class-name">Servlet</span> servlet<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">// 如果servelt为空，则返回null</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>servlet <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 创建过滤器链对象，并设置给request</span>
+    <span class="token class-name">ApplicationFilterChain</span> filterChain <span class="token operator">=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>request <span class="token keyword">instanceof</span> <span class="token class-name">Request</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">Request</span> req <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">Request</span><span class="token punctuation">)</span> request<span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">Globals</span><span class="token punctuation">.</span><span class="token constant">IS_SECURITY_ENABLED</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// Security: Do not recycle</span>
+            filterChain <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ApplicationFilterChain</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+            filterChain <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">ApplicationFilterChain</span><span class="token punctuation">)</span> req<span class="token punctuation">.</span><span class="token function">getFilterChain</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>filterChain <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                filterChain <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ApplicationFilterChain</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                req<span class="token punctuation">.</span><span class="token function">setFilterChain</span><span class="token punctuation">(</span>filterChain<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span> <span class="token keyword">else</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token comment">// Request dispatcher in use</span>
+        filterChain <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ApplicationFilterChain</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+	
+	<span class="token comment">// 将servelt添加到过滤器链中</span>
+    filterChain<span class="token punctuation">.</span><span class="token function">setServlet</span><span class="token punctuation">(</span>servlet<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    filterChain<span class="token punctuation">.</span><span class="token function">setServletSupportsAsync</span><span class="token punctuation">(</span>wrapper<span class="token punctuation">.</span><span class="token function">isAsyncSupported</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 获取上下文及项目启动加载的所有过滤器</span>
+    <span class="token class-name">StandardContext</span> context <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">StandardContext</span><span class="token punctuation">)</span> wrapper<span class="token punctuation">.</span><span class="token function">getParent</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token class-name">FilterMap</span> filterMaps<span class="token punctuation">[</span><span class="token punctuation">]</span> <span class="token operator">=</span> context<span class="token punctuation">.</span><span class="token function">findFilterMaps</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 如果没有过滤器，我们就完成了，自己返回，里面只有servelt</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token punctuation">(</span>filterMaps <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token operator">||</span> <span class="token punctuation">(</span>filterMaps<span class="token punctuation">.</span>length <span class="token operator">==</span> <span class="token number">0</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+        <span class="token keyword">return</span> <span class="token punctuation">(</span>filterChain<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 拦截方式配置也就是资源被访问的形式（没明白）</span>
+    <span class="token class-name">DispatcherType</span> dispatcher <span class="token operator">=</span>
+            <span class="token punctuation">(</span><span class="token class-name">DispatcherType</span><span class="token punctuation">)</span> request<span class="token punctuation">.</span><span class="token function">getAttribute</span><span class="token punctuation">(</span><span class="token class-name">Globals</span><span class="token punctuation">.</span><span class="token constant">DISPATCHER_TYPE_ATTR</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+    <span class="token class-name">String</span> servletName <span class="token operator">=</span> wrapper<span class="token punctuation">.</span><span class="token function">getName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+    <span class="token comment">// 根据过滤器的urlPatterns匹配当前servelt</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> filterMaps<span class="token punctuation">.</span>length<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">matchDispatcher</span><span class="token punctuation">(</span>filterMaps<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token punctuation">,</span>dispatcher<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">matchFiltersURL</span><span class="token punctuation">(</span>filterMaps<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">,</span> requestPath<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">ApplicationFilterConfig</span> filterConfig <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">ApplicationFilterConfig</span><span class="token punctuation">)</span>
+            context<span class="token punctuation">.</span><span class="token function">findFilterConfig</span><span class="token punctuation">(</span>filterMaps<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">getFilterName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>filterConfig <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">// 添加到过滤器链</span>
+        filterChain<span class="token punctuation">.</span><span class="token function">addFilter</span><span class="token punctuation">(</span>filterConfig<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 根据过滤器的servletNames匹配当前servelt</span>
+    <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token keyword">int</span> i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> filterMaps<span class="token punctuation">.</span>length<span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">matchDispatcher</span><span class="token punctuation">(</span>filterMaps<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token punctuation">,</span>dispatcher<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span><span class="token function">matchFiltersServlet</span><span class="token punctuation">(</span>filterMaps<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">,</span> servletName<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">ApplicationFilterConfig</span> filterConfig <span class="token operator">=</span> <span class="token punctuation">(</span><span class="token class-name">ApplicationFilterConfig</span><span class="token punctuation">)</span>
+            context<span class="token punctuation">.</span><span class="token function">findFilterConfig</span><span class="token punctuation">(</span>filterMaps<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">.</span><span class="token function">getFilterName</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>filterConfig <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// FIXME - log configuration problem</span>
+            <span class="token keyword">continue</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">// // 添加到过滤器链</span>
+        filterChain<span class="token punctuation">.</span><span class="token function">addFilter</span><span class="token punctuation">(</span>filterConfig<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 返回完整的过滤器链</span>
+    <span class="token keyword">return</span> filterChain<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h4><a id="12_540"></a>1.2、执行过滤器链</h4> 
+<p><img src="https://images2.imgbox.com/42/12/7TZBR3wb_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="121RequestResponse_544"></a>1.2.1、Request和Response的门面模式</h5> 
+<p>  <font color="BlueViolet"><strong>在调用拦截器链之前，先看下request.getRequest(), response.getResponse()这两个方法，在这之前Request指的是<code>Request implements HttpServletRequest</code>，Response指的是<code>Response implements HttpServletResponse</code>。从这个方法进入以后，Request指的是<code>RequestFacade implements HttpServletRequest</code>，Response指的是<code>ResponseFacade implements HttpServletResponse</code>。<font color="green">这里是利用<code>门面模式</code>，将Req和Res的内容分别包装在RequestFacade和ResponseFacade里面，后者就是起到一个传递作用，为的是保护Req和Res中的属性方法，只在后者暴露想让业务调用者调用的属性和方法。</font></strong></font></p> 
+<blockquote> 
+ <p><strong><font size="3">获取RequestFacade和ResponseFacade</font></strong></p> 
+</blockquote> 
+<ul><li><font color="purple"><strong>其实很简单，就是在RequestFacade和ResponseFacade对象中分别设置request和response属性</strong></font></li><li><font color="RoyalBlue"><strong>外界获取属性方法都是在RequestFacade的方法中调用Req和Res所得</strong></font></li></ul> 
+<pre><code class="prism language-java"><span class="token comment">// Request类方法</span>
+<span class="token keyword">public</span> <span class="token class-name">HttpServletRequest</span> <span class="token function">getRequest</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>facade <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        facade <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">RequestFacade</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>applicationRequest <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        applicationRequest <span class="token operator">=</span> facade<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> applicationRequest<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token comment">// RequestFacade构造方法</span>
+<span class="token keyword">protected</span> <span class="token class-name">Request</span> request <span class="token operator">=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+<span class="token keyword">public</span> <span class="token class-name">RequestFacade</span><span class="token punctuation">(</span><span class="token class-name">Request</span> request<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">this</span><span class="token punctuation">.</span>request <span class="token operator">=</span> request<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+
+<span class="token comment">// Response类方法</span>
+<span class="token keyword">public</span> <span class="token class-name">HttpServletResponse</span> <span class="token function">getResponse</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>facade <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        facade <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ResponseFacade</span><span class="token punctuation">(</span><span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>applicationResponse <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        applicationResponse <span class="token operator">=</span> facade<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+    <span class="token keyword">return</span> applicationResponse<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+<span class="token comment">// ResponseFacade构造方法</span>
+<span class="token keyword">protected</span> <span class="token class-name">Response</span> response <span class="token operator">=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+<span class="token keyword">public</span> <span class="token class-name">ResponseFacade</span><span class="token punctuation">(</span><span class="token class-name">Response</span> response<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+     <span class="token keyword">this</span><span class="token punctuation">.</span>response <span class="token operator">=</span> response<span class="token punctuation">;</span>
+<span class="token punctuation">}</span>
+</code></pre> 
+<h5><a id="122doFilter_588"></a>1.2.2、doFilter方法</h5> 
+<p><img src="https://images2.imgbox.com/a0/21/K97U5bBS_o.png" alt="在这里插入图片描述"></p> 
+<ul><li><font color="RoyalBlue"><strong>核心方法，先执行拦截器链，再执行Servelt实例</strong></font></li></ul> 
+<pre><code class="prism language-java"><span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">internalDoFilter</span><span class="token punctuation">(</span><span class="token class-name">ServletRequest</span> request<span class="token punctuation">,</span>
+                              <span class="token class-name">ServletResponse</span> response<span class="token punctuation">)</span>
+    <span class="token keyword">throws</span> <span class="token class-name">IOException</span><span class="token punctuation">,</span> <span class="token class-name">ServletException</span> <span class="token punctuation">{<!-- --></span>
+
+    <span class="token comment">// 如果有，请调用下一个过滤器。n是过滤器的个数，pos默认值是0</span>
+    <span class="token keyword">if</span> <span class="token punctuation">(</span>pos <span class="token operator">&lt;</span> n<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token class-name">ApplicationFilterConfig</span> filterConfig <span class="token operator">=</span> filters<span class="token punctuation">[</span>pos<span class="token operator">++</span><span class="token punctuation">]</span><span class="token punctuation">;</span>
+        <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token class-name">Filter</span> filter <span class="token operator">=</span> filterConfig<span class="token punctuation">.</span><span class="token function">getFilter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+			filter<span class="token punctuation">.</span><span class="token function">doFilter</span><span class="token punctuation">(</span>request<span class="token punctuation">,</span> response<span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+        <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> <span class="token operator">|</span> <span class="token class-name">ServletException</span> <span class="token operator">|</span> <span class="token class-name">RuntimeException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">throw</span> e<span class="token punctuation">;</span>
+        <span class="token punctuation">}</span> 
+        <span class="token keyword">return</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+    <span class="token comment">// 调用Servelt实例</span>
+    <span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+    	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+		servlet<span class="token punctuation">.</span><span class="token function">service</span><span class="token punctuation">(</span>request<span class="token punctuation">,</span> response<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+    <span class="token punctuation">}</span> <span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token class-name">IOException</span> <span class="token operator">|</span> <span class="token class-name">ServletException</span> <span class="token operator">|</span> <span class="token class-name">RuntimeException</span> e<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">throw</span> e<span class="token punctuation">;</span>
+    <span class="token punctuation">}</span> 
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>  <font color="green"><strong>拦截器实例，拦截器的foFilter方法最后一定要调用<code>filterChain.doFilter(servletRequest,servletResponse)</code>这样整个拦截器链包括Servelt实例才能调用完整。</strong></font></p> 
+<p><img src="https://images2.imgbox.com/22/fd/COZ94cFF_o.png" alt="在这里插入图片描述"></p> 
+<p>  <font color="purple"><strong>就这样，一个请求的执行流程执行完毕。</strong></font></p> 
+<h2><a id="Tomcat_631"></a>Tomcat最终总结</h2> 
+<p><font color="blue"><strong>看着<code>server.xml</code>更容易理解</strong></font></p> 
+<p><img src="https://images2.imgbox.com/2a/34/075KnT3R_o.png" alt="在这里插入图片描述"></p> 
+<ul><li><font color="green"><strong>一个Server类的实例就代表了一个Tomcat的容器，一个<code>Tomcat进程</code>只会有一个<code>Server实例</code>，也是<code>Tomcat的主线程</code>。<font color="purple">Socket监听8005端口，ServerSocket服务端只要接受到Socket客户端发送消息“SHUTDOWN”(不论大小写)，就会停止Tomcat应用</font></strong></font></li><li><font color="green"><strong>一个Server实例可以包含多个Service对象，Service对象由一个容器和多个连接器组成</strong> </font> 
+  <ul><li><font color="Olive"><strong>容器：加载和管理<code>Servlet</code>，以及具体处理Request请求</strong></font></li><li><font color="Olive"><strong>连接器：处理<code>Socket</code>连接，负责网络字节流与Request和Response对象的转化</strong></font></li></ul> </li><li><font color="BlueViolet"><strong>容器分为：顶级容器Engine，虚拟主机Host，Web应用程序Context，Servelt包装类Wrapper</strong> </font> 
+  <ul><li><font color="RoyalBlue"><strong>Engine：从一个或多个Connector中接受请求并处理，并将完成的响应返回给Connector，最终传递给客户端。<font color="purple">解析server.xml获取它下面所有的Host引用</font></strong></font></li><li><font color="RoyalBlue"><strong>Host：运行多个Web应用(一个Context代表一个Web应用 )，并负责安装、展开、启动和结束每个Web应用。<font color="purple">Context和Wrapper中解析出的请求映射和Servelt的内容统一放到Mapper中获取</font></strong></font></li><li><font color="RoyalBlue"><strong>Context：一个web应用。<font color="purple">加载webapps目录下的web应用，实例化和初始化监听器、过滤器、Servlet</font></strong></font></li></ul> </li><li><font color="BlueViolet"><strong>考虑到不同网络通信和应用层协议，所以会有不同的连接器</strong> </font> 
+  <ul><li><font color="Olive"><strong>默认8080端口的http协议，8009的AJP协议</strong></font></li><li><font color="Olive"><strong>连接器核心组件Endpoint使用三种线程接受处理请求</strong> </font> 
+    <ul><li><font color="#d32b8f"><strong>Acceptor线程：一直死循环通过SocketChannel的accept方法接受连接，阻塞方法</strong></font></li><li><font color="#d32b8f"><strong>Poller线程：获取到Acceptor线程的连接，通过SocketChannel注册监听读事件，交给连接池处理</strong></font></li><li><font color="#d32b8f"><strong>任务线程：读取解析socket请求数据封装为request和response调用Servelt方法</strong></font></li></ul> </li></ul> </li><li><font color="green"><strong>请求的处理流程(结合上面server.xml理解)</strong> </font> 
+  <ul><li><font color="RoyalBlue"><strong>连接器<code>Connector</code>监听解析拿到请求，通过Service对象找到唯一的顶级容器<code>Engine</code></strong></font></li><li><font color="RoyalBlue"><strong>顶级容器下有<code>多个虚拟主机Host</code>，与本次请求解析的url对比，获取本次请求的Host</strong></font></li><li><font color="RoyalBlue"><strong>虚拟主机下的webapps下有<code>多个web应用</code>，与本次请求url的path对比，获取本次请求web应用</strong></font></li><li><font color="RoyalBlue"><strong>web应用下有<code>多个Servelt</code>，通过<code>Mapper</code>中记录的请求Mapping映射和Servelt对应关系找到Servevlt</strong></font></li></ul> </li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/96ba8b9a8a6bf4c5f4703b53e9709a4d/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">Objective-C的初始化方法中,应该如何读写属性</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/b5a3ca41708dd5634a323d9706e2665a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">探析—面向存算架构的神经网络数字系统【存内计算开发者社区】</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

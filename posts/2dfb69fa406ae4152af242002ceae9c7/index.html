@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>MySQL事务隔离级别、InnoDB使用MVCC&#43;各种锁实现了RC和RR事务隔离级别、具体案例 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/2dfb69fa406ae4152af242002ceae9c7/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="MySQL事务隔离级别、InnoDB使用MVCC&#43;各种锁实现了RC和RR事务隔离级别、具体案例">
+  <meta property="og:description" content="事务隔离级别 脏读：一个事务读取到另一个未提交事务的更改。不可重复读：一个事务在两次读取同一数据时，发现数据被另一个已提交事务修改了。幻读：一个事务在读取过程中，因其他事务的插入而导致返回的行数不一致，查询到了奇怪的结果 SQL标准定义了如下四个隔离级别，注意是SQL标准，不是MYSQL标准：
+READ-UNCOMMITTED(读取 未提交) ：最低的隔离级别，允许读取尚未提交的数据变更，可能会导致脏读、幻读或不可重复读。几乎没人用，太不安全了。READ-COMMITTED(RC，读取 已提交) ：允许读取并发事务已经提交的数据，可以阻止脏读，但是幻读或不可重复读仍有可能发生。经常用，可以确保并发的性能。REPEATABLE-READ(RR，可重复读) ：在事务开始（start TRANSACTION，关闭自动提交）和结束之间（commit，rollback之前），对同一字段的多次读取结果都是一致的，除非数据是被本身事务自己所修改，可以阻止脏读和不可重复读，但幻读仍有可能发生。也经常被用，可以确保安全。
+虽然标准SQL隔离级别定义是说RR下幻读仍然可能发生，但是在MYSQL的InnoDB下实现的RR隔离级别是解决了幻读问题的发生的，先有个印象，我一开始看也非常懵逼。SERIALIZABLE(可串行化) ：最高的隔离级别，完全服从 ACID 的隔离级别。所有的事务依次逐个执行，这样事务之间就完全不可能产生干扰，也就是说，该级别可以防止脏读、不可重复读以及幻读。几乎没人用，事务并发性能太差了。 隔离级别脏读不可重复读幻读READ-UNCOMMITTED,读未提交√√√READ-COMMITTED,读已提交×√√REPEATABLE-READ,可重复读××√SERIALIZABLE,可串行化××× InnoDB使用MVCC&#43;各种锁实现了RC和RR事务隔离级别 重点当然是讲RR的实现，因为他是MySQL默认存储引擎InnoDB的默认隔离级别。下面先说明实现存在的问题，再说解决方法。
+下面无特别说明都用RR事务隔离级别做例子。
+一致性非锁定读 对于 一致性非锁定读（Consistent Nonlocking Reads）open in new window的实现，通常做法是加一个版本号或者时间戳字段，在更新数据的同时版本号 &#43; 1 或者更新时间戳。查询时，将当前可见的版本号与对应记录的版本号进行比对，如果记录的版本小于可见版本，则表示该记录可见。
+在InnoDB引擎中，多版本控制(multi versioning)就是对上面描述的非锁定读的实现。
+如果读取的行正被其他事务执行 DELETE 或 UPDATE 操作，这时读取操作不会去等待行上锁的释放。相反地，InnoDB 存储引擎会去读取行的一个快照数据，对于这种读取历史数据的方式，我们叫它快照读 (snapshot read)。
+在 Repeatable Read 和 Read Committed 两个隔离级别下，如果是执行普通的 select 语句（不包括 select ... lock in share mode ,select ... for update）则会使用 一致性非锁定读（MVCC，多版本并发控制 (Multi-Version Concurrency Control)）。并且在 Repeatable Read 下 MVCC 实现了可重复读和防止部分幻读
+一致性非锁定读 代码举例">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-08-07T17:15:48+08:00">
+    <meta property="article:modified_time" content="2024-08-07T17:15:48+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">MySQL事务隔离级别、InnoDB使用MVCC&#43;各种锁实现了RC和RR事务隔离级别、具体案例</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_0"></a>事务隔离级别</h3> 
+<ul><li><strong>脏读</strong>：一个事务读取到另一个未提交事务的更改。</li><li><strong>不可重复读</strong>：一个事务在两次读取同一数据时，发现数据被另一个已提交事务修改了。</li><li><strong>幻读</strong>：一个事务在读取过程中，因其他事务的插入而导致返回的行数不一致，查询到了奇怪的结果</li></ul> 
+<p>SQL标准定义了如下四个隔离级别，注意是SQL标准，不是MYSQL标准：</p> 
+<ul><li><strong>READ-UNCOMMITTED(读取 未提交)</strong> ：最低的隔离级别，允许读取尚未提交的数据变更，可能会导致脏读、幻读或不可重复读。几乎没人用，太不安全了。</li><li><strong>READ-COMMITTED(RC，读取 已提交)</strong> ：允许读取并发事务已经提交的数据，可以阻止脏读，但是幻读或不可重复读仍有可能发生。经常用，可以确保并发的性能。</li><li><strong>REPEATABLE-READ(RR，可重复读)</strong> ：在事务开始（start TRANSACTION，关闭自动提交）和结束之间（commit，rollback之前），对同一字段的多次读取结果都是一致的，除非数据是被本身事务自己所修改，可以阻止脏读和不可重复读，但幻读仍有可能发生。也经常被用，可以确保安全。<br> 虽然标准SQL隔离级别定义是说RR下幻读仍然可能发生，但是在MYSQL的InnoDB下实现的RR隔离级别是解决了幻读问题的发生的，先有个印象，我一开始看也非常懵逼。</li><li><strong>SERIALIZABLE(可串行化)</strong> ：最高的隔离级别，完全服从 ACID 的隔离级别。<em>所有的事务依次逐个执行</em>，这样事务之间就完全不可能产生干扰，也就是说，该级别可以防止脏读、不可重复读以及幻读。几乎没人用，事务并发性能太差了。</li></ul> 
+<table><thead><tr><th>隔离级别</th><th>脏读</th><th>不可重复读</th><th>幻读</th></tr></thead><tbody><tr><td>READ-UNCOMMITTED,读未提交</td><td>√</td><td>√</td><td>√</td></tr><tr><td>READ-COMMITTED,读已提交</td><td>×</td><td>√</td><td>√</td></tr><tr><td>REPEATABLE-READ,可重复读</td><td>×</td><td>×</td><td>√</td></tr><tr><td>SERIALIZABLE,可串行化</td><td>×</td><td>×</td><td>×</td></tr></tbody></table> 
+<h3><a id="InnoDBMVCCRCRR_21"></a>InnoDB使用MVCC+各种锁实现了RC和RR事务隔离级别</h3> 
+<p>重点当然是讲RR的实现，因为他是MySQL默认存储引擎InnoDB的默认隔离级别。下面先说明实现存在的问题，再说解决方法。</p> 
+<p><em>下面无特别说明都用RR事务隔离级别做例子</em>。</p> 
+<h6><a id="_25"></a>一致性非锁定读</h6> 
+<p>对于 一致性非锁定读（Consistent Nonlocking Reads）open in new window的实现，通常做法是加一个版本号或者时间戳字段，在更新数据的同时版本号 + 1 或者更新时间戳。查询时，将当前可见的版本号与对应记录的版本号进行比对，如果记录的版本小于可见版本，则表示该记录可见。</p> 
+<p>在InnoDB引擎中，多版本控制(multi versioning)就是对上面描述的非锁定读的实现。<br> 如果读取的行正被其他事务执行 <code>DELETE</code> 或 <code>UPDATE</code> 操作，这时读取操作不会去等待行上锁的释放。相反地，InnoDB 存储引擎会去读取行的一个快照数据，对于这种读取历史数据的方式，我们叫它快照读 (snapshot read)。</p> 
+<p>在 <code>Repeatable Read</code> 和 <code>Read Committed</code> 两个隔离级别下，如果是执行普通的 <code>select</code> 语句（不包括 <code>select ... lock in share mode</code> ,<code>select ... for update</code>）则会使用 一致性非锁定读（MVCC，多版本并发控制 (Multi-Version Concurrency Control)）。并且在 <code>Repeatable Read</code> 下 MVCC 实现了可重复读和防止部分幻读</p> 
+<hr> 
+<p>一致性非锁定读 代码举例<br> ①对两个事务分别commit先，确保都提交了之前的工作。<br> <img src="https://images2.imgbox.com/03/8d/hUjA4Q5r_o.png" alt="在这里插入图片描述"><br> ②事务2虽然update修改了数据，但是可以发现事务1读取的是之前的快照<br> <img src="https://images2.imgbox.com/49/31/9ET0Kone_o.png" alt="在这里插入图片描述"><br> ③先让事务2commit提交，可以发现事务1读取的还不是事务2修改的值<br> <img src="https://images2.imgbox.com/80/a8/fQ7BExma_o.png" alt="在这里插入图片描述"><br> ④等到事务1也commit了，下一次开启事务，查到的才是事务2修改的值<br> <img src="https://images2.imgbox.com/26/bd/NpNfyw0C_o.png" alt="在这里插入图片描述"></p> 
+<hr> 
+<h5><a id="_46"></a>锁定读</h5> 
+<p>如果执行的是下列三类语句，就是锁定读（Locking Reads）</p> 
+<ul><li><code>select ... lock in share mode</code></li><li><code>select ... for update</code></li><li><code>insert</code>、<code>update</code>、<code>delete</code>操作</li></ul> 
+<p>在锁定读下，读取的是数据的最新版本，这种读也被称为 <code>当前读（current read）</code>。锁定读 会对读取到的记录加锁：</p> 
+<ul><li><code>select ... lock in share mode</code>：对记录加 S 锁，其它事务也可以加S锁，如果加 x 锁则会被阻塞</li><li><code>select ... for update</code>、<code>insert</code>、<code>update</code>、<code>delete</code>：对记录加 X 锁，且其它事务不能加任何锁<br> 在一致性非锁定读下，即使读取的记录已被其它事务加上 X 锁，这时记录也是可以被读取的，即读取的快照数据。上面举过例子了，在RR可重复读下，MVCC可以防止一部分情况的幻读，这一部分幻读是指在<code>一致性非锁定读</code>的情况下，它会根据Read View去判断数据是否可见，也就是读到的是历史数据，读的是快照。但是MVCC无法防止在<code>当前读</code>的情况所产生的幻读现象，<code>当前读</code>读取的都是最新数据。</li></ul> 
+<p>如果单靠MVCC，在<code>当前读</code>的情况下，这时如果两次查询中间有其它事务插入数据，就会产生幻读。所以，<code>InnoDB</code> 在实现<code>Repeatable Read</code>时，如果执行的是<code>当前读</code>的 <code>select</code> 查询(说明执行了<code>lock in share mode</code> or <code>for update</code>)，则会对读取的记录使用 <code>Next-key Lock</code> 来防止其它事务在间隙间插入数据。<br> <code>Next-key Lock</code> ：（行锁record lock + 间隙锁gap lock，行锁只能锁住已经存在的行，为了避免插入新行，需要依赖间隙锁）</p> 
+<ul><li>如果数据存在，使用<code>lock in share mode</code> or <code>for update</code>就是<code>Next-key Lock</code>用（读 or 写）行锁</li><li>如果数据不存在，使用使用<code>lock in share mode</code> or <code>for update</code>就是<code>Next-key Lock</code>用间隙锁，锁住区间，不让另一个事务在这个区间插入新数据。</li></ul> 
+<hr> 
+<p><code>当前读的幻读现象</code>问题实例：<br> ①这里使用<code>一致性非锁定读</code>环境下说明<code>当前读下的幻读现象</code>问题，因为这种情况下InnoDB只用了MVCC，没用<code>Next-key Lock</code> 来<code>select</code>查询<br> <img src="https://images2.imgbox.com/1c/4b/Djh7ICYK_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/dc/37/C7skiHJr_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/7e/aa/tgq6IAL1_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/d3/8c/yqJvY76I_o.png" alt="在这里插入图片描述"></p> 
+<p>问题就出在事务Aselect查询时，不应该出现幻读现象，应该在 <code>select</code> 查询时，带上<code>lock in share mode</code> or <code>for update</code>，则会对读取的记录使用 <code>Next-key Lock</code> 来防止其它事务在间隙间插入数据。</p> 
+<p>把原来的表删了，重新演示：<br> <img src="https://images2.imgbox.com/53/40/LCQDFFY1_o.png" alt="在这里插入图片描述"><br> <img src="https://images2.imgbox.com/db/6f/AkWsAx4M_o.png" alt="在这里插入图片描述"></p> 
+<h5><a id="_78"></a>总结一下：</h5> 
+<p>事务1的连续两个<code>快照读</code>中出现<code>当前读</code>不一定会出现<code>幻读</code>，得看事务1的<code>当前读</code>有没有覆盖到其他事务新增的数据，如果没的话，则不会出现<code>幻读</code>。</p> 
+<p>下面是连续两个<code>快照读</code>中出现<code>当前读</code>会出现<code>幻读</code>，因为事务1的<code>当前读</code>覆盖到其他事务新增的数据。<br> <img src="https://images2.imgbox.com/b4/18/lwssY4n9_o.png" alt="在这里插入图片描述"></p> 
+<hr>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/6965bc438c2e664d09fa83b378eb1cc0/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">什么是实时数据仓库？它有哪些不可替代之处？</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/3449eccc178668cea54086f4bbd6b7ca/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">【数据结构】二叉搜索树（Java &#43; 链表实现）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>一文读懂Llama2的架构和推理过程 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/f406389002d98f4b27b8eaaaccd2aede/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="一文读懂Llama2的架构和推理过程">
+  <meta property="og:description" content="01 Llama 2简介 为了更深入了解Llama 2，我们从Meta官网探寻了一些基本信息：
+· Llama 2，作为Llama的下一代版本，推出了三种尺寸供选择：7B、13B和70B。其中，7B和13B沿用了Llama 1的经典架构，而70B模型则采用了创新的分组查询注意力（GQA）架构。
+· 在预训练数据方面，Llama 2的表现颇为出色。相较于Llama 1，Llama 2的预训练语料增加了40%，这使得模型能够在更丰富的语境中学习。更令人惊艳的是，预训练模型在2万亿个标记上进行了训练，且上下文长度是Llama 1的两倍。而经过微调的模型，也在超过100万条人工标注的数据上进行了精进训练。
+进一步观察了Llama 2模型的评估性能，发现它在许多外部基准测试中都优于其他开源语言模型。这些测试涵盖了推理、编码、熟练度和知识等多个方面。
+优化后的Llama 2展现出的卓越表现让人对其架构产生了浓厚兴趣。下面，我们将深入探索Llama 2模型的架构，以揭示其强大的能力背后的秘密。
+02 Llama 2模型的整体结构 在深入探讨Llama 2的架构之前，我们先来对比一下传统的Transformer架构和Llama 2的架构，以便更好地理解其创新之处。
+与传统的Transformer架构相比，Llama 2架构具有以下独特的特点：
+1、取消Encoder，仅保留Decoder：这一设计使得模型结构更为简洁，专注于生成和解码任务。
+2、采用RMSNorm并将Norm前置：这种归一化方式有助于提高模型的训练稳定性和收敛速度。
+3、在Q和K上使用RoPE旋转式位置编码：这种位置编码方式能够更好地捕捉序列中的位置信息，提高模型的表达能力。
+4、使用causal mask确保每个位置只能看到前面的tokens：这保证了模型在生成文本时，每个位置只依赖于前面的tokens，符合语言生成的因果性。
+5、更早地将K、V拼接到当前K、V前面：这使得模型能够利用更多的上下文信息，提高文本生成的一致性和连贯性。
+6、Llama 2使用了Group query attention来节省cache：这一优化减少了模型的计算量和内存占用，提高了模型的效率。
+下面我们详细解释下Llama 2架构中各部分功能：
+2.1 Tokenizer Llama 2架构中的Tokenizer组件负责将输入的文本语句进行分词和编码。
+分词是指将连续的文本拆分成一个个独立的词汇单元，而编码则是将这些词汇单元转换为模型能够处理的整数表示。Llama 2使用了专门的分词表（tokenizer.json）来定义词汇与整数之间的映射关系。
+具体来说，当我们输入一串语句给Llama 2模型进行推理时，Tokenizer首先会根据分词表将语句中的词拆分成对应的整数序列。这些整数序列将作为模型的输入，经过模型的计算后，输出的也是整数序列。推理结束后，需要再次使用分词表将这些输出整数转换回原始的词汇，形成最终的推理结果句子。
+举个例子来说，当我们输入语句“南京市长江大桥”，Tokenizer会将其分词为“南京市”、“长江”和“大桥”，并将这些词汇转换为对应的整数。模型经过计算后，输出的也是一组整数。推理结束后，再次使用分词表将这些整数转换回词汇，得到最终的推理句子。这样，我们就能够理解Llama 2如何处理输入文本，以及如何将模型的输出转换回可读的句子形式。
+2.2 Token Embedding Token Embedding负责将输入的整数序列转换为高维的特征向量表示。
+在完成分词和编码后，每个词汇都被表示为一个整数。然而，模型需要将这些整数转换为更具表达能力的向量形式，以便能够捕获词汇之间的语义关系和特征信息，Token Embedding通过查找一个预定义的嵌入表（Embedding table）来实现这一转换过程。该嵌入表将每个整数映射到一个高维（dim维）的特征向量。这样，每个输入的词汇都被映射到一个稠密的向量空间中，这个向量空间能够更好地捕捉词汇的语义信息和上下文关系。
+通过Token Embedding，Llama 2能够将输入的整数序列转换为模型可以处理的向量表示，从而为后续的计算提供了更加丰富和表达能力的输入特征。
+2.3 RMSNorm 在完成Token Embedding之后，RMSNorm组件负责对输入的向量数据进行归一化处理。
+归一化是一种常见的数据预处理技术，它可以将输入的向量数据进行缩放，使其期望值为0，标准差为1。这样做有助于加快模型的收敛速度，提高模型的性能。
+RMSNorm是一种特定的归一化方法，它采用了均方根（Root Mean Square）的方式来计算缩放因子。通过对输入向量进行RMSNorm处理，可以使得不同尺度的特征具有相同的权重，从而提高了模型的稳定性和泛化能力。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-02-26T16:26:12+08:00">
+    <meta property="article:modified_time" content="2024-02-26T16:26:12+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">一文读懂Llama2的架构和推理过程</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <h3><strong>01 Llama 2简介</strong></h3> 
+<p></p> 
+<p></p> 
+<p>为了更深入了解Llama 2，我们从Meta官网探寻了一些基本信息：</p> 
+<p></p> 
+<p>· Llama 2，作为Llama的下一代版本，推出了三种尺寸供选择：7B、13B和70B。其中，7B和13B沿用了Llama 1的经典架构，而70B模型则采用了创新的分组查询注意力（GQA）架构。</p> 
+<p></p> 
+<p>· <strong>在</strong><strong>预训练数据方面，Llama 2的表现颇为出色。相较于Llama 1，Llama 2的预训练语料增加了40%，这使得模型能够在更丰富的语境中学习</strong>。更令人惊艳的是，预训练模型在2万亿个标记上进行了训练，且上下文长度是Llama 1的两倍。而经过微调的模型，也在超过100万条人工标注的数据上进行了精进训练。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="314" src="https://images2.imgbox.com/10/00/HduFP2VI_o.png" width="554"></p> 
+<p></p> 
+<p>进一步观察了Llama 2模型的评估性能，发现它在许多外部基准测试中都优于其他开源语言模型。这些测试涵盖了推理、编码、熟练度和知识等多个方面。</p> 
+<p></p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="620" src="https://images2.imgbox.com/c9/9d/EPWQWsNN_o.png" width="591"></p> 
+<p></p> 
+<p>优化后的Llama 2展现出的卓越表现让人对其架构产生了浓厚兴趣。下面，我们将深入<strong>探索Llama 2模型的架构，以揭示其强大的能力背后的秘密</strong>。</p> 
+<p></p> 
+<p></p> 
+<h3><strong>02 Llama 2模型的整体结构</strong></h3> 
+<p></p> 
+<p></p> 
+<p>在深入探讨Llama 2的架构之前，我们先来对比一下传统的Transformer架构和Llama 2的架构，以便更好地理解其创新之处。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="378" src="https://images2.imgbox.com/b3/20/exi2wTXU_o.png" width="469"></p> 
+<p></p> 
+<p></p> 
+<p>与传统的Transformer架构相比，Llama 2架构具有以下独特的特点：</p> 
+<p>1、取消Encoder，仅保留Decoder：这一设计使得模型结构更为简洁，专注于生成和解码任务。</p> 
+<p></p> 
+<p>2、采用RMSNorm并将Norm前置：这种归一化方式有助于提高模型的训练稳定性和收敛速度。</p> 
+<p></p> 
+<p>3、在Q和K上使用RoPE旋转式位置编码：这种位置编码方式能够更好地捕捉序列中的位置信息，提高模型的表达能力。</p> 
+<p></p> 
+<p>4、使用causal mask确保每个位置只能看到前面的tokens：这保证了模型在生成文本时，每个位置只依赖于前面的tokens，符合语言生成的因果性。</p> 
+<p></p> 
+<p>5、更早地将K、V拼接到当前K、V前面：这使得模型能够利用更多的上下文信息，提高文本生成的一致性和连贯性。</p> 
+<p></p> 
+<p>6、Llama 2使用了Group query attention来节省cache：这一优化减少了模型的计算量和内存占用，提高了模型的效率。</p> 
+<p></p> 
+<p></p> 
+<p>下面我们详细解释下Llama 2架构中各部分功能：</p> 
+<p></p> 
+<p></p> 
+<h4>2.1 <strong>Tokenizer</strong></h4> 
+<p></p> 
+<p>Llama 2架构中的Tokenizer组件负责将输入的文本语句进行分词和编码。</p> 
+<p>分词是指将连续的文本拆分成一个个独立的词汇单元，而编码则是将这些词汇单元转换为模型能够处理的整数表示。Llama 2使用了专门的分词表（tokenizer.json）来定义词汇与整数之间的映射关系。</p> 
+<p></p> 
+<p></p> 
+<p>具体来说，当我们输入一串语句给Llama 2模型进行推理时，Tokenizer首先会根据分词表将语句中的词拆分成对应的整数序列。这些整数序列将作为模型的输入，经过模型的计算后，输出的也是整数序列。推理结束后，需要再次使用分词表将这些输出整数转换回原始的词汇，形成最终的推理结果句子。</p> 
+<p></p> 
+<p>举个例子来说，当我们输入语句“南京市长江大桥”，Tokenizer会将其分词为“南京市”、“长江”和“大桥”，并将这些词汇转换为对应的整数。模型经过计算后，输出的也是一组整数。推理结束后，再次使用分词表将这些整数转换回词汇，得到最终的推理句子。这样，我们就能够理解Llama 2如何处理输入文本，以及如何将模型的输出转换回可读的句子形式。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="424" src="https://images2.imgbox.com/64/8b/Kvrk9Fu7_o.png" width="554"></p> 
+<p><br>  </p> 
+<h4>2.2 <strong>Token Embedding</strong></h4> 
+<p></p> 
+<p>Token Embedding负责将输入的整数序列转换为高维的特征向量表示。</p> 
+<p></p> 
+<p>在完成分词和编码后，每个词汇都被表示为一个整数。然而，模型需要将这些整数转换为更具表达能力的向量形式，以便能够捕获词汇之间的语义关系和特征信息，Token Embedding通过查找一个预定义的嵌入表（Embedding table）来实现这一转换过程。该嵌入表将每个整数映射到一个高维（dim维）的特征向量。这样，每个输入的词汇都被映射到一个稠密的向量空间中，这个向量空间能够更好地捕捉词汇的语义信息和上下文关系。</p> 
+<p></p> 
+<p>通过Token Embedding，Llama 2能够将输入的整数序列转换为模型可以处理的向量表示，从而为后续的计算提供了更加丰富和表达能力的输入特征。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="382" src="https://images2.imgbox.com/0f/9a/WdYgfC1C_o.png" width="554"></p> 
+<p></p> 
+<p></p> 
+<h4>2.3 <strong>RMSNorm</strong></h4> 
+<p></p> 
+<p>在完成Token Embedding之后，RMSNorm组件负责对输入的向量数据进行归一化处理。</p> 
+<p>归一化是一种常见的数据预处理技术，它可以将输入的向量数据进行缩放，使其期望值为0，标准差为1。这样做有助于加快模型的收敛速度，提高模型的性能。</p> 
+<p></p> 
+<p></p> 
+<p>RMSNorm是一种特定的归一化方法，它采用了均方根（Root Mean Square）的方式来计算缩放因子。通过对输入向量进行RMSNorm处理，可以使得不同尺度的特征具有相同的权重，从而提高了模型的稳定性和泛化能力。</p> 
+<p></p> 
+<p>经过RMSNorm处理后的向量X具有相同的尺度和分布，这有助于模型在训练过程中更快地收敛，同时提高了模型的性能表现。</p> 
+<p></p> 
+<p>Norm处理过程可以简化视为：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="391" src="https://images2.imgbox.com/b3/07/fmPryLlA_o.png" width="405"></p> 
+<p></p> 
+<p>RMSNorm对应的计算公式为：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="136" src="https://images2.imgbox.com/85/e2/CY8SALtF_o.png" width="554"></p> 
+<p></p> 
+<p></p> 
+<h4>2.4 <strong>Self-attention</strong></h4> 
+<p></p> 
+<p></p> 
+<h5><strong>2.4.1 计算Query、Key和Value矩阵</strong></h5> 
+<p></p> 
+<p>首先，通过线性变换将输入的向量转换为Query、Key和Value矩阵。这些矩阵分别代表了查询、键和值的信息，用于计算注意力权重。</p> 
+<p>计算公式如下：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="366" src="https://images2.imgbox.com/5c/09/MsfPQd8W_o.png" width="295"></p> 
+<p></p> 
+<p>其中，WQ、WK和WV是可学习的权重矩阵，用于将输入向量映射到相应的查询、键和值空间。</p> 
+<p></p> 
+<p></p> 
+<h5><strong>2.4.2 对Q、K向量进行RoPE (旋转式位置编码)</strong></h5> 
+<p></p> 
+<p>在进行自注意计算之前，Llama 2会对Query和Key矩阵应用旋转式位置编码（RoPE）。这种位置编码方式能够更好地捕捉序列中的位置信息，提高模型的表达能力。RoPE的原理图如下：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="311" src="https://images2.imgbox.com/69/88/xqP8pOfN_o.png" width="554"></p> 
+<p></p> 
+<p>RoPE计算过程为：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="194" src="https://images2.imgbox.com/0c/52/PASzVcNu_o.png" width="554"></p> 
+<p></p> 
+<p></p> 
+<h5><strong>2.4.3 进行Softmax(Q,K)以及计算自我注意层的输出</strong></h5> 
+<p></p> 
+<p>在进行Softmax(Q,K)以及计算自我注意层输出之前，需要先对经过RoPE运算的Q、K向量进行矩阵运算。具体地，这个矩阵运算是将Query矩阵和Key矩阵进行点积，得到注意力得分。注意力得分衡量了每个位置对当前位置的重要性。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="94" src="https://images2.imgbox.com/86/32/5VTxDlId_o.png" width="461"></p> 
+<p></p> 
+<p>然后，对这些注意力得分进行Softmax运算，将它们转换成注意力权重。Softmax函数确保了这些权重的总和为1，且每个权重值都在0到1之间。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="273" src="https://images2.imgbox.com/18/04/XTbhPyMz_o.png" width="390"></p> 
+<p></p> 
+<p>再将计算得到的注意力权重与Value矩阵进行矩阵运算，即将注意力权重应用于Value矩阵。这样，每个位置都会根据注意力权重聚合相关的值向量，形成自我注意层的输出。</p> 
+<p></p> 
+<p>对应的结构为：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="431" src="https://images2.imgbox.com/b0/74/CuX7hFZv_o.png" width="248"></p> 
+<p></p> 
+<p>Llama 2使用了Group Query Attention，整个自注意力输出的计算过程，可以归纳为：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="373" src="https://images2.imgbox.com/67/52/6KeqJscY_o.png" width="441"></p> 
+<p></p> 
+<p></p> 
+<h4>2.5  <strong>FFN与Final RMSN</strong></h4> 
+<p></p> 
+<p>在自注意计算输出后，Llama 2会将其与输入进行残差连接，然后进行FFN（前馈神经网络）计算输出y。这个计算过程是为了进一步捕获非线性特征，并增强模型的表达能力。</p> 
+<p></p> 
+<p>在Llama 2中，FFN由两个线性层和一个激活函数组成。首先，输入向量会经过一个线性变换，然后经过激活函数（如SiLU），最后再进行另一个线性变换，得到输出向量y。</p> 
+<p></p> 
+<p>具体计算过程为：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="418" src="https://images2.imgbox.com/35/ca/9l8mi37j_o.png" width="554"></p> 
+<p></p> 
+<p>然后将y进行Final RMSNorm归一化处理，会输出一个概率数组logits，logits里面每个元素代表了出现对应token的概率，然后可以根据策略选择某一个token作为输出。</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="381" src="https://images2.imgbox.com/5b/49/bi11GHp8_o.png" width="278"></p> 
+<p></p> 
+<h3><strong>03 写在最后</strong></h3> 
+<p></p> 
+<p></p> 
+<p>我们以输入“南京市长江大桥”为例，通过上述各个步骤的协同作用，整个Llama 2的推理过程可以归纳为下图：</p> 
+<p></p> 
+<p class="img-center"><img alt="图片" height="303" src="https://images2.imgbox.com/ec/45/1myaB66y_o.png" width="553"></p> 
+<p></p> 
+<p>*本文部分图片来源于网络，如有侵权请联系删除</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/a57d370247c223c3634c75f4d607e40b/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">tongweb生成hprof文件并结合Memory Analyzer Mat分析内存溢出（by lqw）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/bef7df073390b632fb1286461db3ba0f/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">面试前端常见项目问题回答参考</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

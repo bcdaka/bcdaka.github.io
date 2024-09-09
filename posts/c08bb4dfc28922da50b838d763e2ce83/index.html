@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Android ViewPager2 &#43; FragmentStateAdapter 的使用以及问题 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/c08bb4dfc28922da50b838d763e2ce83/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Android ViewPager2 &#43; FragmentStateAdapter 的使用以及问题">
+  <meta property="og:description" content="场景介绍：在Android业务功能开发的过程中，需要使用到嵌套ViewPage2实现页面切换，这种场景在我们的开发过程中并不少见，大致结构为一个activity包含一个viewPage2，这个viewPage2中存在一个fragment A，fragment A中也包含了一个viewPage2。所有viewPage2都使用FragmentStateAdapter 适配器实现界面数据联动。
+上述实现过程并不复杂，但是在我实际业务中需要实现activity调用fragmentA中viewPage2的一些方法，当然这个需求可以使用viewModel进行实现，但是由于初版使用了方法调用，遇到了bug所以针对该功能的实现进行初步研究。
+FragmentStateAdapter 介绍及简单使用 FragmentStateAdapter 是 Android Jetpack 中提供的用于管理 Fragment 的适配器，它是 RecyclerView.Adapter 的子类。
+FragmentStateAdapter 会在 ViewPager 中显示的每个 Fragment 的生命周期之间进行恰当的保存和恢复 Fragment 的状态，以确保内存占用较小。
+当 Fragment 不再可见时，FragmentStateAdapter 会销毁该 Fragment 的视图，但会保留其实例状态，以便在需要时重新创建。
+适用于大量 Fragment 的场景，特别是数据动态变化或数据量较大的情况。该适配器的最简单使用方式如下：
+adapter = new FragmentStateAdapter(getChildFragmentManager(), getLifecycle()) { @NonNull @Override public Fragment createFragment(int position) { return fragments.get(position); } @Override public int getItemCount() { return fragments.size(); } }; fragment切换销毁 在默认情况下，viewPage2提供的性能优化实现了临近一个fragment预加载机制，及如果初始展示第0个fragment，viewPage2也会把第1个fragment进行创建视图但并不展示。也就是说viewPage2默认的缓存机制会缓存三个fragment，一旦需要缓存的实例超过三个，例如从第0个滑动到第2个，则会缓存123位置的fragment，响应的第0个fragment将被销毁，一直执行到onDestroy()生命周期。
+值得说明的是：销毁仅仅代表了生命周期的结束，默认情况下该fragment的实例、其内部成员变量以及其绑定的视图都不一定会消失。 基于这一原因，为了防止内存溢出我们在onDestroy()生命周期一般会针对成员变量进行setNull操作。通过setNull可以将成员变量消除引用，以便触发GC。接触过java都清楚即便没有引用的变量也未必里面会触发GC，因此当我门将Binding设置成null后，其关联的view也未必会里面消失，在fragment在此展示时，依旧有可能调用上次绘制过的view进行显示。而且在通过viewPage2切换导致fragment销毁的过程中，其本质上是执行到了onDestroy()生命周期，并不见得会销毁视图，而且viewPage2还将保存一个该fragment的实例！根据上述内容可以总结下面几点：
+进入onDestroy生命周期并不能一定是成员变量销毁。通过viewPage2切换导致fragment销毁本质上是让fragment执行到onDestroy()生命周期，但是viewPage2还保存了该fragment的实例如果在onDestroy()生命周期还没有把该fragment成员变量setNull，则viewPage2所持有的该fragment对象依旧保留着这些fragment成员变量在onDestroy()生命周期中将Binding设置成null后并不能将其view都进行清空 fragment展示 展示通常有三种，一种是viewPage2内缓存的fragment复现，一种是新的未展示过的fragment展示，还有一种是被销毁了的fragment的展示：他们对应一下过程：
+缓存内fragment展示：执行onResume()后直接进行展示未展示过的fragment展示：调用构造方法初始化实例 – 调用onCreate一直执行到onResume生命周期销毁的fragment重新展示：调用onCreateView一直执行到onResume进行展示。 需要注意的是销毁的fragment重新展示的过程中并没有进行fragment实例创建，因此本质上viewPage2已经拥有该实例了，知识当时调用了onDestroy方法而已。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-10T21:04:14+08:00">
+    <meta property="article:modified_time" content="2024-06-10T21:04:14+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Android ViewPager2 &#43; FragmentStateAdapter 的使用以及问题</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <blockquote> 
+ <p>  场景介绍：在Android业务功能开发的过程中，需要使用到嵌套ViewPage2实现页面切换，这种场景在我们的开发过程中并不少见，大致结构为一个activity包含一个viewPage2，这个viewPage2中存在一个fragment A，fragment A中也包含了一个viewPage2。所有viewPage2都使用FragmentStateAdapter 适配器实现界面数据联动。<br>   上述实现过程并不复杂，但是在我实际业务中需要实现activity调用fragmentA中viewPage2的一些方法，当然这个需求可以使用viewModel进行实现，但是由于初版使用了方法调用，遇到了bug所以针对该功能的实现进行初步研究。</p> 
+</blockquote> 
+<h2><a id="FragmentStateAdapter___2"></a>FragmentStateAdapter 介绍及简单使用</h2> 
+<p>  FragmentStateAdapter 是 Android Jetpack 中提供的用于管理 Fragment 的适配器，它是 RecyclerView.Adapter 的子类。<br>   FragmentStateAdapter 会在 ViewPager 中显示的每个 Fragment 的生命周期之间进行恰当的保存和恢复 Fragment 的状态，以确保内存占用较小。<br>   当 Fragment 不再可见时，FragmentStateAdapter 会销毁该 Fragment 的视图，但会保留其实例状态，以便在需要时重新创建。<br>   适用于大量 Fragment 的场景，特别是数据动态变化或数据量较大的情况。该适配器的最简单使用方式如下：</p> 
+<pre><code class="prism language-java">        adapter <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">FragmentStateAdapter</span><span class="token punctuation">(</span><span class="token function">getChildFragmentManager</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> <span class="token function">getLifecycle</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token annotation punctuation">@NonNull</span>
+            <span class="token annotation punctuation">@Override</span>
+            <span class="token keyword">public</span> <span class="token class-name">Fragment</span> <span class="token function">createFragment</span><span class="token punctuation">(</span><span class="token keyword">int</span> position<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">return</span> fragments<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>position<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token annotation punctuation">@Override</span>
+            <span class="token keyword">public</span> <span class="token keyword">int</span> <span class="token function">getItemCount</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">return</span> fragments<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+        <span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="fragment_22"></a>fragment切换销毁</h2> 
+<p>  在默认情况下，viewPage2提供的性能优化实现了临近一个fragment预加载机制，及如果初始展示第0个fragment，viewPage2也会把第1个fragment进行创建视图但并不展示。也就是说viewPage2默认的缓存机制会缓存三个fragment，一旦需要缓存的实例超过三个，例如从第0个滑动到第2个，则会缓存123位置的fragment，响应的第0个fragment将被销毁，一直执行到onDestroy()生命周期。<br>   值得说明的是：<strong>销毁仅仅代表了生命周期的结束，默认情况下该fragment的实例、其内部成员变量以及其绑定的视图都不一定会消失。</strong> 基于这一原因，为了防止内存溢出我们在onDestroy()生命周期一般会针对成员变量进行setNull操作。通过setNull可以将成员变量消除引用，以便触发GC。接触过java都清楚即便没有引用的变量也未必里面会触发GC，因此当我门将Binding设置成null后，其关联的view也未必会里面消失，在fragment在此展示时，依旧有可能调用上次绘制过的view进行显示。而且在通过viewPage2切换导致fragment销毁的过程中，其本质上是执行到了onDestroy()生命周期，并不见得会销毁视图，而且viewPage2还将保存一个该fragment的实例！根据上述内容可以总结下面几点：</p> 
+<ul><li>进入onDestroy生命周期并不能一定是成员变量销毁。</li><li>通过viewPage2切换导致fragment销毁本质上是让fragment执行到onDestroy()生命周期，但是viewPage2还保存了该fragment的实例</li><li>如果在onDestroy()生命周期还没有把该fragment成员变量setNull，则viewPage2所持有的该fragment对象依旧保留着这些fragment成员变量</li><li>在onDestroy()生命周期中将Binding设置成null后并不能将其view都进行清空</li></ul> 
+<h2><a id="fragment_29"></a>fragment展示</h2> 
+<p> 展示通常有三种，一种是viewPage2内缓存的fragment复现，一种是新的未展示过的fragment展示，还有一种是被销毁了的fragment的展示：他们对应一下过程：</p> 
+<ul><li>缓存内fragment展示：执行onResume()后直接进行展示</li><li>未展示过的fragment展示：调用构造方法初始化实例 – 调用onCreate一直执行到onResume生命周期</li><li>销毁的fragment重新展示：调用onCreateView一直执行到onResume进行展示。</li></ul> 
+<p>  需要注意的是销毁的fragment重新展示的过程中并没有进行fragment实例创建，因此本质上viewPage2已经拥有该实例了，知识当时调用了onDestroy方法而已。</p> 
+<h2><a id="_36"></a>我的问题</h2> 
+<p>  在我的业务场景中，需要使用到viewPage2下的fragment实例，然后调用该实例的方法，如果只是单层viewPage2的使用，则相对比较简单，但是如果是嵌套viewPage2则会出现以下问题：<br>   一旦持有viewPage2的fragment，在其所属的viewPage2切换过程中销毁了，然后又由销毁状态到复现，此时通过上述FragmentStateAdapter设置的fragment回调会导致异常。<br>  在适配器的实现过程中，我们通过fragments【list】进行fragment对象持有，如果fragmentA【持有viewPage2的那个fragment】被复现时，如果我们在oncreateView生命周期对fragments进行初始化，调用add(fragment)方法，那么此时复现导致fragments持有对象和上次展示时其所持有对象不同！在fragmentA复现过程中必然也进行着fragmentA所持有的viewPage2下的fragment复现，刚才已经说了销毁的复现本质上是oncreate生命周期的重新调用，此时调用的是原来持有fragment对象的oncreate生命周期，而在fragmentA复现的过程中导致fragments持有的对象和历史对象不同，这些对象严格来讲仅仅经历了对象实例化阶段，未执行fragment的其他生命周期，还未创建持有视图，如果我们调用视图的相关操作则会导致空指针等异常情况！<br>  简单来说就是fragmentA的销毁并不会导致其持有的viewPage2的销毁，更不会导致viewPage2所持有的fragment的销毁，如果我们对fragments进行重新设置，此时创建的fragment对象仅仅创建对象而已。</p> 
+<h2><a id="viewPage2setAdapter_41"></a>viewPage2的setAdapter</h2> 
+<p> 按照我的问题描述，那么是不是我将viewPage2原先持有的fragment对象全都删除就能解决问题，删除的途径是调用viewPage2的setAdapter(null)方法。很遗憾，该方法并不能解决问题，该方法的源码如下：</p> 
+<pre><code class="prism language-java">    <span class="token keyword">public</span> <span class="token keyword">void</span> <span class="token function">setAdapter</span><span class="token punctuation">(</span><span class="token annotation punctuation">@Nullable</span> <span class="token annotation punctuation">@SuppressWarnings</span><span class="token punctuation">(</span><span class="token string">"rawtypes"</span><span class="token punctuation">)</span> <span class="token class-name">Adapter</span> adapter<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">final</span> <span class="token class-name">Adapter</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span> currentAdapter <span class="token operator">=</span> mRecyclerView<span class="token punctuation">.</span><span class="token function">getAdapter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mAccessibilityProvider<span class="token punctuation">.</span><span class="token function">onDetachAdapter</span><span class="token punctuation">(</span>currentAdapter<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">unregisterCurrentItemDataSetTracker</span><span class="token punctuation">(</span>currentAdapter<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mRecyclerView<span class="token punctuation">.</span><span class="token function">setAdapter</span><span class="token punctuation">(</span>adapter<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mCurrentItem <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+        <span class="token function">restorePendingState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mAccessibilityProvider<span class="token punctuation">.</span><span class="token function">onAttachAdapter</span><span class="token punctuation">(</span>adapter<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token function">registerCurrentItemDataSetTracker</span><span class="token punctuation">(</span>adapter<span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+
+</code></pre> 
+<p>在该方法执行的过程中restorePendingState的源码如下：</p> 
+<pre><code class="prism language-java"> <span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">restorePendingState</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>mPendingCurrentItem <span class="token operator">==</span> <span class="token constant">NO_POSITION</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// No state to restore, or state is already restored</span>
+            <span class="token keyword">return</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token class-name">Adapter</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token operator">?</span><span class="token punctuation">&gt;</span></span> adapter <span class="token operator">=</span> <span class="token function">getAdapter</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>adapter <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">return</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span>mPendingAdapterState <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span>adapter <span class="token keyword">instanceof</span> <span class="token class-name">StatefulAdapter</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token class-name">StatefulAdapter</span><span class="token punctuation">)</span> adapter<span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">restoreState</span><span class="token punctuation">(</span>mPendingAdapterState<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+            mPendingAdapterState <span class="token operator">=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+        <span class="token comment">// Now we have an adapter, we can clamp the pending current item and set it</span>
+        mCurrentItem <span class="token operator">=</span> <span class="token class-name">Math</span><span class="token punctuation">.</span><span class="token function">max</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> <span class="token class-name">Math</span><span class="token punctuation">.</span><span class="token function">min</span><span class="token punctuation">(</span>mPendingCurrentItem<span class="token punctuation">,</span> adapter<span class="token punctuation">.</span><span class="token function">getItemCount</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-</span> <span class="token number">1</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mPendingCurrentItem <span class="token operator">=</span> <span class="token constant">NO_POSITION</span><span class="token punctuation">;</span>
+        mRecyclerView<span class="token punctuation">.</span><span class="token function">scrollToPosition</span><span class="token punctuation">(</span>mCurrentItem<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        mAccessibilityProvider<span class="token punctuation">.</span><span class="token function">onRestorePendingState</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+    <span class="token punctuation">}</span>
+	<span class="token comment">/**
+	restoreState方法如下
+	**/</span>
+    <span class="token annotation punctuation">@Override</span>
+    <span class="token keyword">public</span> <span class="token keyword">final</span> <span class="token keyword">void</span> <span class="token function">restoreState</span><span class="token punctuation">(</span><span class="token annotation punctuation">@NonNull</span> <span class="token class-name">Parcelable</span> savedState<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">String</span> key <span class="token operator">:</span> bundle<span class="token punctuation">.</span><span class="token function">keySet</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">isValidKey</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> <span class="token constant">KEY_PREFIX_FRAGMENT</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">long</span> itemId <span class="token operator">=</span> <span class="token function">parseIdFromKey</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> <span class="token constant">KEY_PREFIX_FRAGMENT</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token class-name">Fragment</span> fragment <span class="token operator">=</span> mFragmentManager<span class="token punctuation">.</span><span class="token function">getFragment</span><span class="token punctuation">(</span>bundle<span class="token punctuation">,</span> key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                mFragments<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>itemId<span class="token punctuation">,</span> fragment<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">isValidKey</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> <span class="token constant">KEY_PREFIX_STATE</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                <span class="token keyword">long</span> itemId <span class="token operator">=</span> <span class="token function">parseIdFromKey</span><span class="token punctuation">(</span>key<span class="token punctuation">,</span> <span class="token constant">KEY_PREFIX_STATE</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token class-name">Fragment<span class="token punctuation">.</span>SavedState</span> state <span class="token operator">=</span> bundle<span class="token punctuation">.</span><span class="token function">getParcelable</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">containsItem</span><span class="token punctuation">(</span>itemId<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+                    mSavedStates<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>itemId<span class="token punctuation">,</span> state<span class="token punctuation">)</span><span class="token punctuation">;</span>
+                <span class="token punctuation">}</span>
+                <span class="token keyword">continue</span><span class="token punctuation">;</span>
+            <span class="token punctuation">}</span>
+
+            <span class="token keyword">throw</span> <span class="token keyword">new</span> <span class="token class-name">IllegalArgumentException</span><span class="token punctuation">(</span><span class="token string">"Unexpected key in savedState: "</span> <span class="token operator">+</span> key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+
+</code></pre> 
+<p>需要注意mPendingAdapterState 这一变量，该变量将保留了历史fragment的基本信息，因此在setAdapter的方法过程中还会将viewPage2的一些信息设置到你新的adapter中，是不是很尴尬？setAdapter方法并不是简单的把adapter方法设置后就结束了，viewPage2内部还将自己历史关心的数据设置到该adapter中！<br> FragmentStateAdapter 的createFragment源码如下：</p> 
+<pre><code class="prism language-java">    <span class="token keyword">private</span> <span class="token keyword">void</span> <span class="token function">ensureFragment</span><span class="token punctuation">(</span><span class="token keyword">int</span> position<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+        <span class="token keyword">long</span> itemId <span class="token operator">=</span> <span class="token function">getItemId</span><span class="token punctuation">(</span>position<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token operator">!</span>mFragments<span class="token punctuation">.</span><span class="token function">containsKey</span><span class="token punctuation">(</span>itemId<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+            <span class="token comment">// TODO(133419201): check if a Fragment provided here is a new Fragment</span>
+            <span class="token class-name">Fragment</span> newFragment <span class="token operator">=</span> <span class="token function">createFragment</span><span class="token punctuation">(</span>position<span class="token punctuation">)</span><span class="token punctuation">;</span>
+            newFragment<span class="token punctuation">.</span><span class="token function">setInitialSavedState</span><span class="token punctuation">(</span>mSavedStates<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>itemId<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+            mFragments<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>itemId<span class="token punctuation">,</span> newFragment<span class="token punctuation">)</span><span class="token punctuation">;</span>
+        <span class="token punctuation">}</span>
+    <span class="token punctuation">}</span>
+</code></pre> 
+<p>mFragments对象对于adapter很重要，该对象持有了历史创建的fragment，这样就导致无需每次使用的过程中进行重复创建了，但这会导致一个尴尬的问题，该mFragments默认查找是按照位置进行查找的，换句话说一旦viewPage2完成展示以及数据加载，在后续的切换过程中，就算你用createFragment可以创建fragment对象，但是由于相同位置下mFragments中已经存在数据，所以根部不会执行createFragment方法！<br> 至此闭环：setAdapter方法会使用到viewPage2持有的savedState设置adapter的mFragments对象，ensureFragment方法会根据mFragments按照position判断fragment是否存在！到此结束。</p> 
+<h2><a id="_121"></a>总结</h2> 
+<p>本文内容描述比较粗略，主要讲述了viewPage2嵌套使用过程中的一些问题以及导致这些问题的原因，总结起来无非以下几点：</p> 
+<ul><li>viewPage2销毁fragment后依旧会持有其对象信息，并标记在adapter中的mFragments中，在后续复现时会自动进行对象的创建，因此通过我们一开始传入的list无法获取最新的fragment</li><li>将Binding设置成null并不一定会导致viewPage2的重绘，其依旧可能保留自己原始数据。</li><li>viewPape2在进行setAdapter方法的过程中会将自己持有的fragment对象标记信息设置到FragmentStateAdapter 的mFragments中。</li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/144a58f0e9fb4bae074d2f925cac5183/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【AIGC】基于大模型&#43;知识库的Code Review实践</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d4ecd450f8c39218256732823a2220c5/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">CTE-6作文</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

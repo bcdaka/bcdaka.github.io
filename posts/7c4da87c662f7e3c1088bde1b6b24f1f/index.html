@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【深入理解SpringCloud微服务】深入理解Ribbon原理并手写一个微服务负载均衡器 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/7c4da87c662f7e3c1088bde1b6b24f1f/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【深入理解SpringCloud微服务】深入理解Ribbon原理并手写一个微服务负载均衡器">
+  <meta property="og:description" content="深入理解Ribbon原理并手写一个微服务负载均衡器 负载均衡器理解Ribbon原理手写一个微服务负载均衡器总体设计LoadBalanceClientHttpRequestFactorySimpleLoadBalanceClientSimpleLoadBalancerLoadBalanceRulespring.factories与LoadBalanceConfig 负载均衡器 在微服务架构里面，我们的服务消费者请求服务提供者，通常使用RestTemplate发起http请求。
+我们可以写死服务提供者的ip地址和端口号，然后通过RestTemplate发起http请求时指定该服务提供者的ip地址和端口号。我们可以写死服务提供者的ip地址端口号，但是一个服务通常有好几个服务提供者节点组成一个集群，这时候服务消费者就要记录所有服务提供者的ip地址端口号，并且要自行决定请求哪一个节点，这是非常不便于维护的。即使只有一个服务提供者，它的ip地址和端口好也是有可能会变的。
+在微服务的世界里，负载均衡器是一个重要组成部分。而负载均衡器可以使得服务消费者可以按照某种负载均衡策略请求微服务集群中的不同服务提供者节点。
+由于有了负载均衡器，服务消费者请求服务提供者不再需要通过ip地址加端口号的方式，而是可以以服务名作为域名，负载均衡器会通过一定的负载均衡策略，选择服务名对应的微服务集群中的其中一个服务提供者节点，将请求地址中的服务名替换为该节点的ip地址端口号。
+理解Ribbon原理 Ribbon是一个经典的微服务负载均衡器，它是微服务客户端的负载均衡器。通过引入Ribbon，我们的服务消费者可以通过Ribbon的负载均衡机制，选择服务提供者集群中的某个节点发起请求。
+Ribbon通过在RestTemplate中加入拦截器的方式，扩展了RestTemplate的能力，使得它具备客户端负载均衡的能力。Ribbon会在RestTemplate的拦截器链interceptors中加入一个自己的拦截器LoadBalancerInterceptor，这个LoadBalancerInterceptor会为RestTemplate提供负载均衡的能力。
+LoadBalancerInterceptor被添加到RestTemplate之后，每个通过RestTemplate发起的http请求都会经过LoadBalancerInterceptor的处理。LoadBalancerInterceptor会调用LoadBalancerClient负载均衡客户端进行处理，LoadBalancerClient会通过Ribbon的负载均衡器ILoadBalancer根据负载均衡策略从服务提供者列表中选出一个节点，然后LoadBalancerClient根据选取到的负载均衡节点的ip地址和端口号重写请求的url。
+这样，RestTemplate拿到重写后的url，就可以请求对应的服务提供者节点了。
+那么还剩下一个问题，LoadBalancerInterceptor是什么时候又是如何被添加到RestTemplate的拦截器链的呢？
+其实Ribbon利用了Spring的SmartInitializingSingleton这个扩展点，Spring会在完成所有非懒加载单例bean的初始化后，触发SmartInitializingSingleton的调用。Ribbon扩展了Spring的这个SmartInitializingSingleton接口并往Spring容器中注册。
+Spring在完成所有非懒加载单例bean的初始化后触发该SmartInitializingSingleton的调用，往RestTemplate的拦截器链中添加LoadBalancerInterceptor。
+手写一个微服务负载均衡器 了解了微服务负载均衡器的作用，又理解了Ribbon的原理之后，我们就可以参照Ribbon动手写一个自己的微服务负载均衡器了。
+我们大体上还是参照Ribbon增强RestTemplate的方式，但是我们不像Ribbon那样往RestTemplate的拦截器链上加入自己的拦截器，而是使用另外一个接口ClientHttpRequestFactory。
+在RestTemplate发起http请求时，会调用ClientHttpRequestFactory的createRequest(URI uri, HttpMethod httpMethod)方法构建一个ClientHttpRequest对象，里面包含了请求的url地址。然后再调用这个request对象的execute()方法发起http请求，返回一个response对象。这一切的逻辑就在RestTemplate的doExecute()方法中。
+RestTemplate#doExecute
+protected &lt;T&gt; T doExecute(URI url, HttpMethod method, ...) throws RestClientException { ... ClientHttpResponse response = null; try { // 调用ClientHttpRequestFactory的createRequest()方法方法构造ClientHttpRequest ClientHttpRequest request = createRequest(url, method); ... // 调用ClientHttpRequest的execute()方法发起http请求，返回response response = request.execute(); ... } catch (...) {...} ... } 总体设计 于是我们的大体设计就是实现一个自己的ClientHttpRequestFactory，在ClientHttpRequestFactory的createRequest方法里面进行负载均衡和重构url的操作。而我们的ClientHttpRequestFactory对象也是通过Spring的扩展点SmartInitializingSingleton接口放入到RestTemplate中。
+我们的框架设计大概就是下面那样：
+除了ClientHttpRequestFactory以外，我们还要实现LoadBalanceClient负载均衡客户端，ClientHttpRequestFactory会调用LoadBalanceClient。然后LoadBalanceClient里面是一个loadBalancerMap（负载均衡器map），key是服务名，value是对应的LoadBalancer负载均衡器。
+那么整体流程如下：
+ClientHttpRequestFactory调用LoadBalanceClientLoadBalanceClient从url中取出serviceName，以serviceName为key从loadBalancerMap中取出对应的LoadBalancerLoadBalancer进行负载均衡选取一个节点LoadBalanceClient获取LoadBalancer返回的节点，根据节点的ip地址和port端口重写urlClientHttpRequestFactory利用重写的url构建ClientHttpRequest对象 上图除开灰色部分，其余的部分都是我们要实现的逻辑。
+其中LoadBalancer里面还有一个RegistryCenterClient对象和LoadBalanceRule对象。RegistryCenterClient是注册中心客户端，用于从注册中心中根据服务名serviceName查询服务提供者列表的。而LoadBalanceRule则是负载均衡规则。">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-27T21:24:54+08:00">
+    <meta property="article:modified_time" content="2024-07-27T21:24:54+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【深入理解SpringCloud微服务】深入理解Ribbon原理并手写一个微服务负载均衡器</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>深入理解Ribbon原理并手写一个微服务负载均衡器</h4> 
+ <ul><li><a href="#_1" rel="nofollow">负载均衡器</a></li><li><a href="#Ribbon_21" rel="nofollow">理解Ribbon原理</a></li><li><a href="#_51" rel="nofollow">手写一个微服务负载均衡器</a></li><li><ul><li><a href="#_79" rel="nofollow">总体设计</a></li><li><a href="#LoadBalanceClientHttpRequestFactory_110" rel="nofollow">LoadBalanceClientHttpRequestFactory</a></li><li><a href="#SimpleLoadBalanceClient_150" rel="nofollow">SimpleLoadBalanceClient</a></li><li><a href="#SimpleLoadBalancer_212" rel="nofollow">SimpleLoadBalancer</a></li><li><a href="#LoadBalanceRule_244" rel="nofollow">LoadBalanceRule</a></li><li><a href="#springfactoriesLoadBalanceConfig_270" rel="nofollow">spring.factories与LoadBalanceConfig</a></li></ul> 
+ </li></ul> 
+</div> 
+<p></p> 
+<h2><a id="_1"></a>负载均衡器</h2> 
+<p>在微服务架构里面，我们的服务消费者请求服务提供者，通常使用RestTemplate发起http请求。</p> 
+<p><img src="https://images2.imgbox.com/ea/7c/EO8mMqqQ_o.png" alt="在这里插入图片描述"></p> 
+<p>我们可以写死服务提供者的ip地址和端口号，然后通过RestTemplate发起http请求时指定该服务提供者的ip地址和端口号。我们可以写死服务提供者的ip地址端口号，但是一个服务通常有好几个服务提供者节点组成一个集群，这时候服务消费者就要记录所有服务提供者的ip地址端口号，并且要自行决定请求哪一个节点，这是非常不便于维护的。即使只有一个服务提供者，它的ip地址和端口好也是有可能会变的。</p> 
+<p><img src="https://images2.imgbox.com/06/d4/hpdwn6LW_o.png" alt="在这里插入图片描述"></p> 
+<p>在微服务的世界里，负载均衡器是一个重要组成部分。而负载均衡器可以使得服务消费者可以按照某种负载均衡策略请求微服务集群中的不同服务提供者节点。</p> 
+<p><img src="https://images2.imgbox.com/4e/89/YL6dKwzk_o.png" alt="在这里插入图片描述"></p> 
+<p>由于有了负载均衡器，服务消费者请求服务提供者不再需要通过ip地址加端口号的方式，而是可以以服务名作为域名，负载均衡器会通过一定的负载均衡策略，选择服务名对应的微服务集群中的其中一个服务提供者节点，将请求地址中的服务名替换为该节点的ip地址端口号。</p> 
+<p><img src="https://images2.imgbox.com/98/3d/jRTJQWfX_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="Ribbon_21"></a>理解Ribbon原理</h2> 
+<p>Ribbon是一个经典的微服务负载均衡器，它是微服务客户端的负载均衡器。通过引入Ribbon，我们的服务消费者可以通过Ribbon的负载均衡机制，选择服务提供者集群中的某个节点发起请求。</p> 
+<p><img src="https://images2.imgbox.com/e6/3c/CagwTwUp_o.png" alt="在这里插入图片描述"></p> 
+<p>Ribbon通过在RestTemplate中加入拦截器的方式，扩展了RestTemplate的能力，使得它具备客户端负载均衡的能力。Ribbon会在RestTemplate的拦截器链interceptors中加入一个自己的拦截器LoadBalancerInterceptor，这个LoadBalancerInterceptor会为RestTemplate提供负载均衡的能力。</p> 
+<p><img src="https://images2.imgbox.com/98/1e/bIZz0CQo_o.png" alt="在这里插入图片描述"></p> 
+<p><strong>LoadBalancerInterceptor</strong>被添加到RestTemplate之后，每个通过RestTemplate发起的http请求都会经过LoadBalancerInterceptor的处理。LoadBalancerInterceptor会调用<strong>LoadBalancerClient</strong>负载均衡客户端进行处理，LoadBalancerClient会通过Ribbon的负载均衡器<strong>ILoadBalancer</strong>根据负载均衡策略从服务提供者列表中选出一个节点，然后LoadBalancerClient根据选取到的负载均衡节点的ip地址和端口号重写请求的url。</p> 
+<p><img src="https://images2.imgbox.com/cf/f5/xAtctE4a_o.png" alt="在这里插入图片描述"></p> 
+<p>这样，RestTemplate拿到重写后的url，就可以请求对应的服务提供者节点了。</p> 
+<p>那么还剩下一个问题，LoadBalancerInterceptor是什么时候又是如何被添加到RestTemplate的拦截器链的呢？</p> 
+<p>其实Ribbon利用了Spring的SmartInitializingSingleton这个扩展点，Spring会在完成所有非懒加载单例bean的初始化后，触发SmartInitializingSingleton的调用。Ribbon扩展了Spring的这个SmartInitializingSingleton接口并往Spring容器中注册。</p> 
+<p><img src="https://images2.imgbox.com/e4/75/dgWzvulQ_o.png" alt="在这里插入图片描述"></p> 
+<p>Spring在完成所有非懒加载单例bean的初始化后触发该SmartInitializingSingleton的调用，往RestTemplate的拦截器链中添加LoadBalancerInterceptor。</p> 
+<p><img src="https://images2.imgbox.com/04/18/9Acvixqp_o.png" alt="在这里插入图片描述"></p> 
+<h2><a id="_51"></a>手写一个微服务负载均衡器</h2> 
+<p>了解了微服务负载均衡器的作用，又理解了Ribbon的原理之后，我们就可以参照Ribbon动手写一个自己的微服务负载均衡器了。</p> 
+<p>我们大体上还是参照Ribbon增强RestTemplate的方式，但是我们不像Ribbon那样往RestTemplate的拦截器链上加入自己的拦截器，而是使用另外一个接口ClientHttpRequestFactory。</p> 
+<p>在RestTemplate发起http请求时，会调用ClientHttpRequestFactory的createRequest(URI uri, HttpMethod httpMethod)方法构建一个ClientHttpRequest对象，里面包含了请求的url地址。然后再调用这个request对象的execute()方法发起http请求，返回一个response对象。这一切的逻辑就在RestTemplate的doExecute()方法中。</p> 
+<p>RestTemplate#doExecute</p> 
+<pre><code class="prism language-java">	<span class="token keyword">protected</span> <span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">T</span><span class="token punctuation">&gt;</span></span> <span class="token class-name">T</span> <span class="token function">doExecute</span><span class="token punctuation">(</span><span class="token class-name">URI</span> url<span class="token punctuation">,</span> <span class="token class-name">HttpMethod</span> method<span class="token punctuation">,</span> <span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">RestClientException</span> <span class="token punctuation">{<!-- --></span>
+
+		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+		<span class="token class-name">ClientHttpResponse</span> response <span class="token operator">=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+		<span class="token keyword">try</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">// 调用ClientHttpRequestFactory的createRequest()方法方法构造ClientHttpRequest</span>
+			<span class="token class-name">ClientHttpRequest</span> request <span class="token operator">=</span> <span class="token function">createRequest</span><span class="token punctuation">(</span>url<span class="token punctuation">,</span> method<span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+			<span class="token comment">// 调用ClientHttpRequest的execute()方法发起http请求，返回response</span>
+			response <span class="token operator">=</span> request<span class="token punctuation">.</span><span class="token function">execute</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">catch</span> <span class="token punctuation">(</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">}</span>
+		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+	<span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/ca/ef/0T9T9roP_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="_79"></a>总体设计</h3> 
+<p>于是我们的大体设计就是实现一个自己的ClientHttpRequestFactory，在ClientHttpRequestFactory的createRequest方法里面进行负载均衡和重构url的操作。而我们的ClientHttpRequestFactory对象也是通过Spring的扩展点SmartInitializingSingleton接口放入到RestTemplate中。</p> 
+<p><img src="https://images2.imgbox.com/39/67/3zx5AhnB_o.png" alt="在这里插入图片描述"></p> 
+<p>我们的框架设计大概就是下面那样：</p> 
+<p><img src="https://images2.imgbox.com/3d/a9/kkugIRrK_o.png" alt="在这里插入图片描述"></p> 
+<p>除了ClientHttpRequestFactory以外，我们还要实现LoadBalanceClient负载均衡客户端，ClientHttpRequestFactory会调用LoadBalanceClient。然后LoadBalanceClient里面是一个loadBalancerMap（负载均衡器map），key是服务名，value是对应的LoadBalancer负载均衡器。</p> 
+<p>那么整体流程如下：</p> 
+<ol><li>ClientHttpRequestFactory调用LoadBalanceClient</li><li>LoadBalanceClient从url中取出serviceName，以serviceName为key从loadBalancerMap中取出对应的LoadBalancer</li><li>LoadBalancer进行负载均衡选取一个节点</li><li>LoadBalanceClient获取LoadBalancer返回的节点，根据节点的ip地址和port端口重写url</li><li>ClientHttpRequestFactory利用重写的url构建ClientHttpRequest对象</li></ol> 
+<p><img src="https://images2.imgbox.com/8b/3d/Sao7ZBSA_o.png" alt="在这里插入图片描述"></p> 
+<p>上图除开灰色部分，其余的部分都是我们要实现的逻辑。</p> 
+<p>其中LoadBalancer里面还有一个RegistryCenterClient对象和LoadBalanceRule对象。RegistryCenterClient是注册中心客户端，用于从注册中心中根据服务名serviceName查询服务提供者列表的。而LoadBalanceRule则是负载均衡规则。</p> 
+<p><img src="https://images2.imgbox.com/59/da/0Y5R1dej_o.png" alt="在这里插入图片描述"></p> 
+<p>总体设计就讲述完毕，下面我们就去看一下代码。</p> 
+<h3><a id="LoadBalanceClientHttpRequestFactory_110"></a>LoadBalanceClientHttpRequestFactory</h3> 
+<p>我们实现的ClientHttpRequestFactory名字叫做LoadBalanceClientHttpRequestFactory，它实现了ClientHttpRequestFactory接口。在LoadBalanceClientHttpRequestFactory中调用我们自己实现的负载均衡客户端LoadBalanceClient进行负载均衡和重构url的操作，然后使用重构后的url构建一个Request对象返回。</p> 
+<p><img src="https://images2.imgbox.com/8f/a9/M7VM0Xy3_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">LoadBalanceClientHttpRequestFactory</span> <span class="token keyword">implements</span> <span class="token class-name">ClientHttpRequestFactory</span> <span class="token punctuation">{<!-- --></span>
+	
+	<span class="token keyword">private</span> <span class="token class-name">ClientHttpRequestFactory</span> parent<span class="token punctuation">;</span>
+	
+	<span class="token keyword">private</span> <span class="token class-name">LoadBalanceClient</span> loadBalanceClient<span class="token punctuation">;</span>
+
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token class-name">ClientHttpRequest</span> <span class="token function">createRequest</span><span class="token punctuation">(</span><span class="token class-name">URI</span> uri<span class="token punctuation">,</span> <span class="token class-name">HttpMethod</span> httpMethod<span class="token punctuation">)</span> <span class="token keyword">throws</span> <span class="token class-name">IOException</span> <span class="token punctuation">{<!-- --></span>
+		uri <span class="token operator">=</span> <span class="token constant">URI</span><span class="token punctuation">.</span><span class="token function">create</span><span class="token punctuation">(</span><span class="token function">reconstructUri</span><span class="token punctuation">(</span>uri<span class="token punctuation">.</span><span class="token function">toString</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 使用重构后的url构建request对象</span>
+		<span class="token keyword">return</span> parent<span class="token punctuation">.</span><span class="token function">createRequest</span><span class="token punctuation">(</span>uri<span class="token punctuation">,</span> httpMethod<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	
+	<span class="token keyword">private</span> <span class="token class-name">String</span> <span class="token function">reconstructUri</span><span class="token punctuation">(</span><span class="token class-name">String</span> uri<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token class-name">String</span> serviceName <span class="token operator">=</span> <span class="token keyword">null</span><span class="token punctuation">;</span>
+		<span class="token keyword">boolean</span> startsWithHttps <span class="token operator">=</span> uri<span class="token punctuation">.</span><span class="token function">startsWith</span><span class="token punctuation">(</span><span class="token string">"https"</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token class-name">String</span> temp <span class="token operator">=</span> uri<span class="token punctuation">.</span><span class="token function">replace</span><span class="token punctuation">(</span>startsWithHttps <span class="token operator">?</span> <span class="token string">"https://"</span> <span class="token operator">:</span> <span class="token string">"http://"</span><span class="token punctuation">,</span> <span class="token string">""</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		serviceName <span class="token operator">=</span> temp<span class="token punctuation">.</span><span class="token function">contains</span><span class="token punctuation">(</span><span class="token string">"/"</span><span class="token punctuation">)</span> <span class="token operator">?</span> temp<span class="token punctuation">.</span><span class="token function">substring</span><span class="token punctuation">(</span><span class="token number">0</span><span class="token punctuation">,</span> temp<span class="token punctuation">.</span><span class="token function">indexOf</span><span class="token punctuation">(</span><span class="token string">"/"</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">:</span> temp<span class="token punctuation">;</span>
+		<span class="token comment">// 调用我们自己实现的负载均衡客户端LoadBalanceClient进行负载均衡和重构url的操作</span>
+		uri <span class="token operator">=</span> loadBalanceClient<span class="token punctuation">.</span><span class="token function">reconstructUrl</span><span class="token punctuation">(</span>serviceName<span class="token punctuation">,</span> uri<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> uri<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+</code></pre> 
+<p>可以看到构建Request对象时，我们调用的是parent.createRequest(uri, httpMethod)，这个parent也是一个ClientHttpRequestFactory，它是Spring提供的SimpleClientHttpRequestFactory，通过它就可以使用给定的url构建一个Request对象，无需我们重复造轮子。</p> 
+<p><img src="https://images2.imgbox.com/7d/34/i7s85JEQ_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="SimpleLoadBalanceClient_150"></a>SimpleLoadBalanceClient</h3> 
+<p>LoadBalanceClientHttpRequestFactory会调用LoadBalanceClient接口的reconstructUrl(serviceName, uri)方法，LoadBalanceClient是我们定义的负载均衡客户端接口，具体实现类是SimpleLoadBalanceClient。</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">SimpleLoadBalanceClient</span> <span class="token keyword">implements</span> <span class="token class-name">LoadBalanceClient</span> <span class="token punctuation">{<!-- --></span>
+	
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+	
+	<span class="token keyword">private</span> <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">LoadBalancer</span><span class="token punctuation">&gt;</span></span> loadBalancerMap<span class="token punctuation">;</span>
+
+	<span class="token annotation punctuation">@Autowired</span>
+	<span class="token keyword">private</span> <span class="token class-name">RegistryCenterClient</span> registryCenterClient<span class="token punctuation">;</span>
+	
+	<span class="token annotation punctuation">@Autowired</span>
+	<span class="token keyword">private</span> <span class="token class-name">LoadBalanceProperties</span> loadBalanceProperties<span class="token punctuation">;</span>
+	
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+	
+	<span class="token keyword">public</span> <span class="token class-name">SimpleLoadBalanceClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		loadBalancerMap <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ConcurrentHashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token class-name">String</span> <span class="token function">reconstructUrl</span><span class="token punctuation">(</span><span class="token class-name">String</span> serviceName<span class="token punctuation">,</span> <span class="token class-name">String</span> url<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// 根据服务名serviceName获取负载均衡器LoadBalancer</span>
+		<span class="token class-name">LoadBalancer</span> loadBalancer <span class="token operator">=</span> loadBalancerMap<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span>serviceName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token comment">// 如果loadBalancerMap中没有对应的LoadBalancer，则创建LoadBalancer</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>loadBalancer <span class="token operator">==</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">// 利用Java的SPI机制加载所有的负载均衡策略类LoadBalanceRule</span>
+			<span class="token class-name">ServiceLoader</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">LoadBalanceRule</span><span class="token punctuation">&gt;</span></span> serviceLoader <span class="token operator">=</span> <span class="token class-name">ServiceLoader</span><span class="token punctuation">.</span><span class="token function">load</span><span class="token punctuation">(</span><span class="token class-name">LoadBalanceRule</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">for</span> <span class="token punctuation">(</span><span class="token class-name">LoadBalanceRule</span> loadBalanceRule<span class="token operator">:</span> serviceLoader<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+				<span class="token comment">// 读取LoadBalanceRule实现类上的@Rule注解</span>
+				<span class="token class-name">Rule</span> rule <span class="token operator">=</span> loadBalanceRule<span class="token punctuation">.</span><span class="token function">getClass</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">.</span><span class="token function">getAnnotation</span><span class="token punctuation">(</span><span class="token class-name">Rule</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+				<span class="token comment">// 判断@Rule注解是否与配置文件指定的负载均衡类型匹配</span>
+				<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token class-name">StringUtils</span><span class="token punctuation">.</span><span class="token function">equals</span><span class="token punctuation">(</span>rule<span class="token punctuation">.</span><span class="token function">value</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">,</span> loadBalanceProperties<span class="token punctuation">.</span><span class="token function">getType</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+					<span class="token comment">// 创建LoadBalancer对象，实现类是SimpleLoadBalancer</span>
+					loadBalancer <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">SimpleLoadBalancer</span><span class="token punctuation">(</span>serviceName<span class="token punctuation">,</span> registryCenterClient<span class="token punctuation">,</span> loadBalanceRule<span class="token punctuation">)</span><span class="token punctuation">;</span>
+					<span class="token comment">// LoadBalancer对象缓存到map中</span>
+					loadBalancerMap<span class="token punctuation">.</span><span class="token function">put</span><span class="token punctuation">(</span>serviceName<span class="token punctuation">,</span> loadBalancer<span class="token punctuation">)</span><span class="token punctuation">;</span>
+					<span class="token keyword">break</span><span class="token punctuation">;</span>
+				<span class="token punctuation">}</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+		<span class="token comment">// 根据负载均衡策略选取一个节点</span>
+		<span class="token class-name">MicroService</span> microService <span class="token operator">=</span> loadBalancer<span class="token punctuation">.</span><span class="token function">chooseMicroService</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>microService <span class="token operator">!=</span> <span class="token keyword">null</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+			<span class="token comment">// 把url中的服务名替换成选取节点的ip地址和端口号</span>
+			url <span class="token operator">=</span> url<span class="token punctuation">.</span><span class="token function">replace</span><span class="token punctuation">(</span>serviceName<span class="token punctuation">,</span> microService<span class="token punctuation">.</span><span class="token function">getIp</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">+</span> <span class="token string">":"</span> <span class="token operator">+</span> microService<span class="token punctuation">.</span><span class="token function">getPort</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">return</span> url<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>SimpleLoadBalanceClient根据serviceName从loadBalancerMap取出LoadBalancer，然后调用LoadBalancer的chooseMicroService()方法根据负载均衡策略选取一个服务提供者节点MicroService，然后把url中的服务名替换成选取出的节点的ip地址和端口号。</p> 
+<p>如果SimpleLoadBalanceClient取不到LoadBalancer，就会创建一个LoadBalancer。创建LoadBalancer前首先通过Java的SPI机制加载所有的负载均衡策略类LoadBalanceRule，再通过@Rule注解与配置文件的配置进行匹配，匹配出一个LoadBalanceRule。再以匹配到的LoadBalanceRule对象以及注册中心客户端RegistryCenterClient 为构造方法参数，创建SimpleLoadBalancer对象，缓存到loadBalancerMap中。</p> 
+<p><img src="https://images2.imgbox.com/07/2f/WxSh1iY1_o.png" alt="在这里插入图片描述"></p> 
+<h3><a id="SimpleLoadBalancer_212"></a>SimpleLoadBalancer</h3> 
+<p>再来看一下SimpleLoadBalancer的代码，</p> 
+<pre><code class="prism language-java"><span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">SimpleLoadBalancer</span> <span class="token keyword">implements</span> <span class="token class-name">LoadBalancer</span> <span class="token punctuation">{<!-- --></span>
+	
+	<span class="token keyword">private</span> <span class="token class-name">String</span> serviceName<span class="token punctuation">;</span>
+	
+	<span class="token keyword">private</span> <span class="token class-name">RegistryCenterClient</span> registryCenterClient<span class="token punctuation">;</span>
+	
+	<span class="token keyword">private</span> <span class="token class-name">LoadBalanceRule</span> loadBalanceRule<span class="token punctuation">;</span>
+	
+	<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token class-name">MicroService</span> <span class="token function">chooseMicroService</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token comment">// 通过注册中心客户端根据服务名拉取服务实例列表</span>
+		<span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">MicroService</span><span class="token punctuation">&gt;</span></span> microServiceList <span class="token operator">=</span> registryCenterClient<span class="token punctuation">.</span><span class="token function">getMicroServiceList</span><span class="token punctuation">(</span>serviceName<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">.</span><span class="token punctuation">.</span><span class="token punctuation">.</span>
+		<span class="token comment">// 根据负载均衡规则选出一个节点</span>
+		<span class="token keyword">return</span> loadBalanceRule<span class="token punctuation">.</span><span class="token function">chooseMicroService</span><span class="token punctuation">(</span>serviceName<span class="token punctuation">,</span> microServiceList<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p><img src="https://images2.imgbox.com/b2/f6/S8j8k2r1_o.png" alt="在这里插入图片描述"></p> 
+<p>SimpleLoadBalancer的逻辑很简单，就是调用负载均衡客户端RegistryCenterClient的getMicroServiceList(serviceName)方法根据服务名serviceName从注册中心拉取服务实例列表。RegistryCenterClient里面是有本地缓存的，如果本地已经缓存了服务名对应的服务实例列表，就不会请求注册中心，因此SimpleLoadBalancer里面我就没有再做一次缓存了。当SimpleLoadBalancer通过RegistryCenterClient获取到实例列表后，调用负载均衡规则LoadBalanceRule的chooseMicroService(serviceName, microServiceList)方法根据负载均衡规则从列表中选取一个节点。</p> 
+<h3><a id="LoadBalanceRule_244"></a>LoadBalanceRule</h3> 
+<p>LoadBalanceRule是负载均衡规则的接口，类似与Ribbon的IRule。我们看一个轮询策略的实现类RoundRobinLoadBalanceRule。</p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Rule</span><span class="token punctuation">(</span><span class="token string">"roundrobin"</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">RoundRobinLoadBalanceRule</span> <span class="token keyword">implements</span> <span class="token class-name">LoadBalanceRule</span> <span class="token punctuation">{<!-- --></span>
+	
+	<span class="token comment">// key-&gt;服务名，value-&gt;下标</span>
+	<span class="token keyword">private</span> <span class="token class-name">Map</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">String</span><span class="token punctuation">,</span> <span class="token class-name">AtomicLong</span><span class="token punctuation">&gt;</span></span> indexMap <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token class-name">ConcurrentHashMap</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token punctuation">&gt;</span></span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token annotation punctuation">@Override</span>
+	<span class="token keyword">public</span> <span class="token class-name">MicroService</span> <span class="token function">chooseMicroService</span><span class="token punctuation">(</span><span class="token class-name">String</span> serviceName<span class="token punctuation">,</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">MicroService</span><span class="token punctuation">&gt;</span></span> microServices<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token class-name">AtomicLong</span> index <span class="token operator">=</span> indexMap<span class="token punctuation">.</span><span class="token function">putIfAbsent</span><span class="token punctuation">(</span>serviceName<span class="token punctuation">,</span> <span class="token keyword">new</span> <span class="token class-name">AtomicLong</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">long</span> num <span class="token operator">=</span> index<span class="token punctuation">.</span><span class="token function">getAndIncrement</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token keyword">return</span> microServices<span class="token punctuation">.</span><span class="token function">get</span><span class="token punctuation">(</span><span class="token punctuation">(</span><span class="token keyword">int</span><span class="token punctuation">)</span> <span class="token punctuation">(</span>num <span class="token operator">%</span> microServices<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+	
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>代码一看就懂，indexMap是服务名serviceName与AtomicLong计数器的映射，chooseMicroService方法通过通过serviceName拿到计算器，然后调用AtomicLong的getAndIncrement()进行原子自增操作，然后模上服务列表的size。</p> 
+<p>我们注意到RoundRobinLoadBalanceRule类上有一个@Rule(“roundrobin”)，我们规定每个LoadBalanceRule实现类都必须被@Rule注解修饰，然后@Rule的属性是负载均衡规则名称，用于与配置文件的“loadbalance.rule.type”配置进行匹配的。</p> 
+<h3><a id="springfactoriesLoadBalanceConfig_270"></a>spring.factories与LoadBalanceConfig</h3> 
+<p>我们使用SpringBoot的自动装配机制，在spring.factories文件中定义好我们的自动配置类LoadBalanceConfig<br> spring.factories</p> 
+<pre><code class="prism language-bash"><span class="token assign-left variable">org.springframework.boot.autoconfigure.EnableAutoConfiguration</span><span class="token operator">=</span><span class="token punctuation">\</span>
+  com.huangjunyi1993.simple.microservice.loadbalance.config.LoadBalanceConfig
+</code></pre> 
+<p>LoadBalanceConfig就是我们的自动配置类，会往Spring中注册LoadBalanceClientHttpRequestFactory、LoadBalanceClient等核心组件，并通过SmartInitializingSingleton扩展点把LoadBalanceClientHttpRequestFactory设置到RestTemplate中。</p> 
+<p><img src="https://images2.imgbox.com/e0/1b/eNEBa1t1_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-java"><span class="token annotation punctuation">@Configuration</span>
+<span class="token annotation punctuation">@EnableConfigurationProperties</span><span class="token punctuation">(</span><span class="token punctuation">{<!-- --></span><span class="token class-name">LoadBalanceProperties</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">}</span><span class="token punctuation">)</span>
+<span class="token keyword">public</span> <span class="token keyword">class</span> <span class="token class-name">LoadBalanceConfig</span> <span class="token punctuation">{<!-- --></span>
+
+	<span class="token annotation punctuation">@Autowired</span><span class="token punctuation">(</span>required <span class="token operator">=</span> <span class="token boolean">false</span><span class="token punctuation">)</span>
+	<span class="token keyword">private</span> <span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">RestTemplate</span><span class="token punctuation">&gt;</span></span> restTemplates <span class="token operator">=</span> <span class="token class-name">Collections</span><span class="token punctuation">.</span><span class="token function">emptyList</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+	<span class="token annotation punctuation">@Bean</span>
+	<span class="token annotation punctuation">@ConditionalOnMissingBean</span><span class="token punctuation">(</span><span class="token class-name">LoadBalanceClient</span><span class="token punctuation">.</span><span class="token keyword">class</span><span class="token punctuation">)</span>
+	<span class="token keyword">public</span> <span class="token class-name">LoadBalanceClient</span> <span class="token function">loadBalanceClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">SimpleLoadBalanceClient</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token annotation punctuation">@Bean</span>
+	<span class="token keyword">public</span> <span class="token class-name">LoadBalanceClientHttpRequestFactory</span> <span class="token function">loadBalanceClientHttpRequestFactory</span><span class="token punctuation">(</span><span class="token class-name">LoadBalanceClient</span> loadBalanceClient<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token keyword">new</span> <span class="token class-name">LoadBalanceClientHttpRequestFactory</span><span class="token punctuation">(</span>loadBalanceClient<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token annotation punctuation">@Bean</span>
+	<span class="token annotation punctuation">@ConditionalOnMissingBean</span>
+	<span class="token keyword">public</span> <span class="token class-name">RestTemplateCustomizer</span> <span class="token function">restTemplateCustomizer</span><span class="token punctuation">(</span><span class="token class-name">LoadBalanceClientHttpRequestFactory</span> loadBalanceClientHttpRequestFactory<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token punctuation">(</span>restTemplate<span class="token punctuation">)</span> <span class="token operator">-&gt;</span> restTemplate<span class="token punctuation">.</span><span class="token function">setRequestFactory</span><span class="token punctuation">(</span>loadBalanceClientHttpRequestFactory<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token annotation punctuation">@Bean</span>
+	<span class="token keyword">public</span> <span class="token class-name">SmartInitializingSingleton</span> <span class="token function">loadBalancedRestTemplateInitializer</span><span class="token punctuation">(</span><span class="token class-name">List</span><span class="token generics"><span class="token punctuation">&lt;</span><span class="token class-name">RestTemplateCustomizer</span><span class="token punctuation">&gt;</span></span> customizers<span class="token punctuation">)</span> <span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">-&gt;</span> restTemplates<span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span>restTemplate <span class="token operator">-&gt;</span> customizers<span class="token punctuation">.</span><span class="token function">forEach</span><span class="token punctuation">(</span>customizer <span class="token operator">-&gt;</span> customizer<span class="token punctuation">.</span><span class="token function">customize</span><span class="token punctuation">(</span>restTemplate<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+<span class="token punctuation">}</span>
+</code></pre> 
+<p>大源码图：<br> <img src="https://images2.imgbox.com/57/fd/BkV4eaq2_o.png" alt="在这里插入图片描述"></p> 
+<p>代码仓库地址：https://gitee.com/huang_junyi/simple-microservice/tree/master/simple-microservice-loadbalance<br> <img src="https://images2.imgbox.com/de/d2/yWaskaqd_o.png" alt="在这里插入图片描述"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/ff293d0fae5c056c54f6b459a65ec953/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">全网最详细的postman接口测试教程，一篇文章满足你</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/2db5a070d963062e884ae2551f7a41bd/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">C/C&#43;&#43;基础知识</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

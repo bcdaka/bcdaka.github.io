@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>spark 广播变量broadcast - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/3774260a96146a85e051d9718273b5a3/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="spark 广播变量broadcast">
+  <meta property="og:description" content=" broadcast使用如下图，可以看到创建broadcast是val barr1 = sc.broadcast(arr1)，使用broadcast是barr1.value
+创建broadcast是使用的broadcastManager。
+BroadcastManager cachedValues变量是map结构，key是broadcastId，强引用，GC的时候不会回收，value是broadcast值，弱引用，GC的时候会进行回收。
+创建新的broadcast值是生成新的broadcastId，再调用broadcastFactory的方法。
+TorrentBroadcastFactory 创建新的broadcast值，就是生成了TorrentBroadcast对象。
+TorrentBroadcast _value是一个缓存，但是是软引用，会被GC回收。
+numBlocks是broadcast写入block对应的数量，调用了writeBlocks将obj写入block。
+writeBlocks 这个方法是在driver端运行的。首先将value缓存到driver的本地（MEMORY_AND_DISK），在driver运行的task可以直接读取这个值。再将value序列化、压缩后分块（默认4M），将分好的块也缓存下来（MEMORY_AND_DISK_SER），但是tellMaster=true，意思是将缓存结果通知给blockManagerMaster。
+value 在task中获取broadcast值，使用value方法。
+value方法是调用的getValue方法
+getValue 优先从TorrentBroadcast对象的缓存_value中获取。如果取不到就调用readBroadcastBlock方法获取，得到的结果缓存到_value中。
+readBroadcastBlock 先根据broadcastId从broadcastManager的cache中获取，如果获取不到就先读取本地block来获取值，返回的值缓存到broadcastManager的cache。
+本地没获取到，就调用readBlocks从远端获取（driver或者其它executor）。获取到的结果缓存到本地block，同时缓存到broadcastManager的cache中
+readBlocks broadcast是分块进行存储的，所以也是分块进行获取。
+根据pieceId优先从本地进行读取，如果没有值的话，就调用getRemoteBytes从远端进行读取，得到的piece值缓存到本地，并通知给blockManagerMaster，方便别的executor来获取。最后返回放有所有piece结果的blocks。
+broadcast存储 分成两部分进行存储。整体存储是提供给运行在本地的task来直接获取，分piece存储是为了提供给远端task获取。
+如果只有整体存储没有分块存储的话，一开始broadcast值只在driver端存储。task启动后，对应的executor都会从driver读取，这样就会有driver的io瓶颈。加上分块存储后，一开始broadcast值只在driver端存储，executor向driver请求piece（请求piece的顺序是打乱的），请求数据量不大，而且executor获取到piece后也会缓存到本地，提供给别的executor来请求，这样就将driver的压力分散到各个executor。
+如果只有分块存储没有整体存储的话，本地读取也要按照piece读取再合并，效率比较低，因为一个executor上会运行很多task任务。其实我觉得去掉整体存储影响不大，因为广播变量值在内存还有两层缓存。
+读取broadcast ">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-22T15:29:20+08:00">
+    <meta property="article:modified_time" content="2024-07-22T15:29:20+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">spark 广播变量broadcast</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p>broadcast使用如下图，可以看到创建broadcast是val barr1 = sc.broadcast(arr1)，使用broadcast是barr1.value<br> <img src="https://images2.imgbox.com/cc/5c/aAWCvKIJ_o.png" alt=""><br> 创建broadcast是使用的broadcastManager。<br> <img src="https://images2.imgbox.com/8d/1f/GjKxvxov_o.png" alt=""></p> 
+<h2><a id="BroadcastManager_4"></a>BroadcastManager</h2> 
+<p>cachedValues变量是map结构，key是broadcastId，强引用，GC的时候不会回收，value是broadcast值，弱引用，GC的时候会进行回收。<br> 创建新的broadcast值是生成新的broadcastId，再调用broadcastFactory的方法。<br> <img src="https://images2.imgbox.com/66/80/FlTjfrhe_o.png" alt=""></p> 
+<h2><a id="TorrentBroadcastFactory_8"></a>TorrentBroadcastFactory</h2> 
+<p>创建新的broadcast值，就是生成了TorrentBroadcast对象。<br> <img src="https://images2.imgbox.com/e8/05/ZBLRqWjR_o.png" alt=""></p> 
+<h2><a id="TorrentBroadcast_11"></a>TorrentBroadcast</h2> 
+<p>_value是一个缓存，但是是软引用，会被GC回收。<br> numBlocks是broadcast写入block对应的数量，调用了writeBlocks将obj写入block。<br> <img src="https://images2.imgbox.com/7e/bf/LWRT5PtV_o.png" alt=""></p> 
+<h3><a id="writeBlocks_15"></a>writeBlocks</h3> 
+<p>这个方法是在driver端运行的。首先将value缓存到driver的本地（MEMORY_AND_DISK），在driver运行的task可以直接读取这个值。再将value序列化、压缩后分块（默认4M），将分好的块也缓存下来（MEMORY_AND_DISK_SER），但是tellMaster=true，意思是将缓存结果通知给blockManagerMaster。<br> <img src="https://images2.imgbox.com/ed/4b/PeYZ44Ok_o.png" alt=""></p> 
+<h3><a id="value_18"></a>value</h3> 
+<p>在task中获取broadcast值，使用value方法。<br> value方法是调用的getValue方法<br> <img src="https://images2.imgbox.com/b3/52/iaIjFLV9_o.png" alt=""></p> 
+<h3><a id="getValue_22"></a>getValue</h3> 
+<p>优先从TorrentBroadcast对象的缓存_value中获取。如果取不到就调用readBroadcastBlock方法获取，得到的结果缓存到_value中。<br> <img src="https://images2.imgbox.com/bf/56/oDx8uI4A_o.png" alt=""></p> 
+<h3><a id="readBroadcastBlock_25"></a>readBroadcastBlock</h3> 
+<p>先根据broadcastId从broadcastManager的cache中获取，如果获取不到就先读取本地block来获取值，返回的值缓存到broadcastManager的cache。<br> <img src="https://images2.imgbox.com/72/2f/k12zv5Cn_o.png" alt=""><br> 本地没获取到，就调用readBlocks从远端获取（driver或者其它executor）。获取到的结果缓存到本地block，同时缓存到broadcastManager的cache中<br> <img src="https://images2.imgbox.com/1e/fe/elygPQXA_o.png" alt=""></p> 
+<h3><a id="readBlocks_30"></a>readBlocks</h3> 
+<p>broadcast是分块进行存储的，所以也是分块进行获取。<br> 根据pieceId优先从本地进行读取，如果没有值的话，就调用getRemoteBytes从远端进行读取，得到的piece值缓存到本地，并通知给blockManagerMaster，方便别的executor来获取。最后返回放有所有piece结果的blocks。<br> <img src="https://images2.imgbox.com/f2/d3/1yXmEIM4_o.png" alt=""></p> 
+<h2><a id="broadcast_34"></a>broadcast存储</h2> 
+<p>分成两部分进行存储。整体存储是提供给运行在本地的task来直接获取，分piece存储是为了提供给远端task获取。<br> 如果只有整体存储没有分块存储的话，一开始broadcast值只在driver端存储。task启动后，对应的executor都会从driver读取，这样就会有driver的io瓶颈。加上分块存储后，一开始broadcast值只在driver端存储，executor向driver请求piece（请求piece的顺序是打乱的），请求数据量不大，而且executor获取到piece后也会缓存到本地，提供给别的executor来请求，这样就将driver的压力分散到各个executor。<br> 如果只有分块存储没有整体存储的话，本地读取也要按照piece读取再合并，效率比较低，因为一个executor上会运行很多task任务。其实我觉得去掉整体存储影响不大，因为广播变量值在内存还有两层缓存。<br> <img src="https://images2.imgbox.com/2a/f0/YyuYxYEP_o.png" alt="image.png"></p> 
+<h2><a id="broadcast_39"></a>读取broadcast</h2> 
+<p><img src="https://images2.imgbox.com/9c/d1/JlSgWor4_o.png" alt="image.png"></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/96979782c5af99947af043eb081a79d5/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">前端大文件分片下载解决方案（看这一篇就够了）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/d6469a697524ea8523195d6c002c566a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">word转pdf图变得模糊（解决）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

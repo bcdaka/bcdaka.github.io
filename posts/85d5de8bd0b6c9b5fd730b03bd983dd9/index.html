@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>Go锁 详解 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/85d5de8bd0b6c9b5fd730b03bd983dd9/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="Go锁 详解">
+  <meta property="og:description" content="锁 - Go 函数并发编程中，锁是一种同步机制，用于协调对共享资源的访问，防止数据竞争 - Go 中提供了多种类型的锁，每种锁都有不同的特性和适用场景 类型 互斥锁（mutex）
+基础锁，只能同时允许一个 goroutine 获取资源（悲观锁）保证了对共享资源的独占访问适用于对数据进行频繁写操作的场景 读写锁（RWMutex）
+更高级的锁，它允许多个goroutine同时读取受保护的数据，但只允许一个goroutine同时写入（悲观锁）可以提高程序的性能，因为读取操作通常比写入操作要快适用于对数据进行频繁读操作的场景 互斥锁 底层结构 // sync 包下的mutex就是互斥锁 type Mutex struct { state int32 sema uint32 } - state：表示当前互斥锁的状态，复合型字段 - sema：信号量变量，用来控制等待goroutine的阻塞休眠和唤醒 state的不同位分别表示了不同的状态,使用最小的内存来表示更多的意义
+// 其中低三位由低到高分别表示mutexLocked、mutexWoken 和 mutexStarving // 剩下的位则用来表示当前共有多少个goroutine在等待锁： const ( mutexLocked = 1 &lt;&lt; iota // 表示互斥锁的锁定状态 mutexWoken // 表示从正常模式被从唤醒 mutexStarving // 当前的互斥锁进入饥饿状态 mutexWaiterShift = iota // 当前互斥锁上等待者的数量 ) 提供了三个公开方法： Lock():获得锁，Unlock():释放锁，在Go1.18新提供了TryLock()方法可以非阻塞式的取锁操作 加锁
+释放锁
+正常模式（默认）
+采用公平的先进先出策略当一个goroutine尝试获取锁时，如果锁处于加锁状态，该goroutine会被放入等待队列中，等待锁的释放。当锁被解锁后，等待队列中的goroutine会按照先后顺序获取锁当一个协程被唤醒后并不是直接拥有锁，该协程需要和刚刚到达的协程一起竞争锁的所有权当等待的 goroutine 1ms内没有获取到锁，将会把锁置为饥饿模式 饥饿模式">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-08-29T22:40:30+08:00">
+    <meta property="article:modified_time" content="2024-08-29T22:40:30+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">Go锁 详解</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-dark">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <h3><a id="_0"></a>锁</h3> 
+<pre><code class="prism language-go"><span class="token operator">-</span> Go 函数并发编程中，锁是一种同步机制，用于协调对共享资源的访问，防止数据竞争
+<span class="token operator">-</span> Go 中提供了多种类型的锁，每种锁都有不同的特性和适用场景
+</code></pre> 
+<h4><a id="_7"></a>类型</h4> 
+<ul><li> <p>互斥锁（mutex）</p> 
+  <ul><li>基础锁，只能同时允许一个 goroutine 获取资源（悲观锁）</li><li>保证了对共享资源的独占访问</li><li>适用于对数据进行频繁写操作的场景</li></ul> </li><li> <p>读写锁（RWMutex）</p> 
+  <ul><li>更高级的锁，它允许多个goroutine同时读取受保护的数据，但只允许一个goroutine同时写入（悲观锁）</li><li>可以提高程序的性能，因为读取操作通常比写入操作要快</li><li>适用于对数据进行频繁读操作的场景</li></ul> </li></ul> 
+<h4><a id="_18"></a>互斥锁</h4> 
+<ul><li>底层结构</li></ul> 
+<pre><code class="prism language-go"><span class="token comment">// sync 包下的mutex就是互斥锁</span>
+<span class="token keyword">type</span> Mutex <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+ state <span class="token builtin">int32</span>
+ sema  <span class="token builtin">uint32</span>
+<span class="token punctuation">}</span>
+<span class="token operator">-</span> state：表示当前互斥锁的状态，复合型字段
+<span class="token operator">-</span> sema：信号量变量，用来控制等待goroutine的阻塞休眠和唤醒
+</code></pre> 
+<p>state的不同位分别表示了不同的状态,使用最小的内存来表示更多的意义<br> <img src="https://images2.imgbox.com/a0/ba/Lmqp8RBi_o.png" alt="在这里插入图片描述"></p> 
+<pre><code class="prism language-go"><span class="token comment">// 其中低三位由低到高分别表示mutexLocked、mutexWoken 和 mutexStarving</span>
+<span class="token comment">// 剩下的位则用来表示当前共有多少个goroutine在等待锁：</span>
+<span class="token keyword">const</span> <span class="token punctuation">(</span>
+   mutexLocked <span class="token operator">=</span> <span class="token number">1</span> <span class="token operator">&lt;&lt;</span> <span class="token boolean">iota</span> <span class="token comment">// 表示互斥锁的锁定状态</span>
+   mutexWoken <span class="token comment">// 表示从正常模式被从唤醒</span>
+   mutexStarving <span class="token comment">// 当前的互斥锁进入饥饿状态</span>
+   mutexWaiterShift <span class="token operator">=</span> <span class="token boolean">iota</span> <span class="token comment">// 当前互斥锁上等待者的数量</span>
+<span class="token punctuation">)</span>
+</code></pre> 
+<pre><code class="prism language-go">提供了三个公开方法：
+<span class="token function">Lock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>获得锁，<span class="token function">Unlock</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">:</span>释放锁，在Go1<span class="token punctuation">.</span><span class="token number">18</span>新提供了<span class="token function">TryLock</span><span class="token punctuation">(</span><span class="token punctuation">)</span>方法可以非阻塞式的取锁操作
+</code></pre> 
+<ul><li> <p>加锁<br> <img src="https://images2.imgbox.com/4c/c2/S7HgWyiQ_o.png" alt="加锁"></p> </li><li> <p>释放锁<br> <img src="https://images2.imgbox.com/96/8d/qBlzcp8s_o.png" alt="在这里插入图片描述"></p> </li><li> <p>正常模式（默认）</p> 
+  <ul><li>采用公平的先进先出策略</li><li>当一个goroutine尝试获取锁时，如果锁处于加锁状态，该goroutine会被放入等待队列中，等待锁的释放。当锁被解锁后，等待队列中的goroutine会按照先后顺序获取锁</li><li>当一个协程被唤醒后并不是直接拥有锁，该协程需要和刚刚到达的协程一起竞争锁的所有权</li><li>当等待的 goroutine 1ms内没有获取到锁，将会把锁置为饥饿模式</li></ul> </li><li> <p>饥饿模式</p> 
+  <ul><li>非公平的模式</li><li>互斥锁会直接交给等待队列最前面的goroutine，新的 goroutine 在该状态下不能获取锁、也不会进入自旋状态，它们只会在队列的末尾等待</li><li>当等待队列中的协程获取到锁，它会查看以下俩个条件，有任意一个满足，将会将锁改为普通模式 
+    <ol><li>自己是否是等待队列中最后一个协程</li><li>自己等待的时间是否小于1ms</li></ol> </li></ul> </li><li> <p>自旋</p> 
+  <ul><li>定义： 
+    <ul><li>加锁时，如果发现该锁当前由其他协程持有，尝试加锁的协程并不是马上转入阻塞，而是会持续的探测锁是否被释放</li><li>自旋时间很短，但如果在自旋过程中发现锁已被释放，那么协程可以立即获取锁</li></ul> </li><li>优势： 
+    <ul><li>为了更加高效，减少损耗，更充分的利用CPU，尽量避免协程切换</li><li>当前申请加锁的协程拥有CPU，如果经过短时间的自旋可以获得锁，当前协程可以继续运行，不必进入阻塞状态</li></ul> </li><li>条件： 
+    <ul><li>自旋次数要足够小，通常为4，即自旋最多4次</li><li>CPU核数要大于1，否则自旋没有意义，因为此时不可能有其他协程释放锁</li><li>调度机制中的Process数量要大于1，否则自旋没有意义</li><li>调度机制中的可运行队列必须为空，否则会延迟协程调度，需要把CPU让给更需要的进程</li></ul> </li><li>问题： 
+    <ul><li>自旋有个特性，无视正在排队等待加锁的进程，在自旋过程中，获取到锁便可加锁，类似于插队</li><li>极端情况下，很多进程正排队等待加锁，此时有进程刚到，开始自旋加锁，如果成功，该进程便插队成功加锁。如果此时不断有进程自旋加锁，则在排队的进程将长时间无法获取到锁</li><li>解决：锁添加饥饿状态，该状态下不允许自旋</li></ul> </li></ul> </li><li> <p>结论</p> 
+  <ul><li>一般认为普通模式会有更好的性能，因为即使有等待的协程，新的协程可以连续获取到锁</li><li>饥饿模式能够防止等待协程长时间获取不到锁。</li></ul> </li></ul> 
+<h4><a id="_85"></a>读写锁</h4> 
+<pre><code class="prism language-go">读写锁包含了两种锁：读锁、写锁，因此设计中两种锁的权重可能有下列三种场景：
+<span class="token operator">-</span> 读优先：读任务占有锁时，后续的读任务可以立即获得锁；这种设计可以提高并发性能（后来的读任务不需要等待），但如果读任务太多，会造成写任务一直处于等待中，造成写饥饿现象
+<span class="token operator">-</span> 写优先：指如果有写任务在等待锁，会阻塞后来的读任务获取锁。保证了写任务不会被持续的读进程阻塞，但如果写任务过多，又会导致读任务一直被阻塞，造成读任务饿死。
+<span class="token operator">-</span> 读写权重一致：读写锁的优先级一样，即普通的Mutex
+Golang的读写实现中，采用了读优先、写优先交替策略：
+  <span class="token operator">-</span> 在读任务执行过程中，对于接收到的写任务、读任务，采取写优先策略，阻塞接收到的读任务，让写任务在读过程结束后优先执行
+  <span class="token operator">-</span> 在写任务执行过程中，对于接收到的写任务、读任务，采取读优先策略，阻塞接收到的写任务，让读任务在写过程结束后优先执行
+  <span class="token operator">-</span> 使用交替机制，确保不会因为读写任何一方任务过多，造成另一方的任务无法执行
+</code></pre> 
+<ul><li>底层结构</li></ul> 
+<pre><code class="prism language-go"><span class="token keyword">type</span> RWMutex <span class="token keyword">struct</span> <span class="token punctuation">{<!-- --></span>
+ w           Mutex  <span class="token comment">// held if there are pending writers</span>
+ writerSem   <span class="token builtin">uint32</span> <span class="token comment">// semaphore for writers to wait for completing readers</span>
+ readerSem   <span class="token builtin">uint32</span> <span class="token comment">// semaphore for readers to wait for completing writers</span>
+ readerCount <span class="token builtin">int32</span>  <span class="token comment">// number of pending readers</span>
+ readerWait  <span class="token builtin">int32</span>  <span class="token comment">// number of departing readers</span>
+<span class="token punctuation">}</span>
+
+w：复用互斥锁提供的能力
+writerSem：写操作goroutine阻塞等待信号量，当阻塞写操作的读操作goroutine释放读锁时，通过该信号量通知阻塞的写操作的goroutine
+readerSem：读操作goroutine阻塞等待信号量，当写操作goroutine释放写锁时，通过该信号量通知阻塞的读操作的goroutine
+redaerCount：当前正在执行的读操作goroutine数量
+readerWait：当写操作被阻塞时等待的读操作goroutine个数
+</code></pre> 
+<ul><li> <p>获取读锁：</p> 
+  <ul><li>获取读锁时，先将读计数器 readerCount 增1，表示增加一个读任务</li><li>当readerCount值为负时，表示前面存在等待处理写任务或有写任务正在处理，此时阻塞新接收到的读任务，等待信号量通知</li></ul> </li><li> <p>释放读锁：</p> 
+  <ul><li>释放读锁时，先将读计数器 readerCount 减一，表示完成一个读任务</li><li>如果 readerCount 为负，则存在需要优先处理的写任务，进入慢路径</li><li>首先检测读计数器的临界区，防止RUnlock调用出错（上锁一次、解锁多次）</li><li>因为此时存在写任务，readerWait已被写任务赋值，将该值减一，表示写任务执行前要处理的读任务完成一个</li><li>如果readerWait为0，则表示写任务执行之前的所有读任务都已完成，释放写信号量，执行等待处理的写任务</li></ul> </li><li> <p>获取写锁：</p> 
+  <ul><li>获取写锁时，先抢占互斥锁；因为当存在多个写任务时，同一时间仅会处理一个</li><li>反转readerCount的值为负，同时计算收到写任务时的读任务数量</li><li>当读任务数量&gt;0时，表示存在正在处理的读任务，将该值累加给readerWait，表示执行接收到的写任务时需要执行多少任务</li><li>当readWait &gt; 0，表示有任务要执行，因为通过信号量将写任务阻塞</li></ul> </li><li> <p>释放写锁：</p> 
+  <ul><li>释放写锁时，先将readerCount反转为正值表示写任务执行完成，并计算读任务的数量；在释放写锁期间如果有新到的并发读任务，因为readerCount&gt;=0，可以立即获取读锁执行</li><li>释放r次读信号量，将在写任务期间被阻塞的读任务唤醒执行</li><li>释放Mutex互斥锁</li></ul> </li></ul> 
+<p><img src="https://images2.imgbox.com/bf/46/6hjiKA44_o.png" alt="在这里插入图片描述"></p> 
+<ul><li>总结 
+  <ul><li>读写锁提供四种操作：读上锁，读解锁，写上锁，写解锁；加锁规则是读读共享，写写互斥，读写互斥，写读互斥</li><li>读写锁中的读锁是一定要存在的，其目的是也是为了规避原子性问题，只有写锁没有读锁的情况下会导致我们读取到中间值</li><li>Go语言的读写锁在设计上也避免了写锁饥饿</li></ul> </li></ul>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/517b2cd0fbd9ca97fd272a690959c58c/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">【C&#43;&#43;笔记】类和对象的深入理解(一)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/df22847dac8edbf9bb9ac1c4ef88975a/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">CARLA Drone: 首个实现从不同空中视角进行单目3D目标检测，并提供数据集</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

@@ -1,0 +1,263 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>uart开发调试 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/2f9b57c5734e39bef6235b4d449c7512/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="uart开发调试">
+  <meta property="og:description" content="1. Uart基本框架
+1.1概念
+通信系统有两种方式，同步通信和异步通信.
+同步通信的典型特征：通信双方公用同一个时钟，发送/接受速率完全一致，通信时需要带时钟信号传输.
+异步通信的典型特征：通信双方各自具有独立的时钟系统，通信时不需要时钟信号传输，发送/接收速率按照约定值进行通信，缺点是速率越高数据量越大可能会存在误差，因为双方独立的时钟系统在达到一定的高频率下双方的误差会体现出来.
+1.2UART
+串口(uart)是典型的异步通信.其中又分为串行通信和并行通信。
+串行通信每次只能发送/接收1个bit位只用1根信号线传输数据，一般是TX一根线、RX一根线，因此数据按有序传输、占用引脚少、传输速度慢；
+并行通信每次能传输多个bit位有多根传输线，RX多根线、TX多根线，因此传输速度快、占用引脚多。
+一般情况下为了节省引脚数量都会采用串行通信，而串行通信中又分为单工、半双工、全双工。
+单工：只允许数据在一个方向上传输；
+半双工：允许数据在两个方向上传输，但发送和接收不能同时进行；
+全双工；允许数据在两个方向上同时传输，发送和接收可以同时进行。
+Uart中由于开发板和PC等外部不通载体之间通信，所以不会互相接上一根时钟线来做时钟同步，所以uart串口通信一般采用异步通信&#43;串行通信&#43;全双工模式.
+1.3串口电路连接
+1.4串口通讯协议
+2.Uart基本寄存器介绍
+3.串口编程基本思路
+3.1查看硬件原理图弄清楚硬件接线
+通过原理图可以看到UART0通过J2模块的2和8针接入到PA9和PA10，再查看寄存器手册PA9和PA10对应的GPIO组为GPIOA。
+3.2GPIO
+对GPIOA组中PA9和PA10对应bit位初始化。
+3.2.1GPIO属性：
+Memory-map地址：即GPIO挂在哪个总线上，所属总线上GPIO的地址范围，GPIO-A对应的地址偏移。这样才能访问到GPIO-A并进行设置.
+该GPIO-A组对应的pin引脚：每个GPIO组为32位，高16位保留，其中低16位有效每个BIT位对应1个pin引脚;
+GPIO的模式：输入模式、输出模式、复用输出模式，其中复选模式是某个GPIO可能对应多个功能，我们需要AF-ALERT1对应功能UART0-RX、AF-ALERT2对应功能SDIO-D2、其他8种复选功能。我们需要再PA9/10对应的GPIO设置成复用输出模式，然后复用输出寄存器设置成AF-ALERT1，这样该GPIO就对应成我们需要的UART0-RX/TX了。
+GPIO的极性：即默认为1还是0.当GPIO模式为输出/复用输出时，需要设置推免/开漏模式，推免模式可以通过上拉电阻输出1或0，开漏模式只能输出0.一般都有上拉电阻，选择推免模式.
+GPIO速率：寄存中不通的输出等级，对应不通速率，譬如50HZ\25HZ\2HZ，速率越高功耗越大.
+GPIO组时钟：打开总线上下挂的GPIO组对应的时钟，enable相关寄存器.
+3.2.2GPIO寄存器配置
+根据上述GPIO属性以及初始化，相关联的GPIO寄存器 如下图：
+4 中断处理
+中断涉及到嵌套向量控制器NVIC、中断/异常向量表、中断优先级.
+GD/STM32中负责传递中断到CPU的总中断控制器NVIC，各外设设备（UART\I2C\...）也存在一个自身的中断控制单元。总体框图如下：
+当发生中断时，CPU处理过程如下图：
+4.1 嵌套向量控制器NVIC
+4.1.1中断管理
+4.1.2中断和异常向量表
+4.1.3中断优先级/嵌套中断
+4.2外部中断
+中断分为内部中断和外部中断，其中外部中断来自于外设产生的中断.外部中断也有一个外部中断控制器和总中断控制器NVIC相连,用于传递并处理外部中断.外部中断/事件框图如下：
+上图中触发事件时采用脉冲信号，事件本质上是一个信号，譬如唤醒睡眠的电源模块等. 事件是中断的触发源，事件可以触发中断也可以不触发，开放了对应的中断屏蔽位，则事件可以触发相应的中断。 事件还是其它一些操作的触发源，比如DMA，还有TIM中影子寄存器的传递与更新等。简单点就是中断一定要有中断服务函数,但是事件却没有对应的函数。事件可以在不需要CPU干预的情况下,执行这些操作，但是中断则必须要CPU介入。
+上升沿/下降沿选择寄存器：需要软件选择中断发生的检测方式，是采用电平信号上升沿还是下降沿变化来判断中断/事件的发生；
+软件中断/事件寄存器：
+挂起请求寄存器：当中断发生时，如果CPU在执行优先级更高的中断或该中断无法打断的任务，则该中断请求被暂时挂起。待之后CPU再来执行该挂起的中断；当事件发生时过程雷同，差别不是由CPU参与而是由脉冲发生器参与;该寄存器由硬件自动完成，不需要软件配置；
+中断屏蔽寄存器：配置是否屏蔽该中断，他和“请求挂起寄存器”做&amp;操作，最后决定是否把中断发送给NVIC总控制器;
+事件屏蔽寄存器：配置是否屏蔽该事件，他和“请求挂起寄存器”做&amp;操作，最后决定是否把事件发送给脉冲发生器。
+4.2.1外部中断控制器EXTI
+每个GPIO引脚存在在一个外部控制器中，需要在外部控制器中配置打开这些GPIO对应的引脚.框图如下：
+4.2.2系统配置控制器SYSCFG
+打开EXTI控制器中存在的某个GPIO引脚中断功能后（ENABLE），还要保证每个引脚（GPIO）对应的中断能够传递到总中断NVIC控制器，需要配置GPIO引脚所在EXTI控制器到NVIC控制器的连通性，这个配置寄存器就是SYSCFG寄存器,如下图
+5.时钟配置
+6.uart开发思路
+弄清楚原理图----&gt;初始化GPIO（包括时钟配置和GPIO属性配置）-----&gt;初始化UART寄存器------&gt;配置中断相关寄存器------&gt;编写收发包中断函数并将对应中断号写入中断寄存器。
+7.其他
+7.1 PIN和GPIO的联系">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-07-23T17:07:05+08:00">
+    <meta property="article:modified_time" content="2024-07-23T17:07:05+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">uart开发调试</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p style="margin-left:0;text-align:justify;">1. Uart基本框架</p> 
+<p style="margin-left:0;text-align:justify;">1.1概念</p> 
+<p style="margin-left:0;text-align:justify;">通信系统有两种方式，同步通信和异步通信.</p> 
+<p style="margin-left:0;text-align:justify;">同步通信的典型特征：通信双方公用同一个时钟，发送/接受速率完全一致，通信时需要带时钟信号传输.</p> 
+<p style="margin-left:0;text-align:justify;">异步通信的典型特征：通信双方各自具有独立的时钟系统，通信时不需要时钟信号传输，发送/接收速率按照约定值进行通信，缺点是速率越高数据量越大可能会存在误差，因为双方独立的时钟系统在达到一定的高频率下双方的误差会体现出来.</p> 
+<p style="margin-left:0;text-align:justify;">1.2UART</p> 
+<p style="margin-left:0;text-align:justify;">串口(uart)是典型的异步通信.其中又分为串行通信和并行通信。</p> 
+<p style="margin-left:0;text-align:justify;">串行通信每次只能发送/接收1个bit位只用1根信号线传输数据，一般是TX一根线、RX一根线，因此数据按有序传输、占用引脚少、传输速度慢；</p> 
+<p style="margin-left:0;text-align:justify;">并行通信每次能传输多个bit位有多根传输线，RX多根线、TX多根线，因此传输速度快、占用引脚多。</p> 
+<p style="margin-left:0;text-align:justify;">一般情况下为了节省引脚数量都会采用串行通信，而串行通信中又分为单工、半双工、全双工。</p> 
+<p style="margin-left:0;text-align:justify;">单工：只允许数据在一个方向上传输；</p> 
+<p style="margin-left:0;text-align:justify;">半双工：允许数据在两个方向上传输，但发送和接收不能同时进行；</p> 
+<p style="margin-left:0;text-align:justify;">全双工；允许数据在两个方向上同时传输，发送和接收可以同时进行。</p> 
+<p style="margin-left:0;text-align:justify;">Uart中由于开发板和PC等外部不通载体之间通信，所以不会互相接上一根时钟线来做时钟同步，所以uart串口通信一般采用异步通信+串行通信+全双工模式.</p> 
+<p style="margin-left:0;text-align:justify;">1.3串口电路连接</p> 
+<p style="margin-left:0;text-align:center;"><img alt="" height="286" src="https://images2.imgbox.com/09/f2/kQwFLEE4_o.png" width="511"></p> 
+<p style="margin-left:0;text-align:center;"><img alt="" height="250" src="https://images2.imgbox.com/ab/a1/TWOPkoXu_o.png" width="500"></p> 
+<p style="margin-left:0;text-align:justify;">1.4串口通讯协议</p> 
+<p style="margin-left:0;text-align:center;"><img alt="" height="402" src="https://images2.imgbox.com/17/ec/ZzZDNvC0_o.png" width="983"></p> 
+<p style="margin-left:0;text-align:justify;">2.Uart基本寄存器介绍</p> 
+<p style="margin-left:0;text-align:justify;"><img alt="" height="398" src="https://images2.imgbox.com/84/33/bifMefCq_o.png" width="814"></p> 
+<p style="margin-left:0;text-align:justify;">3.串口编程基本思路</p> 
+<p style="margin-left:0;text-align:justify;">   3.1查看硬件原理图弄清楚硬件接线</p> 
+<p style="margin-left:0;text-align:center;"><img alt="" height="96" src="https://images2.imgbox.com/1e/3b/uglqMcjf_o.png" width="526"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:center;"><img alt="" height="385" src="https://images2.imgbox.com/0a/e9/G4xsRUMB_o.png" width="586"></p> 
+<p style="margin-left:0;text-align:justify;">通过原理图可以看到UART0通过J2模块的2和8针接入到PA9和PA10，再查看寄存器手册PA9和PA10对应的GPIO组为GPIOA。</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;">3.2GPIO</p> 
+<p style="margin-left:0;text-align:justify;">     对GPIOA组中PA9和PA10对应bit位初始化。</p> 
+<p style="margin-left:0;text-align:justify;">3.2.1GPIO属性：</p> 
+<p style="margin-left:0;text-align:justify;">               Memory-map地址：即GPIO挂在哪个总线上，所属总线上GPIO的地址范围，GPIO-A对应的地址偏移。这样才能访问到GPIO-A并进行设置.</p> 
+<p style="margin-left:0;text-align:justify;">              该GPIO-A组对应的pin引脚：每个GPIO组为32位，高16位保留，其中低16位有效每个BIT位对应1个pin引脚;</p> 
+<p style="margin-left:0;text-align:justify;">              GPIO的模式：输入模式、输出模式、复用输出模式，其中复选模式是某个GPIO可能对应多个功能，我们需要AF-ALERT1对应功能UART0-RX、AF-ALERT2对应功能SDIO-D2、其他8种复选功能。我们需要再PA9/10对应的GPIO设置成复用输出模式，然后复用输出寄存器设置成AF-ALERT1，这样该GPIO就对应成我们需要的UART0-RX/TX了。</p> 
+<p style="margin-left:0;text-align:justify;">           GPIO的极性：即默认为1还是0.当GPIO模式为输出/复用输出时，需要设置推免/开漏模式，推免模式可以通过上拉电阻输出1或0，开漏模式只能输出0.一般都有上拉电阻，选择推免模式.</p> 
+<p style="margin-left:0;text-align:justify;">          GPIO速率：寄存中不通的输出等级，对应不通速率，譬如50HZ\25HZ\2HZ，速率越高功耗越大.</p> 
+<p style="margin-left:0;text-align:justify;">         GPIO组时钟：打开总线上下挂的GPIO组对应的时钟，enable相关寄存器.</p> 
+<p style="margin-left:0;text-align:justify;">        </p> 
+<p style="margin-left:0;text-align:justify;">3.2.2GPIO寄存器配置</p> 
+<p style="margin-left:0;text-align:justify;">根据上述GPIO属性以及初始化，相关联的GPIO寄存器 如下图：</p> 
+<p style="margin-left:0;text-align:justify;"><img alt="" height="541" src="https://images2.imgbox.com/99/04/hNuYQnzp_o.png" width="831"></p> 
+<p style="margin-left:0;text-align:justify;">              </p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;">4 中断处理</p> 
+<p style="margin-left:0;text-align:justify;">中断涉及到嵌套向量控制器NVIC、中断/异常向量表、中断优先级.</p> 
+<p style="margin-left:0;text-align:justify;">GD/STM32中负责传递中断到CPU的总中断控制器NVIC，各外设设备（UART\I2C\...）也存在一个自身的中断控制单元。总体框图如下：</p> 
+<p style="margin-left:0;text-align:center;"><img alt="" height="484" src="https://images2.imgbox.com/5f/b9/5T0zet3m_o.png" width="960"></p> 
+<p style="margin-left:0;text-align:justify;">当发生中断时，CPU处理过程如下图：</p> 
+<p style="margin-left:0;text-align:center;"><img alt="" height="468" src="https://images2.imgbox.com/05/91/dfVwU6Fo_o.png" width="1014"></p> 
+<p style="margin-left:0;text-align:justify;">4.1 嵌套向量控制器NVIC</p> 
+<p style="margin-left:0;text-align:justify;">4.1.1中断管理</p> 
+<p style="margin-left:0;text-align:center;"><img alt="" height="583" src="https://images2.imgbox.com/c0/7d/W9gLZeR3_o.png" width="838"></p> 
+<p style="margin-left:0;text-align:justify;">4.1.2中断和异常向量表</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:center;"><img alt="" height="485" src="https://images2.imgbox.com/39/76/qNRi98V9_o.png" width="857"></p> 
+<p style="margin-left:0;text-align:center;"><img alt="" height="592" src="https://images2.imgbox.com/88/9e/n5PLVhmB_o.png" width="1182"></p> 
+<p style="margin-left:0;text-align:justify;">4.1.3中断优先级/嵌套中断</p> 
+<p style="margin-left:0;text-align:justify;"><img alt="" height="609" src="https://images2.imgbox.com/8b/8d/DTcsy4iN_o.png" width="1045"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;">4.2外部中断</p> 
+<p style="margin-left:0;text-align:justify;">中断分为内部中断和外部中断，其中外部中断来自于外设产生的中断.外部中断也有一个外部中断控制器和总中断控制器NVIC相连,用于传递并处理外部中断.外部中断/事件框图如下：</p> 
+<p style="margin-left:0;text-align:justify;"><img alt="" height="468" src="https://images2.imgbox.com/d1/b9/BbB4k2Rd_o.png" width="943"></p> 
+<p style="margin-left:0;text-align:justify;">上图中触发事件时采用脉冲信号，事件本质上是一个信号，譬如唤醒睡眠的电源模块等. 事件是中断的触发源，事件可以触发中断也可以不触发，开放了对应的中断屏蔽位，则事件可以触发相应的中断。 事件还是其它一些操作的触发源，比如DMA，还有TIM中影子寄存器的传递与更新等。简单点就是中断一定要有中断服务函数,但是事件却没有对应的函数。事件可以在不需要CPU干预的情况下,执行这些操作，但是中断则必须要CPU介入。</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;">上升沿/下降沿选择寄存器：需要软件选择中断发生的检测方式，是采用电平信号上升沿还是下降沿变化来判断中断/事件的发生；</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;">软件中断/事件寄存器：</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;">挂起请求寄存器：当中断发生时，如果CPU在执行优先级更高的中断或该中断无法打断的任务，则该中断请求被暂时挂起。待之后CPU再来执行该挂起的中断；当事件发生时过程雷同，差别不是由CPU参与而是由脉冲发生器参与;该寄存器由硬件自动完成，不需要软件配置；</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;">中断屏蔽寄存器：配置是否屏蔽该中断，他和“请求挂起寄存器”做&amp;操作，最后决定是否把中断发送给NVIC总控制器;</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;">事件屏蔽寄存器：配置是否屏蔽该事件，他和“请求挂起寄存器”做&amp;操作，最后决定是否把事件发送给脉冲发生器。</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;">4.2.1外部中断控制器EXTI</p> 
+<p style="margin-left:0;text-align:justify;">每个GPIO引脚存在在一个外部控制器中，需要在外部控制器中配置打开这些GPIO对应的引脚.框图如下：</p> 
+<p style="margin-left:0;text-align:justify;"><img alt="" height="667" src="https://images2.imgbox.com/9c/a4/llCX5AE1_o.png" width="759"></p> 
+<p style="margin-left:0;text-align:justify;">4.2.2系统配置控制器SYSCFG</p> 
+<p style="margin-left:0;text-align:justify;">打开EXTI控制器中存在的某个GPIO引脚中断功能后（ENABLE），还要保证每个引脚（GPIO）对应的中断能够传递到总中断NVIC控制器，需要配置GPIO引脚所在EXTI控制器到NVIC控制器的连通性，这个配置寄存器就是SYSCFG寄存器,如下图</p> 
+<p style="margin-left:0;text-align:center;"><img alt="" height="544" src="https://images2.imgbox.com/47/ad/8ZTz0yqB_o.png" width="720"></p> 
+<p style="margin-left:0;text-align:justify;">5.时钟配置</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;">6.uart开发思路</p> 
+<p style="margin-left:0;text-align:justify;">   弄清楚原理图----&gt;初始化GPIO（包括时钟配置和GPIO属性配置）-----&gt;初始化UART寄存器------&gt;配置中断相关寄存器------&gt;编写收发包中断函数并将对应中断号写入中断寄存器。</p> 
+<p style="margin-left:0;text-align:justify;"></p> 
+<p style="margin-left:0;text-align:justify;">7.其他</p> 
+<p style="margin-left:0;text-align:justify;">7.1 PIN和GPIO的联系</p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/5fad1be2389010b25c277e8df51b2619/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">C语言100道基础拔高题（1）</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/4fab37cc8bd24243d393a1547add5ac8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">Coolmuster Android Assistant: 手机数据管理的全能助手</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

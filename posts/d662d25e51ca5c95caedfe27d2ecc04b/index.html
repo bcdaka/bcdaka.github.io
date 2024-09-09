@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>我在高职教STM32——GPIO入门之按键输入（2） - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/d662d25e51ca5c95caedfe27d2ecc04b/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="我在高职教STM32——GPIO入门之按键输入（2）">
+  <meta property="og:description" content="大家好，我是老耿，高职青椒一枚，一直从事单片机、嵌入式、物联网等课程的教学。对于高职的学生层次，同行应该都懂的，老师在课堂上教学几乎是没什么成就感的。正因如此，才有了借助 CSDN 平台寻求认同感和成就感的想法。在这里，我准备陆续把自己花了很多心思的教学设计分享出来，主要面向广大师生朋友，单片机老鸟就略过吧。欢迎点赞&#43;关注，各位的支持是本人持续输出的动力，多谢多谢！
+前面，我们介绍了STM32的IO口作为输出的使用，这一章，我们将向大家介绍如何使用IO口作为输入。在本章中，我们将利用开发板上的按键来控制LED的亮灭。通过本章的学习，我们将明白按键的电路原理，了解按键消抖是怎么回事，巩固GPIO的初始化配置，学习GPIO端口输入函数等知识。
+【学习目标】 了解按键防抖、锁存的方法巩固GPIO初始化的过程，独立完成代码编写理解按键单击、双击、长按的程序算法 按键是初学嵌入式的第一类输入器件，入门不难，但是一旦按法多样化（单击/双击/长按），或是结合其他被控器件，就需要用上中断、定时器、状态机等知识，难度也就上来了。本章还是基于GPIO输入电平的传统方法来按键，计划分两个部分，本文是第二部分。
+三、按键的单击/双击/长按 电子产品上的轻触按键，除了单击，双击和长按也是比较普遍的输入方式，这样可以在同一个按键上实现更多的控制效果，鼠标就是典型的例子。上一节的程序仅能检测单击这个动作，这一节，我们就来学习一下如何通过一定算法，把这三种动作都能检测出来。
+3.1 编程要点 我们来分析三种动作的按键IO口电平变化，如图7所示，看看各自有何特征。首先，无论何种动作，都是从按下这个动作开始的。接下来，就是要看按下的时长了，如果超过了长按标准（图中的S3，如2s），那么毫无疑问肯定是长按了，也就排除了单击和双击。因此，从逻辑上来看，判断出长按所需的条件是最少的。
+其次，如果按下的时长小于S3，也就是说没到长按标准就松开了，那么就只能是单击或双击其中一种可能。这时，看的就是松开的时长了，如果超过了两次单击间隔标准（图中的D1，如250ms），那么就不是双击了，只能是单击。反之，就是双击。所以，单击或双击的判断依据就变成了“按下时长小于S3 且 松开时长是否小于D1”这样的双重条件了。
+最后，还有一种可能，那就是无动作。当然，发生这种情况的条件是没有按下这个动作发生。这种情况其实是程序的初态，或者说是完成一次按键动作后应该回归的状态。至此，本程序的目的就是要通过一系列条件判断得到“单击/双击/长按/无动作”其中一种结果。
+图7 单击/双击/长按对应的IO口电平变化 3.2 代码剖析 本实验的硬件电路和工程文件清单跟上一个实验一样，但文件中的代码发生了较大变化，因此我们将上一个实验的工程文件另存一份再进行编写，这样不会混淆。需要说明的是，这里为了节省篇幅和排版需要，一些与之前重复的代码做了省略，阅读时请注意，完整的源码请阅读本实验配套的工程。
+1. key.h文件源码 如代码清单4所示，这个头文件了增加了很多跟按键动作有关的宏，其实就是把每个按键的每一种可能都起好名字，编好数字。当然，还有一个用来扫描按键动作的函数声明 Key_Scan()，其代码也是本实验的重点。
+//------------------------------------------------------- // 代码清单4：补充与完善后的key.h //------------------------------------------------------- #ifndef _KEY_H_ #define _KEY_H_ #include &#34;stm32f10x.h&#34; //------------------------------------------------------- // 与按键状态和动作有关的宏定义 //------------------------------------------------------- #define KEY_DOWN	0 #define KEY_UP	1 #define KEY1_DOWN	10 #define KEY1_UP	11 #define KEY1_DOUBLE	12 #define KEY1_DOWNLONG	13 #define KEY2_DOWN	20 #define KEY2_UP	21 #define KEY2_DOUBLE	22 #define KEY2_DOWNLONG	23 #define KEY3_DOWN	30 #define KEY3_UP	31 #define KEY3_DOUBLE	32 #define KEY3_DOWNLONG	33 #define KEY4_DOWN	40 #define KEY4_UP	41 #define KEY4_DOUBLE	42 #define KEY4_DOWNLONG	43 #define KEY_NONE	255 #define KEYDOWN_LONG_TIME	200	//长按标准，单位为10ms //------------------------------------------------------- // 必要的宏定义 //------------------------------------------------------- #define KEY1_PIN GPIO_Pin_13 #define KEY2_PIN GPIO_Pin_11 #define KEY3_PIN GPIO_Pin_12 #define KEY4_PIN GPIO_Pin_2 //------------------------------------------------------- // 库函数操作宏定义 //------------------------------------------------------- #define READ_KEY1	GPIO_ReadInputDataBit(GPIOC, KEY1_PIN) #define READ_KEY2	GPIO_ReadInputDataBit(GPIOC, KEY2_PIN) #define READ_KEY3	GPIO_ReadInputDataBit(GPIOC, KEY3_PIN) #define READ_KEY4	GPIO_ReadInputDataBit(GPIOD, KEY4_PIN) //-------------------------------------------------------- // 函数声明 //-------------------------------------------------------- void Key_Init(void);	//按键初始化函数 u8 Key_Scan(void);	//按键扫描函数	#endif 2.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-06-28T21:55:12+08:00">
+    <meta property="article:modified_time" content="2024-06-28T21:55:12+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">我在高职教STM32——GPIO入门之按键输入（2）</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="htmledit_views">
+                    <p>        大家好，我是老耿，高职青椒一枚，<strong>一直从事单片机、嵌入式、物联网等课程的教学。</strong>对于高职的学生层次，同行应该都懂的，老师在课堂上教学几乎是没什么成就感的。正因如此，才有了<strong>借助 CSDN 平台寻求认同感和成就感</strong>的想法。在这里，<span style="color:#4da8ee;"><strong>我准备陆续把自己花了很多心思的教学设计分享出来，主要面向广大师生朋友，</strong></span><a href="https://so.csdn.net/so/search?q=%E5%8D%95%E7%89%87%E6%9C%BA&amp;spm=1001.2101.3001.7020" title="单片机">单片机</a>老鸟就略过吧。欢迎点赞+关注，各位的支持是本人持续输出的动力，多谢多谢！</p> 
+<p class="img-center"><img alt="" height="1200" src="https://images2.imgbox.com/51/89/hgOLrndU_o.png" width="1200"></p> 
+<p>        前面，我们介绍了STM32的IO口作为输出的使用，这一章，我们将向大家介绍如何使用IO口作为输入。在本章中，我们将利用开发板上的按键来控制LED的亮灭。通过本章的学习，我们将明白按键的电路原理，了解按键消抖是怎么回事，巩固GPIO的初始化配置，学习GPIO端口输入函数等知识。</p> 
+<h3><a name="t0"></a><strong>【学习目标】</strong></h3> 
+<ol><li>了解按键防抖、锁存的方法</li><li>巩固GPIO初始化的过程，独立完成代码编写</li><li>理解按键单击、双击、长按的程序算法</li></ol> 
+<hr> 
+<p><span style="color:#956fe7;"><strong>        按键是初学嵌入式的第一类输入器件，入门不难，但是一旦按法多样化（单击/双击/长按），或是结合其他被控器件，就需要用上中断、定时器、状态机等知识，难度也就上来了。本章还是基于GPIO输入电平的传统方法来按键，计划分两个部分，本文是第二部分。</strong></span></p> 
+<p></p> 
+<h2>三、按键的单击/双击/长按</h2> 
+<p>        电子产品上的轻触按键，除了单击，双击和长按也是比较普遍的输入方式，这样可以在同一个按键上实现更多的控制效果，鼠标就是典型的例子。上一节的程序仅能检测单击这个动作，这一节，我们就来学习一下如何通过一定算法，把这三种动作都能检测出来。</p> 
+<h3>3.1 编程要点</h3> 
+<p>        我们来分析三种动作的按键IO口电平变化，如图7所示，看看各自有何特征。首先，无论何种动作，都是从按下这个动作开始的。接下来，就是要看按下的时长了，如果超过了长按标准（图中的S3，如2s），那么毫无疑问肯定是长按了，也就排除了单击和双击。因此，从逻辑上来看，判断出长按所需的条件是最少的。</p> 
+<p>        其次，如果按下的时长小于S3，也就是说没到长按标准就松开了，那么就只能是单击或双击其中一种可能。这时，看的就是松开的时长了，如果超过了两次单击间隔标准（图中的D1，如250ms），那么就不是双击了，只能是单击。反之，就是双击。所以，单击或双击的判断依据就变成了“按下时长小于S3 且 松开时长是否小于D1”这样的双重条件了。</p> 
+<p>        最后，还有一种可能，那就是无动作。当然，发生这种情况的条件是没有按下这个动作发生。这种情况其实是程序的初态，或者说是完成一次按键动作后应该回归的状态。至此，本程序的目的就是要通过一系列条件判断得到“单击/双击/长按/无动作”其中一种结果。</p> 
+<div class="img-center"> 
+ <figure class="image"> 
+  <img alt="" height="1200" src="https://images2.imgbox.com/3a/14/RYlbGszd_o.png" width="1200"> 
+  <figcaption>
+    图7 单击/双击/长按对应的IO口电平变化 
+  </figcaption> 
+ </figure> 
+</div> 
+<h3>3.2 代码剖析</h3> 
+<p>        本实验的硬件电路和工程文件清单跟上一个实验一样，但文件中的代码发生了较大变化，因此我们将上一个实验的工程文件另存一份再进行编写，这样不会混淆。需要说明的是，这里为了节省篇幅和排版需要，一些与之前重复的代码做了省略，阅读时请注意，完整的源码请阅读本实验配套的工程。</p> 
+<h4><strong>1. key.h文件源码</strong></h4> 
+<p>        如代码清单4所示，这个头文件了增加了很多跟按键动作有关的宏，其实就是把每个按键的每一种可能都起好名字，编好数字。当然，还有一个用来扫描按键动作的函数声明 <span style="color:#1c7331;"><strong>Key_Scan()</strong></span>，其代码也是本实验的重点。</p> 
+<pre><code class="language-cpp">//-------------------------------------------------------
+// 代码清单4：补充与完善后的key.h
+//-------------------------------------------------------
+ 
+#ifndef  _KEY_H_
+#define  _KEY_H_
+ 
+#include "stm32f10x.h"
+
+//-------------------------------------------------------
+// 与按键状态和动作有关的宏定义
+//-------------------------------------------------------
+#define  KEY_DOWN		0
+#define  KEY_UP			1
+
+#define  KEY1_DOWN		10
+#define  KEY1_UP		11
+#define  KEY1_DOUBLE	12
+#define  KEY1_DOWNLONG	13
+
+#define  KEY2_DOWN		20
+#define  KEY2_UP		21
+#define  KEY2_DOUBLE	22
+#define  KEY2_DOWNLONG	23
+
+#define  KEY3_DOWN		30
+#define  KEY3_UP		31
+#define  KEY3_DOUBLE	32
+#define  KEY3_DOWNLONG	33
+
+#define  KEY4_DOWN		40
+#define  KEY4_UP		41
+#define  KEY4_DOUBLE	42
+#define  KEY4_DOWNLONG	43
+
+#define  KEY_NONE		255
+
+#define  KEYDOWN_LONG_TIME	200		//长按标准，单位为10ms
+
+//-------------------------------------------------------
+// 必要的宏定义
+//-------------------------------------------------------
+#define  KEY1_PIN     GPIO_Pin_13
+#define  KEY2_PIN     GPIO_Pin_11
+#define  KEY3_PIN     GPIO_Pin_12
+#define  KEY4_PIN     GPIO_Pin_2
+ 
+//-------------------------------------------------------
+// 库函数操作宏定义
+//-------------------------------------------------------
+#define  READ_KEY1	GPIO_ReadInputDataBit(GPIOC, KEY1_PIN)
+#define  READ_KEY2	GPIO_ReadInputDataBit(GPIOC, KEY2_PIN)
+#define  READ_KEY3	GPIO_ReadInputDataBit(GPIOC, KEY3_PIN)
+#define  READ_KEY4	GPIO_ReadInputDataBit(GPIOD, KEY4_PIN)
+ 
+//--------------------------------------------------------
+// 函数声明
+//--------------------------------------------------------
+void Key_Init(void);	//按键初始化函数
+u8 Key_Scan(void);	    //按键扫描函数	
+ 
+#endif
+ </code></pre> 
+<h4><strong>2. key.c文件源码</strong></h4> 
+<p>        我们主要对该文件中的 <span style="color:#1c7331;"><strong>Key_Scan()</strong></span> 函数源码进行剖析，如代码清单5所示，请大家结合上面的编程要点来阅读源码。</p> 
+<pre><code class="language-cpp">/**
+************************************************************
+* 代码清单5：在key.c中补充的按键扫描函数
+* 函数名称：Key_Scan
+* 函数功能：按键IO口扫描
+* 入口参数：无
+* 返回参数：单击/双击/长按/无动作对应编号
+* 说    明：
+************************************************************
+*/
+u8 Key_Scan(void)
+{
+	u8 downCount = 0, upCount = 0;	//按下和松开的计时变量，单位10ms
+	u8 clickDoubleFlag = 0;			//单/双击标志，0为单击，1为双击
+
+	/*------------------- 以下是检测过程 ----------------------*/
+	if(READ_KEY1 == KEY_DOWN)
+	{
+		delay_ms(10);			    //10ms消抖
+		if(READ_KEY1 == KEY_DOWN)	//确认按下，开始检测
+		{
+			while(READ_KEY1==KEY_DOWN &amp;&amp; downCount&lt;KEYDOWN_LONG_TIME)
+			{	//提前松开按键或按下超过规定时长都会退出循环
+				downCount++;	//按下期间计数值累加
+				delay_ms(10);	//累加1次的时长
+			}
+			if(downCount&gt;=KEYDOWN_LONG_TIME)	//说明前面是长按导致的退出
+			{
+				while(READ_KEY1 == KEY_DOWN);	//等待按键松开
+				return KEY1_DOWNLONG;		    //返回长按结果
+			}
+			else	//说明前面是短按导致的退出，则进行单/双击检测
+			{
+				for(upCount=0; upCount&lt;25; upCount++)
+				{	//在松开期间检测是否有二次按下
+					delay_ms(10);
+					if(READ_KEY1 == KEY_DOWN)	//有二次按下
+					{
+						clickDoubleFlag = 1;		    //置双击标志
+						while(READ_KEY1 == KEY_DOWN);	//等待按键松开
+						return KEY1_DOUBLE;			    //返回双击结果
+					}
+				}
+				if(clickDoubleFlag == 0)	//退出循环发现仍为单击标志
+					return KEY1_DOWN;		//返回单击结果
+			}
+		}
+	}
+		
+	/*---------------------- 扫描按键2/3/4的过程同上 ----------------------*/
+	
+	return KEY_NONE;	//无按下动作或扫描完成，返回无动作结果
+}</code></pre> 
+<p>        以上代码给出了扫描KEY1按键的过程，由于判断的条件较多且相互嵌套，理解起来是有一点难度的，大家阅读时可以借助Keil的代码收缩和展开的功能（如图8所示），先理清总体上的逻辑关系，再逐层展开仔细阅读，体会编程思路在代码层面上的实现。</p> 
+<div class="img-center"> 
+ <figure class="image"> 
+  <img alt="" height="1195" src="https://images2.imgbox.com/85/d8/IebJEn4k_o.png" width="1200"> 
+  <figcaption>
+    图8 Keil中的代码收缩和展开 
+  </figcaption> 
+ </figure> 
+</div> 
+<h4><strong>3. main.c文件源码</strong></h4> 
+<p>        主程序比较简单，如代码清单6所示，主循环中不断根据按键扫描函数的返回值来控制LED的亮灭。单击KEY1，改变红灯状态；双击KEY1，改变绿灯状态；长按KEY1，改变黄灯状态。</p> 
+<pre><code class="language-cpp">/**
+  ******************************************************************************
+  * 代码清单7：main.c
+  * 应用：按键单击/双击/长按控制LED
+  * 平台：麒麟座开发板V3.2
+  * 作者：老耿
+  * 日期：yyyy-mm-dd
+  * 修改：无
+  ******************************************************************************
+  */  
+
+//必要的头文件
+#include "delay.h"
+#include "key.h"
+#include "led.h"
+
+int main()
+{
+	delay_init();
+	LED_Init();
+	Key_Init();
+	
+	while(1)
+	{
+		switch(Key_Scan())
+		{
+			case KEY1_DOWN:     RED_TOG();    break;
+			case KEY1_DOUBLE:   GREEN_TOG();  break;
+			case KEY1_DOWNLONG: YELLOW_TOG(); break;
+			default: break;
+		}
+	}
+}
+</code></pre> 
+<h2>四、再谈延时和消抖方法</h2> 
+<p>        上面的两个实验我们都是用简单的延时实现了按键的消抖。对于这种很简单的演示程序，这样写没问题，但是在实际做项目开发时，程序量往往很大，各种状态值也很多，while(1)主循环要不停的扫描各种状态值是否发生变化，及时的进行任务调度。如果程序中加了这种delay延时操作，则很可能有一件事发生了，但程序还在进行delay延时操作中，而delay结束再去检查那件事的时候，已经晚了。</p> 
+<p>        为了避免这种情况的发生，<strong>要尽量缩短while(1)循环一次所用的时间，而需要进行长时间延时的操作，必须用其他办法来处理，</strong>比如通过IO口的外部中断机制或交给专门的定时器去扫描，这些内容我们将在后续的章节讲到。这里只是先给大家强调一种编程的意识，不光是用来消抖的延时，其它任务的延时亦是如此。</p> 
+<p style="text-align:right;"><span style="color:#be191c;"><strong>（第二部分完，本文结束）</strong></span></p>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/0a6a6083c9ce0dcc4cb65ea3d6b1b9e3/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">树莓派4B学习笔记14：Python多线程编程_线程间的同步通信_(锁‘threading.Lock’)</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/6aab642ba6bb7c9373d162661b635e0d/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">django模型、项目、配置、模型类、数据库操作、查询、F/Q对象、字段类型、聚合函数、排序函数</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>

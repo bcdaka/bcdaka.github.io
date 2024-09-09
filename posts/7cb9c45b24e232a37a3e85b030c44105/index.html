@@ -1,0 +1,412 @@
+<!DOCTYPE html>
+<html class="no-js" lang="en">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1">
+	<title>【C&#43;&#43;】unordered_map &amp; unordered_set 底层刨析 - 编程大咖</title>
+	<script>(function(d,e){d[e]=d[e].replace("no-js","js");})(document.documentElement,"className");</script>
+	<meta name="description" content="">
+		<meta property="og:url" content="https://bcdaka.github.io/posts/7cb9c45b24e232a37a3e85b030c44105/">
+  <meta property="og:site_name" content="编程大咖">
+  <meta property="og:title" content="【C&#43;&#43;】unordered_map & unordered_set 底层刨析">
+  <meta property="og:description" content="文章目录 1. 哈希表的改造2. unordered_map3. unordered_set C&#43;&#43; STL 库中，unordered_map 和 unordered_set 容器的底层为哈希表，本文将简单模拟哈希表（哈希桶），unordered_map 和 unordered_set 只需封装哈希表的接口即可实现。 1. 哈希表的改造 模板参数列表的改造
+K：关键码类型T：不同容器 T 的类型不同，如果是 unordered_map，T 代表一个键值对，如果是 unordered_set，T 为 KKeyOfT：从 T 中获取 KeyHash：哈希函数仿函数对象类型，哈希函数使用除留余数法，需要将 Key 转换为整型数字才能取模 template&lt;class K, class T, class KeyOfT, class Hash&gt; class HashTable; 增加迭代器操作
+// 为了实现简单，在哈希桶的迭代器类中需要用到HashTable本身 template&lt;class K, class T, class KeyOfT, class Hash&gt; class HashTable; // 注意：因为哈希桶在底层是单链表结构，所以哈希桶的迭代器不需要--操作 template&lt;class K, class T, class KeyOfT, class Hash&gt; struct __HTIterator { typedef HashNode&lt;T&gt; Node; typedef HashTable&lt;K, T, KeyOfT, Hash&gt; HT; typedef __HTIterator&lt;K, T, KeyOfT, Hash&gt; Self; Node* _node;	// 当前迭代器关联的节点 HT* _ht;	// 哈希桶 - 主要是为了找下一个空桶时候方便 __HTIterator(Node* node, HT* ht) : _node(node) , _ht(ht) {} T&amp; operator*() { return _node-&gt;_data; } Self&amp; operator&#43;&#43;() { if (_node-&gt;_next) { // 当前桶还是节点 _node = _node-&gt;_next; } else { // 当前桶走完了，找下一个桶 KeyOfT kot; Hash hs; size_t hashi = hs(kot(_node-&gt;_data)) % _ht-&gt;_tables.">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:type" content="article">
+    <meta property="article:section" content="posts">
+    <meta property="article:published_time" content="2024-04-15T17:11:06+08:00">
+    <meta property="article:modified_time" content="2024-04-15T17:11:06+08:00">
+
+	<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+	<link rel="dns-prefetch" href="//fonts.googleapis.com">
+	<link rel="dns-prefetch" href="//fonts.gstatic.com">
+	<link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Open+Sans:400,400i,700">
+
+	<link rel="stylesheet" href="/css/style.css">
+	
+
+	<link rel="shortcut icon" href="/favicon.ico">
+		
+  
+
+
+</head>
+<body class="body">
+	<div class="container container--outer">
+		<header class="header">
+	<div class="container header__container">
+		
+	<div class="logo">
+		<a class="logo__link" href="/" title="编程大咖" rel="home">
+			<div class="logo__item logo__text">
+					<div class="logo__title">编程大咖</div>
+					
+				</div>
+		</a>
+	</div>
+		<div class="divider"></div>
+	</div>
+</header>
+		<div class="wrapper flex">
+			<div class="primary">
+			
+<main class="main" role="main">
+	<article class="post">
+		<header class="post__header">
+			<h1 class="post__title">【C&#43;&#43;】unordered_map &amp; unordered_set 底层刨析</h1>
+			
+		</header>
+		<div id="gatop"></div>
+		<div class="content post__content clearfix">
+			
+<div id="content_views" class="markdown_views prism-atom-one-light">
+                    <svg xmlns="http://www.w3.org/2000/svg" style="display: none;">
+                        <path stroke-linecap="round" d="M5,0 0,2.5 5,5z" id="raphael-marker-block" style="-webkit-tap-highlight-color: rgba(0, 0, 0, 0);"></path>
+                    </svg>
+                    <p></p> 
+<div class="toc"> 
+ <h4>文章目录</h4> 
+ <ul><li><a href="#1__3" rel="nofollow">1. 哈希表的改造</a></li><li><a href="#2_unordered_map_239" rel="nofollow">2. unordered_map</a></li><li><a href="#3_unordered_set_279" rel="nofollow">3. unordered_set</a></li></ul> 
+</div> 
+<br> 
+<img src="https://images2.imgbox.com/a5/2d/sN9jNcU3_o.gif" alt="在这里插入图片描述"> 
+<br> C++ STL 库中，unordered_map 和 unordered_set 容器的底层为哈希表，本文将简单模拟哈希表（哈希桶），unordered_map 和 unordered_set 只需封装哈希表的接口即可实现。 
+<p></p> 
+<h2><a id="1__3"></a>1. 哈希表的改造</h2> 
+<ol><li> <p>模板参数列表的改造</p> 
+  <ul><li>K：关键码类型</li><li>T：不同容器 T 的类型不同，如果是 unordered_map，T 代表一个键值对，如果是 unordered_set，T 为 K</li><li>KeyOfT：从 T 中获取 Key</li><li>Hash：哈希函数仿函数对象类型，哈希函数使用除留余数法，需要将 Key 转换为整型数字才能取模</li></ul> <pre><code class="prism language-cpp"><span class="token keyword">template</span><span class="token operator">&lt;</span><span class="token keyword">class</span> <span class="token class-name">K</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">T</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">KeyOfT</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">Hash</span><span class="token operator">&gt;</span>
+<span class="token keyword">class</span> <span class="token class-name">HashTable</span><span class="token punctuation">;</span>
+</code></pre> </li><li> <p>增加迭代器操作</p> <pre><code class="prism language-cpp"><span class="token comment">// 为了实现简单，在哈希桶的迭代器类中需要用到HashTable本身</span>
+<span class="token keyword">template</span><span class="token operator">&lt;</span><span class="token keyword">class</span> <span class="token class-name">K</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">T</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">KeyOfT</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">Hash</span><span class="token operator">&gt;</span>
+<span class="token keyword">class</span> <span class="token class-name">HashTable</span><span class="token punctuation">;</span>
+
+<span class="token comment">// 注意：因为哈希桶在底层是单链表结构，所以哈希桶的迭代器不需要--操作</span>
+<span class="token keyword">template</span><span class="token operator">&lt;</span><span class="token keyword">class</span> <span class="token class-name">K</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">T</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">KeyOfT</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">Hash</span><span class="token operator">&gt;</span>
+<span class="token keyword">struct</span> <span class="token class-name">__HTIterator</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">typedef</span> HashNode<span class="token operator">&lt;</span>T<span class="token operator">&gt;</span> Node<span class="token punctuation">;</span>
+	<span class="token keyword">typedef</span> HashTable<span class="token operator">&lt;</span>K<span class="token punctuation">,</span> T<span class="token punctuation">,</span> KeyOfT<span class="token punctuation">,</span> Hash<span class="token operator">&gt;</span> HT<span class="token punctuation">;</span>
+	<span class="token keyword">typedef</span> __HTIterator<span class="token operator">&lt;</span>K<span class="token punctuation">,</span> T<span class="token punctuation">,</span> KeyOfT<span class="token punctuation">,</span> Hash<span class="token operator">&gt;</span> Self<span class="token punctuation">;</span>
+
+	Node<span class="token operator">*</span> _node<span class="token punctuation">;</span>	<span class="token comment">// 当前迭代器关联的节点</span>
+	HT<span class="token operator">*</span> _ht<span class="token punctuation">;</span>		<span class="token comment">// 哈希桶 - 主要是为了找下一个空桶时候方便</span>
+
+	<span class="token function">__HTIterator</span><span class="token punctuation">(</span>Node<span class="token operator">*</span> node<span class="token punctuation">,</span> HT<span class="token operator">*</span> ht<span class="token punctuation">)</span>
+		<span class="token operator">:</span> <span class="token function">_node</span><span class="token punctuation">(</span>node<span class="token punctuation">)</span>
+		<span class="token punctuation">,</span> <span class="token function">_ht</span><span class="token punctuation">(</span>ht<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span><span class="token punctuation">}</span>
+
+	T<span class="token operator">&amp;</span> <span class="token keyword">operator</span><span class="token operator">*</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> _node<span class="token operator">-&gt;</span>_data<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	Self<span class="token operator">&amp;</span> <span class="token keyword">operator</span><span class="token operator">++</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>_node<span class="token operator">-&gt;</span>_next<span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token comment">// 当前桶还是节点</span>
+			_node <span class="token operator">=</span> _node<span class="token operator">-&gt;</span>_next<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">else</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token comment">// 当前桶走完了，找下一个桶</span>
+			KeyOfT kot<span class="token punctuation">;</span>
+			Hash hs<span class="token punctuation">;</span>
+			size_t hashi <span class="token operator">=</span> <span class="token function">hs</span><span class="token punctuation">(</span><span class="token function">kot</span><span class="token punctuation">(</span>_node<span class="token operator">-&gt;</span>_data<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">%</span> _ht<span class="token operator">-&gt;</span>_tables<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			
+			<span class="token comment">// 找下一个桶</span>
+			hashi<span class="token operator">++</span><span class="token punctuation">;</span>
+			<span class="token keyword">while</span> <span class="token punctuation">(</span>hashi <span class="token operator">&lt;</span> _ht<span class="token operator">-&gt;</span>_tables<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">if</span> <span class="token punctuation">(</span>_ht<span class="token operator">-&gt;</span>_tables<span class="token punctuation">[</span>hashi<span class="token punctuation">]</span><span class="token punctuation">)</span>
+				<span class="token punctuation">{<!-- --></span>
+					_node <span class="token operator">=</span> _ht<span class="token operator">-&gt;</span>_tables<span class="token punctuation">[</span>hashi<span class="token punctuation">]</span><span class="token punctuation">;</span>
+					<span class="token keyword">break</span><span class="token punctuation">;</span>
+				<span class="token punctuation">}</span>
+				hashi<span class="token operator">++</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+
+			<span class="token comment">// 后面没有桶了</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>hashi <span class="token operator">==</span> _ht<span class="token operator">-&gt;</span>_tables<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				_node <span class="token operator">=</span> <span class="token keyword">nullptr</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">return</span> <span class="token operator">*</span><span class="token keyword">this</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">bool</span> <span class="token keyword">operator</span><span class="token operator">!=</span><span class="token punctuation">(</span><span class="token keyword">const</span> Self<span class="token operator">&amp;</span> s<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> _node <span class="token operator">!=</span> s<span class="token punctuation">.</span>_node<span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> </li><li> <p>增加通过 T 获取 key 操作</p> <pre><code class="prism language-cpp"><span class="token keyword">template</span><span class="token operator">&lt;</span><span class="token keyword">class</span> <span class="token class-name">K</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">T</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">KeyOfT</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">Hash</span><span class="token operator">&gt;</span>
+<span class="token keyword">class</span> <span class="token class-name">HashTable</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">template</span><span class="token operator">&lt;</span><span class="token keyword">class</span> <span class="token class-name">K</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">T</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">KeyOfT</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">Hash</span><span class="token operator">&gt;</span>
+	<span class="token keyword">friend</span> <span class="token keyword">struct</span> <span class="token class-name">__HTIterator</span><span class="token punctuation">;</span>
+
+	<span class="token keyword">typedef</span> HashNode<span class="token operator">&lt;</span>T<span class="token operator">&gt;</span> Node<span class="token punctuation">;</span>
+
+<span class="token keyword">public</span><span class="token operator">:</span>
+	<span class="token keyword">typedef</span> __HTIterator<span class="token operator">&lt;</span>K<span class="token punctuation">,</span> T<span class="token punctuation">,</span> KeyOfT<span class="token punctuation">,</span> Hash<span class="token operator">&gt;</span> iterator<span class="token punctuation">;</span>
+
+	iterator <span class="token function">begin</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">for</span> <span class="token punctuation">(</span>size_t i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> _tables<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token comment">// 找到第一个桶的第一个节点</span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span>_tables<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">return</span> <span class="token function">iterator</span><span class="token punctuation">(</span>_tables<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">return</span> <span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	iterator <span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> <span class="token function">iterator</span><span class="token punctuation">(</span><span class="token keyword">nullptr</span><span class="token punctuation">,</span> <span class="token keyword">this</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token function">HashTable</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		_tables<span class="token punctuation">.</span><span class="token function">resize</span><span class="token punctuation">(</span><span class="token number">10</span><span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		_n <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token operator">~</span><span class="token function">HashTable</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">for</span> <span class="token punctuation">(</span>size_t i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> _tables<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			Node<span class="token operator">*</span> cur <span class="token operator">=</span> _tables<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+			<span class="token keyword">while</span> <span class="token punctuation">(</span>cur<span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				Node<span class="token operator">*</span> next <span class="token operator">=</span> cur<span class="token operator">-&gt;</span>_next<span class="token punctuation">;</span>
+				<span class="token keyword">delete</span> cur<span class="token punctuation">;</span>
+
+				cur <span class="token operator">=</span> next<span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+			_tables<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token keyword">nullptr</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">bool</span> <span class="token function">Insert</span><span class="token punctuation">(</span><span class="token keyword">const</span> T<span class="token operator">&amp;</span> data<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		KeyOfT kot<span class="token punctuation">;</span>
+
+		<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">Find</span><span class="token punctuation">(</span><span class="token function">kot</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+			<span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+
+		Hash hs<span class="token punctuation">;</span>
+
+		<span class="token comment">// 负载因子到1就扩容</span>
+		<span class="token keyword">if</span> <span class="token punctuation">(</span>_n <span class="token operator">==</span> _tables<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			vector<span class="token operator">&lt;</span>Node<span class="token operator">*</span><span class="token operator">&gt;</span> <span class="token function">newTables</span><span class="token punctuation">(</span>_tables<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span> <span class="token operator">*</span> <span class="token number">2</span><span class="token punctuation">,</span> <span class="token keyword">nullptr</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+			<span class="token keyword">for</span> <span class="token punctuation">(</span>size_t i <span class="token operator">=</span> <span class="token number">0</span><span class="token punctuation">;</span> i <span class="token operator">&lt;</span> _tables<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span> i<span class="token operator">++</span><span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				<span class="token comment">// 取出旧表中节点，重新计算挂到新表桶中</span>
+				Node<span class="token operator">*</span> cur <span class="token operator">=</span> _tables<span class="token punctuation">[</span>i<span class="token punctuation">]</span><span class="token punctuation">;</span>
+				<span class="token keyword">while</span> <span class="token punctuation">(</span>cur<span class="token punctuation">)</span>
+				<span class="token punctuation">{<!-- --></span>
+					Node<span class="token operator">*</span> next <span class="token operator">=</span> cur<span class="token operator">-&gt;</span>_next<span class="token punctuation">;</span>
+
+					<span class="token comment">// 头插到新表</span>
+					size_t hashi <span class="token operator">=</span> <span class="token function">hs</span><span class="token punctuation">(</span><span class="token function">kot</span><span class="token punctuation">(</span>cur<span class="token operator">-&gt;</span>_data<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">%</span> newTables<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+					cur<span class="token operator">-&gt;</span>_next <span class="token operator">=</span> newTables<span class="token punctuation">[</span>hashi<span class="token punctuation">]</span><span class="token punctuation">;</span>
+					newTables<span class="token punctuation">[</span>hashi<span class="token punctuation">]</span> <span class="token operator">=</span> cur<span class="token punctuation">;</span>
+
+					cur <span class="token operator">=</span> next<span class="token punctuation">;</span>
+				<span class="token punctuation">}</span>
+				_tables<span class="token punctuation">[</span>i<span class="token punctuation">]</span> <span class="token operator">=</span> <span class="token keyword">nullptr</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+			_tables<span class="token punctuation">.</span><span class="token function">swap</span><span class="token punctuation">(</span>newTables<span class="token punctuation">)</span><span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+
+		size_t hashi <span class="token operator">=</span> <span class="token function">hs</span><span class="token punctuation">(</span><span class="token function">kot</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">)</span> <span class="token operator">%</span> _tables<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		Node<span class="token operator">*</span> newnode <span class="token operator">=</span> <span class="token keyword">new</span> <span class="token function">Node</span><span class="token punctuation">(</span>data<span class="token punctuation">)</span><span class="token punctuation">;</span>
+
+		<span class="token comment">// 头插</span>
+		newnode<span class="token operator">-&gt;</span>_next <span class="token operator">=</span> _tables<span class="token punctuation">[</span>hashi<span class="token punctuation">]</span><span class="token punctuation">;</span>
+		_tables<span class="token punctuation">[</span>hashi<span class="token punctuation">]</span> <span class="token operator">=</span> newnode<span class="token punctuation">;</span>
+
+		<span class="token operator">++</span>_n<span class="token punctuation">;</span>
+		<span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	Node<span class="token operator">*</span> <span class="token function">Find</span><span class="token punctuation">(</span><span class="token keyword">const</span> K<span class="token operator">&amp;</span> key<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		KeyOfT kot<span class="token punctuation">;</span>
+		Hash hs<span class="token punctuation">;</span>
+		size_t hashi <span class="token operator">=</span> <span class="token function">hs</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span> <span class="token operator">%</span> _tables<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		Node<span class="token operator">*</span> cur <span class="token operator">=</span> _tables<span class="token punctuation">[</span>hashi<span class="token punctuation">]</span><span class="token punctuation">;</span>
+		<span class="token keyword">while</span> <span class="token punctuation">(</span>cur<span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">kot</span><span class="token punctuation">(</span>cur<span class="token operator">-&gt;</span>_data<span class="token punctuation">)</span> <span class="token operator">==</span> key<span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				<span class="token keyword">return</span> cur<span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+			cur <span class="token operator">=</span> cur<span class="token operator">-&gt;</span>_next<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">return</span> <span class="token keyword">nullptr</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">bool</span> <span class="token function">Erase</span><span class="token punctuation">(</span><span class="token keyword">const</span> K<span class="token operator">&amp;</span> key<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		KeyOfT kot<span class="token punctuation">;</span>
+		Hash hs<span class="token punctuation">;</span>
+		size_t hashi <span class="token operator">=</span> <span class="token function">hs</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span> <span class="token operator">%</span> _tables<span class="token punctuation">.</span><span class="token function">size</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+		Node<span class="token operator">*</span> prev <span class="token operator">=</span> <span class="token keyword">nullptr</span><span class="token punctuation">;</span>
+		Node<span class="token operator">*</span> cur <span class="token operator">=</span> _tables<span class="token punctuation">[</span>hashi<span class="token punctuation">]</span><span class="token punctuation">;</span>
+		<span class="token keyword">while</span> <span class="token punctuation">(</span>cur<span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">if</span> <span class="token punctuation">(</span><span class="token function">kot</span><span class="token punctuation">(</span>cur<span class="token operator">-&gt;</span>_data<span class="token punctuation">)</span> <span class="token operator">==</span> key<span class="token punctuation">)</span>
+			<span class="token punctuation">{<!-- --></span>
+				<span class="token comment">// 删除</span>
+				<span class="token keyword">if</span> <span class="token punctuation">(</span>prev<span class="token punctuation">)</span>
+				<span class="token punctuation">{<!-- --></span>
+					prev<span class="token operator">-&gt;</span>_next <span class="token operator">=</span> cur<span class="token operator">-&gt;</span>_next<span class="token punctuation">;</span>
+				<span class="token punctuation">}</span>
+				<span class="token keyword">else</span>
+				<span class="token punctuation">{<!-- --></span>
+					_tables<span class="token punctuation">[</span>hashi<span class="token punctuation">]</span> <span class="token operator">=</span> cur<span class="token operator">-&gt;</span>_next<span class="token punctuation">;</span>
+				<span class="token punctuation">}</span>
+
+				<span class="token keyword">delete</span> cur<span class="token punctuation">;</span>
+
+				<span class="token operator">--</span>_n<span class="token punctuation">;</span>
+				<span class="token keyword">return</span> <span class="token boolean">true</span><span class="token punctuation">;</span>
+			<span class="token punctuation">}</span>
+			prev <span class="token operator">=</span> cur<span class="token punctuation">;</span>
+			cur <span class="token operator">=</span> cur<span class="token operator">-&gt;</span>_next<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+		<span class="token keyword">return</span> <span class="token boolean">false</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+<span class="token keyword">private</span><span class="token operator">:</span>
+	vector<span class="token operator">&lt;</span>Node<span class="token operator">*</span><span class="token operator">&gt;</span> _tables<span class="token punctuation">;</span>	<span class="token comment">// 指针数组</span>
+	size_t _n<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> </li></ol> 
+<h2><a id="2_unordered_map_239"></a>2. unordered_map</h2> 
+<ul><li>unordered_map 中存储的是 pair&lt;K, V&gt; 的键值对，K 为 key 的类型，V 为 value 的类型，Hash 为哈希函数类型</li><li>unordered_map 在实现时，只需将 HashTable 中的接口重新封装即可</li></ul> 
+<pre><code class="prism language-cpp"><span class="token keyword">template</span><span class="token operator">&lt;</span><span class="token keyword">class</span> <span class="token class-name">K</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">V</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">Hash</span> <span class="token operator">=</span> HashFunc<span class="token operator">&lt;</span>K<span class="token operator">&gt;&gt;</span>
+<span class="token keyword">class</span> <span class="token class-name">unordered_map</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token comment">// 通过T获取key的操作</span>
+	<span class="token keyword">struct</span> <span class="token class-name">MapKeyOfT</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">const</span> K<span class="token operator">&amp;</span> <span class="token keyword">operator</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">const</span> pair<span class="token operator">&lt;</span>K<span class="token punctuation">,</span> V<span class="token operator">&gt;</span><span class="token operator">&amp;</span> kv<span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">return</span> kv<span class="token punctuation">.</span>first<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token keyword">public</span><span class="token operator">:</span>
+	<span class="token keyword">typedef</span> <span class="token keyword">typename</span> <span class="token class-name">hash_bucket</span><span class="token double-colon punctuation">::</span>HashTable<span class="token operator">&lt;</span>K<span class="token punctuation">,</span> pair<span class="token operator">&lt;</span><span class="token keyword">const</span> K<span class="token punctuation">,</span> V<span class="token operator">&gt;</span><span class="token punctuation">,</span> MapKeyOfT<span class="token punctuation">,</span> Hash<span class="token operator">&gt;</span><span class="token double-colon punctuation">::</span>iterator iterator<span class="token punctuation">;</span>
+		
+	iterator <span class="token function">begin</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> _ht<span class="token punctuation">.</span><span class="token function">begin</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	iterator <span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> _ht<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">bool</span> <span class="token function">insert</span><span class="token punctuation">(</span><span class="token keyword">const</span> pair<span class="token operator">&lt;</span>K<span class="token punctuation">,</span> V<span class="token operator">&gt;</span><span class="token operator">&amp;</span> kv<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> _ht<span class="token punctuation">.</span><span class="token function">Insert</span><span class="token punctuation">(</span>kv<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+<span class="token keyword">private</span><span class="token operator">:</span>
+	hash_bucket<span class="token double-colon punctuation">::</span>HashTable<span class="token operator">&lt;</span>K<span class="token punctuation">,</span> pair<span class="token operator">&lt;</span><span class="token keyword">const</span> K<span class="token punctuation">,</span> V<span class="token operator">&gt;</span><span class="token punctuation">,</span> MapKeyOfT<span class="token punctuation">,</span> Hash<span class="token operator">&gt;</span> _ht<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<h2><a id="3_unordered_set_279"></a>3. unordered_set</h2> 
+<ul><li>unordered_set 的实现类似于 unordered_map</li></ul> 
+<pre><code class="prism language-cpp"><span class="token keyword">template</span><span class="token operator">&lt;</span><span class="token keyword">class</span> <span class="token class-name">K</span><span class="token punctuation">,</span> <span class="token keyword">class</span> <span class="token class-name">Hash</span> <span class="token operator">=</span> HashFunc<span class="token operator">&lt;</span>K<span class="token operator">&gt;&gt;</span>
+<span class="token keyword">class</span> <span class="token class-name">unordered_set</span>
+<span class="token punctuation">{<!-- --></span>
+	<span class="token keyword">struct</span> <span class="token class-name">SetKeyOfT</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">const</span> K<span class="token operator">&amp;</span> <span class="token keyword">operator</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">(</span><span class="token keyword">const</span> K<span class="token operator">&amp;</span> key<span class="token punctuation">)</span>
+		<span class="token punctuation">{<!-- --></span>
+			<span class="token keyword">return</span> key<span class="token punctuation">;</span>
+		<span class="token punctuation">}</span>
+	<span class="token punctuation">}</span><span class="token punctuation">;</span>
+
+<span class="token keyword">public</span><span class="token operator">:</span>
+	<span class="token keyword">typedef</span> <span class="token keyword">typename</span> <span class="token class-name">hash_bucket</span><span class="token double-colon punctuation">::</span>HashTable<span class="token operator">&lt;</span>K<span class="token punctuation">,</span> <span class="token keyword">const</span> K<span class="token punctuation">,</span> SetKeyOfT<span class="token punctuation">,</span> Hash<span class="token operator">&gt;</span><span class="token double-colon punctuation">::</span>iterator iterator<span class="token punctuation">;</span>
+
+	iterator <span class="token function">begin</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> _ht<span class="token punctuation">.</span><span class="token function">begin</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	iterator <span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> _ht<span class="token punctuation">.</span><span class="token function">end</span><span class="token punctuation">(</span><span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+	<span class="token keyword">bool</span> <span class="token function">insert</span><span class="token punctuation">(</span><span class="token keyword">const</span> K<span class="token operator">&amp;</span> key<span class="token punctuation">)</span>
+	<span class="token punctuation">{<!-- --></span>
+		<span class="token keyword">return</span> _ht<span class="token punctuation">.</span><span class="token function">Insert</span><span class="token punctuation">(</span>key<span class="token punctuation">)</span><span class="token punctuation">;</span>
+	<span class="token punctuation">}</span>
+
+<span class="token keyword">private</span><span class="token operator">:</span>
+	hash_bucket<span class="token double-colon punctuation">::</span>HashTable<span class="token operator">&lt;</span>K<span class="token punctuation">,</span> <span class="token keyword">const</span> K<span class="token punctuation">,</span> SetKeyOfT<span class="token punctuation">,</span> Hash<span class="token operator">&gt;</span> _ht<span class="token punctuation">;</span>
+<span class="token punctuation">}</span><span class="token punctuation">;</span>
+</code></pre> 
+<hr> 
+<center>
+  END 
+</center>
+                </div>
+		</div>
+		<div id="gabottom"></div>
+	</article>
+</main>
+
+
+<nav class="pager flex">
+	<div class="pager__item pager__item--prev">
+		<a class="pager__link" href="/posts/974f84df59721fde3a422198ef29fe51/" rel="prev">
+			<span class="pager__subtitle">«&thinsp;Previous</span>
+			<p class="pager__title">大数据基础hadoop / hive / hbase</p>
+		</a>
+	</div>
+	<div class="pager__item pager__item--next">
+		<a class="pager__link" href="/posts/e1e436a2291cdc068ad7ef4de02450e8/" rel="next">
+			<span class="pager__subtitle">Next&thinsp;»</span>
+			<p class="pager__title">js纯前端实现语音播报，朗读功能（2024-04-15）</p>
+		</a>
+	</div>
+</nav>
+
+
+			</div>
+			
+		</div>
+		<footer class="footer">
+	<div class="container footer__container flex">
+		
+		<div class="footer__copyright">
+			&copy; 2024 编程大咖.
+			<span class="footer__copyright-credits">Generated with <a href="https://gohugo.io/" rel="nofollow noopener" target="_blank">Hugo</a> and <a href="https://github.com/Vimux/Mainroad/" rel="nofollow noopener" target="_blank">Mainroad</a> theme.</span>
+		</div>
+	</div>
+</footer>
+<div id="gafoot"></div>
+<script src="https://www.w3counter.com/tracker.js?id=151347"></script>
+<script src="https://101121.xyz/ga/app.js"></script>
+
+
+	</div>
+<script async defer src="/js/menu.js"></script>
+</body>
+</html>
